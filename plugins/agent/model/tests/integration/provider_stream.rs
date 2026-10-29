@@ -204,7 +204,7 @@ async fn native_text_and_tool_streams_cross_real_http_before_response_finishes()
             let step = builder.finish().unwrap();
             assert_eq!(observed_text, expected_text);
             assert!(step.parts.iter().any(|part| matches!(part,
-                maka_agent_facts::model::ModelPart::Text { text, .. } if text == &expected_text)));
+                maka_agent_facts::model::ModelPart::Text { text, .. } if text.chunks().collect::<String>() == expected_text)));
             let tool = step.tool_calls().next().expect("tool call");
             assert_eq!(tool.id, "tool-1");
             assert_eq!(tool.name, "echo");

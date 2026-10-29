@@ -77,13 +77,13 @@ impl OwnedOverlay {
         ))
     }
     fn new(text: TextOwner, role: MessageRole) -> Self {
-        let source = TextSource {
-            bytes: SourceBytes::Source(Arc::new(OwnedString {
+        let source = TextSource::new(
+            SourceBytes::Source(Arc::new(OwnedString {
                 text: text.clone(),
                 range: 0..text.len(),
             })),
-            encoding: TextEncoding::Utf8,
-        };
+            TextEncoding::Utf8,
+        );
         let recipe = match role {
             MessageRole::System => MessageRecipe::System {
                 content: source,
@@ -132,14 +132,14 @@ impl OwnedOverlay {
     }
     /// Create a per-request accounting view; the shared input DTO never retains it.
     pub fn bound(&self, owner: Arc<dyn Send + Sync>) -> Self {
-        let source = TextSource {
-            bytes: SourceBytes::Source(Arc::new(BoundString {
+        let source = TextSource::new(
+            SourceBytes::Source(Arc::new(BoundString {
                 overlay: self.0.clone(),
                 range: 0..self.0.text.len(),
                 owner: owner.clone(),
             })),
-            encoding: TextEncoding::Utf8,
-        };
+            TextEncoding::Utf8,
+        );
         let recipe = match self.0.metadata.role {
             MessageRole::System => MessageRecipe::System {
                 content: source,
@@ -619,7 +619,7 @@ mod tests {
         let MessageRecipe::System { content, .. } = overlay.recipe() else {
             panic!("expected System overlay");
         };
-        let mut cursor = content.bytes.open(Arc::new(Budget));
+        let mut cursor = content.bytes().open(Arc::new(Budget));
         let read = ready(cursor.read_chunk(ChargedBuffer::new(vec![0; 16], ()))).unwrap();
         let bytes = read.buffer.into_bytes(read.bytes_read);
         assert_eq!(bytes.as_ref(), &text.as_bytes()[..16]);
@@ -657,7 +657,7 @@ mod tests {
         let MessageRecipe::System { content, .. } = first.recipe() else {
             panic!("expected System overlay");
         };
-        let mut cursor = content.bytes.open(Arc::new(Budget));
+        let mut cursor = content.bytes().open(Arc::new(Budget));
         let read = ready(cursor.read_chunk(ChargedBuffer::new(vec![0; 8], ()))).unwrap();
         let bytes = read.buffer.into_bytes(read.bytes_read);
         drop(cursor);
@@ -753,7 +753,7 @@ mod tests {
         let Some(ContentRecipe::Text { text, .. }) = ready(content.open(0).next()).unwrap() else {
             panic!("expected checkpoint text");
         };
-        let SourceBytes::Source(source) = text.bytes else {
+        let SourceBytes::Source(source) = text.into_bytes() else {
             panic!("checkpoint text was copied inline");
         };
         let start = LABEL.len() - 2;
@@ -786,7 +786,7 @@ mod tests {
         let Some(ContentRecipe::Text { text, .. }) = ready(content.open(0).next()).unwrap() else {
             panic!("expected checkpoint text");
         };
-        let mut cursor = text.bytes.open(Arc::new(Budget));
+        let mut cursor = text.bytes().open(Arc::new(Budget));
         let read = ready(cursor.read_chunk(ChargedBuffer::new(vec![0; 8], ()))).unwrap();
         let bytes = read.buffer.into_bytes(read.bytes_read);
         drop(cursor);

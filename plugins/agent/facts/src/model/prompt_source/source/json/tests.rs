@@ -74,9 +74,7 @@ impl ByteCursor for Cursor {
     }
 }
 fn source(bytes: impl Into<Bytes>) -> JsonSource {
-    JsonSource {
-        bytes: SourceBytes::Source(Arc::new(Native(bytes.into()))),
-    }
+    JsonSource::new(SourceBytes::Source(Arc::new(Native(bytes.into()))))
 }
 fn run<T>(future: impl Future<Output = T>) -> T {
     let mut context = Context::from_waker(Waker::noop());
@@ -123,6 +121,116 @@ fn escaped_keys_unicode_and_nested_value_ranges_remain_sources() {
                 .unwrap()
         );
         assert!(items.next().await.unwrap().is_none());
+    });
+}
+
+#[test]
+fn field_selection_matches_decoded_keys_and_last_duplicate_without_token_storage() {
+    run(async {
+        let budget: Arc<dyn SourceBudget> = Arc::new(Budget);
+        let long_key = "中😀ab".repeat(8192);
+        let input = format!(
+            r#"{{"":1,"a":2,"ab":3,"\u0061":4,"中😀":5,"\u4e2d\ud83d\ude00":6,"\u0000":7,{}:8}}"#,
+            serde_json::to_string(&long_key).unwrap()
+        );
+        let expected: serde_json::Value = serde_json::from_str(&input).unwrap();
+        let names = ["", "a", "ab", "abc", "中😀", "a", "\0", &long_key];
+        let values = fields(&source(Bytes::from(input)), &names, budget.clone())
+            .await
+            .unwrap();
+        for (name, value) in names.into_iter().zip(values) {
+            match (expected.get(name), value) {
+                (Some(expected), Some(value)) => assert_eq!(
+                    u64_value(&value.source, budget.clone()).await.unwrap(),
+                    expected.as_u64().unwrap(),
+                    "selected field {name:?}"
+                ),
+                (None, None) => {}
+                (_, value) => panic!("field selection disagrees with serde: {name:?}, {value:?}"),
+            }
+        }
+    });
+}
+
+#[test]
+fn named_field_cursor_preserves_original_spans_and_first_schema_slot() {
+    run(async {
+        let budget: Arc<dyn SourceBudget> = Arc::new(Budget);
+        let input = r#"{"\u0061":1,"other":2,"a":3}"#;
+        let mut cursor = ObjectCursor::open(source(Bytes::from_static(input.as_bytes())), budget)
+            .await
+            .unwrap();
+        let (spans, selected) = cursor
+            .next_named_spans(["a", "a"].into_iter())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected, Some(0));
+        assert_eq!(
+            &input[spans.key_range.start as usize..spans.key_range.end as usize],
+            r#""\u0061""#
+        );
+        assert_eq!(
+            &input[spans.value_range.start as usize..spans.value_range.end as usize],
+            "1"
+        );
+        let (field, selected) = cursor.next_named(["a"].into_iter()).await.unwrap().unwrap();
+        assert_eq!(selected, None);
+        assert!(
+            text_eq(&field.key, "other", Arc::new(Budget))
+                .await
+                .unwrap()
+        );
+        let (spans, selected) = cursor
+            .next_named_spans(["missing", "a", "other"].into_iter())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected, Some(1));
+        assert_eq!(
+            &input[spans.key_range.start as usize..spans.key_range.end as usize],
+            r#""a""#
+        );
+        assert!(
+            cursor
+                .next_named_spans(["a"].into_iter())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    });
+}
+
+#[test]
+fn field_selection_validates_unmatched_keys_values_and_the_complete_object() {
+    run(async {
+        let budget: Arc<dyn SourceBudget> = Arc::new(Budget);
+        for input in [
+            r#"{"wanted":1,"different\ud800":2}"#,
+            r#"{"wanted":1,"different\q":2}"#,
+            r#"{"wanted":1,"different":[true,]}"#,
+            r#"{"wanted":1,"wanted":}"#,
+            r#"{"wanted":1} trailing"#,
+        ] {
+            assert!(serde_json::from_str::<serde_json::Value>(input).is_err());
+            for names in [&["wanted"][..], &["missing"][..], &[][..]] {
+                let error = fields(&source(Bytes::from(input)), names, budget.clone())
+                    .await
+                    .unwrap_err();
+                assert!(is_syntax_error(&error), "{input}: {error}");
+            }
+        }
+        let input = source(Bytes::from_static(
+            br#"{"wanted":1,"unselected":1e999999999999999999999999999999}"#,
+        ));
+        let values = fields(&input, &["wanted"], budget.clone()).await.unwrap();
+        assert_eq!(
+            u64_value(&values[0].as_ref().unwrap().source, budget)
+                .await
+                .unwrap(),
+            1,
+            "canonical field selection retains lexical-only number validation"
+        );
     });
 }
 
@@ -233,14 +341,14 @@ fn closed_field_lookup_on_scalar_options_is_absent() {
 fn decoded_key_digest_and_equality_agree_across_encodings() {
     run(async {
         let budget: Arc<dyn SourceBudget> = Arc::new(Budget);
-        let escaped = TextSource {
-            bytes: source(Bytes::from_static(br#""a\ud83d\ude00""#)).bytes,
-            encoding: TextEncoding::JsonString,
-        };
-        let literal = TextSource {
-            bytes: SourceBytes::Inline(Bytes::from_static("a😀".as_bytes())),
-            encoding: TextEncoding::Utf8,
-        };
+        let escaped = TextSource::new(
+            source(Bytes::from_static(br#""a\ud83d\ude00""#)).bytes,
+            TextEncoding::JsonString,
+        );
+        let literal = TextSource::new(
+            SourceBytes::Inline(Bytes::from_static("a😀".as_bytes())),
+            TextEncoding::Utf8,
+        );
         assert!(
             text_source_eq(&escaped, &literal, budget.clone())
                 .await
@@ -274,7 +382,7 @@ fn decoded_stream_validation_needs_no_random_access_capability() {
             JsonKind::Array
         );
         assert_eq!(
-            inspect(&JsonSource { bytes }, budget)
+            inspect(&JsonSource::new(bytes), budget)
                 .await
                 .unwrap_err()
                 .kind(),
@@ -331,10 +439,10 @@ fn object_spans_reopen_exact_native_value_ranges() {
             .unwrap();
         let first = cursor.next_spans().await.unwrap().unwrap();
         assert_eq!(first.kind, JsonKind::Array);
-        let key = TextSource {
-            bytes: parent.bytes.slice(first.key_range).unwrap(),
-            encoding: TextEncoding::JsonString,
-        };
+        let key = TextSource::new(
+            parent.bytes.slice(first.key_range).unwrap(),
+            TextEncoding::JsonString,
+        );
         assert!(text_eq(&key, "a", budget.clone()).await.unwrap());
         let value = parent.slice(first.value_range).unwrap();
         let mut array = ArrayCursor::open(value.clone(), budget.clone())
@@ -439,12 +547,10 @@ fn structure_walk_visits_nested_giant_leaf_only_once() {
         );
         let length = raw.len() as u64;
         let read = Arc::new(AtomicU64::new(0));
-        let source = JsonSource {
-            bytes: SourceBytes::Source(Arc::new(Observed {
-                bytes: Bytes::from(raw),
-                read: read.clone(),
-            })),
-        };
+        let source = JsonSource::new(SourceBytes::Source(Arc::new(Observed {
+            bytes: Bytes::from(raw),
+            read: read.clone(),
+        })));
         let mut cursor = StructureCursor::open(source, Arc::new(Budget))
             .await
             .unwrap();

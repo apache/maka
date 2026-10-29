@@ -466,6 +466,7 @@ impl SessionStore {
     /// exact T1, then is released before potentially long native execution.
     pub async fn append_computer_app_dispatch(
         &self,
+        prefix: &[EventWrite],
         event: &EventWrite,
         targets: &[GrantTarget],
         app: &GrantTarget,
@@ -495,7 +496,7 @@ impl SessionStore {
             .await
             .map_err(super::session_store::commit_error)?;
         log.scoped(Arc::new(pin))
-            .append_computer_app_dispatch(event, targets, app, display, basis)
+            .append_computer_app_dispatch(prefix, event, targets, app, display, basis)
             .await
     }
 

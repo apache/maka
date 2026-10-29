@@ -106,7 +106,7 @@ impl PreparedPrompt {
         preparation
             .promote(peak, cancellation)
             .await
-            .map_err(crate::RunError::Preparation)
+            .map_err(crate::RunError::preparation)
     }
     pub fn resident_bytes(&self) -> usize {
         self.resident_bytes
@@ -612,6 +612,30 @@ mod tests {
     use maka_agent_facts::model::prompt_source::{
         PreparedWire, WireCursor, WireFormat, WireSource,
     };
+
+    #[tokio::test]
+    async fn promotion_preserves_cancellation_and_closed_resource_failure() {
+        use tokio_util::sync::CancellationToken;
+
+        let resources = maka_model::ModelPreparationResources::new(Default::default()).unwrap();
+        let staged = resources.reserve_staging(1).await.unwrap();
+        let mut prompt = PreparedPrompt::new(Prompt::from_messages(Vec::new()));
+        prompt.preparation = Some(crate::history::preparation::RequestPreparation::new(staged));
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(matches!(
+            prompt.promote(1, &cancellation).await,
+            Err(crate::RunError::Cancelled)
+        ));
+
+        resources.close();
+        let result = prompt.promote(1, &CancellationToken::new()).await;
+        assert!(matches!(
+            result,
+            Err(crate::RunError::Preparation(error))
+                if error.kind() == std::io::ErrorKind::BrokenPipe
+        ));
+    }
 
     struct UnreadableHistory;
     impl PromptSource for UnreadableHistory {

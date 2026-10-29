@@ -25,9 +25,11 @@ use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::ModelInterruption;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::history::RowPosition;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
+use maka_agent_facts::model::recorded::{
+    CompletionPart, ModelCompletion, ModelObservation, ModelPartRecord, ModelPartial,
+};
+
 use maka_agent_facts::model::ModelUsage;
 use maka_agent_facts::model::TextKind;
 use maka_event_log::{EventLog, StoreError};
@@ -71,29 +73,14 @@ async fn completed_bytes_digest_identity_reopen_and_selected_rebuild() {
         .unwrap()
         .is_empty()
     );
-    let (id, _) = partial(&log, "a", "hello😀").await;
-    log.append(&event(
-        "a",
-        observe(
-            "a",
-            ModelEvent::PartFinished {
-                id: "provider-part".into(),
-                provider_options: None,
-            },
-        ),
-    ))
-    .await
-    .unwrap();
+    let (part, _) = partial(&log, "a", "hello😀").await;
+    let id = part.message_id.clone();
     log.append(&event(
         "a",
         Fact::ModelCompleted {
             step_id: "step-a".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::Text {
-                    text_kind: TextKind::Text,
-                    text: "hello😀".into(),
-                    provider_options: None,
-                }],
+            output: ModelCompletion {
+                parts: vec![CompletionPart::Own(part)],
                 finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
                 usage: ModelUsage {
                     input_tokens: Some(9),
@@ -290,23 +277,29 @@ async fn interleaved_stream_preserves_order_and_excludes_other_session_evidence(
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("log.sqlite");
     let log = EventLog::open(&path).await.unwrap();
-    let (id, _) = partial(&log, "a", "start\n").await;
-    partial(&log, "b", "unrelated").await;
     let expected = format!(
         "start\n{}",
         (0..1024).map(|i| format!("{i}😀\n")).collect::<String>()
     );
-    let events: Vec<_> = (0..1024)
+    let (part, _) = partial(&log, "a", &expected).await;
+    let id = part.message_id.clone();
+    let (part_b, _) = partial(
+        &log,
+        "b",
+        &format!("unrelated{}", "not part of a".repeat(1024)),
+    )
+    .await;
+    let events: Vec<_> = (0..128)
         .flat_map(|i| {
-            [("a", format!("{i}😀\n")), ("b", "not part of a".into())].map(|(session, text)| {
+            ["a", "b"].map(move |session| {
                 event(
                     session,
                     observe(
                         session,
-                        ModelEvent::PartDelta {
-                            id: "provider-part".into(),
-                            text,
-                            provider_options: None,
+                        ModelObservation::ResponseMetadata {
+                            id: Some(format!("response-{session}-{i}")),
+                            model: None,
+                            timestamp: None,
                         },
                     ),
                 )
@@ -314,7 +307,7 @@ async fn interleaved_stream_preserves_order_and_excludes_other_session_evidence(
         })
         .collect();
     log.append_batch(&events).await.unwrap();
-    let through = interrupt(&log, "a").await;
+    let through = interrupt(&log, "a", part).await;
     crate::transcript_cache::materialize_all_rows(&log, "a", through)
         .await
         .unwrap();
@@ -325,7 +318,7 @@ async fn interleaved_stream_preserves_order_and_excludes_other_session_evidence(
     assert_eq!(assistant["id"], id);
     assert_eq!(assistant["text"], expected);
 
-    let other = interrupt(&log, "b").await;
+    let other = interrupt(&log, "b", part_b).await;
     crate::transcript_cache::materialize_all_rows(&log, "b", other)
         .await
         .unwrap();
@@ -346,8 +339,9 @@ async fn partial_freezes_at_interruption_and_old_fence_excludes_later_boundaries
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("log.sqlite");
     let log = EventLog::open(&path).await.unwrap();
-    let (id, live) = partial(&log, "a", "partial😀").await;
-    let interrupted = interrupt(&log, "a").await;
+    let (part, live) = partial(&log, "a", "partial😀").await;
+    let id = part.message_id.clone();
+    let interrupted = interrupt(&log, "a", part).await;
     let ended = end(
         &log,
         "a",
@@ -358,8 +352,7 @@ async fn partial_freezes_at_interruption_and_old_fence_excludes_later_boundaries
     .await;
     let invocation = event("a", opening()).event().invocation.clone();
     let overlay = log.active_transcript(&invocation, live).await.unwrap();
-    assert_eq!(overlay.len(), 1);
-    assert_eq!(overlay[0].id, id);
+    assert!(overlay.is_empty());
     assert!(
         log.active_transcript(&invocation, interrupted)
             .await
@@ -447,7 +440,7 @@ async fn directory_fences_and_sparse_body_session_isolation() {
 }
 
 #[tokio::test]
-async fn terminal_without_model_interruption_seals_only_committed_partial_evidence() {
+async fn terminal_without_model_interruption_does_not_invent_unsealed_preview() {
     for outcome in [
         InvocationOutcome::Failed {
             model_failure: None,
@@ -461,7 +454,7 @@ async fn terminal_without_model_interruption_seals_only_committed_partial_eviden
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("log.sqlite");
         let log = EventLog::open(&path).await.unwrap();
-        let (id, live) = partial(&log, "a", "committed😀 prefix").await;
+        let (_part, live) = partial(&log, "a", "committed😀 prefix").await;
         let invocation = event("a", opening()).event().invocation.clone();
         let overlay = log.active_transcript(&invocation, live).await.unwrap();
         crate::transcript_cache::materialize_all_rows(&log, "a", live)
@@ -480,22 +473,15 @@ async fn terminal_without_model_interruption_seals_only_committed_partial_eviden
                 .is_empty()
         );
         let original = crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await;
-        assert_eq!(original.len(), 4); // user, running, factual partial, terminal; no usage
-        let assistant: Value = serde_json::from_slice(&original[2].1).unwrap();
-        assert_eq!(assistant["id"], id);
-        let failed = matches!(outcome, InvocationOutcome::Failed { .. });
-        let mut expected = serde_json::to_value(&overlay[0]).unwrap();
-        if failed {
-            expected["interrupted"] = Value::Bool(true);
-        }
-        assert_eq!(assistant, expected);
+        assert_eq!(original.len(), 3); // user, running, terminal; no unsealed preview
+        assert!(overlay.is_empty());
         let delivery = log
             .session_stream_events("a", live, through, 8, 4096)
             .await
             .unwrap();
         assert!(matches!(&delivery.events[0].fact,
             maka_event_log::observation::StreamFact::InvocationEnded { interrupted, .. }
-            if if failed { interrupted == std::slice::from_ref(&id) } else { interrupted.is_empty() }));
+            if interrupted.is_empty()));
         assert_eq!(
             original[2].0,
             RowPosition {
@@ -503,7 +489,7 @@ async fn terminal_without_model_interruption_seals_only_committed_partial_eviden
                 item_index: 0
             }
         );
-        let terminal: Value = serde_json::from_slice(&original[3].1).unwrap();
+        let terminal: Value = serde_json::from_slice(&original[2].1).unwrap();
         assert_eq!(
             terminal["status"],
             if matches!(outcome, InvocationOutcome::Failed { .. }) {
@@ -540,8 +526,9 @@ async fn complete_projection_and_malformed_source_preserve_canonical_admission()
     let path = temp.path().join("log.sqlite");
     let log = EventLog::open(&path).await.unwrap();
     let expected = "x".repeat(16 * 1024 * 1024);
-    let (id, _) = partial(&log, "a", &expected).await;
-    let through = interrupt(&log, "a").await;
+    let (part, _) = partial(&log, "a", &expected).await;
+    let id = part.message_id.clone();
+    let through = interrupt(&log, "a", part).await;
     crate::transcript_cache::materialize_all_rows(&log, "a", through)
         .await
         .unwrap();
@@ -618,27 +605,21 @@ async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebu
             provider_executed: false,
         })
         .collect();
-    let observed: Vec<_> = calls
-        .iter()
-        .map(|call| {
-            event(
-                "fanout",
-                observe("fanout", ModelEvent::ToolCall(call.clone())),
-            )
-        })
-        .collect();
-    let old_fence = *log.append_batch(&observed).await.unwrap().last().unwrap();
+    let old_fence = log.committed_sequence().await.unwrap();
     let completion = log
         .append(&event(
             "fanout",
             Fact::ModelCompleted {
                 step_id: "step-fanout".into(),
-                output: ModelStep {
-                    parts: calls
-                        .iter()
-                        .cloned()
-                        .map(|call| ModelPart::ToolCall { call })
-                        .collect(),
+                output: ModelCompletion {
+                    parts: completion_parts(
+                        "step-fanout".into(),
+                        calls
+                            .iter()
+                            .cloned()
+                            .map(|call| ModelPart::ToolCall { call })
+                            .collect(),
+                    ),
                     finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
                     usage: ModelUsage {
                         input_tokens: Some(7),

@@ -52,7 +52,7 @@ pub(super) async fn verify_original_proofs(
             let parts = event["fact"]["output"]["parts"].as_array_mut().unwrap();
             if let Some(call) = parts
                 .iter()
-                .find(|part| part["kind"] == "tool_call")
+                .find(|part| part["kind"] == "own" && part["data"]["part"]["kind"] == "tool_call")
                 .cloned()
             {
                 parts.push(call);

@@ -22,7 +22,7 @@ use maka_agent_facts::model::ModelFinishReason;
 use maka_agent_ports::session::history::{Page, Position};
 
 #[tokio::test]
-async fn more_than_ten_thousand_actual_observations_remain_readable() {
+async fn large_complete_body_remains_readable_without_durable_deltas() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("observations.sqlite");
     let log = EventLog::open(&path).await.unwrap();
@@ -30,67 +30,27 @@ async fn more_than_ten_thousand_actual_observations_remain_readable() {
     log.create_session(session, "create", &serde_json::json!({}), 1)
         .await
         .unwrap();
-    let start = event(
-        session,
-        observe(
-            session,
-            ModelEvent::PartStarted {
-                id: "part".into(),
-                text_kind: TextKind::Text,
-                provider_options: None,
-            },
-        ),
-    );
-    let message_id = start.event().id.clone();
-    let invocation = start.event().invocation.clone();
-    let mut events = vec![
-        event(session, opening()),
-        event(session, request(session)),
-        start,
-    ];
-    for _ in 0..10_001 {
-        events.push(event(
-            session,
-            observe(
-                session,
-                ModelEvent::PartDelta {
-                    id: "part".into(),
-                    text: "x".into(),
-                    provider_options: None,
-                },
-            ),
-        ));
-    }
-    events.push(event(
-        session,
-        observe(
-            session,
-            ModelEvent::PartFinished {
-                id: "part".into(),
-                provider_options: None,
-            },
-        ),
-    ));
-    let sequences = log.append_batch(&events).await.unwrap();
-    assert_eq!(sequences.len(), 10_005);
-    let live = *sequences.last().unwrap();
     let expected = "x".repeat(10_001);
-    let overlay = log.active_transcript(&invocation, live).await.unwrap();
-    assert_eq!(overlay.len(), 1);
-    assert_eq!(overlay[0].id, message_id);
-    assert!(matches!(&overlay[0].content,
-        maka_presentation::Content::Assistant { text, interrupted: false, .. } if text == &expected));
+    let record = record(
+        "step-observations",
+        0,
+        ModelPart::Text {
+            text_kind: TextKind::Text,
+            text: expected.clone().into(),
+            provider_options: None,
+        },
+    );
+    let message_id = record.message_id.clone();
+    log.append_batch(&[event(session, opening()), event(session, request(session))])
+        .await
+        .unwrap();
     let completion = log
         .append(&event(
             session,
             Fact::ModelCompleted {
                 step_id: "step-observations".into(),
-                output: ModelStep {
-                    parts: vec![ModelPart::Text {
-                        text_kind: TextKind::Text,
-                        text: expected.clone(),
-                        provider_options: None,
-                    }],
+                output: ModelCompletion {
+                    parts: vec![CompletionPart::Own(record)],
                     finish_reason: ModelFinishReason::Stop,
                     usage: ModelUsage::default(),
                     provider_options: None,
@@ -122,6 +82,13 @@ async fn more_than_ten_thousand_actual_observations_remain_readable() {
         .unwrap();
     assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0].message_id, message_id);
+    assert_eq!(
+        chunks[0].model_part,
+        Some(maka_agent_ports::session::history::ModelPartIdentity {
+            step_id: "step-observations".into(),
+            ordinal: 0,
+        })
+    );
     assert_eq!(
         chunks[0].position,
         RowPosition {

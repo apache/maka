@@ -17,7 +17,7 @@
  * under the License.
  */
 
-// Independent historical oracle: the former canonical-fact query.
+// Independent historical oracle: decode complete canonical bodies and Own/Ref directly.
 // Keep this in tests to compare every cut, including before later settlements.
 use super::*;
 
@@ -35,15 +35,80 @@ const INDEPENDENT_TOOLS: &str = "WITH RECURSIVE independent(operation_id) AS (
       AND child.kind IN ('tool_dispatched','tool_rejected')
 )";
 
-// Only admitted Summary requests without tool observations are private work.
-// Recovery still sees them; foreground readiness may ignore them. Parameters
-// 1 and 2 are invocation identity and the historical upper cut.
-pub(crate) const PRIVATE_SUMMARIES: &str = "private_summaries(operation_id) AS (
+// Deliberately independent of model_items' views/macro and the indexed reducer.
+const MODEL_RECORDS: &str = "body_records AS (
+    SELECT e.invocation_id, json_extract(e.event_json,'$.fact.step_id') AS step_id,
+        e.event_id, e.sequence, e.kind AS source_kind,
+        json_extract(e.event_json,'$.fact.event.data') AS record
+    FROM runtime_events e WHERE e.sequence<=?2 AND e.kind='model_observed'
+      AND json_extract(e.event_json,'$.fact.event.kind')='part'
+    UNION ALL
+    SELECT e.invocation_id, json_extract(e.event_json,'$.fact.step_id'),
+        e.event_id, e.sequence, e.kind, json_extract(p.value,'$.data')
+    FROM runtime_events e, json_each(e.event_json, CASE e.kind
+        WHEN 'model_completed' THEN '$.fact.output.parts'
+        WHEN 'model_interrupted' THEN '$.fact.partial.parts' END) p
+    WHERE e.sequence<=?2 AND e.kind IN ('model_completed','model_interrupted')
+      AND json_extract(p.value,'$.kind')='own'
+), observed_parts AS (
+    SELECT invocation_id,step_id,event_id,sequence,json_extract(record,'$.part') AS part
+    FROM body_records WHERE source_kind='model_observed'
+), terminal_parts AS (
+    SELECT e.invocation_id, json_extract(e.event_json,'$.fact.step_id') AS step_id,
+        e.sequence,e.kind AS terminal_kind,json_extract(p.value,'$.data.ordinal') AS ordinal,
+        CASE json_extract(p.value,'$.kind') WHEN 'own' THEN e.event_id
+            WHEN 'ref' THEN json_extract(p.value,'$.data.event_id') END AS body_event_id
+    FROM runtime_events e, json_each(e.event_json, CASE e.kind
+        WHEN 'model_completed' THEN '$.fact.output.parts'
+        WHEN 'model_interrupted' THEN '$.fact.partial.parts' END) p
+    WHERE e.sequence<=?2 AND e.kind IN ('model_completed','model_interrupted')
+), selected_parts AS (
+    SELECT t.*,json_extract(b.record,'$.part') AS part
+    FROM terminal_parts t JOIN body_records b
+      ON b.invocation_id=t.invocation_id AND b.step_id=t.step_id
+      AND b.event_id=t.body_event_id AND json_extract(b.record,'$.ordinal')=t.ordinal
+), accepted_calls AS (
+    SELECT p.invocation_id,p.step_id,p.sequence,json_extract(p.part,'$.call') AS call
+    FROM selected_parts p JOIN runtime_events r ON r.invocation_id=p.invocation_id
+      AND r.operation_id=p.step_id AND r.kind='model_requested'
+    WHERE p.terminal_kind='model_completed' AND json_extract(p.part,'$.kind')='tool_call'
+      AND COALESCE(json_extract(r.event_json,'$.fact.item_acceptance'),0)=0
+    UNION ALL
+    SELECT p.invocation_id,p.step_id,p.sequence,json_extract(p.part,'$.call')
+    FROM observed_parts p JOIN runtime_events r ON r.invocation_id=p.invocation_id
+      AND r.operation_id=p.step_id AND r.kind='model_requested'
+    WHERE json_extract(p.part,'$.kind')='tool_call'
+      AND json_extract(r.event_json,'$.fact.item_acceptance')=1
+), observation_witnesses AS (
+    SELECT e.invocation_id,json_extract(e.event_json,'$.fact.step_id') AS step_id,e.sequence,
+        EXISTS(SELECT 1 FROM observed_parts p WHERE p.sequence=e.sequence
+            AND json_extract(p.part,'$.kind') IN ('tool_call','tool_result')) AS tool,
+        (json_extract(e.event_json,'$.fact.event.kind')='finished'
+         OR (json_extract(e.event_json,'$.fact.event.kind')='provider_options'
+            AND json_extract(e.event_json,'$.fact.event.data.options')!='{}')
+         OR EXISTS(SELECT 1 FROM observed_parts p WHERE p.sequence=e.sequence AND (
+            json_extract(p.part,'$.kind')='tool_result'
+            OR (json_extract(p.part,'$.kind')='tool_call'
+                AND json_extract(p.part,'$.call.provider_executed')=1)
+            OR (CASE json_extract(p.part,'$.kind') WHEN 'tool_call'
+                THEN json_extract(p.part,'$.call.provider_options')
+                ELSE json_extract(p.part,'$.provider_options') END)!='{}'))) AS barrier
+    FROM runtime_events e WHERE e.sequence<=?2 AND e.kind='model_observed'
+    UNION ALL
+    SELECT e.invocation_id,json_extract(e.event_json,'$.fact.step_id'),e.sequence,
+        EXISTS(SELECT 1 FROM body_records b WHERE b.event_id=e.event_id
+            AND json_extract(b.record,'$.part.kind') IN ('tool_call','tool_result')),0
+    FROM runtime_events e WHERE e.sequence<=?2 AND e.kind='model_interrupted'
+      AND (json_array_length(e.event_json,'$.fact.partial.parts')>0
+        OR json_array_length(e.event_json,'$.fact.partial.tool_inputs')>0)
+)";
+
+// Private Summary work can be ignored by foreground readiness until a real tool witness.
+const PRIVATE_SUMMARIES: &str = "private_summaries(operation_id) AS (
   SELECT r.operation_id FROM runtime_events r WHERE r.invocation_id=?1 AND r.sequence<=?2
     AND r.kind='model_requested' AND json_extract(r.event_json,'$.fact.purpose')='summary'
-    AND NOT EXISTS(SELECT 1 FROM runtime_events o WHERE o.invocation_id=r.invocation_id
-      AND json_extract(o.event_json,'$.fact.step_id')=r.operation_id AND o.kind='model_observed' AND o.sequence<=?2
-      AND json_extract(o.event_json,'$.fact.event.kind') IN ('tool_call','provider_tool_result'))
+    AND NOT EXISTS(SELECT 1 FROM observation_witnesses o WHERE o.invocation_id=r.invocation_id
+      AND o.step_id=r.operation_id AND o.tool)
 )";
 
 async fn canonical_execution_boundary(
@@ -52,9 +117,8 @@ async fn canonical_execution_boundary(
     through: u64,
     boundary: Boundary,
 ) -> Result<(), StoreError> {
-    let accepted_calls = crate::model_items::accepted_calls!();
     let pending: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "{INDEPENDENT_TOOLS}, {PRIVATE_SUMMARIES}, {accepted_calls}
+        "{INDEPENDENT_TOOLS}, {MODEL_RECORDS}, {PRIVATE_SUMMARIES}
         SELECT EXISTS(SELECT 1 FROM runtime_events e WHERE e.invocation_id = ?1 AND e.sequence <= ?2 AND (
           (e.kind = 'tool_dispatched' AND NOT EXISTS(SELECT 1 FROM runtime_events t
              WHERE t.invocation_id = e.invocation_id AND t.operation_id = e.operation_id AND t.kind = 'tool_settled' AND t.sequence <= ?2)
@@ -64,7 +128,7 @@ async fn canonical_execution_boundary(
              AND NOT EXISTS(SELECT 1 FROM runtime_events t
              WHERE t.invocation_id = e.invocation_id AND t.operation_id = e.operation_id AND t.kind IN ('model_completed','model_interrupted') AND t.sequence <= ?2))
           OR (e.kind = 'model_requested' AND EXISTS(SELECT 1 FROM accepted_calls p
-             WHERE p.invocation_id=e.invocation_id AND p.step_id=e.operation_id AND p.sequence <= ?2
+             WHERE p.invocation_id=e.invocation_id AND p.step_id=e.operation_id
              AND json_extract(p.call, '$.provider_executed') = 0
              AND NOT EXISTS(SELECT 1 FROM runtime_events d WHERE d.invocation_id = e.invocation_id
                AND d.operation_id = e.operation_id || ':' || json_extract(p.call, '$.id')
@@ -74,33 +138,25 @@ async fn canonical_execution_boundary(
                OR (NOT EXISTS(SELECT 1 FROM runtime_events request WHERE request.invocation_id=e.invocation_id
                    AND request.operation_id=e.operation_id AND request.kind='model_requested'
                    AND json_extract(request.event_json,'$.fact.item_acceptance')=1)
-                 AND EXISTS(SELECT 1 FROM runtime_events barrier WHERE barrier.invocation_id=e.invocation_id
-                 AND json_extract(barrier.event_json, '$.fact.step_id')=e.operation_id
-                 AND barrier.kind='model_observed' AND barrier.sequence <= ?2
-                 AND (json_extract(barrier.event_json, '$.fact.event.kind') IN ('provider_tool_result','finished')
-                   OR (json_extract(barrier.event_json, '$.fact.event.kind')='tool_call'
-                     AND json_extract(barrier.event_json, '$.fact.event.data.provider_executed')=1)
-                   OR (json_extract(barrier.event_json, '$.fact.event.data.provider_options') IS NOT NULL
-                     AND json_extract(barrier.event_json, '$.fact.event.data.provider_options') != '{{}}')))))
+                 AND EXISTS(SELECT 1 FROM observation_witnesses barrier WHERE barrier.invocation_id=e.invocation_id
+                   AND barrier.step_id=e.operation_id AND barrier.barrier)))
              AND NOT ((?3 OR ?4) AND e.operation_id IN (SELECT operation_id FROM private_summaries))
-             AND EXISTS(SELECT 1 FROM runtime_events o
-             WHERE o.invocation_id = e.invocation_id AND json_extract(o.event_json, '$.fact.step_id') = e.operation_id
-             AND o.kind = 'model_observed' AND o.sequence <= ?2))
+             AND EXISTS(SELECT 1 FROM observation_witnesses o
+                 WHERE o.invocation_id=e.invocation_id AND o.step_id=e.operation_id))
           OR (e.kind='model_requested' AND json_extract(e.event_json,'$.fact.item_acceptance')=1
              AND EXISTS(SELECT 1 FROM accepted_calls p WHERE p.invocation_id=e.invocation_id AND p.step_id=e.operation_id
-               AND p.sequence <= ?2 AND json_extract(p.call,'$.provider_executed')=1
-               AND NOT EXISTS(SELECT 1 FROM runtime_events result WHERE result.invocation_id=e.invocation_id
-                 AND result.kind='model_observed' AND result.sequence <= ?2
-                 AND json_extract(result.event_json,'$.fact.step_id')=e.operation_id
-                 AND json_extract(result.event_json,'$.fact.event.kind')='provider_tool_result'
-                 AND json_extract(result.event_json,'$.fact.event.data.id')=json_extract(p.call,'$.id')
-                 AND json_extract(result.event_json,'$.fact.event.data.name')=json_extract(p.call,'$.name'))))
-          OR (e.kind = 'model_completed' AND EXISTS(SELECT 1 FROM json_each(e.event_json, '$.fact.output.parts') p
-             WHERE json_extract(p.value, '$.kind') = 'tool_call' AND json_extract(p.value, '$.call.provider_executed') = 1
-             AND NOT EXISTS(SELECT 1 FROM json_each(e.event_json, '$.fact.output.parts') result
-               WHERE json_extract(result.value, '$.kind') = 'tool_result'
-                 AND json_extract(result.value, '$.id') = json_extract(p.value, '$.call.id')
-                 AND json_extract(result.value, '$.name') = json_extract(p.value, '$.call.name'))))))",
+               AND json_extract(p.call,'$.provider_executed')=1
+               AND NOT EXISTS(SELECT 1 FROM observed_parts result WHERE result.invocation_id=e.invocation_id
+                 AND result.step_id=e.operation_id AND json_extract(result.part,'$.kind')='tool_result'
+                 AND json_extract(result.part,'$.id')=json_extract(p.call,'$.id')
+                 AND json_extract(result.part,'$.name')=json_extract(p.call,'$.name'))))
+          OR (e.kind = 'model_completed' AND EXISTS(SELECT 1 FROM selected_parts p
+             WHERE p.sequence=e.sequence AND json_extract(p.part, '$.kind') = 'tool_call'
+               AND json_extract(p.part, '$.call.provider_executed') = 1
+               AND NOT EXISTS(SELECT 1 FROM selected_parts result
+                 WHERE result.sequence=e.sequence AND json_extract(result.part, '$.kind') = 'tool_result'
+                   AND json_extract(result.part, '$.id') = json_extract(p.part, '$.call.id')
+                   AND json_extract(result.part, '$.name') = json_extract(p.part, '$.call.name'))))))",
     ))).bind(invocation).bind(through as i64).bind(matches!(boundary,Boundary::Settled))
         .bind(matches!(boundary,Boundary::Model)).fetch_one(connection).await?;
     if pending {
@@ -232,7 +288,7 @@ async fn settlement_closes_only_its_obligation_kind_when_operations_share_an_id(
     assert_eq!(live, 0);
 }
 
-async fn request(db: &mut SqliteConnection, purpose: &str, acceptance: bool) {
+async fn request(db: &mut SqliteConnection, purpose: &str, acceptance: bool) -> u64 {
     checked(
         db,
         "model_requested",
@@ -241,7 +297,7 @@ async fn request(db: &mut SqliteConnection, purpose: &str, acceptance: bool) {
             "step_id":"step", "purpose":purpose, "item_acceptance":acceptance
         }),
     )
-    .await;
+    .await
 }
 
 async fn observe(db: &mut SqliteConnection, kind: &str, data: Value) -> u64 {
@@ -265,8 +321,8 @@ async fn intervals_preserve_tool_call_and_independent_descendant_cuts() {
         "model_completed",
         Some("step"),
         json!({"step_id":"step","output":{"parts":[
-            {"kind":"tool_call","call":{"id":"local","name":"tool","provider_executed":false}},
-            {"kind":"tool_call","call":{"id":"rejected","name":"tool","provider_executed":false}}
+            own_part("step",0,json!({"kind":"tool_call","call":{"id":"local","name":"tool","provider_executed":false}})),
+            own_part("step",1,json!({"kind":"tool_call","call":{"id":"rejected","name":"tool","provider_executed":false}}))
         ]}}),
     )
     .await;
@@ -440,30 +496,54 @@ async fn intervals_keep_nested_effects_blocking_model_progress() {
 async fn intervals_preserve_interrupted_observation_and_summary_privacy_cuts() {
     for purpose in ["main", "summary"] {
         for acceptance in [false, true] {
+            if purpose == "summary" && acceptance {
+                continue;
+            }
             for status in ["retryable_failure", "failed", "cancelled"] {
                 for observation in [
                     None,
-                    Some("part_delta"),
+                    Some("partial_text"),
+                    Some("response_metadata"),
+                    Some("provider_options"),
                     Some("finished"),
                     Some("tool_call"),
                 ] {
+                    if purpose == "summary"
+                        && matches!(
+                            observation,
+                            Some("partial_text" | "response_metadata" | "provider_options")
+                        )
+                    {
+                        continue;
+                    }
                     let mut db = database().await;
                     request(&mut db, purpose, acceptance).await;
-                    if let Some(kind) = observation {
-                        let data = if kind == "tool_call" {
-                            json!({"id":"call","name":"provider","provider_executed":true})
-                        } else {
-                            json!({})
-                        };
-                        observe(&mut db, kind, data).await;
+                    let mut interruption = json!({"step_id":"step","status":status});
+                    match observation {
+                        Some("partial_text") => {
+                            interruption["partial"] = json!({
+                                "parts":[own_part("step",0,json!({"kind":"text","text_kind":"text","text":"valid prefix"}))],
+                                "tool_inputs":[]
+                            });
+                        }
+                        Some("tool_call") => {
+                            observe(&mut db,"part",recorded_part("step",0,
+                                json!({"kind":"tool_call","call":{"id":"call","name":"provider","provider_executed":true}}))).await;
+                        }
+                        Some("provider_options") => {
+                            observe(
+                                &mut db,
+                                "provider_options",
+                                json!({"options":{"signature":"opaque"}}),
+                            )
+                            .await;
+                        }
+                        Some(kind) => {
+                            observe(&mut db, kind, json!({})).await;
+                        }
+                        None => {}
                     }
-                    checked(
-                        &mut db,
-                        "model_interrupted",
-                        Some("step"),
-                        json!({"step_id":"step","status":status}),
-                    )
-                    .await;
+                    checked(&mut db, "model_interrupted", Some("step"), interruption).await;
                     if purpose == "summary" && observation != Some("tool_call") {
                         settled_boundary(&mut db, "invocation", i64::MAX as u64)
                             .await
@@ -482,20 +562,29 @@ async fn intervals_require_exact_provider_results_and_preserve_accepted_call_cut
             let mut db = database().await;
             request(&mut db, "main", acceptance).await;
             let call = json!({"id":"call","name":"provider","provider_executed":true});
-            observe(&mut db, "tool_call", call.clone()).await;
-            observe(
+            let call_at = observe(
                 &mut db,
-                "provider_tool_result",
-                json!({"id":"call","name":name}),
+                "part",
+                recorded_part("step", 0, json!({"kind":"tool_call","call":call})),
             )
             .await;
+            let result_at = observe(
+                &mut db,
+                "part",
+                recorded_part(
+                    "step",
+                    1,
+                    json!({"kind":"tool_result","id":"call","name":name}),
+                ),
+            )
+            .await;
+            let call_ref = part_reference(&mut db, call_at, 0).await;
+            let result_ref = part_reference(&mut db, result_at, 1).await;
             checked(
                 &mut db,
                 "model_completed",
                 Some("step"),
-                json!({"step_id":"step","output":{"parts":[
-                    {"kind":"tool_call","call":call}, {"kind":"tool_result","id":"call","name":name}
-                ]}}),
+                json!({"step_id":"step","output":{"parts":[call_ref,result_ref]}}),
             )
             .await;
             assert_eq!(
@@ -510,8 +599,8 @@ async fn intervals_require_exact_provider_results_and_preserve_accepted_call_cut
     request(&mut db, "main", true).await;
     observe(
         &mut db,
-        "tool_call",
-        json!({"id":"local","name":"tool","provider_executed":false}),
+        "part",
+        recorded_part("step",0,json!({"kind":"tool_call","call":{"id":"local","name":"tool","provider_executed":false}})),
     )
     .await;
     checked(&mut db, "tool_rejected", Some("step:local"), json!({})).await;
@@ -528,26 +617,80 @@ async fn intervals_require_exact_provider_results_and_preserve_accepted_call_cut
 }
 
 #[tokio::test]
+async fn canonical_oracle_resolves_mixed_own_refs_without_projection_metadata() {
+    let mut db = database().await;
+    request(&mut db, "main", false).await;
+    let call_at = observe(&mut db, "part", recorded_part("step", 0,
+        json!({"kind":"tool_call","call":{"id":"remote","name":"provider","provider_executed":true}}))).await;
+    let result_at = observe(
+        &mut db,
+        "part",
+        recorded_part(
+            "step",
+            1,
+            json!({"kind":"tool_result","id":"remote","name":"provider"}),
+        ),
+    )
+    .await;
+    let call_ref = part_reference(&mut db, call_at, 0).await;
+    let result_ref = part_reference(&mut db, result_at, 1).await;
+    let accepted = checked(&mut db, "model_completed", Some("step"), json!({
+        "step_id":"step","output":{"parts":[call_ref,result_ref,
+            own_part("step", 2, json!({"kind":"tool_call","call":{"id":"local","name":"tool","provider_executed":false}}))
+        ]}
+    })).await;
+    assert!(
+        model_boundary(&mut db, "invocation", accepted)
+            .await
+            .is_err()
+    );
+    checked(&mut db, "tool_rejected", Some("step:local"), json!({})).await;
+    model_boundary(&mut db, "invocation", i64::MAX as u64)
+        .await
+        .unwrap();
+
+    // The expected side must survive removal of the implementation's body catalog.
+    sqlx::raw_sql("DROP VIEW model_selected_parts; DROP VIEW model_part_bodies; DELETE FROM model_part_records;")
+        .execute(&mut db).await.unwrap();
+    compare_cuts(&mut db).await;
+    assert!(
+        canonical_execution_boundary(&mut db, "invocation", accepted, Boundary::Model)
+            .await
+            .is_err()
+    );
+    canonical_execution_boundary(&mut db, "invocation", i64::MAX as u64, Boundary::Model)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn summary_tool_observations_remain_nonprivate_after_settlement() {
     let mut db = database().await;
-    request(&mut db, "summary", false).await;
-    let private_cut = observe(&mut db, "part_delta", json!({})).await;
+    let private_cut = request(&mut db, "summary", false).await;
     model_boundary(&mut db, "invocation", private_cut)
         .await
         .unwrap();
     summary_boundary(&mut db, "invocation").await.unwrap();
-    observe(
+    let call_at = observe(&mut db,"part",recorded_part("step",0,
+        json!({"kind":"tool_call","call":{"id":"call","name":"provider","provider_executed":true}}))).await;
+    let result_at = observe(
         &mut db,
-        "provider_tool_result",
-        json!({"id":"call","name":"provider"}),
+        "part",
+        recorded_part(
+            "step",
+            1,
+            json!({"kind":"tool_result","id":"call","name":"provider"}),
+        ),
     )
     .await;
     assert!(summary_boundary(&mut db, "invocation").await.is_err());
+    let call_ref = part_reference(&mut db, call_at, 0).await;
+    let result_ref = part_reference(&mut db, result_at, 1).await;
     checked(
         &mut db,
         "model_completed",
         Some("step"),
-        json!({"step_id":"step","output":{"parts":[]}}),
+        json!({"step_id":"step","output":{"parts":[call_ref,result_ref]}}),
     )
     .await;
     settled_boundary(&mut db, "invocation", i64::MAX as u64)
@@ -583,7 +726,7 @@ async fn execution_rollback_and_reopen_preserve_historical_answers() {
         json!({"step_id":"step","purpose":"main","item_acceptance":true}),
     )
     .await;
-    append(&mut db,"model_observed",None,json!({"step_id":"step","event":{"kind":"tool_call","data":{"id":"call","name":"provider","provider_executed":true}}})).await;
+    append(&mut db,"model_observed",None,json!({"step_id":"step","event":{"kind":"part","data":recorded_part("step",0,json!({"kind":"tool_call","call":{"id":"call","name":"provider","provider_executed":true}}))}})).await;
     let old_cut = append(
         &mut db,
         "model_interrupted",
@@ -671,11 +814,6 @@ async fn fixed_work_does_not_scan_completed_steps_or_failed_private_summaries() 
                             "model_requested",
                             Some(summary.as_str()),
                             json!({"step_id":summary,"purpose":"summary"}),
-                        ),
-                        (
-                            "model_observed",
-                            None,
-                            json!({"step_id":summary,"event":{"kind":"part_delta","data":{}}}),
                         ),
                         (
                             "model_interrupted",

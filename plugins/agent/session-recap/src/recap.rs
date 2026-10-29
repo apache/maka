@@ -524,6 +524,7 @@ mod tests {
                 Ok(history::Page::Ready {
                     through: 7,
                     chunks: vec![history::Chunk {
+                        model_part: None,
                         final_output: false,
                         model: None,
                         origin: None,

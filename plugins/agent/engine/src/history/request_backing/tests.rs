@@ -278,8 +278,10 @@ async fn dropped_publish_observer_keeps_the_original_owner_able_to_close_and_reo
         settled.send(()).unwrap();
         Ok(range)
     }));
-    assert!(futures_util::poll!(&mut observer).is_pending());
-    accepted.await.unwrap();
+    tokio::select! {
+        result = &mut observer => panic!("writer observer finished before release: {result:?}"),
+        result = accepted => result.unwrap(),
+    }
     drop(observer);
     let mut close_observer = Box::pin(arena.close());
     assert!(futures_util::poll!(&mut close_observer).is_pending());
@@ -412,10 +414,10 @@ async fn arena_sealed_ranges_survive_append_conversion_and_last_resident_slice()
     let list = recipes.begin_list(1).await.unwrap();
     let leaf = recipes
         .text(
-            maka_agent_facts::model::prompt_source::source::TextSource {
-                bytes: first_source.clone(),
-                encoding: maka_agent_facts::model::prompt_source::source::TextEncoding::Utf8,
-            },
+            maka_agent_facts::model::prompt_source::source::TextSource::new(
+                first_source.clone(),
+                maka_agent_facts::model::prompt_source::source::TextEncoding::Utf8,
+            ),
             copy_work.budget(),
             &cancel,
         )
@@ -542,7 +544,10 @@ async fn append_session_keeps_chunked_output_contiguous_and_allows_control_reads
         .await
         .unwrap();
     assert_eq!(
-        arena.read_control::<16>(table.start).await.unwrap(),
+        arena
+            .read_control_owned::<16>(table.start, Arc::new(source.clone()))
+            .await
+            .unwrap(),
         [0; 16]
     );
     let first = append
@@ -561,7 +566,12 @@ async fn append_session_keeps_chunked_output_contiguous_and_allows_control_reads
         .await
         .unwrap();
     assert_eq!(
-        u64::from_le_bytes(arena.read_control::<8>(table.start).await.unwrap()),
+        u64::from_le_bytes(
+            arena
+                .read_control_owned::<8>(table.start, Arc::new(source.clone()))
+                .await
+                .unwrap()
+        ),
         9
     );
     assert!(futures_util::poll!(&mut competing).is_pending());

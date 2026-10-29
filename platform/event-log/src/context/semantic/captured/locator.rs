@@ -42,11 +42,9 @@ enum Kind {
 #[derive(Deserialize)]
 enum Part {
     Complete(RowPosition),
-    Text { part: RowPosition, end: u64 },
 }
 pub(super) enum Locator {
     Fragment(RowPosition),
-    Text { part: RowPosition, through: u64 },
 }
 #[derive(Deserialize)]
 struct ArtifactRow {
@@ -88,9 +86,6 @@ pub(super) fn read(reader: &mut dyn Read, revision: u64) -> Result<Option<Locato
         | Kind::AssistantPart {
             payload: Part::Complete(payload),
         } => Some(Locator::Fragment(payload)),
-        Kind::AssistantPart {
-            payload: Part::Text { part, end },
-        } => Some(Locator::Text { part, through: end }),
         Kind::UnknownTool {} => None,
     };
     Ok(locator)

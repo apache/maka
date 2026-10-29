@@ -210,7 +210,7 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
         let step_id = &invocation.invocation_id;
         let mut step = request.into_step(step_id);
         for (call, reason) in expectations {
-            let result = step.invoke(&call, token.clone()).await;
+            let result = step.invoke(&call, None, token.clone()).await;
             let prefix = log.prefix(200, 1024 * 1024).await.unwrap();
             let facts: Vec<_> = prefix
                 .events
@@ -347,7 +347,7 @@ async fn nested_preflight_is_effect_free_and_diagnostics_are_successful_parent_v
             .await
             .unwrap()
             .into_step(&invocation.invocation_id)
-            .invoke(&call, CancellationToken::new())
+            .invoke(&call, None, CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(value["state"], "completed");

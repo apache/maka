@@ -209,18 +209,6 @@ fn decoded_fact(sequence: i64, json: &str) -> Result<StoredEvent, StoreError> {
     })
 }
 
-pub(super) async fn pending_step(
-    tx: &mut SqliteConnection,
-    invocation: &str,
-    through: i64,
-) -> Result<Option<String>, StoreError> {
-    let invocation = invocation.to_owned();
-    crate::connection::worker_query(tx, move |worker| {
-        Box::pin(async move { pending_step_on_worker(worker, &invocation, through).await })
-    })
-    .await
-}
-
 pub(super) async fn pending_step_on_worker(
     tx: &mut SqliteWorkerConnection<'_>,
     invocation: &str,

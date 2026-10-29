@@ -32,10 +32,10 @@ fn l(value: &'static [u8]) -> F {
     F::literal(value)
 }
 fn generated(value: &'static str) -> TextSource {
-    TextSource {
-        bytes: SourceBytes::Inline(Bytes::from_static(value.as_bytes())),
-        encoding: TextEncoding::Utf8,
-    }
+    TextSource::new(
+        SourceBytes::Inline(Bytes::from_static(value.as_bytes())),
+        TextEncoding::Utf8,
+    )
 }
 fn text(value: TextSource) -> Vec<F> {
     source::quoted(value)

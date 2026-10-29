@@ -32,8 +32,8 @@ async fn history_pages_preserve_utf8_nul_suffixes_archive_and_frozen_fences() {
         .await
         .unwrap();
     let text = format!("a{}\0suffix-needle", "🦀".repeat(10_000));
-    let (_, old) = partial(&log, "a", &text).await;
-    interrupt(&log, "a").await;
+    let (part, old) = partial(&log, "a", &text).await;
+    interrupt(&log, "a", part).await;
     log.append(&event("a", request("history"))).await.unwrap();
     let call = maka_agent_facts::model::ModelToolCall {
         id: "read".into(),
@@ -42,21 +42,13 @@ async fn history_pages_preserve_utf8_nul_suffixes_archive_and_frozen_fences() {
         provider_options: None,
         provider_executed: false,
     };
-    log.append(&event(
-        "a",
-        Fact::ModelObserved {
-            step_id: "step-history".into(),
-            event: ModelEvent::ToolCall(call.clone()),
-        },
-    ))
-    .await
-    .unwrap();
+
     log.append(&event(
         "a",
         Fact::ModelCompleted {
             step_id: "step-history".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall { call }],
+            output: ModelCompletion {
+                parts: completion_parts("step-history".into(), vec![ModelPart::ToolCall { call }]),
                 finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
                 usage: ModelUsage::default(),
                 provider_options: None,
@@ -417,18 +409,13 @@ async fn tool_metadata_preserves_empty_calls_and_non_text_results_through_frozen
             provider_executed: false,
         };
         let step = format!("step-{session}");
-        log.append(&event(
-            session,
-            observe(session, ModelEvent::ToolCall(call.clone())),
-        ))
-        .await
-        .unwrap();
+
         log.append(&event(
             session,
             Fact::ModelCompleted {
                 step_id: step.clone(),
-                output: ModelStep {
-                    parts: vec![ModelPart::ToolCall { call }],
+                output: ModelCompletion {
+                    parts: completion_parts(step.clone(), vec![ModelPart::ToolCall { call }]),
                     finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
                     usage: ModelUsage::default(),
                     provider_options: None,
@@ -1292,9 +1279,9 @@ async fn history_text_accepts_committed_fences_without_preparation_and_rejects_f
     log.create_session("a", "create", &serde_json::json!({}), 1)
         .await
         .unwrap();
-    let (_, through) = partial(&log, "a", "answer").await;
+    let (part, through) = partial(&log, "a", "answer").await;
 
-    let later = interrupt(&log, "a").await;
+    let later = interrupt(&log, "a", part).await;
     assert!(later > through);
     assert!(
         log.history_text(
@@ -2258,6 +2245,7 @@ async fn failed_turn_and_retry_diagnostics_are_visible_with_exact_sources_and_fe
         .append(&event(
             "failed",
             Fact::ModelInterrupted {
+                partial: None,
                 model_failure: None,
                 step_id: "step-first".into(),
                 status: ModelInterruption::RetryableFailure,
@@ -2272,6 +2260,7 @@ async fn failed_turn_and_retry_diagnostics_are_visible_with_exact_sources_and_fe
     log.append(&event(
         "failed",
         Fact::ModelInterrupted {
+            partial: None,
             model_failure: None,
             step_id: "step-second".into(),
             status: ModelInterruption::Failed,
@@ -2651,18 +2640,21 @@ async fn response_models_follow_exact_steps_fences_and_retained_copied_history()
         let mut expected = Expected::new();
         let mut accepted = Vec::new();
         for (index, (kind, text)) in parts.iter().enumerate() {
-            let part_id = format!("{id}-{index}");
             let observed = |event| Fact::ModelObserved {
                 step_id: format!("step-{id}"),
                 event,
             };
-            let start = write(observed(ModelEvent::PartStarted {
-                id: part_id.clone(),
-                text_kind: *kind,
-                provider_options: None,
-            }));
+            let body = record(
+                &format!("step-{id}"),
+                index as u64,
+                ModelPart::Text {
+                    text_kind: *kind,
+                    text: (*text).into(),
+                    provider_options: None,
+                },
+            );
             expected.insert(
-                start.event().id.clone(),
+                body.message_id.clone(),
                 (
                     if *kind == TextKind::Thinking {
                         HistoryField::Thinking
@@ -2674,42 +2666,50 @@ async fn response_models_follow_exact_steps_fences_and_retained_copied_history()
                     false,
                 ),
             );
-            log.append(&start).await.unwrap();
-            for event in [
-                ModelEvent::PartDelta {
-                    id: part_id.clone(),
-                    text: (*text).into(),
-                    provider_options: None,
-                },
-                ModelEvent::PartFinished {
-                    id: part_id,
-                    provider_options: None,
-                },
-            ] {
-                log.append(&write(observed(event))).await.unwrap();
+            if item_acceptance {
+                let start = write(observed(ModelObservation::Part(body)));
+                log.append(&start).await.unwrap();
+                accepted.push(CompletionPart::Ref(
+                    maka_agent_facts::model::recorded::RecordedPartRef {
+                        event_id: start.event().id.clone(),
+                        ordinal: index as u64,
+                    },
+                ));
+            } else {
+                accepted.push(CompletionPart::Own(body));
             }
-            accepted.push(ModelPart::Text {
-                text_kind: *kind,
-                text: (*text).into(),
-                provider_options: None,
-            });
         }
+
         let source = maka_agent_facts::model::ModelSource::Url {
             id: format!("source-{id}"),
             url: "https://example.com/evidence".into(),
             title: Some("Evidence".into()),
             provider_options: None,
         };
-        let citation = write(Fact::ModelObserved {
-            step_id: format!("step-{id}"),
-            event: ModelEvent::Source(source.clone()),
-        });
-        let citation_event = citation.event().id.clone();
-        log.append(&citation).await.unwrap();
-        accepted.push(ModelPart::Source { source });
+        let citation_record = record(
+            &format!("step-{id}"),
+            parts.len() as u64,
+            ModelPart::Source { source },
+        );
+        let citation_id = citation_record.message_id.clone();
+        if item_acceptance {
+            let citation = write(Fact::ModelObserved {
+                step_id: format!("step-{id}"),
+                event: ModelObservation::Part(citation_record),
+            });
+            log.append(&citation).await.unwrap();
+            accepted.push(CompletionPart::Ref(
+                maka_agent_facts::model::recorded::RecordedPartRef {
+                    event_id: citation.event().id.clone(),
+                    ordinal: parts.len() as u64,
+                },
+            ));
+        } else {
+            accepted.push(CompletionPart::Own(citation_record));
+        }
         log.append(&write(Fact::ModelObserved {
             step_id: format!("step-{id}"),
-            event: ModelEvent::ResponseMetadata {
+            event: ModelObservation::ResponseMetadata {
                 id: None,
                 model: reported.map(str::to_owned),
                 timestamp: None,
@@ -2719,7 +2719,7 @@ async fn response_models_follow_exact_steps_fences_and_retained_copied_history()
         .unwrap();
         log.append(&write(Fact::ModelObserved {
             step_id: format!("step-{id}"),
-            event: ModelEvent::Finished {
+            event: ModelObservation::Finished {
                 reason: maka_agent_facts::model::ModelFinishReason::Stop,
                 usage: ModelUsage::default(),
                 provider_options: None,
@@ -2729,7 +2729,7 @@ async fn response_models_follow_exact_steps_fences_and_retained_copied_history()
         .unwrap();
         let completion = write(Fact::ModelCompleted {
             step_id: format!("step-{id}"),
-            output: ModelStep {
+            output: ModelCompletion {
                 parts: accepted,
                 finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
                 usage: ModelUsage::default(),
@@ -2739,13 +2739,8 @@ async fn response_models_follow_exact_steps_fences_and_retained_copied_history()
                 timestamp: None,
             },
         });
-        let citation_id = if item_acceptance {
-            citation_event
-        } else {
-            completion.event().id.clone()
-        };
         expected.insert(
-            format!("{citation_id}:source:{}", parts.len()),
+            citation_id,
             (
                 HistoryField::Body,
                 "Source: Evidence\nhttps://example.com/evidence".into(),
@@ -3057,40 +3052,22 @@ async fn item_accepted_text_at_old_fence_is_independent_of_later_body_cache() {
     *source_high_water = source.high_water;
     *source_digest = source.digest;
     log.append(&event("a", requested)).await.unwrap();
-    for observation in [
-        ModelEvent::PartStarted {
-            id: "accepted-part".into(),
+    let body = record(
+        "step-a",
+        0,
+        ModelPart::Text {
             text_kind: TextKind::Text,
-            provider_options: None,
-        },
-        ModelEvent::PartDelta {
-            id: "accepted-part".into(),
             text: "accepted中😀".into(),
             provider_options: None,
         },
-    ] {
-        log.append(&event("a", observe("a", observation)))
-            .await
-            .unwrap();
-    }
-    let old = log
-        .append(&event(
-            "a",
-            observe(
-                "a",
-                ModelEvent::PartFinished {
-                    id: "accepted-part".into(),
-                    provider_options: None,
-                },
-            ),
-        ))
-        .await
-        .unwrap();
+    );
+    let observed = event("a", observe("a", ModelObservation::Part(body)));
+    let old = log.append(&observed).await.unwrap();
     log.append(&event(
         "a",
         observe(
             "a",
-            ModelEvent::Finished {
+            ModelObservation::Finished {
                 reason: maka_agent_facts::model::ModelFinishReason::Stop,
                 usage: ModelUsage::default(),
                 provider_options: None,
@@ -3104,12 +3081,13 @@ async fn item_accepted_text_at_old_fence_is_independent_of_later_body_cache() {
             "a",
             Fact::ModelCompleted {
                 step_id: "step-a".into(),
-                output: ModelStep {
-                    parts: vec![ModelPart::Text {
-                        text_kind: TextKind::Text,
-                        text: "accepted中😀".into(),
-                        provider_options: None,
-                    }],
+                output: ModelCompletion {
+                    parts: vec![CompletionPart::Ref(
+                        maka_agent_facts::model::recorded::RecordedPartRef {
+                            event_id: observed.event().id.clone(),
+                            ordinal: 0,
+                        },
+                    )],
                     finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
                     usage: ModelUsage::default(),
                     provider_options: None,

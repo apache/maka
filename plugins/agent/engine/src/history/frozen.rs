@@ -228,10 +228,10 @@ mod tests {
     fn message(text: &'static str) -> MessageDescriptor {
         MessageDescriptor {
             recipe: MessageRecipe::System {
-                content: TextSource {
-                    bytes: SourceBytes::Inline(text.as_bytes().into()),
-                    encoding: TextEncoding::Utf8,
-                },
+                content: TextSource::new(
+                    SourceBytes::Inline(text.as_bytes().into()),
+                    TextEncoding::Utf8,
+                ),
                 provider_options: None,
             },
             role: MessageRole::System,
@@ -278,10 +278,10 @@ mod tests {
                 panic!("metadata must never open a historical body")
             }
         }
-        let text = TextSource {
-            bytes: SourceBytes::Source(Arc::new(Unreadable)),
-            encoding: TextEncoding::Utf8,
-        };
+        let text = TextSource::new(
+            SourceBytes::Source(Arc::new(Unreadable)),
+            TextEncoding::Utf8,
+        );
         let descriptor = MessageDescriptor {
             recipe: MessageRecipe::User {
                 content: Arc::new(Items::new(

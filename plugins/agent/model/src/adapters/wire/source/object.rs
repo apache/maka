@@ -105,14 +105,12 @@ pub(super) fn plan(
     let fields = make_fields(values, &mut owned)?;
     let finals = make_fields(finals, &mut owned)?;
     Ok(vec![F::owned_raw(
-        JsonSource {
-            bytes: SourceBytes::Source(Arc::new(Object {
-                source,
-                fields,
-                finals,
-                overlay,
-            })),
-        },
+        JsonSource::new(SourceBytes::Source(Arc::new(Object {
+            source,
+            fields,
+            finals,
+            overlay,
+        }))),
         owned,
     )])
 }
@@ -169,10 +167,10 @@ struct Cursor {
     first: bool,
 }
 fn key(name: &'static str) -> TextSource {
-    TextSource {
-        bytes: SourceBytes::Inline(Bytes::from_static(name.as_bytes())),
-        encoding: TextEncoding::Utf8,
-    }
+    TextSource::new(
+        SourceBytes::Inline(Bytes::from_static(name.as_bytes())),
+        TextEncoding::Utf8,
+    )
 }
 impl Cursor {
     async fn initialize(&mut self) -> io::Result<()> {
@@ -192,18 +190,6 @@ impl Cursor {
             self.cursor = Some(ObjectCursor::open(source.clone(), self.budget.clone()).await?);
         }
         Ok(())
-    }
-    async fn matching(
-        fields: &[Field],
-        name: &TextSource,
-        budget: Arc<dyn SourceBudget>,
-    ) -> io::Result<Option<usize>> {
-        for (index, field) in fields.iter().enumerate() {
-            if json::text_eq(name, field.name, budget.clone()).await? {
-                return Ok(Some(index));
-            }
-        }
-        Ok(None)
     }
     async fn next_field(&mut self) -> io::Result<Option<(Vec<F>, Arc<[F]>)>> {
         loop {
@@ -232,36 +218,39 @@ impl Cursor {
                 }
                 Phase::Original => {
                     let field = match &mut self.cursor {
-                        Some(cursor) => cursor.next_spans().await?,
+                        Some(cursor) => {
+                            cursor
+                                .next_named_spans(
+                                    self.fields
+                                        .iter()
+                                        .chain(self.finals.iter())
+                                        .map(|field| field.name),
+                                )
+                                .await?
+                        }
                         None => None,
                     };
-                    if let Some(field) = field {
+                    if let Some((field, matching)) = field {
                         let source = self.source.as_ref().expect("object source cursor");
-                        let key_bytes = source.bytes.slice(field.key_range)?;
-                        let name = TextSource {
-                            bytes: key_bytes.clone(),
-                            encoding: TextEncoding::JsonString,
-                        };
-                        let value_source = JsonSource {
-                            bytes: source.bytes.slice(field.value_range)?,
-                        };
-                        let matching =
-                            Self::matching(&self.fields, &name, self.budget.clone()).await?;
-                        if self.overlay && matching.is_some() {
+                        let key_bytes = source.bytes().slice(field.key_range)?;
+                        let value_source =
+                            JsonSource::new(source.bytes().slice(field.value_range)?);
+                        if self.overlay && matching.is_some_and(|index| index < self.fields.len()) {
                             continue;
                         }
-                        let value = if let Some(index) = matching {
+                        let value = if let Some(index) =
+                            matching.filter(|index| *index < self.fields.len())
+                        {
                             self.seen[index] = true;
                             self.fields[index].value.clone()
-                        } else if let Some(index) =
-                            Self::matching(&self.finals, &name, self.budget.clone()).await?
-                        {
+                        } else if let Some(index) = matching {
+                            let index = index - self.fields.len();
                             self.final_seen[index] = true;
                             self.finals[index].value.clone()
                         } else {
                             Arc::from([F::Raw(value_source)])
                         };
-                        return Ok(Some((vec![F::Raw(JsonSource { bytes: key_bytes })], value)));
+                        return Ok(Some((vec![F::Raw(JsonSource::new(key_bytes))], value)));
                     }
                     self.phase = if self.overlay {
                         Phase::Finals

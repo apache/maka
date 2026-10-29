@@ -457,6 +457,7 @@ impl Owner {
         runs.controls.insert(
             input.session_id,
             Control {
+                preview: running.preview(),
                 compacting: false,
                 invocation: invocation.clone(),
                 basis,

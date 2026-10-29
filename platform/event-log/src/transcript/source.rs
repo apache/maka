@@ -29,7 +29,7 @@ use maka_agent_ports::session::history::SourceFormat;
 use maka_agent_ports::session::history::SourcePosition;
 use maka_agent_ports::session::history::SourceRole;
 use maka_agent_ports::session::history::SourceSegment;
-use sqlx::{Connection, Row};
+use sqlx::Row;
 
 fn source_sql() -> String {
     format!("WITH original AS (SELECT
@@ -79,23 +79,23 @@ impl EventLog {
         let session = session.to_owned();
         let tool_use_id = tool_use_id.to_owned();
         self.connection
-            .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    super::directory::check_read(&mut tx, &session, fence).await?;
-                    let (source, item): (i64, i64) = sqlx::query_as(
-                        "SELECT source_sequence,item_index FROM transcript_directory
+            .observe(move |connection| {
+                super::bodycache::run(connection, move |tx| {
+                    Box::pin(async move {
+                        super::directory::ensure(tx, &session, fence).await?;
+                        let (source, item): (i64, i64) = sqlx::query_as(
+                            "SELECT source_sequence,item_index FROM transcript_directory
                  WHERE session_id = ? AND message_id = ? AND source_sequence <= ?
                  AND role = 'tool_call'",
-                    )
-                    .bind(&session)
-                    .bind(tool_use_id)
-                    .bind(fence_sql)
-                    .fetch_optional(&mut *tx)
-                    .await?
-                    .ok_or_else(|| invalid("history source was not found"))?;
-                    tx.commit().await?;
-                    row_position(source, item)
+                        )
+                        .bind(&session)
+                        .bind(tool_use_id)
+                        .bind(fence_sql)
+                        .fetch_optional(&mut *tx)
+                        .await?
+                        .ok_or_else(|| invalid("history source was not found"))?;
+                        row_position(source, item)
+                    })
                 })
             })
             .await
@@ -140,7 +140,7 @@ impl EventLog {
         self.connection
             .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::check_read(tx, &session, fence).await?;
+                    super::directory::ensure(tx, &session, fence).await?;
                     let exists: bool = sqlx::query_scalar(
                         "SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)",
                     )

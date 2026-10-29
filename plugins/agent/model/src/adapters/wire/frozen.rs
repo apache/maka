@@ -998,10 +998,10 @@ mod tests {
     fn message(source: Arc<dyn ByteSource>) -> MessageRecipe {
         MessageRecipe::User {
             content: Arc::new(GeneratedRecipes::new(vec![source::ContentRecipe::Text {
-                text: source::TextSource {
-                    bytes: source::SourceBytes::Source(source),
-                    encoding: source::TextEncoding::Utf8,
-                },
+                text: source::TextSource::new(
+                    source::SourceBytes::Source(source),
+                    source::TextEncoding::Utf8,
+                ),
                 provider_options: None,
             }])),
             provider_options: None,

@@ -144,10 +144,24 @@ async fn observe(
                             FROM runtime_events WHERE invocation_id = ?1 AND kind = 'executor_completed'
                             UNION ALL
                             SELECT event.sequence, (
-                                SELECT group_concat(json_extract(part.value, '$.text'), '')
-                                FROM json_each(event.event_json, '$.fact.output.parts') part
-                                WHERE json_extract(part.value, '$.kind') = 'text'
-                                  AND json_extract(part.value, '$.text_kind') = 'text'
+                                SELECT group_concat(json_extract(body, '$.text'), '') FROM (
+                                    SELECT CASE json_extract(part.value, '$.kind')
+                                        WHEN 'own' THEN json_extract(part.value, '$.data.part')
+                                        WHEN 'ref' THEN (
+                                            SELECT json_extract(original.event_json, '$.fact.event.data.part')
+                                            FROM runtime_events original
+                                            WHERE original.event_id = json_extract(part.value, '$.data.event_id')
+                                              AND original.invocation_id = event.invocation_id
+                                              AND original.sequence < event.sequence
+                                              AND original.kind = 'model_observed'
+                                              AND json_extract(original.event_json, '$.fact.step_id') = event.operation_id
+                                              AND json_extract(original.event_json, '$.fact.event.kind') = 'part'
+                                              AND json_extract(original.event_json, '$.fact.event.data.ordinal') = json_extract(part.value, '$.data.ordinal')
+                                        ) END AS body
+                                    FROM json_each(event.event_json, '$.fact.output.parts') part
+                                    ORDER BY CAST(part.key AS INTEGER)
+                                ) WHERE json_extract(body, '$.kind') = 'text'
+                                    AND json_extract(body, '$.text_kind') = 'text'
                             ) AS text
                             FROM runtime_events event WHERE invocation_id = ?1 AND kind = 'model_completed'
                         ) WHERE text IS NOT NULL AND trim(text) != ''

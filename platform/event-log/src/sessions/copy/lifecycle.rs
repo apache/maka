@@ -89,8 +89,6 @@ impl EventLog {
                         "DELETE FROM session_history_artifacts WHERE session_id=?",
                         "DELETE FROM session_history_members WHERE session_id=?",
                         "DELETE FROM session_revision_sources WHERE session_id=?",
-                        "DELETE FROM transcript_directory WHERE session_id=?",
-                        "DELETE FROM transcript_failures WHERE session_id=?",
                         "DELETE FROM catalog_messages WHERE session_id=?",
                         "DELETE FROM session_read_state WHERE session_id=?",
                         "DELETE FROM artifacts WHERE session_id=?",

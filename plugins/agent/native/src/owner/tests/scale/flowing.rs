@@ -287,7 +287,23 @@ async fn cancel_queued(
                 json!({"sessionId":session,"invocationId":sent["invocationId"]}),
             )
             .await;
-        assert_eq!(state["execution"]["state"], "cancelled");
+        if state["execution"]["state"] != "cancelled" {
+            let boundary = load
+                .fixture
+                .session(session)
+                .await
+                .invocation_boundary(session, sent["invocationId"].as_str().unwrap())
+                .await
+                .map(|boundary| {
+                    boundary.map(|(boundary, through)| {
+                        (boundary.state.terminal_outcome().cloned(), through)
+                    })
+                });
+            panic!(
+                "expected cancelled for session {session}, invocation {}: public {state}, durable {boundary:?}",
+                sent["invocationId"]
+            );
+        }
     }
     let cancel_ms = start.elapsed().as_secs_f64() * 1000.0;
     memory_checkpoint("cancellation_settled");

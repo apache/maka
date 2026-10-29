@@ -21,7 +21,13 @@ use super::*;
 use maka_agent_facts::event::CommitError;
 use maka_agent_facts::{
     event::{Fact, Invocation, InvocationInput, LogScope, RuntimeEvent},
-    model::{ModelEvent, ModelFinishReason, ModelPart, ModelStep, TextKind},
+    model::{
+        ModelFinishReason, ModelPart, TextKind,
+        recorded::{
+            CompletionPart, ModelCompletion, ModelObservation, ModelPartRecord, ModelPartial,
+            RecordedPartRef,
+        },
+    },
 };
 use std::sync::{Arc, atomic::Ordering};
 use std::{sync::atomic::AtomicUsize, time::Duration};
@@ -41,31 +47,58 @@ fn event(id: &str, fact: Fact) -> EventWrite {
     EventWrite::plain(event).unwrap()
 }
 
-fn delta(id: &str, text: &str) -> EventWrite {
+fn metadata(id: &str, text: &str) -> EventWrite {
     event(
         id,
         Fact::ModelObserved {
             step_id: "step".into(),
-            event: ModelEvent::PartDelta {
-                id: "part".into(),
-                text: text.into(),
+            event: ModelObservation::ProviderOptions {
+                provider_part_id: Some("provider-part".into()),
+                options: Arc::new(serde_json::json!({"evidence": text})),
+            },
+        },
+    )
+}
+
+fn finished(id: &str) -> EventWrite {
+    event(
+        id,
+        Fact::ModelObserved {
+            step_id: "step".into(),
+            event: ModelObservation::Finished {
+                reason: ModelFinishReason::Stop,
+                usage: Default::default(),
                 provider_options: None,
             },
         },
     )
 }
 
+fn text_record(id: &str, text: &str) -> ModelPartRecord {
+    ModelPartRecord {
+        ordinal: 0,
+        message_id: format!("{id}-text"),
+        started_at: std::time::UNIX_EPOCH,
+        provider_part_id: Some("provider-part".into()),
+        part: Arc::new(ModelPart::Text {
+            text_kind: TextKind::Text,
+            text: text.into(),
+            provider_options: None,
+        }),
+    }
+}
+
 fn completion(id: &str, text: &str) -> EventWrite {
+    completed_parts(id, vec![CompletionPart::Own(text_record(id, text))])
+}
+
+fn completed_parts(id: &str, parts: Vec<CompletionPart>) -> EventWrite {
     event(
         id,
         Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::Text {
-                    text_kind: TextKind::Text,
-                    text: text.into(),
-                    provider_options: None,
-                }],
+            output: ModelCompletion {
+                parts,
                 finish_reason: ModelFinishReason::Stop,
                 usage: Default::default(),
                 provider_options: None,
@@ -95,7 +128,7 @@ async fn open(path: &std::path::Path) -> Arc<EventLog> {
             "requested",
             Fact::ModelRequested {
                 context_breakdown: None,
-                item_acceptance: false,
+                item_acceptance: true,
                 purpose: maka_agent_facts::context::ModelPurpose::Main,
                 context: None,
                 checkpoint_event_id: None,
@@ -110,13 +143,13 @@ async fn open(path: &std::path::Path) -> Arc<EventLog> {
             },
         ),
         event(
-            "part",
+            "metadata",
             Fact::ModelObserved {
                 step_id: "step".into(),
-                event: ModelEvent::PartStarted {
-                    id: "part".into(),
-                    text_kind: TextKind::Text,
-                    provider_options: None,
+                event: ModelObservation::ResponseMetadata {
+                    id: Some("response".into()),
+                    model: None,
+                    timestamp: None,
                 },
             },
         ),
@@ -185,23 +218,23 @@ async fn neighbors_share_commit_and_isolate_bad_batch_and_conflicting_replay() {
     .await;
     let before_failures = log.connection.writer().failures();
     let (release, gate) = gate(&log).await;
-    let first = [delta("first", "one")];
+    let first = [metadata("first", "one")];
     let bad = [
-        delta("rolled-back", "bad prefix"),
+        metadata("rolled-back", "bad prefix"),
         event(
             "bad-tail",
             Fact::ModelObserved {
                 step_id: "missing".into(),
-                event: ModelEvent::PartDelta {
-                    id: "part".into(),
-                    text: "bad tail".into(),
-                    provider_options: None,
+                event: ModelObservation::ResponseMetadata {
+                    id: Some("bad tail".into()),
+                    model: None,
+                    timestamp: None,
                 },
             },
         ),
     ];
-    let conflict = [delta("first", "different")];
-    let last = [delta("last", "two")];
+    let conflict = [metadata("first", "different")];
+    let last = [metadata("last", "two")];
     let mut a = Box::pin(log.append_batch(&first));
     let mut b = Box::pin(log.append_batch(&bad));
     let mut replay = Box::pin(log.append_batch(&first));
@@ -221,7 +254,10 @@ async fn neighbors_share_commit_and_isolate_bad_batch_and_conflicting_replay() {
     assert_eq!(d.await.unwrap(), [5]);
     assert_eq!(count.load(Ordering::SeqCst), 1);
     assert_eq!(log.connection.writer().failures() - before_failures, 2);
-    assert_eq!(ids(&path), ["opened", "requested", "part", "first", "last"]);
+    assert_eq!(
+        ids(&path),
+        ["opened", "requested", "metadata", "first", "last"]
+    );
     assert_projection_positions(&path);
     let mut commits = log.subscribe_commits();
     commits.borrow_and_update();
@@ -257,7 +293,27 @@ async fn queued_model_boundaries_share_commit_and_keep_checkpoint_proof_rejectio
         })
         .await;
         let (release, blocked) = gate(&log).await;
-        let first = delta("observed", "one");
+        let first = [
+            event(
+                "observed",
+                Fact::ModelObserved {
+                    step_id: "step".into(),
+                    event: ModelObservation::Part(text_record("observed", "one")),
+                },
+            ),
+            finished("finished"),
+        ];
+        let reference = RecordedPartRef {
+            event_id: "observed".into(),
+            ordinal: 0,
+        };
+        let invalid_reference = completed_parts(
+            "invalid-reference",
+            vec![CompletionPart::Ref(RecordedPartRef {
+                event_id: "observed".into(),
+                ordinal: 1,
+            })],
+        );
         let late = event(
             "late-checkpoint",
             Fact::ModelRequested {
@@ -282,6 +338,13 @@ async fn queued_model_boundaries_share_commit_and_keep_checkpoint_proof_rejectio
             event(
                 "boundary",
                 Fact::ModelInterrupted {
+                    partial: Some(ModelPartial {
+                        parts: vec![CompletionPart::Ref(reference.clone())],
+                        tool_inputs: Vec::new(),
+                        response_id: None,
+                        model: None,
+                        timestamp: None,
+                    }),
                     step_id: "step".into(),
                     status: maka_agent_facts::event::ModelInterruption::Failed,
                     diagnostic: None,
@@ -289,13 +352,15 @@ async fn queued_model_boundaries_share_commit_and_keep_checkpoint_proof_rejectio
                 },
             )
         } else {
-            completion("boundary", "one")
+            completed_parts("boundary", vec![CompletionPart::Ref(reference)])
         };
-        let mut first = Box::pin(log.append(&first));
+        let mut first = Box::pin(log.append_batch(&first));
         let mut late = Box::pin(log.append(&late));
+        let mut invalid_reference = Box::pin(log.append(&invalid_reference));
         let mut boundary = Box::pin(log.append(&boundary));
         assert!(futures_util::poll!(&mut first).is_pending());
         assert!(futures_util::poll!(&mut late).is_pending());
+        assert!(futures_util::poll!(&mut invalid_reference).is_pending());
         assert!(futures_util::poll!(&mut boundary).is_pending());
         let mut commits = log.subscribe_commits();
         commits.borrow_and_update();
@@ -307,19 +372,31 @@ async fn queued_model_boundaries_share_commit_and_keep_checkpoint_proof_rejectio
             .unwrap();
         assert!(futures_util::poll!(&mut first).is_pending());
         assert!(futures_util::poll!(&mut late).is_pending());
+        assert!(futures_util::poll!(&mut invalid_reference).is_pending());
         assert!(futures_util::poll!(&mut boundary).is_pending());
         assert!(!commits.has_changed().unwrap());
-        assert_eq!(ids(&path), ["opened", "requested", "part"]);
+        assert_eq!(ids(&path), ["opened", "requested", "metadata"]);
         release_commit.send(()).unwrap();
-        assert_eq!(first.await.unwrap(), 4);
+        assert_eq!(first.await.unwrap(), [4, 5]);
         assert!(
             matches!(late.await, Err(CommitError::Rejected(reason)) if reason.contains("missing request baseline"))
         );
-        assert_eq!(boundary.await.unwrap(), 5);
+        assert!(matches!(
+            invalid_reference.await,
+            Err(CommitError::Rejected(_))
+        ));
+        assert_eq!(boundary.await.unwrap(), 6);
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(
             ids(&path),
-            ["opened", "requested", "part", "observed", "boundary"]
+            [
+                "opened",
+                "requested",
+                "metadata",
+                "observed",
+                "finished",
+                "boundary"
+            ]
         );
         assert_projection_positions(&path);
         log.shutdown().await.unwrap();
@@ -333,9 +410,25 @@ async fn commit_failure_preserves_domain_rejection_and_stops_pending_control() {
     let log = open(&path).await;
     hook(&log, || false).await;
     let (release, gate) = gate(&log).await;
-    let first = [delta("first", "one")];
-    let bad = [delta("part", "conflicting original")];
-    let last = [completion("completed", "one")];
+    let first = [metadata("first", "one")];
+    let bad = [metadata("metadata", "conflicting original")];
+    let last = [
+        event(
+            "completed-part",
+            Fact::ModelObserved {
+                step_id: "step".into(),
+                event: ModelObservation::Part(text_record("completed-part", "one")),
+            },
+        ),
+        finished("finished"),
+        completed_parts(
+            "completed",
+            vec![CompletionPart::Ref(RecordedPartRef {
+                event_id: "completed-part".into(),
+                ordinal: 0,
+            })],
+        ),
+    ];
     let mut a = Box::pin(log.append_batch(&first));
     let mut b = Box::pin(log.append_batch(&bad));
     let mut c = Box::pin(log.append_batch(&last));
@@ -359,7 +452,7 @@ async fn commit_failure_preserves_domain_rejection_and_stops_pending_control() {
     assert!(matches!(control.await, Err(StoreError::OperationUnknown)));
     assert_eq!(ran.load(Ordering::SeqCst), 0);
     log.connection.shutdown().await.unwrap();
-    assert_eq!(ids(&path), ["opened", "requested", "part"]);
+    assert_eq!(ids(&path), ["opened", "requested", "metadata"]);
     let reopened = EventLog::open(&path).await.unwrap();
     assert_eq!(reopened.append_batch(&first).await.unwrap(), [4]);
     reopened.close().await.unwrap();
@@ -380,8 +473,8 @@ async fn receipts_wait_for_commit_and_dropped_waiter_is_drained_on_shutdown() {
     })
     .await;
     let (release, gate) = gate(&log).await;
-    let first = [delta("first", "one")];
-    let last = [delta("last", "two")];
+    let first = [metadata("first", "one")];
+    let last = [metadata("last", "two")];
     let mut a = Box::pin(log.append_batch(&first));
     let mut b = Box::pin(log.append_batch(&last));
     assert!(futures_util::poll!(&mut a).is_pending());
@@ -397,14 +490,17 @@ async fn receipts_wait_for_commit_and_dropped_waiter_is_drained_on_shutdown() {
     assert!(futures_util::poll!(&mut a).is_pending());
     assert!(futures_util::poll!(&mut b).is_pending());
     assert!(!commits.has_changed().unwrap());
-    assert_eq!(ids(&path), ["opened", "requested", "part"]);
+    assert_eq!(ids(&path), ["opened", "requested", "metadata"]);
     drop(a);
     let mut close = Box::pin(log.connection.shutdown());
     assert!(futures_util::poll!(&mut close).is_pending());
     release_commit.send(()).unwrap();
     assert_eq!(b.await.unwrap(), [5]);
     close.await.unwrap();
-    assert_eq!(ids(&path), ["opened", "requested", "part", "first", "last"]);
+    assert_eq!(
+        ids(&path),
+        ["opened", "requested", "metadata", "first", "last"]
+    );
 }
 
 #[tokio::test]
@@ -420,8 +516,8 @@ async fn generic_control_keeps_its_original_position_between_observation_groups(
     })
     .await;
     let (release, gate) = gate(&log).await;
-    let first = [delta("first", "one")];
-    let last = [delta("last", "two")];
+    let first = [metadata("first", "one")];
+    let last = [metadata("last", "two")];
     let mut a = Box::pin(log.append_batch(&first));
     assert!(futures_util::poll!(&mut a).is_pending());
     let mut control = Box::pin(log.connection.run(|db| {
@@ -445,7 +541,10 @@ async fn generic_control_keeps_its_original_position_between_observation_groups(
     assert_eq!(b.await.unwrap(), [5]);
     close.await.unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 2);
-    assert_eq!(ids(&path), ["opened", "requested", "part", "first", "last"]);
+    assert_eq!(
+        ids(&path),
+        ["opened", "requested", "metadata", "first", "last"]
+    );
 }
 
 #[tokio::test]
@@ -498,9 +597,12 @@ async fn savepoint_failures_abort_the_group_and_close_without_running_control() 
             .await
             .unwrap();
         let (release, gate) = gate(&log).await;
-        let first = [delta("first", "one")];
-        let bad = [delta("rolled-back", "prefix"), delta("part", "conflict")];
-        let last = [delta("last", "two")];
+        let first = [metadata("first", "one")];
+        let bad = [
+            metadata("rolled-back", "prefix"),
+            metadata("metadata", "conflict"),
+        ];
+        let last = [metadata("last", "two")];
         let mut a = Box::pin(log.append_batch(&first));
         let mut b = Box::pin(log.append_batch(&bad));
         let mut c = Box::pin(log.append_batch(&last));
@@ -523,7 +625,7 @@ async fn savepoint_failures_abort_the_group_and_close_without_running_control() 
         }
         assert!(matches!(control.await, Err(StoreError::OperationUnknown)));
         log.connection.shutdown().await.unwrap();
-        assert_eq!(ids(&path), ["opened", "requested", "part"]);
+        assert_eq!(ids(&path), ["opened", "requested", "metadata"]);
         let reopened = EventLog::open(&path).await.unwrap();
         assert_eq!(reopened.append_batch(&first).await.unwrap(), [4]);
         reopened.close().await.unwrap();
@@ -542,9 +644,9 @@ async fn sqlite_automatic_rollback_is_not_falsely_reported_as_confirmed_rollback
         Ok(())
     })).await.unwrap();
     let (release, gate) = gate(&log).await;
-    let first = [delta("first", "one")];
-    let poison = [delta("poison", "two")];
-    let last = [delta("last", "three")];
+    let first = [metadata("first", "one")];
+    let poison = [metadata("poison", "two")];
+    let last = [metadata("last", "three")];
     let mut a = Box::pin(log.append_batch(&first));
     let mut b = Box::pin(log.append_batch(&poison));
     let mut c = Box::pin(log.append_batch(&last));
@@ -560,7 +662,7 @@ async fn sqlite_automatic_rollback_is_not_falsely_reported_as_confirmed_rollback
         "unstarted request has no uncertain write"
     );
     log.connection.shutdown().await.unwrap();
-    assert_eq!(ids(&path), ["opened", "requested", "part"]);
+    assert_eq!(ids(&path), ["opened", "requested", "metadata"]);
 }
 
 #[tokio::test]
@@ -584,8 +686,8 @@ async fn authority_lost_during_last_request_rolls_back_before_commit() {
         .await
         .unwrap();
     let (release, gate) = gate(&log).await;
-    let first = [delta("first", "one")];
-    let last = [delta("last", "two")];
+    let first = [metadata("first", "one")];
+    let last = [metadata("last", "two")];
     let mut a = Box::pin(log.append_batch(&first));
     let mut b = Box::pin(log.append_batch(&last));
     assert!(futures_util::poll!(&mut a).is_pending());
@@ -595,7 +697,7 @@ async fn authority_lost_during_last_request_rolls_back_before_commit() {
     assert!(matches!(a.await, Err(CommitError::Rejected(_))));
     assert!(matches!(b.await, Err(CommitError::Rejected(_))));
     log.connection.shutdown().await.unwrap();
-    assert_eq!(ids(&path), ["opened", "requested", "part"]);
+    assert_eq!(ids(&path), ["opened", "requested", "metadata"]);
 }
 
 #[tokio::test]
@@ -604,7 +706,7 @@ async fn session_observers_follow_confirmed_fast_and_checked_commits_only() {
     let log = open(&directory.path().join("events.sqlite")).await;
     let mut own = log.subscribe_session_commits("session");
     let other = log.subscribe_session_commits("other");
-    let write = delta("observed", "one");
+    let write = metadata("observed", "one");
     let sequence = log.append(&write).await.unwrap();
     assert_eq!(*own.borrow_and_update(), sequence);
     assert!(!other.has_changed().unwrap());
@@ -613,7 +715,7 @@ async fn session_observers_follow_confirmed_fast_and_checked_commits_only() {
         !own.has_changed().unwrap(),
         "exact replay does not invalidate state"
     );
-    assert!(log.append(&delta("observed", "conflict")).await.is_err());
+    assert!(log.append(&metadata("observed", "conflict")).await.is_err());
     assert!(
         !own.has_changed().unwrap(),
         "rejected input is not a change"
@@ -621,6 +723,7 @@ async fn session_observers_follow_confirmed_fast_and_checked_commits_only() {
     let terminal = event(
         "interrupt",
         Fact::ModelInterrupted {
+            partial: None,
             model_failure: None,
             step_id: "step".into(),
             status: maka_agent_facts::event::ModelInterruption::Failed,
@@ -658,14 +761,14 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
             "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_source_prefixes
          WHEN NEW.sequence=5 AND NEW.kind='session'
          BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
-            delta("poison", "two"),
+            metadata("poison", "two"),
             ControlAfterRollback::RetiredObservation,
         ),
         (
             "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_source_prefixes
          WHEN NEW.sequence=5 AND NEW.kind='invocation'
          BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
-            delta("poison", "two"),
+            metadata("poison", "two"),
             ControlAfterRollback::RetiredObservation,
         ),
         (
@@ -699,7 +802,7 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
         // Inspect the same typed receipts before EventSink intentionally maps
         // storage errors into its string-bearing CommitError API.
         let mut first = Box::pin(log.connection.write(
-            WriteAppend::from_events(&[delta("first", "one")]).unwrap(),
+            WriteAppend::from_events(&[metadata("first", "one")]).unwrap(),
             log.commits.session("session"),
         ));
         let mut poison = Box::pin(log.connection.write(
@@ -761,12 +864,12 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
         }
         assert!(!commits.has_changed().unwrap());
         log.connection.shutdown().await.unwrap();
-        assert_eq!(ids(&path), ["opened", "requested", "part"]);
+        assert_eq!(ids(&path), ["opened", "requested", "metadata"]);
         assert_projection_positions(&path);
         let reopened = EventLog::open(&path).await.unwrap();
         assert_eq!(
             reopened
-                .append_batch(&[delta("first", "one")])
+                .append_batch(&[metadata("first", "one")])
                 .await
                 .unwrap(),
             [4]
@@ -823,7 +926,7 @@ async fn observation_identity_checks_each_invocation_field_after_reopen() {
     log.shutdown().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
     for field in ["session", "turn", "run", "invocation"] {
-        let write = delta(&format!("bad-{field}"), "rejected");
+        let write = metadata(&format!("bad-{field}"), "rejected");
         let mut event = write.event().clone();
         match field {
             "session" => event.invocation.session_id = "changed".into(),
@@ -839,9 +942,9 @@ async fn observation_identity_checks_each_invocation_field_after_reopen() {
             "{field}"
         );
     }
-    assert_eq!(log.append(&delta("valid", "accepted")).await.unwrap(), 4);
+    assert_eq!(log.append(&metadata("valid", "accepted")).await.unwrap(), 4);
     log.close().await.unwrap();
-    assert_eq!(ids(&path), ["opened", "requested", "part", "valid"]);
+    assert_eq!(ids(&path), ["opened", "requested", "metadata", "valid"]);
 }
 
 async fn cached_statement(log: &EventLog, prefix: &'static [u8]) -> (usize, i32, i32) {
@@ -887,74 +990,6 @@ async fn cached_statement(log: &EventLog, prefix: &'static [u8]) -> (usize, i32,
         })
         .await
         .unwrap()
-}
-
-#[tokio::test]
-async fn deltas_skip_directory_work_and_boundaries_reuse_the_writer_statement() {
-    let dir = tempfile::tempdir().unwrap();
-    let log = open(&dir.path().join("events.sqlite")).await;
-    const DIRECTORY: &[u8] = b"SELECT e.invocation_id, CASE WHEN e.kind = 'model_observed'";
-    const INGRESS: &[u8] = b"INSERT INTO event_log";
-    let before = cached_statement(&log, DIRECTORY).await;
-    let ingress_before = cached_statement(&log, INGRESS).await;
-    for index in 0..128 {
-        log.append(&delta(&format!("delta-{index}"), "x"))
-            .await
-            .unwrap();
-    }
-    assert_eq!(
-        cached_statement(&log, DIRECTORY).await,
-        before,
-        "ordinary deltas must not run or reprepare transcript eligibility"
-    );
-    log.append(&event(
-        "interrupted",
-        Fact::ModelInterrupted {
-            step_id: "step".into(),
-            status: maka_agent_facts::event::ModelInterruption::Cancelled,
-            diagnostic: None,
-            model_failure: None,
-        },
-    ))
-    .await
-    .unwrap();
-    assert_eq!(
-        cached_statement(&log, DIRECTORY).await,
-        (before.0, before.1 + 1, before.2)
-    );
-    let text: String = log
-        .connection
-        .read(|db| {
-            Box::pin(async move {
-                Ok(sqlx::query_scalar(
-                    "SELECT preview FROM catalog_messages WHERE message_id='part'",
-                )
-                .fetch_one(db)
-                .await?)
-            })
-        })
-        .await
-        .unwrap();
-    assert_eq!(text, format!("{}…", "x".repeat(95)));
-    let ingress_after = cached_statement(&log, INGRESS).await;
-    assert_eq!(
-        ingress_after.2, ingress_before.2,
-        "changing stream identities must not recompile cached ingress"
-    );
-    let events = log.prefix(256, 1024 * 1024).await.unwrap();
-    let deltas: Vec<_> = events
-        .events
-        .iter()
-        .filter_map(|stored| match &stored.event.fact {
-            Fact::ModelObserved {
-                event: ModelEvent::PartDelta { text, .. },
-                ..
-            } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(deltas, vec!["x"; 128]);
-    log.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1028,12 +1063,12 @@ async fn tool_receipts_share_commit_without_losing_payload_or_rejection_boundari
     reopened.close().await.unwrap();
     assert_eq!(
         ids(&path),
-        ["opened", "requested", "part", "dispatch", "settlement"]
+        ["opened", "requested", "metadata", "dispatch", "settlement"]
     );
 }
 
 #[tokio::test]
-async fn streamed_source_prefixes_reuse_prepared_queries_without_hidden_prepares() {
+async fn observation_source_prefixes_reuse_prepared_queries_without_hidden_prepares() {
     static PREFIX_PREPARES: AtomicUsize = AtomicUsize::new(0);
     unsafe extern "C" fn count_prefix_compiles(
         _: *mut std::ffi::c_void,
@@ -1076,14 +1111,14 @@ async fn streamed_source_prefixes_reuse_prepared_queries_without_hidden_prepares
         })
         .await
         .unwrap();
-    log.append(&delta("warm", "warm")).await.unwrap();
+    log.append(&metadata("warm", "warm")).await.unwrap();
     const NATIVE: &[u8] = b"SELECT sequence,hash,ordinal FROM context_source_prefixes WHERE kind=? AND owner=? AND sequence<=? ORDER BY sequence DESC LIMIT 1";
     const INSERT: &[u8] = b"INSERT INTO context_source_prefixes VALUES(?,?,?,?,?)";
     let read_before = cached_statement(&log, NATIVE).await;
     let write_before = cached_statement(&log, INSERT).await;
     PREFIX_PREPARES.store(0, Ordering::Relaxed);
     for index in 0..128 {
-        log.append(&delta(&format!("prefix-{index}"), "原文"))
+        log.append(&metadata(&format!("prefix-{index}"), "原文"))
             .await
             .unwrap();
     }
@@ -1092,7 +1127,7 @@ async fn streamed_source_prefixes_reuse_prepared_queries_without_hidden_prepares
     assert_eq!(
         PREFIX_PREPARES.load(Ordering::Relaxed),
         0,
-        "streamed prefixes must not compile temporary or cached SQL after warming"
+        "observed prefixes must not compile temporary or cached SQL after warming"
     );
     for (before, after) in [(read_before, read_after), (write_before, write_after)] {
         assert_eq!(after.0, before.0);
@@ -1126,9 +1161,9 @@ async fn streamed_source_prefixes_reuse_prepared_queries_without_hidden_prepares
         .iter()
         .filter_map(|stored| match &stored.event.fact {
             Fact::ModelObserved {
-                event: ModelEvent::PartDelta { text, .. },
+                event: ModelObservation::ProviderOptions { options, .. },
                 ..
-            } => Some(text.as_str()),
+            } => options["evidence"].as_str(),
             _ => None,
         })
         .collect();

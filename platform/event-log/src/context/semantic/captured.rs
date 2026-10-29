@@ -22,10 +22,13 @@ mod artifact_identity;
 mod locator;
 use super::{SemanticCursor, SemanticSelection, available_at, invalid, rows_query};
 use crate::{EventLog, StoreError};
+mod directory;
+pub use directory::{CapturedDirectoryRow, ChildPage, DirectoryPage};
 use maka_agent_facts::history::RowPosition;
 use maka_agent_facts::model::prompt_source::source::{
     ByteCursor, ByteSource, ChargedBuffer, ReadSource, SourceBuffer, SourceRead,
 };
+use maka_agent_facts::model::prompt_source::source::{SourceBacking as Backing, SourceLocator};
 use rusqlite::{Connection as RawConnection, OptionalExtension, params};
 use sqlx::Connection;
 use std::io::{Read, Seek, SeekFrom};
@@ -47,7 +50,7 @@ impl std::hash::Hash for SourceDomain {
     }
 }
 
-struct Domain;
+type Domain = maka_agent_facts::model::prompt_source::source::SourceIdentity;
 struct Inner {
     log: EventLog,
     execution: crate::SessionStore,
@@ -67,7 +70,7 @@ pub struct CapturedRow {
     bytes: u64,
     payload: Option<Backing>,
 }
-const METADATA_WORDS: usize = 13;
+const METADATA_WORDS: usize = 12;
 const METADATA_BYTES: usize = METADATA_WORDS * 8;
 pub struct SourcePage<B> {
     domain: Arc<Domain>,
@@ -109,10 +112,6 @@ impl<B: SourceBuffer> SourcePage<B> {
                 offset: values[10],
                 bytes: values[11],
             }),
-            3 => Some(Backing::PartText {
-                part: key,
-                through: values[12],
-            }),
             _ => unreachable!("metadata words are written only by the source worker"),
         };
         Some(CapturedRow {
@@ -137,7 +136,6 @@ pub enum PayloadEncoding {
     SemanticRow,
     Payload,
     CanonicalProjection,
-    TextFragments,
     Artifact,
     ArtifactMetadata,
 }
@@ -146,40 +144,8 @@ pub struct PayloadSource {
     domain: Arc<Domain>,
     backing: Backing,
 }
-#[derive(Clone)]
-enum Backing {
-    Row {
-        rowid: i64,
-        bytes: u64,
-    },
-    Canonical {
-        key: RowPosition,
-        offset: u64,
-        bytes: u64,
-    },
-    Pieces {
-        key: RowPosition,
-        bytes: u64,
-    },
-    PartText {
-        part: RowPosition,
-        through: u64,
-    },
-    Artifact {
-        rowid: i64,
-        bytes: u64,
-        digest: [u8; 32],
-    },
-    ArtifactMetadata {
-        rowid: i64,
-        bytes: u64,
-        payload_bytes: u64,
-        digest: [u8; 32],
-    },
-}
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SourcePosition {
-    fragment: Option<RowPosition>,
     piece: i64,
     offset: u64,
 }
@@ -309,7 +275,6 @@ impl PayloadSource {
             Backing::Row { .. } => PayloadEncoding::SemanticRow,
             Backing::Canonical { .. } => PayloadEncoding::CanonicalProjection,
             Backing::Pieces { .. } => PayloadEncoding::Payload,
-            Backing::PartText { .. } => PayloadEncoding::TextFragments,
             Backing::Artifact { .. } => PayloadEncoding::Artifact,
             Backing::ArtifactMetadata { .. } => PayloadEncoding::ArtifactMetadata,
         }
@@ -318,13 +283,37 @@ impl PayloadSource {
         match self.backing {
             Backing::Row { bytes, .. } | Backing::Canonical { bytes, .. } => Some(bytes),
             Backing::Pieces { bytes, .. } => Some(bytes),
-            Backing::PartText { .. } => None,
             Backing::Artifact { bytes, .. } => Some(bytes),
             Backing::ArtifactMetadata { bytes, .. } => Some(bytes),
         }
     }
 }
 impl CapturedSource {
+    pub fn locator_metadata_bytes() -> usize {
+        std::mem::size_of::<CapturedBytes>() + 2 * std::mem::size_of::<usize>()
+    }
+    pub fn owns_locator(
+        &self,
+        identity: &Arc<maka_agent_facts::model::prompt_source::source::SourceIdentity>,
+    ) -> bool {
+        Arc::ptr_eq(&self.0.domain, identity)
+    }
+    /// Resolve a descriptor emitted by this captured owner's controlled request writer.
+    /// Numeric request directories are ephemeral internal state, never external input.
+    pub fn restore_locator(
+        &self,
+        backing: Backing,
+        range: std::ops::Range<u64>,
+    ) -> Result<Arc<dyn ByteSource>, StoreError> {
+        let source = PayloadSource {
+            domain: self.0.domain.clone(),
+            backing,
+        };
+        if range.start > range.end {
+            return Err(invalid("inverted captured locator range"));
+        }
+        self.byte_range(&source, range.start, range.end - range.start)
+    }
     pub(crate) async fn capture(
         log: EventLog,
         execution: crate::SessionStore,
@@ -356,7 +345,7 @@ impl CapturedSource {
             log,
             execution,
             selection,
-            domain: Arc::new(Domain),
+            domain: Arc::new(maka_agent_facts::model::prompt_source::source::SourceIdentity),
         })))
     }
     pub fn selection(&self) -> &SemanticSelection {
@@ -463,12 +452,11 @@ impl CapturedSource {
                         let order = RowPosition { source_sequence: crate::sequence_number(record.get(4)?)?, item_index: crate::sequence_number(record.get(5)?)? };
                         let bytes = crate::sequence_number(record.get(6)?)?;
                         let payload = row_payload(raw,rowid,revision,bytes)?;
-                        let mut words = [rowid as u64,id.source_sequence,id.item_index,order.source_sequence,order.item_index,revision,bytes,0,0,0,0,0,0];
+                        let mut words = [rowid as u64,id.source_sequence,id.item_index,order.source_sequence,order.item_index,revision,bytes,0,0,0,0,0];
                         match payload {
                             None => {},
                             Some(Backing::Pieces{key,bytes}) => { words[7]=1; words[8]=key.source_sequence; words[9]=key.item_index; words[11]=bytes; },
                             Some(Backing::Canonical{key,offset,bytes}) => { words[7]=2; words[8]=key.source_sequence; words[9]=key.item_index; words[10]=offset; words[11]=bytes; },
-                            Some(Backing::PartText{part,through}) => { words[7]=3; words[8]=part.source_sequence; words[9]=part.item_index; words[12]=through; },
                             Some(Backing::Row{..}|Backing::Artifact{..}|Backing::ArtifactMetadata{..}) => unreachable!("payload is never row metadata"),
                         }
                         for (target,word) in buffer.as_mut()[count*METADATA_BYTES..(count+1)*METADATA_BYTES].as_chunks_mut::<8>().0.iter_mut().zip(words) { target.copy_from_slice(&word.to_le_bytes()); }
@@ -506,41 +494,6 @@ impl CapturedSource {
             })
             .await
     }
-    pub async fn next_text_fragment(
-        &self,
-        source: &PayloadSource,
-        after: Option<RowPosition>,
-    ) -> Result<Option<(RowPosition, PayloadSource)>, StoreError> {
-        self.check(&source.domain)?;
-        let Backing::PartText { part, through } = source.backing else {
-            return Err(invalid("source is not a streamed text part"));
-        };
-        let domain = source.domain.clone();
-        self.0
-            .log
-            .connection
-            .read(move |db| {
-                Box::pin(async move {
-                    let mut tx = db.begin().await?;
-                    let result = crate::connection::worker_query(&mut tx, move |worker| {
-                        Box::pin(async move {
-                            with_raw(worker, |raw| {
-                                next_fragment(raw, part, through, after)?
-                                    .map(|key| {
-                                        fragment_backing(raw, key)
-                                            .map(|backing| (key, PayloadSource { domain, backing }))
-                                    })
-                                    .transpose()
-                            })
-                        })
-                    })
-                    .await;
-                    let close = tx.rollback().await;
-                    settle_read(result, close)
-                })
-            })
-            .await
-    }
     #[cfg(test)]
     pub(crate) async fn artifact_lookup_fixture(
         &self,
@@ -557,10 +510,10 @@ impl CapturedSource {
             .run(move |db| {
                 Box::pin(async move {
                     sqlx::query(
-                        "INSERT INTO context_semantic_fragments VALUES(0,?,0,?,'pieces',NULL,NULL)",
+                        "INSERT INTO context_semantic_fragments VALUES(0,?,'pieces',NULL,NULL,'null',?)",
                     )
                     .bind(index as i64)
-                    .bind(index as i64)
+                    .bind(bytes as i64)
                     .execute(&mut *db)
                     .await?;
                     for (piece, chunk) in json.chunks(32 * 1024).enumerate() {
@@ -749,9 +702,6 @@ impl CapturedSource {
                                         None => result,
                                     }
                                 }
-                                Backing::PartText { .. } => {
-                                    Err(invalid("sequential text source requires fragment cursor"))
-                                }
                                 Backing::Artifact {
                                     rowid,
                                     bytes,
@@ -789,7 +739,7 @@ impl CapturedSource {
     }
 }
 
-fn with_raw<T>(
+pub(super) fn with_raw<T>(
     worker: &mut sqlx::sqlite::SqliteWorkerConnection<'_>,
     action: impl FnOnce(&RawConnection) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
@@ -820,13 +770,49 @@ fn row_payload(
             key.validate().map_err(invalid)?;
             fragment_backing(raw, key).map(Some)
         }
-        Some(locator::Locator::Text { part, through }) => {
-            part.validate().map_err(invalid)?;
-            i64::try_from(through)
-                .map_err(|_| invalid("captured text end exceeds SQLite range"))?;
-            Ok(Some(Backing::PartText { part, through }))
-        }
         None => Ok(None),
+    }
+}
+
+pub(super) fn with_fragment_reader<T>(
+    raw: &RawConnection,
+    key: RowPosition,
+    source: super::source::SemanticPayloadSource,
+    consume: impl FnOnce(&mut dyn Read) -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    match source {
+        super::source::SemanticPayloadSource::CanonicalToolProjection(span) => with_blob(
+            raw,
+            "event_log",
+            "event_json",
+            key.source_sequence as i64,
+            span.offset() as u64,
+            span.len() as u64,
+            consume,
+        ),
+        super::source::SemanticPayloadSource::CanonicalModelPart(span) => with_blob(
+            raw,
+            "event_log",
+            "event_json",
+            key.source_sequence as i64,
+            span.offset() as u64,
+            span.len() as u64,
+            consume,
+        ),
+        super::source::SemanticPayloadSource::Pieces => {
+            let mut reader = PieceReader {
+                raw,
+                key,
+                piece: 0,
+                offset: 0,
+                failed: None,
+            };
+            let result = consume(&mut reader);
+            match reader.failed {
+                Some(error) => Err(error),
+                None => result,
+            }
+        }
     }
 }
 
@@ -844,8 +830,8 @@ fn fragment_backing(raw: &RawConnection, key: RowPosition) -> Result<Backing, St
             })
         }
         Some((kind, Some(offset), Some(bytes)))
-            if kind == "canonical_tool_projection"
-                && key.item_index == 0
+            if ((kind == "canonical_tool_projection" && key.item_index == 0)
+                || kind == "canonical_model_part")
                 && offset >= 0
                 && bytes > 0
                 && offset
@@ -1036,21 +1022,7 @@ fn read_chunk<B: SourceBuffer>(
                 }),
             )
         }
-        Backing::Pieces { key, .. } => read_piece_chunk(raw, key, position, output, None)?,
-        Backing::PartText { part, through } => {
-            let key = match position.fragment {
-                Some(key) => {
-                    let valid:bool=raw.query_row("SELECT EXISTS(SELECT 1 FROM context_semantic_fragments WHERE source_sequence=? AND source_index=? AND part_sequence=? AND part_index=? AND source_sequence<=?)",params![key.source_sequence as i64,key.item_index as i64,part.source_sequence as i64,part.item_index as i64,through as i64],|r|r.get(0))?;
-                    if !valid {
-                        return Err(invalid("captured text position is outside its part"));
-                    }
-                    key
-                }
-                None => next_fragment(raw, part, through, None)?
-                    .ok_or_else(|| invalid("captured text has no fragments"))?,
-            };
-            read_piece_chunk(raw, key, position, output, Some((part, through)))?
-        }
+        Backing::Pieces { key, .. } => read_piece_chunk(raw, key, position, output)?,
         Backing::Artifact {
             rowid,
             bytes,
@@ -1109,31 +1081,11 @@ fn read_chunk<B: SourceBuffer>(
         next,
     })
 }
-fn next_fragment(
-    raw: &RawConnection,
-    part: RowPosition,
-    through: u64,
-    after: Option<RowPosition>,
-) -> Result<Option<RowPosition>, StoreError> {
-    let after = after.unwrap_or(RowPosition {
-        source_sequence: 0,
-        item_index: 0,
-    });
-    let row:Option<(i64,i64)>=raw.query_row("SELECT source_sequence,source_index FROM context_semantic_fragments WHERE part_sequence=?1 AND part_index=?2 AND source_sequence<=?3 AND (source_sequence,source_index)>(?4,?5) ORDER BY source_sequence,source_index LIMIT 1",params![part.source_sequence as i64,part.item_index as i64,through as i64,after.source_sequence as i64,after.item_index as i64],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-    row.map(|(s, i)| {
-        Ok(RowPosition {
-            source_sequence: crate::sequence_number(s)?,
-            item_index: crate::sequence_number(i)?,
-        })
-    })
-    .transpose()
-}
 fn read_piece_chunk(
     raw: &RawConnection,
     key: RowPosition,
     position: SourcePosition,
     output: &mut [u8],
-    part: Option<(RowPosition, u64)>,
 ) -> Result<(usize, Option<RowPosition>, bool, Option<SourcePosition>), StoreError> {
     check_pieces(raw, key)?;
     let (rowid, bytes) = piece(raw, key, position.piece)?
@@ -1150,20 +1102,12 @@ fn read_piece_chunk(
     let fragment_end = piece_end && !more_piece;
     let next = if !piece_end {
         Some(SourcePosition {
-            fragment: Some(key),
             offset: position.offset + count as u64,
             ..position
         })
     } else if more_piece {
         Some(SourcePosition {
-            fragment: Some(key),
             piece: position.piece + 1,
-            offset: 0,
-        })
-    } else if let Some((part, through)) = part {
-        next_fragment(raw, part, through, Some(key))?.map(|next| SourcePosition {
-            fragment: Some(next),
-            piece: 0,
             offset: 0,
         })
     } else {
@@ -1251,6 +1195,13 @@ struct CapturedBytes {
     bytes: u64,
 }
 impl ByteSource for CapturedBytes {
+    fn locator(&self) -> Option<SourceLocator> {
+        Some(SourceLocator::Captured {
+            identity: self.source.domain.clone(),
+            backing: self.source.backing.clone(),
+            range: self.start..self.start + self.bytes,
+        })
+    }
     fn len(&self) -> Option<u64> {
         Some(self.bytes)
     }
@@ -1301,8 +1252,7 @@ impl ByteCursor for CapturedByteCursor {
             }
             let absolute = self.source.start + position;
             let cursor = match self.source.source.backing {
-                Backing::Pieces { key, .. } => SourcePosition {
-                    fragment: Some(key),
+                Backing::Pieces { .. } => SourcePosition {
                     piece: (absolute / (32 * 1024)) as i64,
                     offset: absolute % (32 * 1024),
                 },
@@ -1373,20 +1323,14 @@ mod tests {
     fn database() -> RawConnection {
         let db = RawConnection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE event_log(sequence INTEGER PRIMARY KEY,event_json TEXT);
-CREATE TABLE context_semantic_fragments(source_sequence INTEGER,source_index INTEGER,part_sequence INTEGER,part_index INTEGER,storage_kind TEXT,byte_offset INTEGER,byte_len INTEGER,PRIMARY KEY(source_sequence,source_index)) WITHOUT ROWID;
-CREATE TABLE context_semantic_fragment_pieces(source_sequence INTEGER,source_index INTEGER,piece_index INTEGER,bytes BLOB,PRIMARY KEY(source_sequence,source_index,piece_index));
-CREATE INDEX part_fragments ON context_semantic_fragments(part_sequence,part_index,source_sequence,source_index);").unwrap();
+CREATE TABLE context_semantic_fragments(source_sequence INTEGER,source_index INTEGER,storage_kind TEXT,byte_offset INTEGER,byte_len INTEGER,PRIMARY KEY(source_sequence,source_index)) WITHOUT ROWID;
+CREATE TABLE context_semantic_fragment_pieces(source_sequence INTEGER,source_index INTEGER,piece_index INTEGER,bytes BLOB,PRIMARY KEY(source_sequence,source_index,piece_index));").unwrap();
         db
     }
-    fn insert_pieces(db: &RawConnection, key: RowPosition, part: RowPosition, bytes: &[u8]) {
+    fn insert_pieces(db: &RawConnection, key: RowPosition, bytes: &[u8]) {
         db.execute(
-            "INSERT INTO context_semantic_fragments VALUES(?,?,?,?,'pieces',NULL,NULL)",
-            params![
-                key.source_sequence as i64,
-                key.item_index as i64,
-                part.source_sequence as i64,
-                part.item_index as i64
-            ],
+            "INSERT INTO context_semantic_fragments VALUES(?,?,'pieces',NULL,NULL)",
+            params![key.source_sequence as i64, key.item_index as i64],
         )
         .unwrap();
         for (index, bytes) in bytes.chunks(32 * 1024).enumerate() {
@@ -1436,7 +1380,11 @@ CREATE INDEX part_fragments ON context_semantic_fragments(part_sequence,part_ind
             [std::str::from_utf8(&event).unwrap()],
         )
         .unwrap();
-        db.execute("INSERT INTO context_semantic_fragments VALUES(1,0,1,0,'canonical_tool_projection',?,?)",params![prefix.len() as i64,projection.len() as i64]).unwrap();
+        db.execute(
+            "INSERT INTO context_semantic_fragments VALUES(1,0,'canonical_tool_projection',?,?)",
+            params![prefix.len() as i64, projection.len() as i64],
+        )
+        .unwrap();
         let backing = fragment_backing(
             &db,
             RowPosition {
@@ -1450,58 +1398,23 @@ CREATE INDEX part_fragments ON context_semantic_fragments(part_sequence,part_ind
         }
     }
     #[test]
-    fn piece_cursor_crosses_storage_boundaries_and_text_stops_at_frozen_end() {
+    fn piece_cursor_crosses_storage_boundaries() {
         let db = database();
         let first = RowPosition {
             source_sequence: 10,
             item_index: 0,
         };
-        let second = RowPosition {
-            source_sequence: 11,
-            item_index: 0,
-        };
-        let later = RowPosition {
-            source_sequence: 12,
-            item_index: 0,
-        };
-        let values = [
-            Payload::TextDelta {
-                text: "a".repeat(70_000),
-                provider_options: None,
-            },
-            Payload::TextDelta {
-                text: "世界".into(),
-                provider_options: None,
-            },
-            Payload::TextDelta {
-                text: "later".into(),
-                provider_options: None,
-            },
-        ];
-        let encoded: Vec<_> = values
-            .iter()
-            .map(|v| serde_json::to_vec(v).unwrap())
-            .collect();
-        for (key, bytes) in [first, second, later].into_iter().zip(&encoded) {
-            insert_pieces(&db, key, first, bytes);
-        }
-        let fragments = collect(
-            &db,
-            &Backing::PartText {
-                part: first,
-                through: 11,
-            },
-            97,
-        );
+        let encoded = [serde_json::to_vec(&Payload::Text("a".repeat(70_000))).unwrap()];
+        insert_pieces(&db, first, &encoded[0]);
+        let backing = fragment_backing(&db, first).unwrap();
         assert_eq!(
-            fragments,
-            vec![(first, encoded[0].clone()), (second, encoded[1].clone())]
+            collect(&db, &backing, 97),
+            vec![(first, encoded[0].clone())]
         );
         let backing = fragment_backing(&db, first).unwrap();
         let position = SourcePosition {
             piece: 1,
             offset: 5,
-            fragment: Some(first),
         };
         let chunk = read_chunk(&db, &backing, position, Buffer(vec![0; 19]), None).unwrap();
         assert_eq!(
@@ -1540,7 +1453,7 @@ CREATE INDEX part_fragments ON context_semantic_fragments(part_sequence,part_ind
                 provider_options: None,
             }))
             .unwrap();
-        insert_pieces(&db, key, key, &encoded);
+        insert_pieces(&db, key, &encoded);
         let row = SemanticRow {
             id: key,
             revision: 7,

@@ -33,12 +33,74 @@ fn identity(id: &str) -> Invocation {
 pub(super) fn event(id: &str, fact: Fact) -> EventWrite {
     EventWrite::plain(RuntimeEvent::new(identity(id), fact)).unwrap()
 }
-fn step(text: &str) -> ModelStep {
-    serde_json::from_value(
-        json!({"parts":[{"kind":"text","text_kind":"text","text":text}],
-        "finish_reason":"stop","usage":{}}),
+pub(super) fn record(
+    id: &str,
+    step: &str,
+    ordinal: u64,
+    part: maka_agent_facts::model::ModelPart,
+) -> maka_agent_facts::model::recorded::ModelPartRecord {
+    let message_id = match &part {
+        maka_agent_facts::model::ModelPart::ToolCall { call } => {
+            maka_agent_facts::tool_call::tool_use_id(id, &format!("{step}:{}", call.id))
+        }
+        _ => uuid::Uuid::now_v7().to_string(),
+    };
+    maka_agent_facts::model::recorded::ModelPartRecord {
+        ordinal,
+        message_id,
+        started_at: std::time::UNIX_EPOCH,
+        provider_part_id: None,
+        part: std::sync::Arc::new(part),
+    }
+}
+
+pub(super) fn model_output(
+    invocation: &str,
+    step: &str,
+    mut value: serde_json::Value,
+) -> maka_agent_facts::model::recorded::ModelCompletion {
+    use maka_agent_facts::model::recorded::CompletionPart;
+    let parts = value["parts"]
+        .as_array_mut()
+        .unwrap()
+        .drain(..)
+        .enumerate()
+        .map(|(ordinal, value)| {
+            CompletionPart::Own(record(
+                invocation,
+                step,
+                ordinal as u64,
+                serde_json::from_value(value).unwrap(),
+            ))
+        })
+        .collect();
+    value["parts"] = serde_json::json!([]);
+    let mut output: maka_agent_facts::model::recorded::ModelCompletion =
+        serde_json::from_value(value).unwrap();
+    output.parts = parts;
+    output
+}
+
+pub(super) fn output_summary(
+    output: &maka_agent_facts::model::recorded::ModelCompletion,
+) -> TextSummary {
+    use maka_agent_facts::model::recorded::CompletionPart;
+    TextSummary::from_parts(
+        output.finish_reason,
+        output.parts.iter().map(|part| match part {
+            CompletionPart::Own(record) => record.part.as_ref(),
+            CompletionPart::Ref(_) => panic!("summary fixture owns its result"),
+        }),
     )
     .unwrap()
+}
+
+fn step(id: &str, step: &str, text: &str) -> ModelCompletion {
+    model_output(
+        id,
+        step,
+        json!({"parts":[{"kind":"text","text_kind":"text","text":text}],"finish_reason":"stop","usage":{}}),
+    )
 }
 fn request(id: &str, source: &ModelContextSource) -> EventWrite {
     event(
@@ -107,10 +169,10 @@ pub(super) async fn closed(
                 id,
                 Fact::ModelObserved {
                     step_id: format!("{id}:step"),
-                    event: ModelEvent::PartDelta {
-                        id: "text".into(),
-                        text: "part".into(),
-                        provider_options: None,
+                    event: ModelObservation::ResponseMetadata {
+                        id: Some(uuid::Uuid::now_v7().to_string()),
+                        model: None,
+                        timestamp: None,
                     },
                 },
             )
@@ -123,7 +185,7 @@ pub(super) async fn closed(
             id,
             Fact::ModelCompleted {
                 step_id: format!("{id}:step"),
-                output: step(&"x".repeat(body_bytes)),
+                output: step(id, &format!("{id}:step"), &"x".repeat(body_bytes)),
             },
         ),
         event(
@@ -138,15 +200,10 @@ pub(super) async fn closed(
     first
 }
 pub(super) async fn prepared(log: &EventLog, id: &str) -> Vec<EventWrite> {
-    prepare_trace(log, id, 0, false).await
+    prepare_trace(log, id, false).await
 }
 
-pub(super) async fn prepare_trace(
-    log: &EventLog,
-    id: &str,
-    observations: usize,
-    fail: bool,
-) -> Vec<EventWrite> {
+pub(super) async fn prepare_trace(log: &EventLog, id: &str, fail: bool) -> Vec<EventWrite> {
     log.append(&event(
         id,
         Fact::InvocationOpened {
@@ -168,30 +225,15 @@ pub(super) async fn prepare_trace(
         )
         .await
         .unwrap();
-    let output = step(SUMMARY);
-    let summary = TextSummary::from_model_step(&output).unwrap();
+    let output = step(id, &format!("{id}-summary"), SUMMARY);
+    let summary = output_summary(&output);
     log.append(&request(id, &source)).await.unwrap();
-    let trace: Vec<_> = (0..observations)
-        .map(|_| {
-            event(
-                id,
-                Fact::ModelObserved {
-                    step_id: format!("{id}-summary"),
-                    event: ModelEvent::PartDelta {
-                        id: "summary-text".into(),
-                        text: "part".into(),
-                        provider_options: None,
-                    },
-                },
-            )
-        })
-        .collect();
-    log.append_batch(&trace).await.unwrap();
     if fail {
         log.append_batch(&[
             event(
                 id,
                 Fact::ModelInterrupted {
+                    partial: None,
                     model_failure: None,
                     diagnostic: None,
                     step_id: format!("{id}-summary"),
@@ -323,7 +365,7 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
             log.append(&timed(request(id, &source), 1000))
                 .await
                 .unwrap();
-            let output = step("custom summary");
+            let output = step(id, &format!("{id}-summary"), "custom summary");
             log.append(&timed(
                 event(
                     id,
@@ -370,7 +412,7 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
                     id,
                     Fact::ModelCompleted {
                         step_id: "retry".into(),
-                        output: output.clone(),
+                        output: step(id, "retry", "custom summary"),
                     },
                 ),
                 4000,
@@ -406,7 +448,7 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
                                 .baseline
                                 .as_ref()
                                 .map(|b| b.event_id.clone()),
-                            summary: TextSummary::from_model_step(&output).unwrap(),
+                            summary: output_summary(&output),
                             summary_step_id: "retry".into(),
                         },
                     },

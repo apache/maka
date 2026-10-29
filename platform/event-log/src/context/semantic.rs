@@ -21,17 +21,22 @@
 #[cfg(test)]
 mod age_tests;
 mod captured;
+mod directory;
 pub(crate) mod gc;
 pub use captured::{
     ArtifactCapture, ArtifactIdentityValidity, ArtifactLookup, ArtifactLookupResult,
-    CapturedLocalResource, CapturedRow, CapturedSource, PayloadEncoding, PayloadSource,
-    SourceChunk, SourceDomain, SourcePage, SourcePosition, close_request_file, create_request_file,
+    CapturedDirectoryRow, CapturedLocalResource, CapturedRow, CapturedSource, ChildPage,
+    DirectoryPage, PayloadEncoding, PayloadSource, SourceChunk, SourceDomain, SourcePage,
+    SourcePosition, close_request_file, create_request_file,
 };
 mod source;
 #[cfg(test)]
 mod tests;
 mod write;
 pub(crate) use write::{copy_member, record};
+
+#[cfg(test)]
+pub(crate) use directory::fixture_json as directory_fixture_json;
 
 use crate::{EventLog, StoreError};
 use maka_agent_facts::history::{
@@ -387,6 +392,13 @@ async fn payload(
                 first.try_get("byte_len")?,
             )?;
             match source {
+                SemanticPayloadSource::CanonicalModelPart(span) => {
+                    if first.try_get::<Option<Vec<u8>>, _>("bytes")?.is_some() {
+                        return Err(invalid("canonical semantic payload has extracted pieces"));
+                    }
+                    drop(records);
+                    span.read(worker)
+                }
                 SemanticPayloadSource::CanonicalToolProjection(span) => {
                     if first.try_get::<Option<Vec<u8>>, _>("bytes")?.is_some() {
                         return Err(invalid("canonical semantic payload has extracted pieces"));
@@ -418,53 +430,6 @@ pub(crate) async fn resolve(
     for row in rows {
         let value = match &row.kind {
             SemanticKind::UnknownTool { .. } => None,
-            SemanticKind::AssistantPart {
-                payload:
-                    PartPayload::Text {
-                        part,
-                        end,
-                        text_kind,
-                    },
-                ..
-            } => {
-                let mut text = String::new();
-                let mut options = None;
-                let mut after = 0i64;
-                loop {
-                    let keys:Vec<(i64,i64)>=sqlx::query_as("SELECT source_sequence,source_index FROM context_semantic_fragments WHERE part_sequence=? AND part_index=? AND source_sequence>? AND source_sequence<=? ORDER BY source_sequence,source_index LIMIT 128")
-                        .bind(part.source_sequence as i64).bind(part.item_index as i64).bind(after).bind(*end as i64).fetch_all(&mut *connection).await?;
-                    if keys.is_empty() {
-                        break;
-                    }
-                    for (sequence, index) in keys {
-                        let Payload::TextDelta {
-                            text: delta,
-                            provider_options,
-                        } = payload(
-                            connection,
-                            RowPosition {
-                                source_sequence: crate::sequence_number(sequence)?,
-                                item_index: crate::sequence_number(index)?,
-                            },
-                        )
-                        .await?
-                        else {
-                            return Err(invalid("streamed text has a non-text fragment"));
-                        };
-                        text.push_str(&delta);
-                        maka_agent_facts::model::merge_provider_options(
-                            &mut options,
-                            provider_options,
-                        );
-                        after = sequence;
-                    }
-                }
-                Some(Payload::Part(maka_agent_facts::model::ModelPart::Text {
-                    text_kind: *text_kind,
-                    text,
-                    provider_options: options,
-                }))
-            }
             SemanticKind::AssistantPart {
                 payload: PartPayload::Complete(key),
                 ..

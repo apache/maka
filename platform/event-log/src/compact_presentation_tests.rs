@@ -29,11 +29,12 @@ use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::ModelInterruption;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::StoredEvent;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelFinishReason;
 use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::TextKind;
+use maka_agent_facts::model::recorded::{
+    CompletionPart, ModelCompletion, ModelObservation, ModelPartRecord,
+};
 use maka_event_log::{
     EventLog, observation::StreamFact, sessions::SessionExecutionState, turns::InvocationState,
 };
@@ -148,25 +149,14 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
             },
         )
         .await;
-        hidden(
-            &log,
-            &mut view,
-            &compact,
-            observation(ModelEvent::PartStarted {
-                id: "part".into(),
-                text_kind: TextKind::Text,
-                provider_options: None,
-            }),
-        )
-        .await;
         let secret = "private summary text ".repeat(100);
         let delta = hidden(
             &log,
             &mut view,
             &compact,
-            observation(ModelEvent::PartDelta {
-                id: "part".into(),
-                text: secret.clone(),
+            observation(ModelObservation::Finished {
+                reason: ModelFinishReason::Stop,
+                usage: Default::default(),
                 provider_options: None,
             }),
         )
@@ -210,16 +200,6 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
         );
         let outcome = match mode {
             "accepted" | "rejected" => {
-                hidden(
-                    &log,
-                    &mut view,
-                    &compact,
-                    observation(ModelEvent::PartFinished {
-                        id: "part".into(),
-                        provider_options: None,
-                    }),
-                )
-                .await;
                 hidden(&log, &mut view, &compact, accepted(&secret)).await;
                 InvocationOutcome::ContextCompactFinished {
                     outcome: if mode == "rejected" {
@@ -243,6 +223,7 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
                         diagnostic: None,
                         step_id: "summary".into(),
                         status: ModelInterruption::Cancelled,
+                        partial: None,
                     },
                 )
                 .await;

@@ -153,7 +153,7 @@ struct RawText {
 impl RawText {
     async fn new(text: &TextSource, context: &ProjectContext<'_>) -> io::Result<Self> {
         let mut value = Self {
-            cursor: text.bytes.open(context.budget.clone()),
+            cursor: text.bytes().open(context.budget.clone()),
             buffer: Some(context.budget.allocate(4096).await?),
             at: 0,
             used: 0,
@@ -268,7 +268,7 @@ pub(super) async fn project(
     let Some(state) = state(options, contract, !arena_projection, context).await? else {
         return Ok(None);
     };
-    if text.encoding != TextEncoding::JsonString {
+    if text.encoding() != TextEncoding::JsonString {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "summary projection requires captured quoted text source",
@@ -284,7 +284,7 @@ pub(super) async fn project(
         .ok_or_else(invalid)?;
     let mut metadata_bytes = super::super::joined_source::metadata_bytes(count)?;
     for value in [&state.profile, &state.id, &state.lengths] {
-        footprint_add(&mut metadata_bytes, raw_footprint(&value.bytes)?)?;
+        footprint_add(&mut metadata_bytes, raw_footprint(value.bytes())?)?;
     }
     let mut pieces = if build {
         Vec::with_capacity(count)
@@ -293,15 +293,15 @@ pub(super) async fn project(
     };
     if build {
         pieces.extend([
-            literal(r#"{"makaResponses":{"version":1,"profile":"#).bytes,
-            state.profile.bytes,
-            literal(r#","itemId":"#).bytes,
-            state.id.bytes.clone(),
-            literal(r#","summaryPartLengths":"#).bytes,
-            state.lengths.bytes.clone(),
-            literal(r#"},"openResponses":{"itemId":"#).bytes,
-            state.id.bytes,
-            literal(r#","reasoningSummary":["#).bytes,
+            literal(r#"{"makaResponses":{"version":1,"profile":"#).into_bytes(),
+            state.profile.into_bytes(),
+            literal(r#","itemId":"#).into_bytes(),
+            state.id.bytes().clone(),
+            literal(r#","summaryPartLengths":"#).into_bytes(),
+            state.lengths.bytes().clone(),
+            literal(r#"},"openResponses":{"itemId":"#).into_bytes(),
+            state.id.into_bytes(),
+            literal(r#","reasoningSummary":["#).into_bytes(),
         ]);
     }
     let mut lengths = json::ArrayCursor::open(state.lengths, context.budget.clone()).await?;
@@ -321,15 +321,15 @@ pub(super) async fn project(
         if units != length {
             return Ok(None);
         }
-        let span = text.bytes.slice(start..raw.position)?;
+        let span = text.bytes().slice(start..raw.position)?;
         footprint_add(&mut metadata_bytes, raw_footprint(&span)?)?;
         if build {
             if !first {
-                pieces.push(literal(",").bytes);
+                pieces.push(literal(",").into_bytes());
             }
-            pieces.push(literal(r#"{"type":"summary_text","text":""#).bytes);
+            pieces.push(literal(r#"{"type":"summary_text","text":""#).into_bytes());
             pieces.push(span);
-            pieces.push(literal(r#""}"#).bytes);
+            pieces.push(literal(r#""}"#).into_bytes());
         }
         first = false;
     }
@@ -337,10 +337,11 @@ pub(super) async fn project(
         return Ok(None);
     }
     let options = if build {
-        pieces.push(literal(r#"],"reasoningContent":null}}"#).bytes);
-        Some(JsonSource {
-            bytes: super::super::joined_source::join(pieces, context.directory_owner.clone())?,
-        })
+        pieces.push(literal(r#"],"reasoningContent":null}}"#).into_bytes());
+        Some(JsonSource::new(super::super::joined_source::join(
+            pieces,
+            context.directory_owner.clone(),
+        )?))
     } else {
         None
     };

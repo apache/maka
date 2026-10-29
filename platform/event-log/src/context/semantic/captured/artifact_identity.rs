@@ -116,7 +116,6 @@ fn with_range<T>(
                 consume,
             )
         }
-        Backing::PartText { .. } => Err(invalid("identity requires addressable encoded source")),
     }
 }
 struct Input<'a> {

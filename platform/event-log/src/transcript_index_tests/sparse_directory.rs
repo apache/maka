@@ -28,8 +28,9 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
     log.create_session("a", "create", &serde_json::json!({}), 1)
         .await
         .unwrap();
-    let (assistant_id, live) = partial(&log, "a", "answer😀").await;
-    let sealed = interrupt(&log, "a").await;
+    let (part, live) = partial(&log, "a", "answer😀").await;
+    let assistant_id = part.message_id.clone();
+    let sealed = interrupt(&log, "a", part).await;
     let through = end(
         &log,
         "a",
@@ -59,17 +60,38 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
             item_index: 0
         }
     );
-    let db = Connection::open(&path).unwrap();
     assert!(
         crate::test_store::inspect_cache(&log, |db| rows(db, "a"))
             .await
             .is_empty()
     );
-    let directory = || {
+    fn directory(db: &Connection) -> Vec<(i64, i64, String, String)> {
         db.prepare("SELECT source_sequence,item_index,message_id,role FROM transcript_directory WHERE session_id='a' ORDER BY source_sequence,item_index")
         .unwrap().query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
-    };
-    let metadata = directory();
+    }
+    assert!(
+        crate::test_store::inspect_cache(&log, directory)
+            .await
+            .is_empty(),
+        "append must not install observer metadata"
+    );
+    log.transcript_between_turns(
+        "a",
+        through,
+        RowPosition {
+            source_sequence: through,
+            item_index: 0,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        crate::test_store::inspect_cache(&log, |db| rows(db, "a"))
+            .await
+            .is_empty(),
+        "directory installation must not hydrate bodies"
+    );
+    let metadata = crate::test_store::inspect_cache(&log, directory).await;
     assert_eq!(metadata.len(), expected.len());
     for (actual, row) in metadata.iter().zip(&expected) {
         assert_eq!(
@@ -89,7 +111,7 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
             .is_empty(),
         "ordinary reopen does not rebuild optional bodies"
     );
-    // Each anchor starts independently with complete metadata and no optional bytes.
+    // Each anchor starts with an independently empty body cache.
     let cursor = Cursor {
         position: assistant,
         field: HistoryField::Body,
@@ -148,13 +170,13 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
             }
         }
         assert_eq!(
-            directory(),
+            crate::test_store::inspect_cache(&log, directory).await,
             metadata,
-            "reading cannot rebuild or rewrite metadata"
+            "cache reconstruction must preserve original metadata"
         );
     }
     crate::test_store::inspect_cache(&log, move |db| {
-        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
+        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows; DELETE FROM temp.transcript_directory; DELETE FROM temp.transcript_failures; DELETE FROM temp.transcript_directory_progress")
             .unwrap()
     })
     .await;
@@ -215,6 +237,7 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
         ["你好"]
     );
     assert!(before.is_none() && after.is_none());
+    assert_eq!(crate::test_store::inspect_cache(&log, |db| db.query_row("SELECT through_sequence FROM temp.transcript_directory_progress WHERE session_id='a'",[],|row|row.get::<_,i64>(0)).unwrap()).await,through as i64,"historical reads must not rewind progress after a later zero-row or visible source");
     assert_eq!(
         serde_json::to_vec(&log.prefix(32, 65536).await.unwrap()).unwrap(),
         canonical

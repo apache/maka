@@ -52,13 +52,11 @@ pub(super) fn plan(
     language: Language,
 ) -> io::Result<Vec<F>> {
     Ok(vec![F::owned_raw(
-        JsonSource {
-            bytes: SourceBytes::Source(Arc::new(ContentArray {
-                parts,
-                codec,
-                language,
-            })),
-        },
+        JsonSource::new(SourceBytes::Source(Arc::new(ContentArray {
+            parts,
+            codec,
+            language,
+        }))),
         allocation()?,
     )])
 }
@@ -66,13 +64,11 @@ pub(super) fn textual(
     parts: Arc<dyn RecipeSource<ContentRecipe>>,
     language: Language,
 ) -> io::Result<Vec<F>> {
-    let source = JsonSource {
-        bytes: SourceBytes::Source(Arc::new(ContentArray {
-            parts,
-            codec: Codec::ChatTool,
-            language,
-        })),
-    };
+    let source = JsonSource::new(SourceBytes::Source(Arc::new(ContentArray {
+        parts,
+        codec: Codec::ChatTool,
+        language,
+    })));
     Ok(vec![
         F::literal(b"\""),
         F::OwnedJsonString {

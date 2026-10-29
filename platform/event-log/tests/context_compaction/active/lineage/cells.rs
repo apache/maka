@@ -150,6 +150,7 @@ async fn lineage_model_cut_allows_only_independent_cell_progress_not_compaction_
     log.append(&event(
         "child",
         Fact::ModelInterrupted {
+            partial: None,
             model_failure: None,
             diagnostic: None,
             step_id: "attempt".into(),

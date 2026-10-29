@@ -76,8 +76,7 @@ struct Encoder<'a> {
 impl Encoder<'_> {
     async fn literal(&mut self, bytes: &[u8]) -> io::Result<()> {
         if self.cancellation.is_cancelled() {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
+            return Err(crate::preparation_cancelled(
                 "logical serialization cancelled",
             ));
         }
@@ -93,8 +92,7 @@ impl Encoder<'_> {
         let mut output = self.budget.allocate(4096).await?;
         loop {
             if self.cancellation.is_cancelled() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
+                return Err(crate::preparation_cancelled(
                     "logical serialization cancelled",
                 ));
             }
@@ -148,7 +146,7 @@ impl Encoder<'_> {
         self.literal(b"\"").await
     }
     async fn json(&mut self, source: &JsonSource) -> io::Result<()> {
-        let mut cursor = source.bytes.open(self.budget.clone());
+        let mut cursor = source.bytes().open(self.budget.clone());
         let mut buffer = self.budget.allocate(4096).await?;
         loop {
             let read = cursor.read_chunk(buffer).await?;

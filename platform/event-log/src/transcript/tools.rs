@@ -177,7 +177,12 @@ mod tests {
     use super::*;
     use maka_agent_facts::{
         event::{Fact, Invocation, InvocationInput, LogScope, RuntimeEvent, ToolOutcome},
-        model::{ModelEvent, ModelFinishReason, ModelPart, ModelStep, ModelToolCall},
+        model::{
+            ModelFinishReason, ModelPart, ModelToolCall,
+            recorded::{
+                CompletionPart, ModelCompletion, ModelObservation, ModelPartRecord, RecordedPartRef,
+            },
+        },
         tool_call::{HostSdkParent, ToolCallIdentity},
     };
     use serde_json::json;
@@ -337,7 +342,7 @@ mod tests {
             },
             Fact::ModelRequested {
                 context_breakdown: None,
-                item_acceptance: false,
+                item_acceptance: true,
                 purpose: maka_agent_facts::context::ModelPurpose::Main,
                 context: None,
                 checkpoint_event_id: None,
@@ -351,17 +356,33 @@ mod tests {
                 route_identity: "".into(),
             },
         ];
-        facts.extend(calls.iter().cloned().map(|call| Fact::ModelObserved {
-            step_id: "step".into(),
-            event: ModelEvent::ToolCall(call),
+        facts.extend(calls.iter().cloned().enumerate().map(|(ordinal, call)| {
+            Fact::ModelObserved {
+                step_id: "step".into(),
+                event: ModelObservation::Part(ModelPartRecord {
+                    ordinal: ordinal as u64,
+                    message_id: maka_agent_facts::tool_call::tool_use_id(
+                        &invocation.invocation_id,
+                        &format!("step:{}", call.id),
+                    ),
+                    started_at: std::time::UNIX_EPOCH,
+                    provider_part_id: None,
+                    part: std::sync::Arc::new(ModelPart::ToolCall { call }),
+                }),
+            }
         }));
         facts.push(Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
+            output: ModelCompletion {
                 parts: calls
                     .iter()
-                    .cloned()
-                    .map(|call| ModelPart::ToolCall { call })
+                    .enumerate()
+                    .map(|(ordinal, _)| {
+                        CompletionPart::Ref(RecordedPartRef {
+                            event_id: format!("fixture-part-{ordinal}"),
+                            ordinal: ordinal as u64,
+                        })
+                    })
                     .collect(),
                 finish_reason: ModelFinishReason::ToolCalls,
                 usage: Default::default(),
@@ -387,7 +408,14 @@ mod tests {
             },
         });
         for (index, fact) in facts.into_iter().enumerate() {
-            let event = RuntimeEvent::new(invocation.clone(), fact);
+            let mut event = RuntimeEvent::new(invocation.clone(), fact);
+            if let Fact::ModelObserved {
+                event: ModelObservation::Part(part),
+                ..
+            } = &event.fact
+            {
+                event.id = format!("fixture-part-{}", part.ordinal);
+            }
             crate::canonical_insert::insert(crate::canonical_insert::Record {
                 sequence: Some(index as i64 + 1),
                 event_id: &event.id,

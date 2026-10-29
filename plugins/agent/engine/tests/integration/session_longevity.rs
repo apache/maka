@@ -30,7 +30,7 @@ use maka_agent_engine::{Engine, RunInput, RunWork};
 use maka_agent_facts::{
     context::{CompactOutcome, ModelPurpose, ModelRequestContext},
     event::{EventWrite, Fact, Invocation, InvocationOutcome, LogScope, RuntimeEvent},
-    model::{ModelEvent, ModelFinishReason, ModelUsage, TextKind, assembly::StepBuilder},
+    model::{ModelEvent, ModelFinishReason, ModelUsage, TextKind},
 };
 use maka_event_log::{
     SessionStore,
@@ -147,8 +147,8 @@ async fn seed(store: &SessionStore, start: usize, end: usize) {
                     provider_options: None,
                 },
             ];
-            let mut builder = StepBuilder::default();
-            let mut facts = vec![
+            let mut writer = crate::support::model_records::writer(invocation.clone(), &step, true);
+            let facts = [
                 Fact::InvocationOpened {
                     configuration: None,
                     input: maka_agent_facts::input::InvocationInput::Message {
@@ -175,21 +175,42 @@ async fn seed(store: &SessionStore, start: usize, end: usize) {
                     route_identity: "legacy".into(),
                 },
             ];
-            for event in observed {
-                builder.push(event.clone()).unwrap();
-                facts.push(Fact::ModelObserved {
-                    step_id: step.clone(),
-                    event,
-                });
-            }
-            facts.push(Fact::ModelCompleted {
-                step_id: step,
-                output: builder.finish().unwrap(),
-            });
-            facts.push(Fact::InvocationEnded {
-                outcome: InvocationOutcome::Completed,
-            });
             for fact in facts {
+                writes
+                    .push(EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap());
+            }
+            let first_observation = writes.len();
+            writes.extend(crate::support::model_records::observations(
+                &mut writer,
+                observed,
+            ));
+            let mut output = writer.completed().unwrap().completion();
+            // These bodies precede their references in the same atomic seed batch.
+            // Their real sequences are assigned by the store, never guessed here.
+            output.parts = writes[first_observation..]
+                .iter()
+                .filter_map(|write| match &write.event().fact {
+                    Fact::ModelObserved {
+                        event: maka_agent_facts::model::recorded::ModelObservation::Part(record),
+                        ..
+                    } => Some(maka_agent_facts::model::recorded::CompletionPart::Ref(
+                        maka_agent_facts::model::recorded::RecordedPartRef {
+                            event_id: write.event().id.clone(),
+                            ordinal: record.ordinal,
+                        },
+                    )),
+                    _ => None,
+                })
+                .collect();
+            for fact in [
+                Fact::ModelCompleted {
+                    step_id: step,
+                    output,
+                },
+                Fact::InvocationEnded {
+                    outcome: InvocationOutcome::Completed,
+                },
+            ] {
                 writes
                     .push(EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap());
             }

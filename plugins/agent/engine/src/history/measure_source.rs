@@ -94,7 +94,7 @@ pub(crate) async fn raw_bytes(
     }
 }
 fn cancelled() -> io::Error {
-    io::Error::new(io::ErrorKind::Interrupted, "request preparation cancelled")
+    crate::preparation_cancelled("request preparation cancelled")
 }
 
 struct Measure<'a> {
@@ -114,13 +114,20 @@ impl Measure<'_> {
         self.bucket.estimated_tokens += bytes.div_ceil(3);
     }
     async fn text(&mut self, text: &TextSource, measured: bool) -> io::Result<[u8; 32]> {
-        let mut hash = Sha256::new();
-        let count = text_bytes(text, self.budget, self.cancellation, |bytes| {
-            hash.update(bytes);
-            Ok(())
-        })
-        .await?;
-        let identity: [u8; 32] = hash.finalize().into();
+        if self.cancellation.is_cancelled() {
+            return Err(cancelled());
+        }
+        let (count, identity) = if let Some(measure) = text.measure() {
+            (measure.bytes, measure.sha256)
+        } else {
+            let mut hash = Sha256::new();
+            let count = text_bytes(text, self.budget, self.cancellation, |bytes| {
+                hash.update(bytes);
+                Ok(())
+            })
+            .await?;
+            (count, <[u8; 32]>::from(hash.finalize()))
+        };
         self.marker(b"text");
         self.hash.update(count.to_le_bytes());
         self.hash.update(identity);
@@ -130,15 +137,23 @@ impl Measure<'_> {
         Ok(identity)
     }
     async fn json(&mut self, json: &JsonSource, measured: bool) -> io::Result<()> {
-        let mut hash = Sha256::new();
-        let count = raw_bytes(&json.bytes, self.budget, self.cancellation, |bytes| {
-            hash.update(bytes);
-            Ok(())
-        })
-        .await?;
+        if self.cancellation.is_cancelled() {
+            return Err(cancelled());
+        }
+        let (count, identity) = if let Some(measure) = json.measure() {
+            (measure.bytes, measure.sha256)
+        } else {
+            let mut hash = Sha256::new();
+            let count = raw_bytes(json.bytes(), self.budget, self.cancellation, |bytes| {
+                hash.update(bytes);
+                Ok(())
+            })
+            .await?;
+            (count, <[u8; 32]>::from(hash.finalize()))
+        };
         self.marker(b"json");
         self.hash.update(count.to_le_bytes());
-        self.hash.update(hash.finalize());
+        self.hash.update(identity);
         if measured {
             self.term(count);
         }
@@ -485,14 +500,129 @@ mod tests {
             Box::pin(async move { Ok(ChargedBuffer::new(vec![0; minimum], ())) })
         }
     }
+    fn measured_text(bytes: &'static [u8], decoded: &[u8], encoding: TextEncoding) -> TextSource {
+        TextSource::measured(
+            SourceBytes::Inline(bytes.into()),
+            encoding,
+            DecodedTextMeasure {
+                bytes: decoded.len() as u64,
+                sha256: Sha256::digest(decoded).into(),
+            },
+        )
+    }
+    #[tokio::test]
+    async fn known_leaves_preserve_logical_commitment_and_accounting() {
+        let budget: Arc<dyn SourceBudget> = Arc::new(Budget);
+        let cancellation = CancellationToken::new();
+        let decoded = "想😀\n".as_bytes();
+        let encoded = br#""\u60f3\ud83d\ude00\n""#;
+        let raw_json = br#"{ "value": "\u60f3" }"#;
+        let unknown = MessageRecipe::System {
+            content: TextSource::new(
+                SourceBytes::Inline(encoded.as_slice().into()),
+                TextEncoding::JsonString,
+            ),
+            provider_options: Some(JsonSource::new(SourceBytes::Inline(
+                raw_json.as_slice().into(),
+            ))),
+        };
+        let known = MessageRecipe::System {
+            content: measured_text(encoded, decoded, TextEncoding::JsonString),
+            provider_options: Some(JsonSource::measured(
+                SourceBytes::Inline(raw_json.as_slice().into()),
+                RawJsonMeasure {
+                    bytes: raw_json.len() as u64,
+                    sha256: Sha256::digest(raw_json).into(),
+                },
+            )),
+        };
+        let unknown = describe(unknown, &budget, Arc::new(()), &cancellation)
+            .await
+            .unwrap();
+        let known = describe(known, &budget, Arc::new(()), &cancellation)
+            .await
+            .unwrap();
+        assert_eq!(known.commitment, unknown.commitment);
+        assert_eq!(known.breakdown, unknown.breakdown);
+        let changed = describe(
+            MessageRecipe::System {
+                content: measured_text(encoded, decoded, TextEncoding::JsonString),
+                provider_options: Some(JsonSource::new(SourceBytes::Inline(
+                    r#"{"value":"想"}"#.as_bytes().into(),
+                ))),
+            },
+            &budget,
+            Arc::new(()),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+        assert_ne!(known.commitment, changed.commitment);
+    }
+    #[tokio::test]
+    async fn cancelled_known_message_does_not_complete_measurement() {
+        let budget: Arc<dyn SourceBudget> = Arc::new(Budget);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let options = Some(JsonSource::measured(
+            SourceBytes::Inline(b"{}".as_slice().into()),
+            RawJsonMeasure {
+                bytes: 2,
+                sha256: Sha256::digest(b"{}").into(),
+            },
+        ));
+        for recipe in [
+            MessageRecipe::System {
+                content: measured_text(b"hello", b"hello", TextEncoding::Utf8),
+                provider_options: options.clone(),
+            },
+            MessageRecipe::User {
+                content: Arc::new(generated::GeneratedRecipes::new(Vec::new())),
+                provider_options: options,
+            },
+        ] {
+            let result = describe(recipe, &budget, Arc::new(()), &cancellation).await;
+            assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::Interrupted));
+        }
+    }
+
+    struct UnopenedLargeLeaf;
+    impl ByteSource for UnopenedLargeLeaf {
+        fn len(&self) -> Option<u64> {
+            Some(1 << 40)
+        }
+        fn open(&self, _: Arc<dyn SourceBudget>) -> Box<dyn ByteCursor> {
+            panic!("known logical measurement must not open the leaf")
+        }
+    }
+    #[tokio::test]
+    async fn known_large_leaf_is_measured_without_opening_its_body() {
+        let budget: Arc<dyn SourceBudget> = Arc::new(Budget);
+        let descriptor = describe(
+            MessageRecipe::System {
+                content: TextSource::measured(
+                    SourceBytes::Source(Arc::new(UnopenedLargeLeaf)),
+                    TextEncoding::Utf8,
+                    DecodedTextMeasure {
+                        bytes: 1 << 40,
+                        sha256: [7; 32],
+                    },
+                ),
+                provider_options: None,
+            },
+            &budget,
+            Arc::new(()),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(descriptor.breakdown.system.content_bytes, 1 << 40);
+    }
     #[tokio::test]
     async fn decoded_content_commitment_does_not_depend_on_json_escape_spelling() {
         let budget: Arc<dyn SourceBudget> = Arc::new(Budget);
         let make = |bytes: &'static [u8], encoding| MessageRecipe::System {
-            content: TextSource {
-                bytes: SourceBytes::Inline(bytes.into()),
-                encoding,
-            },
+            content: TextSource::new(SourceBytes::Inline(bytes.into()), encoding),
             provider_options: None,
         };
         let cancellation = CancellationToken::new();

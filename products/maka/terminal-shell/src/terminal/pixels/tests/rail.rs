@@ -235,7 +235,7 @@ fn check_marks(source: &str) {
             }
             assert!(
                 Instant::now() < deadline,
-                "six rendered marks missing at scale {scale}"
+                "six rendered marks missing at scale {factor}"
             );
         };
         let mut mapping = Mapping::default();
@@ -270,13 +270,13 @@ fn check_marks(source: &str) {
                     assert_eq!(
                         text,
                         format!("turn-{index}"),
-                        "scale {scale}, tick {index}, cell ({column}, {row})"
+                        "scale {factor}, tick {index}, cell ({column}, {row})"
                     );
                     break;
                 }
                 assert!(
                     Instant::now() < deadline,
-                    "tick {index} not clickable at scale {scale}"
+                    "tick {index} not clickable at scale {factor}"
                 );
             }
         }
@@ -306,7 +306,7 @@ fn check_marks(source: &str) {
                 }
                 assert!(
                     Instant::now() < deadline,
-                    "preview visible={visible} at scale {scale}"
+                    "preview visible={visible} at scale {factor}"
                 );
             }
         };

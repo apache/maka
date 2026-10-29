@@ -78,10 +78,10 @@ fn opts() -> StreamOptions {
 }
 fn identified(value: &String) -> IdentifiedText {
     IdentifiedText {
-        text: TextSource {
-            bytes: SourceBytes::Inline(Bytes::copy_from_slice(value.as_bytes())),
-            encoding: TextEncoding::Utf8,
-        },
+        text: TextSource::new(
+            SourceBytes::Inline(Bytes::copy_from_slice(value.as_bytes())),
+            TextEncoding::Utf8,
+        ),
         identity: Sha256::digest(value.as_bytes()).into(),
     }
 }

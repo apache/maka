@@ -66,9 +66,19 @@ fn request(id: &str, step: &str, purpose: ModelPurpose, source: &ModelContextSou
 }
 
 fn completion(id: &str, step: &str, text: &str) -> EventWrite {
-    event(id, Fact::ModelCompleted { step_id: step.into(), output: serde_json::from_value(json!({
-        "parts":[{"kind":"text", "text_kind":"text", "text":text}], "finish_reason":"stop", "usage":{"input_tokens":10,"output_tokens":2}
-    })).unwrap() })
+    event(
+        id,
+        Fact::ModelCompleted {
+            step_id: step.into(),
+            output: fixtures::model_output(
+                id,
+                step,
+                json!({
+                    "parts":[{"kind":"text", "text_kind":"text", "text":text}], "finish_reason":"stop", "usage":{"input_tokens":10,"output_tokens":2}
+                }),
+            ),
+        },
+    )
 }
 
 async fn checkpoint(log: &EventLog, id: &str, mode: CheckpointMode) -> EventWrite {
@@ -93,7 +103,7 @@ async fn checkpoint(log: &EventLog, id: &str, mode: CheckpointMode) -> EventWrit
                 covered_through: source.source_evidence.high_water,
                 source_digest: source.source_evidence.digest,
                 previous_checkpoint_id: source.baseline.map(|b| b.event_id),
-                summary: TextSummary::from_model_step(output).unwrap(),
+                summary: fixtures::output_summary(output),
                 summary_step_id: step,
             },
         },
@@ -337,20 +347,8 @@ async fn active_cut_rejects_pending_child_and_changed_summary_repair_source() {
         .unwrap();
     log.append(&event(
         "active",
-        Fact::ModelObserved {
-            step_id: "repair".into(),
-            event: ModelEvent::PartDelta {
-                id: "partial".into(),
-                text: "private failed summary".into(),
-                provider_options: None,
-            },
-        },
-    ))
-    .await
-    .unwrap();
-    log.append(&event(
-        "active",
         Fact::ModelInterrupted {
+            partial: None,
             model_failure: None,
             diagnostic: None,
             step_id: "repair".into(),

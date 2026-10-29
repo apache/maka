@@ -159,6 +159,8 @@ enum PreparedBackend {
 #[derive(Clone)]
 struct Control {
     compacting: bool,
+    preview:
+        tokio::sync::watch::Receiver<Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>>,
     invocation: Invocation,
     basis: MessageBasis,
     cancellation: CancellationToken,
@@ -226,6 +228,24 @@ pub(crate) enum BuiltinBehavior {
 }
 
 impl Owner {
+    pub(crate) fn preview_epoch(&self) -> &str {
+        &self.revision.activation
+    }
+
+    pub(crate) async fn preview_reader(
+        &self,
+        session: &str,
+    ) -> Option<
+        tokio::sync::watch::Receiver<Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>>,
+    > {
+        self.runs
+            .lock()
+            .await
+            .controls
+            .get(session)
+            .map(|control| control.preview.clone())
+    }
+
     pub(crate) fn tool_store(
         &self,
         context: &maka_agent_facts::tools::ToolCallContext,

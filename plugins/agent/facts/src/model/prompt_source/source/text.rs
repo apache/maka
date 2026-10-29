@@ -71,10 +71,10 @@ pub fn concat(
     parts: Arc<dyn RecipeSource<TextSource>>,
     _budget: Arc<dyn SourceBudget>,
 ) -> TextSource {
-    TextSource {
-        bytes: SourceBytes::Source(Arc::new(Concat { parts })),
-        encoding: TextEncoding::Utf8,
-    }
+    TextSource::new(
+        SourceBytes::Source(Arc::new(Concat { parts })),
+        TextEncoding::Utf8,
+    )
 }
 pub fn replace_ascii(
     text: TextSource,
@@ -108,10 +108,10 @@ enum Kind {
     Replace(&'static [(u8, &'static [u8])]),
 }
 fn transformed(source: SourceBytes, kind: Kind, _budget: Arc<dyn SourceBudget>) -> TextSource {
-    TextSource {
-        bytes: SourceBytes::Source(Arc::new(Transformed { source, kind })),
-        encoding: TextEncoding::Utf8,
-    }
+    TextSource::new(
+        SourceBytes::Source(Arc::new(Transformed { source, kind })),
+        TextEncoding::Utf8,
+    )
 }
 struct Transformed {
     source: SourceBytes,
@@ -424,10 +424,10 @@ mod tests {
     }
     #[test]
     fn composed_text_replays_split_unicode_and_escaped_json() {
-        let text = TextSource {
-            bytes: SourceBytes::Inline(Bytes::from_static(br#""\uD83D\uDE42<\"&""#)),
-            encoding: TextEncoding::JsonString,
-        };
+        let text = TextSource::new(
+            SourceBytes::Inline(Bytes::from_static(br#""\uD83D\uDE42<\"&""#)),
+            TextEncoding::JsonString,
+        );
         let budget: Arc<dyn SourceBudget> = Arc::new(Budget);
         let parts = Arc::new(super::super::generated::GeneratedRecipes::new(vec![
             super::super::generated::text("prefix "),

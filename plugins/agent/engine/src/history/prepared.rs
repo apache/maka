@@ -23,9 +23,10 @@ use super::{
     source_projector::{ProjectContext, ProjectedRow},
 };
 use crate::RunError;
+use maka_agent_facts::history::semantic::directory::RowDirectory;
 use maka_agent_facts::{language::Language, model::prompt_source::source::*};
 use maka_event_log::{
-    context::semantic::{CapturedSource, PayloadEncoding, PayloadSource, SemanticSelection},
+    context::semantic::{CapturedSource, SemanticSelection},
     root_store::SessionStore,
 };
 use maka_model::{ModelPreparationResources, ProviderKind, prompt::Prompt};
@@ -95,7 +96,7 @@ pub(super) enum MessageBuilder {
         parts: Range<usize>,
         options: Option<JsonSource>,
     },
-    Tool(ToolResultRecipe),
+    Tool(Box<ToolResultRecipe>),
     DeferredUser {
         parts: Range<usize>,
     },
@@ -280,6 +281,7 @@ async fn capture_owned(
             captured: Some(&captured),
             arena: Some(&arena),
             cancellation,
+            row_root: None,
             payload_root: None,
             internal_arena: false,
         };
@@ -290,73 +292,31 @@ async fn capture_owned(
         let mut page_buffer = budget.allocate(32 * 1024).await.map_err(error)?;
         loop {
             cancelled(cancellation)?;
-            let mut page = captured.metadata_page(after, page_buffer).await?;
-            for index in 0..page.len() {
+            let mut page = captured.directory_page(after, page_buffer).await?;
+            while let Some(entry) = page.next_row()? {
                 cancelled(cancellation)?;
-                let row = page.row(index).expect("source page declared this row");
-                let metadata = raw(&captured, &captured.metadata_source(&row)?)?;
-                let assistant = json::field(&metadata, &["kind", "AssistantPart"], budget.clone())
-                    .await
-                    .map_err(error)?
-                    .is_some();
+                let row = entry.row;
+                let metadata = entry.directory;
+                let assistant = matches!(metadata, RowDirectory::AssistantPart { .. });
                 if !assistant {
                     flush(&mut builders, &parts, &mut group);
                 }
                 let payload = captured.describe_payload(&row)?;
-                let row_context = context.for_payload(payload.as_ref());
-                let projected = match &payload {
-                    Some(payload) if payload.encoding() == PayloadEncoding::TextFragments => {
-                        let text = super::part_text::quoted(
-                            &captured,
-                            payload,
-                            budget.clone(),
-                            owner.clone(),
-                            cancellation,
-                        )
-                        .await
-                        .map_err(error)?;
-                        let options_plan = super::source_json::text_options_footprint(
-                            &captured,
-                            payload,
-                            budget.clone(),
-                            cancellation,
-                        )
-                        .await
-                        .map_err(error)?;
-                        let options = super::source_json::text_options(
-                            &captured,
-                            payload,
-                            &options_plan,
-                            &arena,
-                            budget.clone(),
-                            owner.clone(),
-                            cancellation,
-                        )
-                        .await
-                        .map_err(error)?;
-                        super::source_projector::project_text_part(
-                            metadata,
-                            text,
-                            options,
-                            &row_context,
-                        )
-                        .await
-                        .map_err(error)?
-                    }
-                    payload => super::source_projector::project_row(
-                        metadata,
-                        payload
-                            .as_ref()
-                            .map(|payload| raw(&captured, payload))
-                            .transpose()?,
-                        &row_context,
-                    )
-                    .await
-                    .map_err(error)?,
-                };
+                let row_root = captured.metadata_source(&row)?;
+                let row_context = context.for_row(&row_root, payload.as_ref());
+                let projected = super::source_projector::project_row(
+                    &metadata,
+                    entry.payload.as_ref(),
+                    &row_context,
+                )
+                .await
+                .map_err(error)?;
+
                 match projected {
                     ProjectedRow::User(content) => builders.push(MessageBuilder::User(content)),
-                    ProjectedRow::Tool(result) => builders.push(MessageBuilder::Tool(result)),
+                    ProjectedRow::Tool(result) => {
+                        builders.push(MessageBuilder::Tool(Box::new(result)))
+                    }
                     ProjectedRow::Assistant(part) if !assistant => {
                         let start = parts.len();
                         parts.push(part);
@@ -440,7 +400,7 @@ async fn capture_owned(
                     provider_options: None,
                 },
                 MessageBuilder::Tool(result) => MessageRecipe::Tool {
-                    content: Arc::new(Items::new(vec![result], owner.clone())),
+                    content: Arc::new(Items::new(vec![*result], owner.clone())),
                     provider_options: None,
                 },
             };
@@ -510,13 +470,8 @@ async fn acquire_work(
         work = resources.acquire_work() => work.map_err(error),
     }
 }
-fn raw(captured: &CapturedSource, payload: &PayloadSource) -> Result<JsonSource, RunError> {
-    Ok(JsonSource {
-        bytes: SourceBytes::Source(captured.byte_source(payload)?),
-    })
-}
 fn error(error: io::Error) -> RunError {
-    RunError::Preparation(error)
+    RunError::preparation(error)
 }
 fn cancelled(cancellation: &CancellationToken) -> Result<(), RunError> {
     if cancellation.is_cancelled() {
@@ -593,6 +548,7 @@ async fn plan(
         captured: Some(captured),
         arena: None,
         cancellation,
+        row_root: None,
         payload_root: None,
         internal_arena: false,
     };
@@ -616,17 +572,14 @@ async fn plan(
     let mut page_buffer = budget.allocate(32 * 1024).await?;
     loop {
         if cancellation.is_cancelled() {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "capture cancelled",
-            ));
+            return Err(crate::preparation_cancelled("capture cancelled"));
         }
         let mut page = captured
-            .metadata_page(after, page_buffer)
+            .directory_page(after, page_buffer)
             .await
             .map_err(io::Error::other)?;
-        for index in 0..page.len() {
-            let row = page.row(index).expect("source page declared this row");
+        while let Some(entry) = page.next_row().map_err(io::Error::other)? {
+            let row = entry.row;
             rows = rows
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("frozen row count overflows"))?;
@@ -634,64 +587,27 @@ async fn plan(
             if matches!(provider, ProviderKind::Anthropic) {
                 add(&mut bytes, mem::size_of::<Producer>())?;
             }
-            let metadata = raw(
-                captured,
-                &captured.metadata_source(&row).map_err(io::Error::other)?,
-            )
-            .map_err(io::Error::other)?;
+            let metadata = entry.directory;
             let payload = captured.describe_payload(&row).map_err(io::Error::other)?;
-            let row_context = context.for_payload(payload.as_ref());
-            match &payload {
-                Some(payload) if payload.encoding() == PayloadEncoding::TextFragments => {
-                    add(
-                        &mut bytes,
-                        text_footprint(captured, payload, &metadata, &row_context).await?,
-                    )?;
-                    let options_plan = super::source_json::text_options_footprint(
-                        captured,
-                        payload,
-                        budget.clone(),
-                        cancellation,
-                    )
-                    .await?;
-                    add(&mut bytes, options_plan.metadata_bytes)?;
-                    add(
-                        &mut backing_bytes,
-                        usize::try_from(options_plan.backing_bytes).map_err(io::Error::other)?,
-                    )?;
-                }
-                payload => {
-                    let payload = payload
-                        .as_ref()
-                        .map(|payload| raw(captured, payload))
-                        .transpose()
-                        .map_err(io::Error::other)?;
-                    if chat_policy {
-                        chat.accumulate(
-                            super::source_projector::chat_shape_row(
-                                metadata.clone(),
-                                payload.clone(),
-                                &row_context,
-                            )
-                            .await?,
-                        )?;
-                    }
-                    add(
-                        &mut backing_bytes,
-                        super::source_projector::backing_bytes_row(
-                            metadata.clone(),
-                            payload.clone(),
-                            &row_context,
-                        )
+            let row_root = captured.metadata_source(&row).map_err(io::Error::other)?;
+            let row_context = context.for_row(&row_root, payload.as_ref());
+
+            let payload = entry.payload.as_ref();
+            if chat_policy {
+                chat.accumulate(
+                    super::source_projector::chat_shape_row(&metadata, payload, &row_context)
                         .await?,
-                    )?;
-                    add(
-                        &mut bytes,
-                        super::source_projector::footprint_row(metadata, payload, &row_context)
-                            .await?,
-                    )?;
-                }
+                )?;
             }
+            add(
+                &mut backing_bytes,
+                super::source_projector::backing_bytes_row(&metadata, payload, &row_context)
+                    .await?,
+            )?;
+            add(
+                &mut bytes,
+                super::source_projector::footprint_row(&metadata, payload, &row_context).await?,
+            )?;
         }
         after = page.next;
         page_buffer = page.into_buffer();
@@ -716,71 +632,14 @@ async fn plan(
         })
     }
 }
-async fn text_footprint(
-    captured: &CapturedSource,
-    payload: &PayloadSource,
-    metadata: &JsonSource,
-    context: &ProjectContext<'_>,
-) -> io::Result<usize> {
-    let mut after = None;
-    let mut count = 2usize;
-    let mut bytes = 0usize;
-    let mut has_options = false;
-    while let Some((key, fragment)) = captured
-        .next_text_fragment(payload, after)
-        .await
-        .map_err(io::Error::other)?
-    {
-        if context.cancellation.is_cancelled() {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "capture cancelled",
-            ));
-        }
-        after = Some(key);
-        count = count
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("text fragment count overflows"))?;
-        let source = captured.byte_source(&fragment).map_err(io::Error::other)?;
-        add(&mut bytes, arc(mem::size_of_val(source.as_ref())))?;
-        let source = JsonSource {
-            bytes: SourceBytes::Source(source),
-        };
-        if let Some(value) = json::field(
-            &source,
-            &["TextDelta", "provider_options"],
-            context.budget.clone(),
-        )
-        .await?
-            && value.kind != json::JsonKind::Null
-        {
-            has_options = true;
-            add(
-                &mut bytes,
-                super::source_projector::footprint_text_policy(
-                    metadata,
-                    Some(&value.source),
-                    context,
-                )
-                .await?,
-            )?;
-        }
-    }
-    if !has_options {
-        add(
-            &mut bytes,
-            super::source_projector::footprint_text_policy(metadata, None, context).await?,
-        )?;
-    }
-    add(&mut bytes, super::joined_source::metadata_bytes(count)?)?;
-    Ok(bytes)
-}
-
 async fn identifier(
     text: &TextSource,
     budget: &Arc<dyn SourceBudget>,
     cancellation: &CancellationToken,
 ) -> io::Result<[u8; 32]> {
+    if let Some(measure) = text.measure() {
+        return Ok(measure.sha256);
+    }
     use sha2::Digest;
     let mut hash = sha2::Sha256::new();
     super::measure_source::text_bytes(text, budget, cancellation, |bytes| {
@@ -861,6 +720,36 @@ mod tests {
         fn allocate(&self, minimum: usize) -> Allocate<'_> {
             Box::pin(async move { Ok(ChargedBuffer::new(vec![0; minimum], ())) })
         }
+    }
+    #[tokio::test]
+    async fn identifier_uses_captured_decoded_measure_without_reading() {
+        use sha2::Digest;
+        struct NoReadBudget;
+        impl SourceBudget for NoReadBudget {
+            fn allocate(&self, _: usize) -> Allocate<'_> {
+                panic!("measured identifier must not allocate a source read buffer")
+            }
+        }
+        let bytes = "identifier 世界".as_bytes();
+        let digest: [u8; 32] = sha2::Sha256::digest(bytes).into();
+        let text = TextSource::measured(
+            SourceBytes::Inline(bytes.to_vec().into()),
+            TextEncoding::Utf8,
+            DecodedTextMeasure {
+                bytes: bytes.len() as u64,
+                sha256: digest,
+            },
+        );
+        assert_eq!(
+            identifier(
+                &text,
+                &(Arc::new(NoReadBudget) as Arc<dyn SourceBudget>),
+                &CancellationToken::new()
+            )
+            .await
+            .unwrap(),
+            digest
+        );
     }
     fn call() -> AssistantRecipe {
         AssistantRecipe::ToolCall {

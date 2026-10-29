@@ -114,8 +114,7 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
         .await
         .unwrap();
     // Long projected JSON strings can split one row into several text chunks.
-    let sequences = Connection::open(dir.path().join("source.sqlite"))
-        .unwrap()
+    let sequences = crate::test_store::inspect_cache(&log, |db| db
         .prepare("SELECT source_sequence, item_index FROM transcript_directory WHERE session_id='source' AND role IN ('tool_call','tool_result') ORDER BY source_sequence, item_index")
         .unwrap()
         .query_map([], |row| {
@@ -123,7 +122,7 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
         })
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+        .unwrap()).await;
     assert_eq!(sequences.len(), 5);
     assert!(!chunks.is_empty());
     let expected = serde_json::to_string(&value).unwrap();
@@ -576,7 +575,17 @@ async fn structured_values_page_literal_text_and_exact_json_without_aliasing_key
 
     let through = *log.subscribe_commits().borrow();
 
-    let sequences = Connection::open(&database).unwrap().prepare("SELECT source_sequence, item_index FROM transcript_directory WHERE session_id='structured' AND role IN ('tool_call','tool_result') ORDER BY source_sequence, item_index").unwrap().query_map([], |row| Ok(RowPosition { source_sequence: row.get::<_, i64>(0)? as u64, item_index: row.get::<_, i64>(1)? as u64 })).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+    log.transcript_between_turns(
+        "structured",
+        through,
+        RowPosition {
+            source_sequence: through,
+            item_index: 0,
+        },
+    )
+    .await
+    .unwrap();
+    let sequences = crate::test_store::inspect_cache(&log, |db| db.prepare("SELECT source_sequence, item_index FROM transcript_directory WHERE session_id='structured' AND role IN ('tool_call','tool_result') ORDER BY source_sequence, item_index").unwrap().query_map([], |row| Ok(RowPosition { source_sequence: row.get::<_, i64>(0)? as u64, item_index: row.get::<_, i64>(1)? as u64 })).unwrap().collect::<Result<Vec<_>,_>>().unwrap()).await;
     assert_eq!(sequences.len(), 2);
     for (sequence, field) in [
         (sequences[0], SourceField::Arguments),
@@ -829,18 +838,16 @@ async fn soft_first_history_and_source_keep_complete_title_with_bounded_text() {
         provider_options: None,
         provider_executed: false,
     };
-    log.append(&event(
-        session,
-        observe(session, ModelEvent::ToolCall(call.clone())),
-    ))
-    .await
-    .unwrap();
+
     log.append(&event(
         session,
         Fact::ModelCompleted {
             step_id: format!("step-{session}"),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall { call }],
+            output: ModelCompletion {
+                parts: completion_parts(
+                    format!("step-{session}"),
+                    vec![ModelPart::ToolCall { call }],
+                ),
                 finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
                 usage: Default::default(),
                 provider_options: None,

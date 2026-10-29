@@ -17,11 +17,11 @@
  * under the License.
  */
 
-//! Durable row metadata and optional body caches; authority stays in the canonical ledger.
+//! Disposable transcript/Recall read models; authority stays in the canonical ledger.
 mod active;
 mod compaction;
 pub(crate) use active::interrupted_messages;
-mod bodycache;
+pub(crate) mod bodycache;
 pub(crate) use bodycache::{initialize as initialize_cache, purge as purge_cache};
 pub(crate) mod directory;
 mod emit;

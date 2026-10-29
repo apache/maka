@@ -21,7 +21,7 @@
 
 [English](README.md)
 
-存储通过当前 SQL 迁移初始化；不支持的内部布局和记录格式会被拒绝。规范数据与派生投影在同一事务中维护，可丢弃索引仍按当前恢复契约重建。
+存储通过当前 SQL 迁移初始化；不支持的内部布局和记录格式会被拒绝。规范事实及其接受、所有权、恢复和预算索引共享原事务；transcript 与 Recall 读模型属于可丢弃的 observation 缓存。
 
 管理 SQLite 事件存储和 State Root 租约，持久化应用配置与包、操作回执、会话、轮次及恢复记录。独占所有权见 `root`，已提交的组合见 `applications`，中断恢复见 `recovery`。服务激活前必须先取得 Root 的持久化所有权；业务策略属于插件，规范事实由这里记录。
 
@@ -64,13 +64,11 @@ Control 中的调用意图、项目登记、workspace attachment、Session 路�
 
 普通请求和正常重开信任受控写入或导入边界已接受的事实与 checkpoint，读取固定语义视图，不扫描规范尾部、不与 writer 握手确认、不保存进程内信任证明，也不重新认证历史 checkpoint。新 checkpoint 校验新增来源／前驱边及必要终态。直接改写 SQLite 不属于支持的编辑 API，普通读取不负责检测这种修改；显式有界历史导出继续保留事件数和字节预检。
 
-完整的 Session 可见行元数据目录与规范事实在原 SQLite 写连接上以 FULL 耐久性共同提交。历史窗口按目录定位，仅重建选中来源的正文；正文或文本缓存缺失不要求重放整个 Session 前缀。原发射序号和行 ordinal 保持不变。投影失败或全局消息身份冲突会被明确记录，不额外拒绝原本已接受的执行事实；请求边界以内存在失败时，通过索引返回该 Session 历史不可用。存储错误仍使规范事务回滚。
+Observation worker 在私有临时 SQLite 数据库中建立 transcript 元数据与不含正文的 Recall postings。读取捕获规范成员关系和来源边界，仅补齐新增来源；不产出展示行的来源也推进水位。行、来源失败和进度共享缓存事务，该连接的规范数据库仍物理只读。历史读取明确报告投影失败，搜索通过 gaps 报告受影响会话；存储错误回滚缓存工作，不再拒绝执行事实。
 
-Recall 在 [FTS5](https://sqlite.org/fts5.html#the_detail_option) 中记录每个文档出现过的 gram，每个 gram 由 1/2/3 个 Unicode scalar 组成，重复出现只记录一次。NFC 规范化并转小写后，字面 OR 命中按“非重叠命中的 scalar 总数 ÷ 正文 scalar 数”排序；不同词之间的重叠分别计分，工具结果的权重为一半。结果保留每个 Turn 中最相关的一条消息、稳定的时间与身份排序，以及请求指定的数量限制。
+Recall 在 [FTS5](https://sqlite.org/fts5.html#the_detail_option) 中记录每个文档出现过的 gram，每个 gram 由 1/2/3 个 Unicode scalar 组成，重复出现只记录一次。NFC 规范化并转小写后，字面 OR 命中按“非重叠命中的 scalar 总数 ÷ 正文 scalar 数”排序；不同词之间的重叠分别计分，工具结果的权重为一半。结果保留每个 Turn 中最相关的一条消息、稳定的时间与身份排序，以及请求指定的数量限制。 FTS 身份直接复用目录 rowid；候选正文和附件从原规范来源渲染后执行字面匹配核验。
 
-对于逐项接受输出的 main 模型请求，完整文本段、来源、工具调用和 provider 工具结果在对应 observation 被接受的序号进入历史。读取更晚的边界或重新打开存储，不得改变较早边界的历史。首次目录安装在公开 Ready 前按来源顺序阻塞重建保留的规范事实与冻结成员，保留原始规范字节并明确记录历史坏来源。之后正常打开直接使用已安装目录，不重放历史；目录元数据丢失需要显式维护，不等同于普通选中正文缓存缺失。
-
-既有分区 Root 需要安装派生目录时，使用既有获准长驻角色先维护启动，不依赖普通 launcher 的 30 秒启动观察窗口。未安装的 Root，或使用精确获准 executable 的 Supervised 部署，可运行 `host serve --root …`；它启动真实服务及正常恢复，不是只处理元数据的命令。OnDemand 部署必须使用匹配的获准 executable，以既有直接 `host candidate --root … --expected-root-id … --startup-attempt-id …` 角色启动，不使用 launcher 所有的 stdin。通过正常生命周期协调释放旧服务，保留部署模式、executable 准入和 Root 租约；观察持久化初始化完成及正常继续服务或真实关闭后，再使用普通 launcher。初始化完成前不发布 Ready，中断依靠事务恢复；不增加 timeout/progress 绕过机制或前台全前缀 fallback。
+逐项接受的 main part 保留原 observation 序号、消息身份和 ordinal，旧边界不会被后来事实改写。目录与 FTS 元数据不参与正文 LRU，独立于已有 32 MiB 正文保留目标。复制身份变化或 Session purge 清理对应缓存，关闭 observation 连接会丢弃全部缓存；后续读取按所需规范边界重建，不再要求 writer 安装目录或维护启动。访问权限与材料回收始终由规范所有权和引用决定。
 
 完整产物读取使用 `with_artifact`，选择 Session 或执行轮次范围。元数据与局部只读 BLOB reader 共享原 owner 的同一快照；同步回调拥有目标资源，读取句柄关闭后才释放快照，避免每块重新打开并读取整个 payload。独立 reader 持有快照；即使等待方消失，已受理工作仍保留原 owner。跨分区复制从冻结来源快照按固定大小的 BLOB 块流入一个目标事务，并校验摘要和幂等重试。调用方继续负责资源预算、摘要核验和取消策略。`read_artifact_chunk` 用于独立窗口，多次窗口调用不会保留顺序读取游标。
 

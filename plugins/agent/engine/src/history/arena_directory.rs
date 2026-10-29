@@ -19,7 +19,7 @@
 
 //! Fixed-width message metadata alongside the same arena's numeric recipes.
 
-use super::arena_recipes::{ArenaRecipes, List, Node};
+use super::arena_recipes::{ArenaRecipes, List, Node, Record};
 use maka_agent_facts::{context::PreparedContextBreakdown, model::prompt_source::source::*};
 use sha2::{Digest, Sha256};
 use std::{io, sync::Arc};
@@ -81,7 +81,7 @@ impl Builder {
             .await?;
         self.prefix.update(commitment);
         let prefix: [u8; 32] = self.prefix.clone().finalize().into();
-        let mut record = [0_u64; 16];
+        let mut record = Record::default();
         record[0] = METADATA;
         record[1] = match metadata.role {
             MessageRole::System => 0,
@@ -120,7 +120,7 @@ impl Builder {
                 .store
                 .text(identified.text, budget.clone(), cancel)
                 .await?;
-            let mut record = [0; 16];
+            let mut record = Record::default();
             record[0] = IDENTIFIED_TEXT;
             record[1] = text.0;
             encode_digest(&mut record[2..6], identified.identity);
@@ -163,7 +163,7 @@ impl ArenaDirectory {
     pub fn breakdown(&self) -> &PreparedContextBreakdown {
         &self.0.totals
     }
-    async fn record(&self, index: usize) -> io::Result<Option<[u64; 16]>> {
+    async fn record(&self, index: usize) -> io::Result<Option<Record>> {
         let Some(node) = self.0.store.get(self.0.metadata, index).await? else {
             return Ok(None);
         };

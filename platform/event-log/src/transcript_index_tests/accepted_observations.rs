@@ -20,7 +20,10 @@
 use super::*;
 use maka_agent_facts::{
     event::StoredEvent,
-    model::{ModelFinishReason, ModelSource, ModelToolCall, assembly::StepBuilder},
+    model::{
+        ModelEvent, ModelFinishReason, ModelSource, ModelToolCall,
+        assembly::{AttemptBinding, AttemptWriter, PartReceipt},
+    },
 };
 use maka_agent_ports::session::history::{Page, Position};
 
@@ -49,8 +52,17 @@ async fn seed(
     *source_scope = source.scope;
     *source_high_water = source.high_water;
     *source_digest = source.digest;
-    log.append(&event("a", requested)).await.unwrap();
-    let mut builder = StepBuilder::default();
+    let request_sequence = log.append(&event("a", requested)).await.unwrap();
+    let mut builder = AttemptWriter::new(
+        AttemptBinding {
+            invocation: event("a", opening()).event().invocation.clone(),
+            step_id: "step-a".into(),
+            purpose: maka_agent_facts::context::ModelPurpose::Main,
+        },
+        accepted,
+    )
+    .unwrap();
+    builder.fenced(request_sequence);
     let mut cuts = Vec::new();
     for observation in [
         ModelEvent::PartStarted {
@@ -88,22 +100,31 @@ async fn seed(
             provider_options: None,
         },
     ] {
-        let publishes = matches!(
-            observation,
-            ModelEvent::PartFinished { .. }
-                | ModelEvent::Source(_)
-                | ModelEvent::ToolCall(_)
-                | ModelEvent::ProviderToolResult { .. }
-        );
-        builder.push(observation.clone()).unwrap();
-        let sequence = log
-            .append(&event("a", observe("a", observation)))
-            .await
-            .unwrap();
-        if publishes {
-            cuts.push(sequence);
+        for observed in builder
+            .push(observation, std::time::SystemTime::now())
+            .unwrap()
+        {
+            let part = match &observed {
+                ModelObservation::Part(part) => Some(part.ordinal),
+                _ => None,
+            };
+            let write = event("a", observe("a", observed));
+            let sequence = log.append(&write).await.unwrap();
+            if let Some(ordinal) = part {
+                builder.recorded(PartReceipt {
+                    part: maka_agent_facts::model::recorded::RecordedPartRef {
+                        event_id: write.event().id.clone(),
+                        ordinal,
+                    },
+                    sequence,
+                });
+                cuts.push(sequence);
+            } else {
+                builder.fenced(sequence);
+            }
         }
     }
+
     let later = if interrupted {
         log.append(&event(
             "a",
@@ -112,6 +133,7 @@ async fn seed(
                 status: ModelInterruption::RetryableFailure,
                 diagnostic: None,
                 model_failure: None,
+                partial: builder.partial(),
             },
         ))
         .await
@@ -122,15 +144,21 @@ async fn seed(
             usage: ModelUsage::default(),
             provider_options: None,
         };
-        builder.push(finished.clone()).unwrap();
-        log.append(&event("a", observe("a", finished)))
-            .await
-            .unwrap();
+        for observed in builder
+            .push(finished, std::time::SystemTime::now())
+            .unwrap()
+        {
+            let sequence = log
+                .append(&event("a", observe("a", observed)))
+                .await
+                .unwrap();
+            builder.fenced(sequence);
+        }
         log.append(&event(
             "a",
             Fact::ModelCompleted {
                 step_id: "step-a".into(),
-                output: builder.finish().unwrap(),
+                output: builder.completed().unwrap().completion(),
             },
         ))
         .await
@@ -187,9 +215,35 @@ async fn accepted_kinds_publish_at_observation_and_unaccepted_kinds_wait_for_sea
             let path = directory.path().join("items.sqlite");
             let log = EventLog::open(&path).await.unwrap();
             let (cuts, later, events) = seed(&log, accepted, interrupted).await;
+            if !interrupted {
+                let Fact::ModelCompleted { output, .. } = &events.last().unwrap().event.fact else {
+                    unreachable!()
+                };
+                assert_eq!(output.parts.len(), 4);
+                assert!(
+                    output.parts[2..]
+                        .iter()
+                        .all(|part| matches!(part, CompletionPart::Ref(_))),
+                    "provider evidence is owned once and referenced at completion"
+                );
+                if !accepted {
+                    assert!(
+                        output.parts[..2]
+                            .iter()
+                            .all(|part| matches!(part, CompletionPart::Own(_)))
+                    );
+                }
+                let bytes = serde_json::to_string(&events).unwrap();
+                assert_eq!(bytes.matches("provider中😀").count(), 1);
+            }
+
             let db = Connection::open(&path).unwrap();
             let canonical = canonical_bytes(&db);
-            let unaccepted = cuts[0] - 1;
+            let unaccepted = events
+                .iter()
+                .find(|event| matches!(event.event.fact, Fact::ModelRequested { .. }))
+                .unwrap()
+                .sequence;
             crate::transcript_cache::materialize_all_rows(&log, "a", unaccepted)
                 .await
                 .unwrap();
@@ -315,16 +369,18 @@ async fn accepted_observation_directory_survives_missing_optional_bodies_and_reo
             .unwrap()
     })
     .await;
-    log.close().await.unwrap();
-    let db = Connection::open(&path).unwrap();
-    let canonical = canonical_bytes(&db);
-    let metadata: i64 = db
-        .query_row(
+    let metadata: i64 = crate::test_store::inspect_cache(&log, |db| {
+        db.query_row(
             "SELECT count(*) FROM transcript_directory WHERE session_id='a'",
             [],
             |r| r.get(0),
         )
-        .unwrap();
+        .unwrap()
+    })
+    .await;
+    log.close().await.unwrap();
+    let db = Connection::open(&path).unwrap();
+    let canonical = canonical_bytes(&db);
 
     let reopened = EventLog::open(&path).await.unwrap();
     assert!(
@@ -341,12 +397,14 @@ async fn accepted_observation_directory_survives_missing_optional_bodies_and_reo
         expected(&events, old)
     );
     assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM transcript_directory WHERE session_id='a'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
+        crate::test_store::inspect_cache(&reopened, |db| db
+            .query_row(
+                "SELECT count(*) FROM transcript_directory WHERE session_id='a'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap())
+        .await,
         metadata
     );
     assert_eq!(canonical_bytes(&db), canonical);

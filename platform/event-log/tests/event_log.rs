@@ -77,6 +77,7 @@ async fn settled_uncertainty_survives_reopen_without_abandoning_the_invocation()
                 ToolCallIdentity::standalone(operation.into()),
                 operation.into(),
                 Value::Null,
+                None,
                 CancellationToken::new(),
                 move |_| {
                     Box::pin(async move {
@@ -297,16 +298,36 @@ struct FaultSink {
 
 impl EventSink for FaultSink {
     fn commit(self: Arc<Self>, event: EventWrite) -> CommitFuture {
+        self.commit_with_prefix(&[], event)
+    }
+
+    fn commit_with_prefix(
+        self: Arc<Self>,
+        prefix: &[EventWrite],
+        last: EventWrite,
+    ) -> CommitFuture {
+        let mut events = prefix.to_vec();
+        events.push(last);
         Box::pin(async move {
-            if event.event().fact.kind() == self.kind {
+            if events
+                .last()
+                .expect("last event is present")
+                .event()
+                .fact
+                .kind()
+                == self.kind
+            {
                 if self.commit_before_error {
-                    self.log.clone().commit(event).await?;
+                    self.log.append_batch(&events).await?;
                 }
                 return Err(CommitError::OutcomeUnknown(
                     "injected commit failure".into(),
                 ));
             }
-            self.log.clone().commit(event).await
+            self.log
+                .append_batch(&events)
+                .await
+                .map(|sequences| *sequences.last().expect("last event has a sequence"))
         })
     }
 }

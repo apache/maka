@@ -686,13 +686,15 @@ impl OwnedConnection {
 
     /// Private observation state belongs to one physical reader. Its admission
     /// is independent of pure reads, so cache work cannot consume their capacity.
+    /// Disposable cache work may stop after caller loss; its rollback still drains
+    /// before this physical reader or its retained source custody can be reused.
     pub(crate) async fn observe<T: Send + 'static>(
         &self,
         operation: impl for<'c> FnOnce(&'c mut SqliteConnection) -> BoxFuture<'c, Result<T, StoreError>>
         + Send
         + 'static,
     ) -> Result<T, StoreError> {
-        self.read_job(ReaderRole::Observation, operation, false)
+        self.read_job(ReaderRole::Observation, operation, true)
             .await
     }
 
@@ -888,7 +890,11 @@ async fn reader_worker(
         if let Some(custody) = custody {
             retained.hold(slot, custody);
         }
-        let mut valid = authority.validate();
+        let mut valid = if connection.is_none() {
+            authority.validate()
+        } else {
+            Ok(())
+        };
         if valid.is_ok() && connection.is_none() && matches!(&job, ReadJob::Execute(_)) {
             match connect_reader(&options.connection, options.control.as_ref(), role).await {
                 Ok(opened) => connection = Some(opened),

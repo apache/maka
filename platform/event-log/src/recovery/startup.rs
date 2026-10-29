@@ -70,6 +70,7 @@ pub async fn recover_invocations(log: &EventLog) -> Result<usize, RecoveryError>
             };
             for step_id in state.unfinished_model_steps {
                 append(Fact::ModelInterrupted {
+                    partial: None,
                     model_failure: None,
                     step_id,
                     status: ModelInterruption::Failed,

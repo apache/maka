@@ -59,9 +59,9 @@ fn list<T: Clone + Send + Sync + 'static>(values: Vec<T>) -> Arc<dyn RecipeSourc
     Arc::new(List(values.into()))
 }
 fn options(value: serde_json::Value) -> Option<JsonSource> {
-    Some(JsonSource {
-        bytes: SourceBytes::Inline(Bytes::from(serde_json::to_vec(&value).unwrap())),
-    })
+    Some(JsonSource::new(SourceBytes::Inline(Bytes::from(
+        serde_json::to_vec(&value).unwrap(),
+    ))))
 }
 fn opts() -> StreamOptions {
     StreamOptions {
@@ -72,10 +72,10 @@ fn opts() -> StreamOptions {
     }
 }
 fn raw(value: &str) -> TextSource {
-    TextSource {
-        bytes: SourceBytes::Inline(Bytes::copy_from_slice(value.as_bytes())),
-        encoding: TextEncoding::Utf8,
-    }
+    TextSource::new(
+        SourceBytes::Inline(Bytes::copy_from_slice(value.as_bytes())),
+        TextEncoding::Utf8,
+    )
 }
 async fn bytes(item: &SourceItem) -> Vec<u8> {
     let budget: Arc<dyn SourceBudget> = Arc::new(Budget);
@@ -129,12 +129,12 @@ impl ByteCursor for SplitCursor {
 #[tokio::test]
 async fn source_text_matches_owned_oracle_with_split_escapes_and_unicode_trim() {
     let text = format!("\u{2003}\n{}\u{00a0}", "中\"\\\n🚀".repeat(5000));
-    let source = TextSource {
-        bytes: SourceBytes::Source(Arc::new(SplitSource(Bytes::from(
+    let source = TextSource::new(
+        SourceBytes::Source(Arc::new(SplitSource(Bytes::from(
             serde_json::to_vec(&text).unwrap(),
         )))),
-        encoding: TextEncoding::JsonString,
-    };
+        TextEncoding::JsonString,
+    );
     let compiler = Compiler::new(Arc::new(opts()), Language::En);
     let items = compiler
         .compile(
@@ -183,9 +183,9 @@ async fn mcp_replay_consumes_only_the_frozen_producer_decision() {
         content: list(vec![AssistantRecipe::ToolCall {
             tool_call_id: raw("id"),
             tool_name: raw("custom"),
-            input: ToolInputRecipe::Json(JsonSource {
-                bytes: SourceBytes::Inline(Bytes::from_static(b"{}")),
-            }),
+            input: ToolInputRecipe::Json(JsonSource::new(SourceBytes::Inline(Bytes::from_static(
+                b"{}",
+            )))),
             kind: ToolCallKind::Function,
             provider_executed: Some(true),
             provider_options: options(
@@ -201,9 +201,9 @@ async fn mcp_replay_consumes_only_the_frozen_producer_decision() {
             tool_name: raw("custom"),
             kind: ToolResultKind::Settled,
             call_kind: ToolCallKind::Function,
-            output: ToolOutputRecipe::Json(JsonSource {
-                bytes: SourceBytes::Inline(Bytes::from_static(b"{\"opaque\":[1,2]}")),
-            }),
+            output: ToolOutputRecipe::Json(JsonSource::new(SourceBytes::Inline(
+                Bytes::from_static(b"{\"opaque\":[1,2]}"),
+            ))),
             provider_options: None,
             parsed_error: None,
             replay,
@@ -273,8 +273,10 @@ async fn nested_error_string_keeps_first_stage_wrapper_and_second_stage_code() {
     let inner = json!({"type":"code_execution_tool_result_error","error_code":"quota"});
     let first = json!(inner.to_string());
     let original = json!(first.to_string());
-    let source_json = |value: &serde_json::Value| JsonSource {
-        bytes: SourceBytes::Inline(Bytes::from(serde_json::to_vec(value).unwrap())),
+    let source_json = |value: &serde_json::Value| {
+        JsonSource::new(SourceBytes::Inline(Bytes::from(
+            serde_json::to_vec(value).unwrap(),
+        )))
     };
     let mut options = opts();
     options
@@ -389,10 +391,10 @@ async fn message_cursor_emits_one_part_before_opening_later_bodies() {
                         provider_options: None,
                     },
                     ContentRecipe::Text {
-                        text: TextSource {
-                            bytes: SourceBytes::Source(Arc::new(FailedSource(reads.clone()))),
-                            encoding: TextEncoding::Utf8,
-                        },
+                        text: TextSource::new(
+                            SourceBytes::Source(Arc::new(FailedSource(reads.clone()))),
+                            TextEncoding::Utf8,
+                        ),
                         provider_options: None,
                     },
                 ]),

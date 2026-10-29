@@ -111,7 +111,17 @@ async fn captured_source_keeps_original_custody_after_parent_release_until_real_
 #[tokio::test]
 async fn captured_metadata_pages_exclude_covered_rows_and_preserve_replay_filters() {
     use crate::context::semantic::{SemanticReplay, SemanticSelection};
-    use maka_agent_facts::model::prompt_source::source::ChargedBuffer;
+    use maka_agent_facts::{
+        history::semantic::{
+            Payload,
+            directory::{ByteRange, PartDirectory, PayloadDirectory, TextSpan},
+        },
+        model::{
+            ModelPart, TextKind,
+            prompt_source::source::{ChargedBuffer, DecodedTextMeasure},
+        },
+    };
+    use sha2::{Digest, Sha256};
 
     let directory = tempfile::tempdir().unwrap();
     let root = open(directory.path()).await;
@@ -119,6 +129,32 @@ async fn captured_metadata_pages_exclude_covered_rows_and_preserve_replay_filter
         .create_session("session", "session", &json!({}), 1)
         .await
         .unwrap();
+    let body = serde_json::to_vec(&Payload::Part(ModelPart::Text {
+        text_kind: TextKind::Text,
+        text: "x".into(),
+        provider_options: None,
+    }))
+    .unwrap();
+    let token = br#""x""#;
+    let start = body
+        .windows(token.len())
+        .position(|bytes| bytes == token)
+        .unwrap();
+    let payload_directory = serde_json::to_string(&PayloadDirectory::Part(PartDirectory::Text {
+        text_kind: TextKind::Text,
+        text: TextSpan {
+            range: ByteRange {
+                start: start as u64,
+                len: token.len() as u64,
+            },
+            measure: DecodedTextMeasure {
+                bytes: 1,
+                sha256: Sha256::digest(b"x").into(),
+            },
+        },
+        provider_options: None,
+    }))
+    .unwrap();
     session.owner().unwrap().connection.run(|db| Box::pin(async move {
         for (sequence, order, invocation, kind) in [
             (1_i64, 1_i64, "current", "assistant_part"),
@@ -128,16 +164,23 @@ async fn captured_metadata_pages_exclude_covered_rows_and_preserve_replay_filter
             (5, 5, "current", "unknown_tool"),
         ] {
             let payload = if kind == "unknown_tool" {
-                json!({"UnknownTool": {}})
+                json!({"UnknownTool": {"operation_id":"operation","call_id":"call","name":"tool","custom":false}})
             } else {
-                json!({"AssistantPart": {"payload": {"Text": {
-                    "part": {"sourceSequence": sequence, "itemIndex": 0}, "end": sequence
+                json!({"AssistantPart": {"step_id":"step","model_id":"model","route_identity":"route","accepted_at":sequence,"index":0,"payload": {"Complete": {
+                    "sourceSequence": sequence, "itemIndex": 0
                 }}}})
             };
-            let metadata = json!({"revision": sequence, "kind": payload});
-            sqlx::query("INSERT INTO context_semantic_rows VALUES('session',?,0,?,?,0,?,?,'metadata-window',?,0,0,1,0,?)")
+            if kind == "assistant_part" {
+                sqlx::query("INSERT INTO context_semantic_fragment_pieces(source_sequence,source_index,piece_index,bytes) VALUES(?,0,0,?)")
+                    .bind(sequence).bind(&body).execute(&mut *db).await?;
+                sqlx::query("INSERT INTO context_semantic_fragments(source_sequence,source_index,storage_kind,byte_offset,byte_len,directory_json,payload_bytes) VALUES(?,0,'pieces',NULL,NULL,?,?)")
+                    .bind(sequence).bind(&payload_directory).bind(body.len() as i64).execute(&mut *db).await?;
+            }
+            let metadata = json!({"id":{"sourceSequence":sequence,"itemIndex":0},"revision": sequence,"order":{"sourceSequence":order,"itemIndex":0},"invocation":{"session_id":"session","turn_id":"turn","run_id":"run","invocation_id":invocation},"kind": payload}).to_string();
+            let directory = crate::context::semantic::directory_fixture_json(&metadata)?;
+            sqlx::query("INSERT INTO context_semantic_rows VALUES('session',?,0,?,?,0,?,?,'metadata-window',?,0,0,1,0,?,?)")
                 .bind(sequence).bind(sequence).bind(order).bind(invocation).bind(invocation)
-                .bind(kind).bind(metadata.to_string()).execute(&mut *db).await?;
+                .bind(kind).bind(metadata).bind(directory).execute(&mut *db).await?;
         }
         Ok(())
     })).await.unwrap();
@@ -167,11 +210,11 @@ async fn captured_metadata_pages_exclude_covered_rows_and_preserve_replay_filter
         let mut selected = Vec::new();
         loop {
             let mut page = source
-                .metadata_page(cursor, ChargedBuffer::new(vec![0; 128], ()))
+                .directory_page(cursor, ChargedBuffer::new(vec![0; 1024], ()))
                 .await
                 .unwrap();
-            for index in 0..page.len() {
-                selected.push(page.row(index).unwrap().id.source_sequence);
+            while let Some(record) = page.next_row().unwrap() {
+                selected.push(record.row.id.source_sequence);
             }
             cursor = page.next;
             if cursor.is_none() {

@@ -122,18 +122,21 @@ impl FragmentCursor {
                 (SourceBytes::Inline(bytes), Conversion::Raw)
             }
             SourceFragment::Raw(json) | SourceFragment::OwnedRaw { source: json, .. } => {
-                (json.bytes, Conversion::Raw)
+                (json.into_bytes(), Conversion::Raw)
             }
-            SourceFragment::Text(text) => (
-                text.bytes,
-                match text.encoding {
-                    TextEncoding::Utf8 => Conversion::Escape(JsonEscape::new()),
-                    TextEncoding::JsonString => Conversion::DecodeEscape {
-                        decoder: JsonStringDecoder::new(),
-                        escape: JsonEscape::new(),
+            SourceFragment::Text(text) => {
+                let (bytes, encoding) = text.into_parts();
+                (
+                    bytes,
+                    match encoding {
+                        TextEncoding::Utf8 => Conversion::Escape(JsonEscape::new()),
+                        TextEncoding::JsonString => Conversion::DecodeEscape {
+                            decoder: JsonStringDecoder::new(),
+                            escape: JsonEscape::new(),
+                        },
                     },
-                },
-            ),
+                )
+            }
             SourceFragment::LossyText(bytes) => (
                 bytes,
                 Conversion::Lossy {
@@ -143,7 +146,7 @@ impl FragmentCursor {
             ),
             SourceFragment::JsonString(json)
             | SourceFragment::OwnedJsonString { source: json, .. } => {
-                (json.bytes, Conversion::Escape(JsonEscape::new()))
+                (json.into_bytes(), Conversion::Escape(JsonEscape::new()))
             }
             SourceFragment::Base64(bytes) => (bytes, Conversion::Base64(Base64Encoder::new())),
         };
@@ -581,10 +584,10 @@ mod tests {
             (Bytes::copy_from_slice(value.as_bytes()), TextEncoding::Utf8),
             (Bytes::from(expected.clone()), TextEncoding::JsonString),
         ] {
-            let actual = collect(SourceFragment::Text(TextSource {
-                bytes: SourceBytes::Inline(bytes),
+            let actual = collect(SourceFragment::Text(TextSource::new(
+                SourceBytes::Inline(bytes),
                 encoding,
-            }))
+            )))
             .await;
             assert_eq!(actual, &expected[1..expected.len() - 1]);
         }
@@ -593,9 +596,9 @@ mod tests {
         let expected = serde_json::to_vec(std::str::from_utf8(&bytes).expect("UTF-8 fixture"))
             .expect("outer JSON");
         assert_eq!(
-            collect(SourceFragment::JsonString(JsonSource {
-                bytes: SourceBytes::Inline(Bytes::from(bytes))
-            }))
+            collect(SourceFragment::JsonString(JsonSource::new(
+                SourceBytes::Inline(Bytes::from(bytes))
+            )))
             .await,
             &expected[1..expected.len() - 1]
         );

@@ -18,20 +18,25 @@
  */
 
 use super::*;
-use maka_agent_facts::model::ModelToolCall;
+use maka_agent_facts::model::{
+    ModelPart, ModelToolCall,
+    recorded::{CompletionPart, ModelPartial, RecordedPartRef},
+};
 
-fn provider_call() -> ModelEvent {
-    ModelEvent::ToolCall(ModelToolCall {
-        id: "same-call".into(),
-        name: "remote-search".into(),
-        input: json!({}).into(),
-        provider_options: None,
-        provider_executed: true,
-    })
+fn provider_call() -> ModelPart {
+    ModelPart::ToolCall {
+        call: ModelToolCall {
+            id: "same-call".into(),
+            name: "remote-search".into(),
+            input: json!({}).into(),
+            provider_options: None,
+            provider_executed: true,
+        },
+    }
 }
 
-fn provider_result() -> ModelEvent {
-    ModelEvent::ProviderToolResult {
+fn provider_result() -> ModelPart {
+    ModelPart::ToolResult {
         id: "same-call".into(),
         name: "remote-search".into(),
         output: json!({"done":true}),
@@ -40,16 +45,19 @@ fn provider_result() -> ModelEvent {
     }
 }
 
-async fn observe(log: &EventLog, step: &str, observed: ModelEvent) {
-    log.append(&event(
+async fn observe(log: &EventLog, step: &str, ordinal: u64, part: ModelPart) -> RecordedPartRef {
+    let write = event(
         "old",
         Fact::ModelObserved {
             step_id: step.into(),
-            event: observed,
+            event: ModelObservation::Part(fixtures::record("old", step, ordinal, part)),
         },
-    ))
-    .await
-    .unwrap();
+    );
+    log.append(&write).await.unwrap();
+    RecordedPartRef {
+        event_id: write.event().id.clone(),
+        ordinal,
+    }
 }
 
 #[tokio::test]
@@ -68,16 +76,23 @@ async fn interrupted_history_preserves_provider_effect_uncertainty_without_rejec
             log.append(&request("old", "prior", ModelPurpose::Main, &source))
                 .await
                 .unwrap();
-            observe(&log, "prior", provider_call()).await;
-            observe(&log, "prior", provider_result()).await;
-            log.append(&event("old", Fact::ModelCompleted { step_id:"prior".into(),
-                output:serde_json::from_value(json!({
-                    "parts":[
-                        {"kind":"tool_call","call":{"id":"same-call","name":"remote-search","input":{"kind":"json","data":{}},"provider_executed":true}},
-                        {"kind":"tool_result","id":"same-call","name":"remote-search","output":{"done":true},"is_error":false}
-                    ],"finish_reason":"stop","usage":{}
-                })).unwrap()
-            })).await.unwrap();
+            let call = observe(&log, "prior", 0, provider_call()).await;
+            let result = observe(&log, "prior", 1, provider_result()).await;
+            let mut output = fixtures::model_output(
+                "old",
+                "prior",
+                json!({"parts":[], "finish_reason":"stop", "usage":{}}),
+            );
+            output.parts = vec![CompletionPart::Ref(call), CompletionPart::Ref(result)];
+            log.append(&event(
+                "old",
+                Fact::ModelCompleted {
+                    step_id: "prior".into(),
+                    output,
+                },
+            ))
+            .await
+            .unwrap();
         }
         let source = log
             .capture_model_context("session", Some("old"), 100_000, 64 * 1024 * 1024)
@@ -86,27 +101,39 @@ async fn interrupted_history_preserves_provider_effect_uncertainty_without_rejec
         log.append(&request("old", "interrupted", ModelPurpose::Main, &source))
             .await
             .unwrap();
-        if case == "text" {
-            observe(
-                &log,
+        let parts = if case == "text" {
+            vec![CompletionPart::Own(fixtures::record(
+                "old",
                 "interrupted",
-                ModelEvent::PartDelta {
-                    id: "partial".into(),
+                0,
+                ModelPart::Text {
+                    text_kind: maka_agent_facts::model::TextKind::Text,
                     text: "known partial".into(),
                     provider_options: None,
                 },
-            )
-            .await;
+            ))]
         } else {
-            observe(&log, "interrupted", provider_call()).await;
+            let mut parts = vec![CompletionPart::Ref(
+                observe(&log, "interrupted", 0, provider_call()).await,
+            )];
             if case == "settled" {
-                observe(&log, "interrupted", provider_result()).await;
+                parts.push(CompletionPart::Ref(
+                    observe(&log, "interrupted", 1, provider_result()).await,
+                ));
             }
-        }
+            parts
+        };
         log.append_batch(&[
             event(
                 "old",
                 Fact::ModelInterrupted {
+                    partial: Some(ModelPartial {
+                        parts,
+                        tool_inputs: Vec::new(),
+                        response_id: None,
+                        model: None,
+                        timestamp: None,
+                    }),
                     model_failure: None,
                     diagnostic: None,
                     step_id: "interrupted".into(),

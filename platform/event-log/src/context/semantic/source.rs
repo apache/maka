@@ -21,7 +21,9 @@
 
 use super::invalid;
 use crate::StoreError;
-use maka_agent_facts::{history::semantic::Payload, tool_output::DurableToolProjection};
+use maka_agent_facts::{
+    history::semantic::Payload, model::ModelPart, tool_output::DurableToolProjection,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use sqlx::sqlite::SqliteWorkerConnection;
@@ -40,6 +42,130 @@ pub(super) struct CanonicalToolProjectionSpan {
 pub(super) enum SemanticPayloadSource {
     Pieces,
     CanonicalToolProjection(CanonicalToolProjectionSpan),
+    CanonicalModelPart(CanonicalModelPartSpan),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CanonicalModelPartSpan(CanonicalToolProjectionSpan);
+
+pub(super) fn locate_model_parts(
+    source_sequence: u64,
+    json: &str,
+) -> Result<std::collections::BTreeMap<u64, CanonicalModelPartSpan>, StoreError> {
+    #[derive(Deserialize)]
+    struct Envelope<'src> {
+        #[serde(borrow)]
+        fact: Fact<'src>,
+    }
+    #[derive(Deserialize)]
+    struct Fact<'src> {
+        kind: &'src str,
+        #[serde(borrow)]
+        event: Option<Observation<'src>>,
+        #[serde(borrow)]
+        output: Option<Parts<'src>>,
+        #[serde(borrow)]
+        partial: Option<Parts<'src>>,
+    }
+    #[derive(Deserialize)]
+    struct Observation<'src> {
+        kind: &'src str,
+        #[serde(borrow)]
+        data: Record<'src>,
+    }
+    #[derive(Deserialize)]
+    struct Parts<'src> {
+        #[serde(borrow)]
+        parts: Vec<Part<'src>>,
+    }
+    #[derive(Deserialize)]
+    struct Part<'src> {
+        kind: &'src str,
+        #[serde(borrow)]
+        data: Record<'src>,
+    }
+    #[derive(Deserialize)]
+    struct Record<'src> {
+        ordinal: Option<u64>,
+        #[serde(borrow)]
+        part: Option<&'src RawValue>,
+    }
+    let envelope: Envelope<'_> = serde_json::from_str(json)?;
+    let records = match envelope.fact {
+        Fact {
+            kind: "model_observed",
+            event: Some(Observation { kind: "part", data }),
+            ..
+        } => vec![data],
+        Fact {
+            kind: "model_completed",
+            output: Some(output),
+            ..
+        } => output
+            .parts
+            .into_iter()
+            .filter_map(|part| (part.kind == "own").then_some(part.data))
+            .collect(),
+        Fact {
+            kind: "model_interrupted",
+            partial,
+            ..
+        } => partial
+            .into_iter()
+            .flat_map(|partial| partial.parts)
+            .filter_map(|part| (part.kind == "own").then_some(part.data))
+            .collect(),
+        Fact {
+            kind: "model_observed",
+            ..
+        } => Vec::new(),
+        _ => return Err(invalid("canonical model part lacks a model fact")),
+    };
+    let mut spans = std::collections::BTreeMap::new();
+    for record in records {
+        let ordinal = record
+            .ordinal
+            .ok_or_else(|| invalid("canonical model part lacks ordinal"))?;
+        let raw = record
+            .part
+            .ok_or_else(|| invalid("canonical model part lacks body"))?
+            .get();
+        let offset = (raw.as_ptr() as usize)
+            .checked_sub(json.as_ptr() as usize)
+            .ok_or_else(|| invalid("canonical model part does not borrow its event"))?;
+        let end = offset
+            .checked_add(raw.len())
+            .filter(|end| *end <= json.len())
+            .ok_or_else(|| invalid("canonical model part is outside its event"))?;
+        i32::try_from(end)
+            .map_err(|_| invalid("canonical model part exceeds SQLite Blob range"))?;
+        let span = CanonicalModelPartSpan(CanonicalToolProjectionSpan::from_metadata(
+            i64::try_from(source_sequence)
+                .map_err(|_| invalid("canonical model sequence exceeds SQLite range"))?,
+            i64::try_from(offset)
+                .map_err(|_| invalid("canonical model offset exceeds SQLite range"))?,
+            i64::try_from(raw.len())
+                .map_err(|_| invalid("canonical model length exceeds SQLite range"))?,
+        )?);
+        if spans.insert(ordinal, span).is_some() {
+            return Err(invalid("duplicate canonical model ordinal"));
+        }
+    }
+    Ok(spans)
+}
+impl CanonicalModelPartSpan {
+    pub(super) fn offset(self) -> i64 {
+        self.0.offset()
+    }
+    pub(super) fn len(self) -> i64 {
+        self.0.len()
+    }
+    pub(super) fn read(
+        self,
+        worker: &mut SqliteWorkerConnection<'_>,
+    ) -> Result<Payload, StoreError> {
+        self.0.read_value::<ModelPart>(worker).map(Payload::Part)
+    }
 }
 
 impl CanonicalToolProjectionSpan {
@@ -123,6 +249,13 @@ impl CanonicalToolProjectionSpan {
         self,
         worker: &mut SqliteWorkerConnection<'_>,
     ) -> Result<Payload, StoreError> {
+        self.read_value::<DurableToolProjection>(worker)
+            .map(Payload::Tool)
+    }
+    fn read_value<T: serde::de::DeserializeOwned>(
+        self,
+        worker: &mut SqliteWorkerConnection<'_>,
+    ) -> Result<T, StoreError> {
         // SAFETY: the original SQLite worker is exclusively borrowed. The wrapper
         // is non-owning, and it and the Blob are dropped before this callback returns.
         let borrowed =
@@ -145,8 +278,7 @@ impl CanonicalToolProjectionSpan {
             blob.seek(SeekFrom::Start(self.byte_offset))?;
             let reader =
                 BufReader::with_capacity(READ_BUFFER_BYTES, (&mut blob).take(self.byte_len));
-            let projection: DurableToolProjection = serde_json::from_reader(reader)?;
-            Ok(Payload::Tool(projection))
+            Ok(serde_json::from_reader(reader)?)
         })();
         let closed = blob.close();
         drop(borrowed);
@@ -204,6 +336,11 @@ impl SemanticPayloadSource {
                     CanonicalToolProjectionSpan::from_metadata(sequence, offset, len)?,
                 ))
             }
+            ("canonical_model_part", Some(offset), Some(len)) if index >= 0 => {
+                Ok(Self::CanonicalModelPart(CanonicalModelPartSpan(
+                    CanonicalToolProjectionSpan::from_metadata(sequence, offset, len)?,
+                )))
+            }
             _ => Err(invalid("invalid semantic payload source")),
         }
     }
@@ -226,5 +363,43 @@ impl std::fmt::Display for ReadAndCloseError {
 impl std::error::Error for ReadAndCloseError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.read)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_spans_locate_every_owned_ordinal_and_skip_refs() {
+        let json = r#"{"fact":{"kind":"model_completed","step_id":"step","output":{"parts":[{"kind":"own","data":{"ordinal":2,"message_id":"first","part":{"kind":"text","text_kind":"thinking","text":"first\n中\"","provider_options":{"signature":"original"}}}},{"kind":"ref","data":{"event_id":"original","ordinal":3}},{"kind":"own","data":{"ordinal":7,"message_id":"last","part":{"kind":"tool_result","id":"call","name":"search","output":{"body":"result"},"is_error":false,"provider_options":null}}}]}}}"#;
+        let spans = locate_model_parts(11, json).unwrap();
+        assert_eq!(spans.keys().copied().collect::<Vec<_>>(), vec![2, 7]);
+        let first = spans[&2];
+        let part: ModelPart = serde_json::from_str(
+            &json[first.offset() as usize..(first.offset() + first.len()) as usize],
+        )
+        .unwrap();
+        assert!(
+            matches!(part, ModelPart::Text { text, provider_options: Some(options), .. } if text.to_string() == "first\n中\"" && options["signature"] == "original")
+        );
+        let last = spans[&7];
+        let part: ModelPart = serde_json::from_str(
+            &json[last.offset() as usize..(last.offset() + last.len()) as usize],
+        )
+        .unwrap();
+        assert!(matches!(part, ModelPart::ToolResult { output, .. } if output["body"] == "result"));
+    }
+
+    #[test]
+    fn interrupted_own_uses_the_same_fixed_part_root() {
+        let json = r#"{"fact":{"kind":"model_interrupted","partial":{"parts":[{"kind":"own","data":{"ordinal":4,"part":{"kind":"text","text_kind":"text","text":"partial","provider_options":null}}}]}}}"#;
+        let spans = locate_model_parts(9, json).unwrap();
+        assert_eq!(spans.len(), 1);
+        let span = spans[&4];
+        assert_eq!(
+            &json[span.offset() as usize..(span.offset() + span.len()) as usize],
+            r#"{"kind":"text","text_kind":"text","text":"partial","provider_options":null}"#
+        );
     }
 }

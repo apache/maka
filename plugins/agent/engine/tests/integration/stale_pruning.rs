@@ -44,10 +44,7 @@ async fn legacy(log: &SessionFixture, id: &str, repeats: usize) {
         Fact::ModelRequested { item_acceptance: false, purpose: maka_agent_facts::context::ModelPurpose::Main, context: None, context_breakdown: None, checkpoint_event_id: None, effective_source_digest: None,
             step_id: step.clone(), model_id: "test".into(), source_scope: LogScope::Session { id: "session".into() },
             source_high_water: 1, source_digest: "legacy".into(), input_digest: "legacy".into(), route_identity: "legacy".into() },
-        Fact::ModelCompleted { step_id: step.clone(), output: serde_json::from_value(json!({
-            "parts":[{"kind":"tool_call","call":{"id":format!("call-{id}"),"name":"Read","input":{"kind":"json","data":{"path":id}},"provider_executed":false}}],
-            "finish_reason":"tool-calls","usage":{}
-        })).unwrap() },
+        Fact::ModelCompleted { step_id: step.clone(), output: crate::support::model_records::completion(invocation.clone(), &step, serde_json::from_value::<Vec<maka_agent_facts::model::ModelPart>>(json!([{"kind":"tool_call","call":{"id":format!("call-{id}"),"name":"Read","input":{"kind":"json","data":{"path":id}},"provider_executed":false}}])).unwrap(), maka_agent_facts::model::ModelFinishReason::ToolCalls) },
         Fact::ToolDispatched { presentation: None,
         title: None, operation_id: operation.clone(),
             call: ToolCallIdentity::provider(step, format!("call-{id}")), name: "Read".into(), input: json!({"path":id}) },

@@ -110,24 +110,19 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
             provider_executed: false,
         })
         .collect();
-    for call in &calls {
-        log.append(&event(
-            SESSION,
-            observe(SESSION, ModelEvent::ToolCall(call.clone())),
-        ))
-        .await
-        .unwrap();
-    }
     let completion = log
         .append(&event(
             SESSION,
             Fact::ModelCompleted {
                 step_id: format!("step-{SESSION}"),
-                output: ModelStep {
-                    parts: calls
-                        .into_iter()
-                        .map(|call| ModelPart::ToolCall { call })
-                        .collect(),
+                output: ModelCompletion {
+                    parts: completion_parts(
+                        format!("step-{SESSION}"),
+                        calls
+                            .into_iter()
+                            .map(|call| ModelPart::ToolCall { call })
+                            .collect(),
+                    ),
                     finish_reason: ModelFinishReason::ToolCalls,
                     usage: ModelUsage {
                         input_tokens: Some(7),

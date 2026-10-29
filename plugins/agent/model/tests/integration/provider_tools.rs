@@ -259,7 +259,7 @@ async fn anthropic_hosted_result_replays_from_canonical_parts_with_opaque_conten
             let content = step.parts.into_iter().filter_map(|part| match part {
                 ModelPart::ToolCall { call } => Some(AssistantPart::ToolCall { tool_call_id: call.id, tool_name: call.name, input: call.input, provider_executed: Some(call.provider_executed), provider_options: call.provider_options }),
                 ModelPart::ToolResult { id, name, output, is_error, provider_options } => Some(AssistantPart::ToolResult { tool_call_id: id, tool_name: name, output: if is_error { ToolOutput::ErrorJson(output) } else { ToolOutput::Json(output) }, provider_options }),
-                ModelPart::Text { text, provider_options, .. } => Some(AssistantPart::Text { text, provider_options }),
+                ModelPart::Text { text, provider_options, .. } => Some(AssistantPart::Text { text: text.chunks().collect(), provider_options: provider_options.as_deref().cloned() }),
                 _ => None,
             }).collect();
             history = vec![PromptMessage::Assistant { content, provider_options: None }, PromptMessage::user("Continue")];

@@ -24,11 +24,10 @@ use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelFinishReason;
 use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::ModelToolCall;
+use maka_agent_facts::model::recorded::ModelCompletion;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_call::ToolOrigin;
 use maka_agent_facts::tool_call::ToolRejection;
@@ -90,14 +89,10 @@ async fn accepted(log: &EventLog, step: &str, name: &str) -> u64 {
             input_digest: "".into(),
             route_identity: "".into(),
         },
-        Fact::ModelObserved {
-            step_id: step.into(),
-            event: ModelEvent::ToolCall(call.clone()),
-        },
         Fact::ModelCompleted {
             step_id: step.into(),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall { call }],
+            output: ModelCompletion {
+                parts: owned_parts("invocation", step, vec![ModelPart::ToolCall { call }]),
                 finish_reason: ModelFinishReason::ToolCalls,
                 usage: Default::default(),
                 provider_options: None,
@@ -476,4 +471,35 @@ async fn tool_boundaries_page_independently_and_rebuild_exact_ids_without_readin
         original,
         "the complete index is disposable"
     );
+}
+
+fn owned_parts(
+    invocation: &str,
+    step: &str,
+    parts: Vec<maka_agent_facts::model::ModelPart>,
+) -> Vec<maka_agent_facts::model::recorded::CompletionPart> {
+    use maka_agent_facts::model::{
+        ModelPart,
+        recorded::{CompletionPart, ModelPartRecord},
+    };
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, part)| {
+            let message_id = match &part {
+                ModelPart::ToolCall { call } => maka_agent_facts::tool_call::tool_use_id(
+                    invocation,
+                    &format!("{step}:{}", call.id),
+                ),
+                _ => uuid::Uuid::new_v4().to_string(),
+            };
+            CompletionPart::Own(ModelPartRecord {
+                ordinal: ordinal as u64,
+                message_id,
+                started_at: std::time::UNIX_EPOCH,
+                provider_part_id: None,
+                part: std::sync::Arc::new(part),
+            })
+        })
+        .collect()
 }

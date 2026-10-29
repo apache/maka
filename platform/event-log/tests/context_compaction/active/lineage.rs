@@ -180,7 +180,7 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
                     covered_through: source.source_evidence.high_water,
                     source_digest: source.source_evidence.digest.clone(),
                     previous_checkpoint_id: source.baseline.as_ref().map(|b| b.event_id.clone()),
-                    summary: TextSummary::from_model_step(output).unwrap(),
+                    summary: fixtures::output_summary(output),
                     summary_step_id: "repair".into(),
                 },
             },

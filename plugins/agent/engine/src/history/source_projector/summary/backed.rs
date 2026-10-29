@@ -26,10 +26,7 @@ use crate::history::{
 
 fn check_cancel(context: &ProjectContext<'_>) -> io::Result<()> {
     if context.cancellation.is_cancelled() {
-        Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "summary projection cancelled",
-        ))
+        Err(crate::preparation_cancelled("summary projection cancelled"))
     } else {
         Ok(())
     }
@@ -73,10 +70,7 @@ async fn emit(
     let mut buffer = context.budget.allocate(4096).await?;
     loop {
         if context.cancellation.is_cancelled() {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "summary projection cancelled",
-            ));
+            return Err(crate::preparation_cancelled("summary projection cancelled"));
         }
         let read = cursor.read_chunk(buffer).await?;
         sink.write(&read.buffer.as_ref()[..read.bytes_read]).await?;
@@ -107,13 +101,13 @@ pub(super) async fn project(
     let start = sink.position();
     sink.write(br#"{"makaResponses":{"version":1,"profile":"#)
         .await?;
-    emit(&state.profile.bytes, &mut sink, context).await?;
+    emit(state.profile.bytes(), &mut sink, context).await?;
     sink.write(br#","itemId":"#).await?;
-    emit(&state.id.bytes, &mut sink, context).await?;
+    emit(state.id.bytes(), &mut sink, context).await?;
     sink.write(br#","summaryPartLengths":"#).await?;
-    emit(&state.lengths.bytes, &mut sink, context).await?;
+    emit(state.lengths.bytes(), &mut sink, context).await?;
     sink.write(br#"},"openResponses":{"itemId":"#).await?;
-    emit(&state.id.bytes, &mut sink, context).await?;
+    emit(state.id.bytes(), &mut sink, context).await?;
     sink.write(br#","reasoningSummary":["#).await?;
     let mut lengths = json::ArrayCursor::open(state.lengths, context.budget.clone()).await?;
     let mut raw = RawText::new(text, context).await?;
@@ -136,7 +130,12 @@ pub(super) async fn project(
             sink.write(b",").await?;
         }
         sink.write(br#"{"type":"summary_text","text":""#).await?;
-        emit(&text.bytes.slice(start..raw.position)?, &mut sink, context).await?;
+        emit(
+            &text.bytes().slice(start..raw.position)?,
+            &mut sink,
+            context,
+        )
+        .await?;
         sink.write(br#""}"#).await?;
         first = false;
     }
@@ -144,9 +143,7 @@ pub(super) async fn project(
     let end = sink.position();
     sink.finish().await?;
     Ok(Some(Summary {
-        options: Some(JsonSource {
-            bytes: arena.inspect(start..end),
-        }),
+        options: Some(JsonSource::new(arena.inspect(start..end))),
         metadata_bytes: capture_arena::source_metadata_bytes(1)?,
     }))
 }
@@ -193,6 +190,7 @@ mod tests {
             provider: &provider,
             replay: None,
             captured: Some(&captured),
+            row_root: None,
             payload_root: None,
             arena: Some(&arena),
             internal_arena: true,
@@ -235,7 +233,7 @@ mod tests {
             capture_arena::source_metadata_bytes(1).unwrap()
         );
         let mut expected_bytes = Vec::new();
-        measure_source::raw_bytes(&expected.bytes, &context.budget, &cancellation, |bytes| {
+        measure_source::raw_bytes(expected.bytes(), &context.budget, &cancellation, |bytes| {
             expected_bytes.extend_from_slice(bytes);
             Ok(())
         })
@@ -243,7 +241,7 @@ mod tests {
         .unwrap();
         let mut actual_bytes = Vec::new();
         measure_source::raw_bytes(
-            &actual.options.unwrap().bytes,
+            actual.options.unwrap().bytes(),
             &context.budget,
             &cancellation,
             |bytes| {

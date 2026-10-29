@@ -179,8 +179,8 @@ fn assistant(step: &maka_agent_facts::model::ModelStep) -> PromptMessage {
                 provider_options,
                 ..
             } => AssistantPart::Text {
-                text: text.clone(),
-                provider_options: provider_options.clone(),
+                text: text.chunks().collect(),
+                provider_options: provider_options.as_deref().cloned(),
             },
             _ => panic!("unexpected fixture output"),
         })

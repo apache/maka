@@ -438,7 +438,7 @@ struct SourceOverlay {
     expected: u64,
     insertions: Vec<(u64, VecDeque<SourceFragment>)>,
     inserted: usize,
-    active: Option<FragmentCursor>,
+    active: Option<Box<FragmentCursor>>,
     deletes: Vec<std::ops::Range<u64>>,
 }
 impl SourceOverlay {
@@ -558,7 +558,8 @@ impl Payload {
                         && *at == overlay.offset
                     {
                         if overlay.active.is_none() {
-                            overlay.active = fragments.pop_front().map(FragmentCursor::new);
+                            overlay.active =
+                                fragments.pop_front().map(FragmentCursor::new).map(Box::new);
                         }
                         if let Some(active) = &mut overlay.active {
                             let budget = self.cursor.budget().ok_or_else(|| {

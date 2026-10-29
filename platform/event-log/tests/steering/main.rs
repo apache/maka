@@ -22,11 +22,10 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelFinishReason;
 use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::ModelToolCall;
+use maka_agent_facts::model::recorded::ModelCompletion;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_call::ToolOrigin;
 use maka_event_log::EventLog;
@@ -95,19 +94,14 @@ async fn steering_is_exact_once_session_scoped_and_atomic_with_rebuildable_user_
     };
     log.append(&write(
         "a",
-        Fact::ModelObserved {
-            step_id: "step".into(),
-            event: ModelEvent::ToolCall(call.clone()),
-        },
-    ))
-    .await
-    .unwrap();
-    log.append(&write(
-        "a",
         Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall { call }],
+            output: ModelCompletion {
+                parts: owned_parts(
+                    &invocation("a").invocation_id,
+                    "step",
+                    vec![ModelPart::ToolCall { call }],
+                ),
                 finish_reason: ModelFinishReason::ToolCalls,
                 usage: Default::default(),
                 provider_options: None,
@@ -287,4 +281,35 @@ async fn steering_is_exact_once_session_scoped_and_atomic_with_rebuildable_user_
     assert_eq!(preview, "visible correction");
     drop(db);
     log.close().await.unwrap();
+}
+
+fn owned_parts(
+    invocation: &str,
+    step: &str,
+    parts: Vec<maka_agent_facts::model::ModelPart>,
+) -> Vec<maka_agent_facts::model::recorded::CompletionPart> {
+    use maka_agent_facts::model::{
+        ModelPart,
+        recorded::{CompletionPart, ModelPartRecord},
+    };
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, part)| {
+            let message_id = match &part {
+                ModelPart::ToolCall { call } => maka_agent_facts::tool_call::tool_use_id(
+                    invocation,
+                    &format!("{step}:{}", call.id),
+                ),
+                _ => uuid::Uuid::new_v4().to_string(),
+            };
+            CompletionPart::Own(ModelPartRecord {
+                ordinal: ordinal as u64,
+                message_id,
+                started_at: std::time::UNIX_EPOCH,
+                provider_part_id: None,
+                part: std::sync::Arc::new(part),
+            })
+        })
+        .collect()
 }

@@ -151,7 +151,7 @@ mod tests {
     use super::*;
     use maka_agent_facts::context::{CheckpointMode, ContextCheckpoint, TextSummary};
     use maka_agent_facts::event::{Invocation, InvocationOutcome, StoredEvent};
-    use maka_agent_facts::model::ModelStep;
+    use maka_agent_facts::model::recorded::ModelCompletion;
     use serde_json::json;
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -202,10 +202,11 @@ mod tests {
                         },
                     },
                 );
-                let output: ModelStep = serde_json::from_value(json!({
-                    "parts":[{"kind":"text","text_kind":"text","text":"private summary beyond presentation budget"}],
+                let output: ModelCompletion = serde_json::from_value(json!({
+                    "parts":[],
                     "finish_reason":"stop","usage":{}
-                })).unwrap();
+                }))
+                .unwrap();
                 assert!(push(&mut view, 2, 1000, request("summary")).is_empty());
                 assert!(
                     push(
@@ -309,7 +310,7 @@ mod tests {
                 *purpose = ModelPurpose::Main;
             }
             push(&mut view, 3, 1500, main);
-            let output: ModelStep =
+            let output: ModelCompletion =
                 serde_json::from_value(json!({"parts":[],"finish_reason":"stop","usage":{}}))
                     .unwrap();
             push(

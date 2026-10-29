@@ -317,11 +317,7 @@ pub(super) async fn run(
             // Only accepted Main progress renews the budget. Summary events
             // never replenish their own attempts, even though the log advances.
             compaction = CompactionBudget::Available;
-            let local_calls: Vec<_> = output
-                .tool_calls()
-                .filter(|call| !call.provider_executed)
-                .collect();
-            if local_calls.is_empty() {
+            if output.local_call_ids.is_empty() {
                 if !tools.finish_output(high_water).await? {
                     main_progress = true;
                     continue;
@@ -358,7 +354,7 @@ pub(super) async fn run(
                     maka_agent_facts::context::ModelPurpose::Main,
                 )
                 .await?;
-                let ids: Vec<_> = local_calls.iter().map(|call| call.id.as_str()).collect();
+                let ids: Vec<_> = output.local_call_ids.iter().map(String::as_str).collect();
                 let mut replay = replay;
                 let confirmation = async {
                     replay

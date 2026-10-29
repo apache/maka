@@ -420,6 +420,22 @@ async fn queue_controls_are_revisioned_and_observed_without_transcript_progress(
                     assert_eq!(update["through"], through);
                     assert_eq!(update["events"], json!([]));
                 }
+                Some("preview") => {
+                    let contract::DeliveryPage::Preview { page } = serde_json::from_value(update)
+                        .expect("queue watch preview must satisfy the public delivery contract")
+                    else { unreachable!() };
+                    match page {
+                        contract::PreviewPage::Empty { host_epoch } => {
+                            assert_eq!(host_epoch, fixture.owner.preview_epoch());
+                        }
+                        contract::PreviewPage::Cut { host_epoch, invocation_id, depends_on, parts, .. } => {
+                            assert_eq!(host_epoch, fixture.owner.preview_epoch());
+                            assert_eq!(invocation_id, started["invocationId"].as_str().unwrap());
+                            assert!(depends_on <= through);
+                            assert!(parts.is_empty(), "the held provider has emitted no model content");
+                        }
+                    }
+                }
                 _ => panic!("unexpected queue watch delivery: {update}"),
             }
         };

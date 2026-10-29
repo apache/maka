@@ -143,25 +143,32 @@ struct RequestProof {
     checkpoint_id: Option<String>,
 }
 
-fn model_text(output: &maka_agent_facts::model::ModelStep) -> String {
-    output
-        .parts
-        .iter()
+fn model_text(
+    output: &maka_agent_facts::model::recorded::ModelCompletion,
+    recorded_parts: &CanonicalModelParts,
+) -> String {
+    recorded_parts
+        .parts(output)
         .filter_map(|part| match part {
             ModelPart::Text {
                 text,
                 text_kind: TextKind::Text,
                 ..
-            } => Some(text.as_str()),
+            } => Some(text),
             _ => None,
         })
+        .flat_map(|text| text.chunks())
         .collect()
 }
 
-fn summary_output(output: &maka_agent_facts::model::ModelStep, expected: &str) {
-    assert_eq!(model_text(output), expected);
+fn summary_output(
+    output: &maka_agent_facts::model::recorded::ModelCompletion,
+    expected: &str,
+    recorded_parts: &CanonicalModelParts,
+) {
+    assert_eq!(model_text(output, recorded_parts), expected);
     assert_eq!(output.finish_reason, ModelFinishReason::Stop);
-    assert!(output.parts.iter().all(|part| matches!(
+    assert!(recorded_parts.parts(output).all(|part| matches!(
         part,
         ModelPart::Text {
             text_kind: TextKind::Text,
@@ -180,6 +187,7 @@ async fn serve(
     progress: Arc<StdMutex<Value>>,
 ) -> Value {
     let mut after = 0;
+    let mut recorded_parts = CanonicalModelParts::default();
     let mut mains = 0;
     let mut issued = 0;
     let mut request_bytes = 0;
@@ -209,6 +217,7 @@ async fn serve(
                 .await
                 .unwrap();
             for stored in page.events {
+                recorded_parts.observe(&stored);
                 match stored.event.fact {
                     Fact::InvocationOpened { .. } => {
                         assert!(opening.replace(stored.event.id).is_none());
@@ -243,7 +252,7 @@ async fn serve(
                             .find(|summary| summary.step_id == step_id)
                         {
                             assert!(!summary.completion_seen);
-                            summary_output(&output, &summary.text);
+                            summary_output(&output, &summary.text, &recorded_parts);
                             summary.completion_seen = true;
                         }
                     }
@@ -487,6 +496,7 @@ async fn verify(
 ) -> Value {
     let through = fixture.through(session).await;
     let mut after = 0;
+    let mut recorded_parts = CanonicalModelParts::default();
     let mut dispatched = BTreeMap::new();
     let mut settled = BTreeSet::new();
     let mut raw_bytes = 0;
@@ -506,6 +516,7 @@ async fn verify(
             .await
             .unwrap();
         for stored in page.events {
+            recorded_parts.observe(&stored);
             assert_eq!(stored.event.invocation.invocation_id, invocation);
             match &stored.event.fact {
                 Fact::ToolDispatched {
@@ -577,7 +588,7 @@ async fn verify(
                             assert_eq!(output.usage.input_tokens, Some(7));
                             assert_eq!(output.usage.output_tokens, Some(11));
                         }
-                        let text = model_text(output);
+                        let text = model_text(output, &recorded_parts);
                         if !text.is_empty() {
                             assert_eq!(text, FINAL);
                             assert_eq!(output.finish_reason, ModelFinishReason::Stop);
@@ -591,7 +602,7 @@ async fn verify(
                             .iter()
                             .find(|proof| proof["step_id"] == *step_id)
                             .unwrap();
-                        summary_output(output, proof["text"].as_str().unwrap());
+                        summary_output(output, proof["text"].as_str().unwrap(), &recorded_parts);
                         summary_completions += 1;
                     }
                 },

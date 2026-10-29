@@ -50,13 +50,16 @@ async fn interrupted_streaming_tool_ancestry_and_later_model_step_replay_exactly
         "a",
         observe(
             "a",
-            ModelEvent::ToolCall(ModelToolCall {
-                id: "call".into(),
-                name: "Read".into(),
-                input: serde_json::json!({}).into(),
-                provider_options: None,
-                provider_executed: false,
-            }),
+            tool_observation(
+                &format!("step-{}", "a"),
+                ModelToolCall {
+                    id: "call".into(),
+                    name: "Read".into(),
+                    input: serde_json::json!({}).into(),
+                    provider_options: None,
+                    provider_executed: false,
+                },
+            ),
         ),
     ))
     .await
@@ -78,6 +81,7 @@ async fn interrupted_streaming_tool_ancestry_and_later_model_step_replay_exactly
         .append(&event(
             "a",
             Fact::ModelInterrupted {
+                partial: None,
                 step_id: "step-a".into(),
                 status: ModelInterruption::RetryableFailure,
                 diagnostic: None,
@@ -121,7 +125,7 @@ async fn interrupted_streaming_tool_ancestry_and_later_model_step_replay_exactly
         "a",
         Fact::ModelObserved {
             step_id: "step-retry".into(),
-            event: ModelEvent::Finished {
+            event: ModelObservation::Finished {
                 reason: maka_agent_facts::model::ModelFinishReason::Stop,
                 usage: ModelUsage::default(),
                 provider_options: None,
@@ -134,8 +138,8 @@ async fn interrupted_streaming_tool_ancestry_and_later_model_step_replay_exactly
         "a",
         Fact::ModelCompleted {
             step_id: "step-retry".into(),
-            output: ModelStep {
-                parts: Vec::new(),
+            output: ModelCompletion {
+                parts: completion_parts("step-retry".into(), Vec::new()),
                 finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
                 usage: ModelUsage::default(),
                 provider_options: None,

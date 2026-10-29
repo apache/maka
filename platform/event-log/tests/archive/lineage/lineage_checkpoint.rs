@@ -56,10 +56,15 @@ async fn narrower_checkpoint_does_not_corrupt_later_whole_session_archives() {
         *purpose = ModelPurpose::Main;
     }
     continuation::append(&log, &main).await;
-    log.append(&event("child", Fact::ModelCompleted {
-        step_id: "main".into(),
-        output: serde_json::from_value(json!({"parts":[{"kind":"text","text_kind":"text","text":"work"}],"finish_reason":"stop","usage":{}})).unwrap(),
-    })).await.unwrap();
+    log.append(&event(
+        "child",
+        Fact::ModelCompleted {
+            step_id: "main".into(),
+            output: summary_completion("child", "main", "work"),
+        },
+    ))
+    .await
+    .unwrap();
     let mode = CheckpointMode::MidTurn {
         anchor_event_id: child.id.clone(),
     };

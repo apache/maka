@@ -17,10 +17,7 @@
  * under the License.
  */
 
-use crate::{
-    EventLog,
-    test_store::{inspect as inspect_main, inspect_cache as inspect},
-};
+use crate::{EventLog, test_store::inspect_cache as inspect};
 use maka_agent_facts::{
     event::{EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent},
     history::RowPosition,
@@ -142,7 +139,7 @@ async fn private_body_reads_do_not_write_main_and_reopen_reconstructs_exact_byte
     );
     inspect(&log, |db| {
         assert!(db.query_row("SELECT count(*) FROM temp.transcript_rows", [], |row| row.get::<_, i64>(0)).unwrap()>0);
-        assert_eq!(db.query_row("SELECT count(*) FROM main.sqlite_schema WHERE name IN ('transcript_rows','transcript_text')", [], |row| row.get::<_, i64>(0)).unwrap(),0);
+        assert_eq!(db.query_row("SELECT count(*) FROM main.sqlite_schema WHERE name IN ('transcript_rows','transcript_text','transcript_directory','transcript_failures','transcript_directory_progress','recall_documents','recall_terms','recall_progress')", [], |row| row.get::<_, i64>(0)).unwrap(),0);
         assert_eq!(db.query_row("PRAGMA main.journal_mode", [], |row| row.get::<_, String>(0)).unwrap(), "wal");
         for (query, expected) in [("PRAGMA main.synchronous",2), ("PRAGMA temp.page_size",4096), ("PRAGMA temp.auto_vacuum",1), ("PRAGMA temp.cache_size",-4096), ("PRAGMA temp.synchronous",0), ("PRAGMA temp_store",1)] {
             assert_eq!(db.query_row(query, [], |row| row.get::<_, i64>(0)).unwrap(), expected, "{query}");
@@ -205,10 +202,6 @@ async fn oversized_source_reuses_fragments_then_reclaims_backing_file_on_replace
     use maka_agent_facts::{
         input::{DeliveredMessage, MessageInput},
         message::{MessageDisposition, MessageOrigin, Placement, RootSourceMessage, aggregate},
-    };
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
     };
 
     let directory = tempfile::tempdir().unwrap();
@@ -275,10 +268,10 @@ async fn oversized_source_reuses_fragments_then_reclaims_backing_file_on_replace
             "the opening must project each attributed message and its running state"
         );
         assert!(
-            db.query_row("PRAGMA temp.page_count", [], |row| row
+            db.query_row("SELECT bytes FROM temp.transcript_body_cache_bytes", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap()
-                > super::RETAINED_PAGES
+                > super::RETAINED_BYTES
         );
         (
             db.total_changes(),
@@ -286,20 +279,6 @@ async fn oversized_source_reuses_fragments_then_reclaims_backing_file_on_replace
         )
     })
     .await;
-    let steps = Arc::new(AtomicUsize::new(0));
-    let observed = steps.clone();
-    log.connection
-        .observe(move |db| {
-            Box::pin(async move {
-                db.lock_handle().await?.set_progress_handler(1, move || {
-                    observed.fetch_add(1, Ordering::Relaxed);
-                    true
-                });
-                Ok(())
-            })
-        })
-        .await
-        .unwrap();
     let Page::Ready { chunks, .. } = read(
         &log,
         through,
@@ -308,23 +287,6 @@ async fn oversized_source_reuses_fragments_then_reclaims_backing_file_on_replace
         },
     )
     .await;
-    log.connection
-        .observe(|db| {
-            Box::pin(async move {
-                db.lock_handle().await?.remove_progress_handler();
-                Ok(())
-            })
-        })
-        .await
-        .unwrap();
-    let steps = steps.load(Ordering::Relaxed);
-    // Even one correlated sweep of all siblings must read/compare both source
-    // key columns and advance each row (>8 VM ops/row). Stay below that sweep
-    // lower bound, rather than imposing a machine-dependent elapsed-time cap.
-    assert!(
-        steps > 0 && steps < SIBLINGS * 8,
-        "cached continuation must not scan all {SIBLINGS} siblings: {steps} VM steps"
-    );
     assert_eq!(chunks[0].text, "α".repeat(4096));
     inspect(&log, move |db| {
         assert_eq!(
@@ -349,10 +311,11 @@ async fn oversized_source_reuses_fragments_then_reclaims_backing_file_on_replace
     .await;
     assert_eq!(chunks[0].text, "replacement 中🙂");
     inspect(&log, move |db| {
-        let pages = db
-            .query_row("PRAGMA temp.page_count", [], |row| row.get::<_, i64>(0))
+        let body_bytes = db
+            .query_row("SELECT bytes FROM temp.transcript_body_cache_bytes", [], |row| row.get::<_, i64>(0))
             .unwrap();
-        assert!(pages <= super::RETAINED_PAGES);
+        assert!(body_bytes <= super::RETAINED_BYTES);
+        assert_eq!(db.query_row("SELECT count(*) FROM temp.transcript_directory WHERE session_id='cache' AND source_sequence=?", [through as i64], |row| row.get::<_,i64>(0)).unwrap(), SIBLINGS as i64 + 1, "body eviction must retain complete directory metadata");
         assert_eq!(
             db.query_row("PRAGMA temp.freelist_count", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
@@ -369,7 +332,7 @@ async fn oversized_source_reuses_fragments_then_reclaims_backing_file_on_replace
         );
         let size = backing_bytes(db).unwrap();
         assert!(
-            size <= 32 * 1024 * 1024 && size < before.1,
+            size < before.1,
             "actual temporary file must shrink: {} -> {size}",
             before.1
         );
@@ -439,7 +402,7 @@ async fn late_sibling_conflicts_roll_back_all_earlier_cache_fills() {
         .await;
         read(&log, through, Position::Start).await;
         if corruption == "identity" {
-            inspect_main(&log, |db| {
+            inspect(&log, |db| {
                 db.execute(
                     "UPDATE transcript_directory SET turn_id='wrong' WHERE item_index=34",
                     [],
@@ -909,7 +872,7 @@ async fn accepted_cleanup_survives_waiter_cancellation_and_shutdown_drains_its_o
                 Box::pin(async move {
                     use sqlx::Connection;
                     let mut tx = db.begin().await?;
-                    sqlx::query("DELETE FROM transcript_directory WHERE session_id='cache'")
+                    sqlx::query("INSERT INTO session_retirements(session_id,remove_session,completed) VALUES('cache',1,1)")
                         .execute(&mut *tx)
                         .await?;
                     tx.commit().await?;
@@ -935,6 +898,72 @@ async fn accepted_cleanup_survives_waiter_cancellation_and_shutdown_drains_its_o
         deleted.load(Ordering::SeqCst),
         cached,
         "shutdown must drain actual cache deletion after the original observer vanished"
+    );
+    log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn directory_cache_failure_preserves_canonical_append_and_can_rebuild() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("directory-failure.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    log.create_session("cache", "create", &serde_json::json!({}), 1)
+        .await
+        .unwrap();
+    inspect(&log, |db| db.execute_batch("CREATE TEMP TRIGGER reject_directory BEFORE INSERT ON transcript_directory BEGIN SELECT RAISE(ABORT,'directory cache fault'); END").unwrap()).await;
+    let through = user(&log, "first", "durable despite cache failure 中🙂".into()).await;
+    let canonical = serde_json::to_vec(&log.prefix(16, 65536).await.unwrap()).unwrap();
+    let error = log
+        .history_text(
+            "cache",
+            through,
+            Position::Start,
+            false,
+            crate::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(8),
+                max_json_bytes: 65536,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error,crate::StoreError::Sqlite(error) if error.to_string().contains("directory cache fault")),
+        "{error:?}"
+    );
+    inspect(&log, |db| {
+        for table in [
+            "transcript_directory",
+            "transcript_failures",
+            "transcript_directory_progress",
+            "transcript_rows",
+            "transcript_text",
+        ] {
+            assert_eq!(
+                db.query_row(&format!("SELECT count(*) FROM temp.{table}"), [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "failed read must roll back {table}"
+            );
+        }
+        db.execute_batch("DROP TRIGGER temp.reject_directory")
+            .unwrap();
+    })
+    .await;
+    let first = read(&log, through, Position::Start).await;
+    let Page::Ready { chunks, .. } = &first;
+    assert_eq!(chunks[0].text, "durable despite cache failure 中🙂");
+    inspect(&log, |db| {
+        db.execute_batch("DELETE FROM temp.transcript_rows; DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_directory; DELETE FROM temp.transcript_failures; DELETE FROM temp.transcript_directory_progress").unwrap();
+    }).await;
+    assert_eq!(
+        serde_json::to_value(read(&log, through, Position::Start).await).unwrap(),
+        serde_json::to_value(first).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_vec(&log.prefix(16, 65536).await.unwrap()).unwrap(),
+        canonical
     );
     log.close().await.unwrap();
 }

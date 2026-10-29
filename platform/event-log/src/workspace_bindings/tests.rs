@@ -400,6 +400,7 @@ async fn capability_t1_rejects_an_old_binding_even_when_numeric_boundary_matches
     };
     assert!(matches!(
         log.append_capability_dispatch(
+            &[],
             &dispatch("old-dispatch"),
             std::slice::from_ref(&target),
             &old
@@ -438,11 +439,17 @@ async fn capability_t1_rejects_an_old_binding_even_when_numeric_boundary_matches
     .await
     .unwrap();
     assert!(matches!(
-        log.append_capability_dispatch(&dispatch("still-old"), std::slice::from_ref(&target), &old)
-            .await,
+        log.append_capability_dispatch(
+            &[],
+            &dispatch("still-old"),
+            std::slice::from_ref(&target),
+            &old
+        )
+        .await,
         Err(CommitError::PermissionRevoked)
     ));
     log.append_capability_dispatch(
+        &[],
         &dispatch("new-dispatch"),
         std::slice::from_ref(&target),
         &new,

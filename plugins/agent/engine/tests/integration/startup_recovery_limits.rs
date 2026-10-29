@@ -17,14 +17,13 @@
  * under the License.
  */
 
-use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
-use maka_agent_facts::model::ModelEvent;
+use maka_agent_facts::model::{ModelEvent, TextKind};
 use maka_event_log::recovery::recover_invocations as recover;
 use maka_event_log::{EventLog, StoreError};
 
 use crate::support::recovery;
-use recovery::{append, invocation, opening, request};
+use recovery::{invocation, opening};
 
 #[tokio::test]
 async fn recovery_excludes_large_stream_history_but_bounds_execution_authority() {
@@ -33,19 +32,29 @@ async fn recovery_excludes_large_stream_history_but_bounds_execution_authority()
     {
         let log = EventLog::open(&path).await.unwrap();
         opening(&log).await;
-        request(&log).await;
-        append(
-            &log,
-            Fact::ModelObserved {
-                step_id: "step".into(),
-                event: ModelEvent::PartDelta {
+        recovery::item_request(&log).await;
+        let mut writer = crate::support::model_records::writer(invocation(), "step", true);
+        let writes = crate::support::model_records::observations(
+            &mut writer,
+            [
+                ModelEvent::PartStarted {
+                    id: "part".into(),
+                    text_kind: TextKind::Text,
+                    provider_options: None,
+                },
+                ModelEvent::PartDelta {
                     id: "part".into(),
                     text: "x".repeat(8 * 1024 * 1024),
                     provider_options: None,
                 },
-            },
-        )
-        .await;
+                ModelEvent::PartFinished {
+                    id: "part".into(),
+                    provider_options: None,
+                },
+            ],
+        );
+        let sequences = log.append_batch(&writes).await.unwrap();
+        crate::support::model_records::receipts(&mut writer, &writes, &sequences);
         log.close().await.unwrap();
     }
     let log = EventLog::open(&path).await.unwrap();

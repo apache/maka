@@ -816,30 +816,14 @@ pub enum DeliveryFact {
         /// The model/executor completed; this says nothing about tool business success.
         completed: bool,
     },
-    PartStarted {
-        message_id: String,
+    PartCommitted {
         step_id: String,
-        part_id: String,
-        text_kind: ContentKind,
+        message_id: String,
+        ordinal: u64,
     },
     Delta {
         step_id: String,
         part_id: String,
-        text: String,
-    },
-    PartFinished {
-        step_id: String,
-        part_id: String,
-    },
-    /// Model input observations are display-only; they cannot authorize a tool effect.
-    ToolInputStarted {
-        tool_use_id: String,
-        step_id: String,
-        name: String,
-        provider_executed: bool,
-    },
-    ToolInputDelta {
-        tool_use_id: String,
         text: String,
     },
     /// Complete model input was observed, not authorization to execute it.
@@ -1038,6 +1022,9 @@ pub enum DeliveryPage {
         next_after: u64,
         events: Vec<Delivery>,
     },
+    Preview {
+        page: PreviewPage,
+    },
     Queue {
         queue: Queue,
     },
@@ -1046,6 +1033,66 @@ pub enum DeliveryPage {
     },
     ComputerApps {
         apps: ComputerApps,
+    },
+}
+
+/// Current display material, independent of the durable Events cursor.
+#[derive(Serialize, JsonSchema, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentPreviewPage")]
+pub enum PreviewPage {
+    Empty {
+        host_epoch: String,
+    },
+    Cut {
+        host_epoch: String,
+        invocation_id: String,
+        turn_id: String,
+        step_id: String,
+        revision: u64,
+        depends_on: u64,
+        first: bool,
+        last: bool,
+        parts: Vec<PreviewPart>,
+    },
+}
+
+#[derive(Serialize, JsonSchema, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentPreviewPart")]
+pub struct PreviewPart {
+    pub ordinal: Option<u64>,
+    pub message_id: String,
+    pub provider_part_id: Option<String>,
+    pub started_at: f64,
+    pub field: PreviewField,
+    /// UTF-8 byte offset into the body, independent of JavaScript string length.
+    pub offset: u64,
+    pub total_bytes: u64,
+    pub text: String,
+}
+
+#[derive(Serialize, JsonSchema, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentPreviewField")]
+pub enum PreviewField {
+    Text {
+        text_kind: ContentKind,
+    },
+    ToolInput {
+        tool_use_id: String,
+        name: String,
+        provider_executed: bool,
     },
 }
 
@@ -1178,6 +1225,8 @@ pub struct HistoryAttachment {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistoryChunk")]
 pub struct HistoryChunk {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_part: Option<maka_agent_ports::session::history::ModelPartIdentity>,
     /// Part of the successfully completed native Turn's final output at `through`.
     /// Includes all body parts and source citations; never a Thinking field.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

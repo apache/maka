@@ -3233,7 +3233,7 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("UNSENT_PREVIEW_DRAFT"));
         support::wait_draft(&client, &fixture.session, "UNSENT_PREVIEW_DRAFT").await;
         let composer = view.surface().focused().unwrap();
-        support::click_label(&mut view, "Browse workspace files");
+        support::click_button(&mut view, "Browse workspace files").await;
         wait_view(&mut view, |screen| screen.contains("000-preview.txt") && screen.contains("001-scene.data") && !screen.contains("Loading files…") && !screen.contains("Updating files…")).await;
         support::click_label(&mut view, "File: 000-preview.txt");
         let first = wait_view_state(&mut view, |view, screen| screen.contains("AFTER_CURRENT_EDIT") && screen.contains("Captured version") && !screen.contains("Reading current file…") && view.accessibility_snapshot().iter().any(|node| node.label == long_line && node.frame.size.height.0 > 16.0)).await;
@@ -4174,9 +4174,8 @@ async fn production_history_retry_and_live_reconnect_preserve_the_draft_receipt_
         terminal_client.save_draft("agent", &fixture.session, EDITOR, None, "RECOVERY_ORIGINAL_A".into()).await.unwrap();
         let binary = std::env::var_os("MAKA_TEST_CLI_BINARY").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_BIN_EXE_maka")));
         let mut terminal = support::pty::Pty::spawn(&binary, &fixture.directory.path().join("host"), Some(&fixture.session));
-        let failed = terminal.wait_for("Retry loading conversation").await;
-        assert!(failed.contains("History unavailable."));
-        assert!(failed.contains("History unavailable. Retrying automatically; your draft is kept."));
+        terminal.wait_for("Retry loading conversation").await;
+        terminal.wait_for("History unavailable. Retrying automatically; your draft is kept.").await;
         terminal.wait_for("RECOVERY_ORIGINAL_A").await;
         support::wait_draft(&terminal_client, &fixture.session, "RECOVERY_ORIGINAL_A").await;
         terminal.click_text("Retry loading conversation");

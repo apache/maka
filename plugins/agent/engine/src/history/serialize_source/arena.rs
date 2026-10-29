@@ -112,8 +112,7 @@ impl AsyncEmit for ArenaEmit {
             let mut remaining = bytes;
             while !remaining.is_empty() {
                 if self.cancellation.is_cancelled() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
+                    return Err(crate::preparation_cancelled(
                         "arena serialization cancelled",
                     ));
                 }

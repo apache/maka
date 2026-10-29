@@ -23,7 +23,7 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::ToolOutcome;
-use maka_agent_facts::model::ModelEvent;
+use maka_agent_facts::model::recorded::ModelObservation;
 use maka_agent_facts::tool_call::RejectionKind;
 use maka_agent_facts::tool_call::ToolRejection;
 use serde_json::{Value, json};
@@ -105,10 +105,6 @@ impl EventLog {
             // remain the material-collection authority; descendants were checked above.
             // Also covers imported owners that never had a local retirement.
             crate::context::semantic::gc::retire_owner(&mut tx,&session).await?;
-            for table in ["transcript_directory", "transcript_failures"] {
-                let sql = format!("DELETE FROM {table} WHERE session_id=?");
-                sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(&session).execute(&mut *tx).await?;
-            }
             let rows: Vec<(i64, String, String)> = sqlx::query_as(
                 "SELECT sequence,event_id,event_json FROM event_log WHERE event_session=?
                  AND event_json IS NOT NULL ORDER BY sequence LIMIT 8"
@@ -117,6 +113,8 @@ impl EventLog {
                 let event: RuntimeEvent = serde_json::from_str(&body)?;
                 let proof = retained(&event);
                 crate::context::semantic::gc::collect_event(&mut tx,crate::sequence_number(sequence)?).await?;
+                sqlx::query("DELETE FROM model_part_records WHERE source_sequence=?")
+                    .bind(sequence).execute(&mut *tx).await?;
                 sqlx::query("DELETE FROM tool_result_payloads WHERE event_id=?")
                     .bind(&id).execute(&mut *tx).await?;
                 let surface: Option<String> = sqlx::query_scalar(
@@ -160,6 +158,7 @@ fn retained(event: &RuntimeEvent) -> Value {
             status,
             diagnostic,
             model_failure,
+            ..
         } => {
             let mut material = json!({"step_id":step_id,"status":status});
             if let Some(diagnostic) = diagnostic {
@@ -172,7 +171,7 @@ fn retained(event: &RuntimeEvent) -> Value {
         }
         Fact::ModelObserved {
             step_id,
-            event: ModelEvent::Finished { usage, .. },
+            event: ModelObservation::Finished { usage, .. },
         } => json!({"step_id":step_id,"event":{"kind":"finished","data":{"usage":usage}}}),
         Fact::ToolDispatched { call, name, .. } => json!({"call":call,"name":name}),
         Fact::ToolRejected {

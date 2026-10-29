@@ -31,11 +31,9 @@ impl SourceBudget for Budget {
     }
 }
 fn json_source(value: &Value) -> JsonSource {
-    JsonSource {
-        bytes: SourceBytes::Inline(Bytes::from(
-            serde_json::to_vec(value).expect("fixture JSON"),
-        )),
-    }
+    JsonSource::new(SourceBytes::Inline(Bytes::from(
+        serde_json::to_vec(value).expect("fixture JSON"),
+    )))
 }
 async fn encode(tool: &'static str, value: &Value) -> (&'static str, Value) {
     encode_output(tool, ToolOutputRecipe::Json(json_source(value)), None).await
@@ -178,9 +176,7 @@ async fn numbers_round_like_serde_with_long_mantissas_and_exponents() {
         let actual = async {
             let (_, fragments) = hosted_result(
                 "code_execution",
-                ToolOutputRecipe::Json(JsonSource {
-                    bytes: SourceBytes::Inline(Bytes::from(raw)),
-                }),
+                ToolOutputRecipe::Json(JsonSource::new(SourceBytes::Inline(Bytes::from(raw)))),
                 None,
                 Arc::new(Budget),
             )

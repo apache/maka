@@ -46,7 +46,8 @@ async fn settle(engine: &Engine, root: &maka_event_log::root_store::RootStore, s
         run_id: "run".into(),
         invocation_id: "invocation".into(),
     };
-    let completed = engine
+    let context = RunContext::new(engine.0.clone(), execution.store(), &invocation).unwrap();
+    let completed = context
         .start_owned(
             execution,
             invocation.clone(),
@@ -237,9 +238,16 @@ async fn selected_stores_keep_one_active_admission_after_observer_drop() {
     let a = crate::test_support::session(&root, "a").await;
     let b = crate::test_support::session(&root, "b").await;
     let (release, wait) = tokio::sync::oneshot::channel();
-    let first = engine
+    let first_execution = a.execution_scope(None).await.unwrap();
+    let first_context = RunContext::new(
+        engine.0.clone(),
+        first_execution.store(),
+        &invocation("a", "first"),
+    )
+    .unwrap();
+    let first = first_context
         .start_owned(
-            a.execution_scope(None).await.unwrap(),
+            first_execution,
             invocation("a", "first"),
             Arc::default(),
             None,
@@ -253,11 +261,17 @@ async fn selected_stores_keep_one_active_admission_after_observer_drop() {
         .await
         .unwrap();
     drop(first);
+    let collision_execution = a.execution_scope(None).await.unwrap();
+    let collision_context = RunContext::new(
+        engine.0.clone(),
+        collision_execution.store(),
+        &invocation("a", "collision"),
+    )
+    .unwrap();
     assert!(matches!(
-        engine
-            .clone()
+        collision_context
             .start_owned(
-                a.execution_scope(None).await.unwrap(),
+                collision_execution,
                 invocation("a", "collision"),
                 Arc::default(),
                 None,
@@ -267,9 +281,16 @@ async fn selected_stores_keep_one_active_admission_after_observer_drop() {
             .await,
         Err(RunError::Busy)
     ));
-    let other = engine
+    let other_execution = b.execution_scope(None).await.unwrap();
+    let other_context = RunContext::new(
+        engine.0.clone(),
+        other_execution.store(),
+        &invocation("b", "parallel"),
+    )
+    .unwrap();
+    let other = other_context
         .start_owned(
-            b.execution_scope(None).await.unwrap(),
+            other_execution,
             invocation("b", "parallel"),
             Arc::default(),
             None,
@@ -314,9 +335,16 @@ async fn unconfirmed_worker_cleanup_keeps_original_root_authority_after_completi
             CodeExecutor::new(CellLimits::default()).unwrap(),
         )
         .unwrap();
-        let completion = engine
+        let execution = store.execution_scope(None).await.unwrap();
+        let context = RunContext::new(
+            engine.0.clone(),
+            execution.store(),
+            &invocation("failed", "run"),
+        )
+        .unwrap();
+        let completion = context
             .start_owned(
-                store.execution_scope(None).await.unwrap(),
+                execution,
                 invocation("failed", "run"),
                 Arc::default(),
                 None,
@@ -366,7 +394,13 @@ async fn worker_completion_retains_admission_until_invocation_effect_settles() {
             let selected = execution.store();
             let effect_root = root.clone();
             let (send_effect, effect) = tokio::sync::oneshot::channel();
-            let running = engine
+            let context = RunContext::new(
+                engine.0.clone(),
+                execution.store(),
+                &invocation("effect", "run"),
+            )
+            .unwrap();
+            let running = context
                 .start_owned(
                     execution,
                     invocation("effect", "run"),
@@ -391,10 +425,17 @@ async fn worker_completion_retains_admission_until_invocation_effect_settles() {
             let effect = effect.await.unwrap();
             let mut completion = Box::pin(running.completion());
             assert!(futures_util::poll!(completion.as_mut()).is_pending());
+            let collision_execution = store.execution_scope(None).await.unwrap();
+            let collision_context = RunContext::new(
+                engine.0.clone(),
+                collision_execution.store(),
+                &invocation("effect", "collision"),
+            )
+            .unwrap();
             assert!(matches!(
-                engine
+                collision_context
                     .start_owned(
-                        store.execution_scope(None).await.unwrap(),
+                        collision_execution,
                         invocation("effect", "collision"),
                         Arc::default(),
                         None,
@@ -443,7 +484,13 @@ async fn worker_panic_cancels_and_drains_its_original_invocation_effect() {
         let selected = execution.store();
         let effect_root = root.clone();
         let (send_effect, effect) = tokio::sync::oneshot::channel();
-        let running = engine
+        let context = RunContext::new(
+            engine.0.clone(),
+            execution.store(),
+            &invocation("panicking-effect", "run"),
+        )
+        .unwrap();
+        let running = context
             .start_owned(
                 execution,
                 invocation("panicking-effect", "run"),

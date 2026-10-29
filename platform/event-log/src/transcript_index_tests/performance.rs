@@ -19,7 +19,7 @@
 
 //! Opt-in release probe for many model steps inside one physical invocation.
 use super::*;
-use maka_agent_facts::model::{ModelFinishReason, assembly::StepBuilder};
+use maka_agent_facts::model::ModelFinishReason;
 use serde_json::json;
 use std::time::Instant;
 
@@ -49,42 +49,32 @@ async fn one_invocation_transcript() {
             let step_id = step_id.clone();
             let mut writes = vec![event("a", request)];
             let text = format!("one-invocation-step-{step}. ");
-            let mut observations = vec![ModelEvent::PartStarted {
-                id: "text".into(),
-                text_kind: TextKind::Text,
-                provider_options: None,
-            }];
-            observations.extend((0..13).map(|_| ModelEvent::PartDelta {
-                id: "text".into(),
-                text: text.clone(),
-                provider_options: None,
-            }));
-            observations.push(ModelEvent::PartFinished {
-                id: "text".into(),
-                provider_options: None,
-            });
-            observations.push(ModelEvent::Finished {
-                reason: ModelFinishReason::Stop,
-                usage: ModelUsage::default(),
-                provider_options: None,
-            });
-            let mut builder = StepBuilder::for_step(&step_id).unwrap();
-            for observation in observations {
-                builder.push(observation.clone()).unwrap();
-                writes.push(event("a", observe(&name, observation)));
-            }
             writes.push(event(
                 "a",
                 Fact::ModelCompleted {
-                    step_id,
-                    output: builder.finish().unwrap(),
+                    step_id: step_id.clone(),
+                    output: ModelCompletion {
+                        parts: completion_parts(
+                            step_id,
+                            vec![ModelPart::Text {
+                                text_kind: TextKind::Text,
+                                text: text.repeat(13).into(),
+                                provider_options: None,
+                            }],
+                        ),
+                        finish_reason: ModelFinishReason::Stop,
+                        usage: ModelUsage::default(),
+                        provider_options: None,
+                        response_id: None,
+                        model: None,
+                        timestamp: None,
+                    },
                 },
             ));
-            assert_eq!(writes.len(), 18);
             log.append_batch(&writes).await.unwrap();
         }
         let through = end(&log, "a", InvocationOutcome::Completed).await;
-        assert_eq!(through, (steps * 18 + 2) as u64);
+        assert_eq!(through, (steps * 2 + 2) as u64);
         log.close().await.unwrap();
         for repetition in 0..repetitions {
             let sample = tempfile::tempdir().unwrap();

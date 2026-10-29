@@ -76,10 +76,10 @@ impl JsonValue {
         if self.kind != JsonKind::String {
             return Err(invalid("JSON value is not a string"));
         }
-        Ok(TextSource {
-            bytes: self.source.bytes.clone(),
-            encoding: TextEncoding::JsonString,
-        })
+        Ok(TextSource::new(
+            self.source.bytes.clone(),
+            TextEncoding::JsonString,
+        ))
     }
 }
 #[derive(Clone, Debug)]
@@ -284,9 +284,7 @@ impl Reader {
         if start > end || end > self.position {
             return Err(invalid("JSON source range is invalid"));
         }
-        Ok(JsonSource {
-            bytes: self.source.slice(start..end)?,
-        })
+        Ok(JsonSource::new(self.source.slice(start..end)?))
     }
     async fn hex(&mut self) -> io::Result<u16> {
         let mut value = 0u16;
@@ -366,8 +364,13 @@ impl Reader {
             .expect("a decoded UTF-8 scalar is nonempty"))
     }
     async fn string(&mut self) -> io::Result<()> {
+        self.string_with(|_| {}).await
+    }
+    async fn string_with(&mut self, mut character: impl FnMut(char)) -> io::Result<()> {
         self.expect(b'"').await?;
-        while self.string_char().await?.is_some() {}
+        while let Some(value) = self.string_char().await? {
+            character(value);
+        }
         Ok(())
     }
     async fn number_take(
@@ -655,6 +658,7 @@ pub struct ObjectCursor {
     reader: Reader,
     first: bool,
     done: bool,
+    matches: Option<ChargedBuffer>,
 }
 impl ObjectCursor {
     pub async fn open(source: JsonSource, budget: Arc<dyn SourceBudget>) -> io::Result<Self> {
@@ -665,30 +669,99 @@ impl ObjectCursor {
             reader,
             first: true,
             done: false,
+            matches: None,
         })
     }
     pub async fn next(&mut self) -> io::Result<Option<JsonField>> {
         let Some(spans) = self.next_spans().await? else {
             return Ok(None);
         };
-        let key = TextSource {
-            bytes: self
-                .reader
-                .range(spans.key_range.start, spans.key_range.end)?
-                .bytes,
-            encoding: TextEncoding::JsonString,
-        };
-        let value = JsonValue {
-            source: self
-                .reader
-                .range(spans.value_range.start, spans.value_range.end)?,
-            kind: spans.kind,
-        };
-        Ok(Some(JsonField { key, value }))
+        Ok(Some(self.field(spans)?))
     }
     /// A fixed-record directory can retain spans without allocating one source
     /// adapter per field. Its existing input source remains the read authority.
     pub async fn next_spans(&mut self) -> io::Result<Option<JsonFieldSpans>> {
+        self.next_spans_with_key(|_| {}).await
+    }
+    /// Scan one original field and match its decoded key against finite schema
+    /// names. The first matching name's index accompanies the unchanged spans.
+    pub async fn next_named_spans<'a>(
+        &mut self,
+        names: impl Iterator<Item = &'a str> + Clone,
+    ) -> io::Result<Option<(JsonFieldSpans, Option<usize>)>> {
+        let count = names.clone().count();
+        if count == 0 {
+            return Ok(self.next_spans().await?.map(|spans| (spans, None)));
+        }
+        let mut matches = match self.matches.take() {
+            Some(buffer) if buffer.as_ref().len() >= count => buffer,
+            _ => self.reader.budget.allocate(count).await?,
+        };
+        if matches.as_ref().len() < count {
+            return Err(invalid("JSON field selector allocation is too small"));
+        }
+        matches.as_mut()[..count].fill(1);
+        let mut key_bytes = 0u64;
+        let mut candidates = count;
+        let spans = self
+            .next_spans_with_key(|character| {
+                if candidates == 0 {
+                    return;
+                }
+                let mut bytes = [0; 4];
+                let encoded = character.encode_utf8(&mut bytes).as_bytes();
+                for (matched, name) in matches.as_mut().iter_mut().zip(names.clone()) {
+                    if *matched != 0 {
+                        *matched = u8::from(
+                            usize::try_from(key_bytes)
+                                .ok()
+                                .and_then(|at| name.as_bytes().get(at..))
+                                .is_some_and(|rest| rest.starts_with(encoded)),
+                        );
+                        if *matched == 0 {
+                            candidates -= 1;
+                        }
+                    }
+                }
+                key_bytes += encoded.len() as u64;
+            })
+            .await?;
+        let selected = names.enumerate().find_map(|(index, name)| {
+            (matches.as_ref()[index] != 0 && key_bytes == name.len() as u64).then_some(index)
+        });
+        self.matches = Some(matches);
+        Ok(spans.map(|spans| (spans, selected)))
+    }
+    /// Match schema names while retaining the original key and value sources.
+    pub async fn next_named<'a>(
+        &mut self,
+        names: impl Iterator<Item = &'a str> + Clone,
+    ) -> io::Result<Option<(JsonField, Option<usize>)>> {
+        let Some((spans, selected)) = self.next_named_spans(names).await? else {
+            return Ok(None);
+        };
+        Ok(Some((self.field(spans)?, selected)))
+    }
+    fn field(&self, spans: JsonFieldSpans) -> io::Result<JsonField> {
+        Ok(JsonField {
+            key: TextSource::new(
+                self.reader
+                    .range(spans.key_range.start, spans.key_range.end)?
+                    .bytes,
+                TextEncoding::JsonString,
+            ),
+            value: JsonValue {
+                source: self
+                    .reader
+                    .range(spans.value_range.start, spans.value_range.end)?,
+                kind: spans.kind,
+            },
+        })
+    }
+    async fn next_spans_with_key(
+        &mut self,
+        character: impl FnMut(char),
+    ) -> io::Result<Option<JsonFieldSpans>> {
         if self.done {
             return Ok(None);
         }
@@ -705,7 +778,7 @@ impl ObjectCursor {
         }
         self.first = false;
         let key_start = self.reader.position;
-        self.reader.string().await?;
+        self.reader.string_with(character).await?;
         let key_end = self.reader.position;
         self.reader.whitespace().await?;
         self.reader.expect(b':').await?;
@@ -778,11 +851,17 @@ pub async fn fields(
     budget: Arc<dyn SourceBudget>,
 ) -> io::Result<Vec<Option<JsonValue>>> {
     let mut output = vec![None; names.len()];
-    let mut cursor = ObjectCursor::open(source.clone(), budget.clone()).await?;
-    while let Some(field) = cursor.next().await? {
-        for (index, name) in names.iter().enumerate() {
-            if text_eq(&field.key, name, budget.clone()).await? {
-                output[index] = Some(field.value.clone());
+    let mut cursor = ObjectCursor::open(source.clone(), budget).await?;
+    while let Some((field, selected)) = cursor.next_named_spans(names.iter().copied()).await? {
+        let value = JsonValue {
+            source: source.slice(field.value_range)?,
+            kind: field.kind,
+        };
+        if let Some(selected) = selected {
+            for (slot, name) in output.iter_mut().zip(names) {
+                if *name == names[selected] {
+                    *slot = Some(value.clone());
+                }
             }
         }
     }

@@ -23,9 +23,6 @@ use maka_agent_facts::model::prompt_source::source::{
 };
 use std::{io, ops::Range, sync::Arc};
 
-pub(super) fn span_metadata_bytes() -> usize {
-    std::mem::size_of::<Joined>() + 2 * std::mem::size_of::<usize>()
-}
 pub(super) fn metadata_bytes(parts: usize) -> io::Result<usize> {
     let arrays = parts
         .checked_mul(std::mem::size_of::<SourceBytes>())

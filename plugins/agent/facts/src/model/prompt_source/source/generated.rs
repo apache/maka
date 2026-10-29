@@ -26,17 +26,15 @@ use crate::model::{
 use sha2::{Digest, Sha256};
 
 pub fn text(value: impl Into<String>) -> TextSource {
-    TextSource {
-        bytes: SourceBytes::Inline(Bytes::from(value.into())),
-        encoding: TextEncoding::Utf8,
-    }
+    TextSource::new(
+        SourceBytes::Inline(Bytes::from(value.into())),
+        TextEncoding::Utf8,
+    )
 }
 pub fn json(value: &serde_json::Value) -> JsonSource {
-    JsonSource {
-        bytes: SourceBytes::Inline(Bytes::from(
-            serde_json::to_vec(value).expect("generated JSON serialization"),
-        )),
-    }
+    JsonSource::new(SourceBytes::Inline(Bytes::from(
+        serde_json::to_vec(value).expect("generated JSON serialization"),
+    )))
 }
 fn options(value: &Option<serde_json::Value>) -> Option<JsonSource> {
     value.as_ref().map(json)
@@ -429,6 +427,7 @@ mod tests {
                 value:
                     JsonSource {
                         bytes: SourceBytes::Inline(parsed),
+                        ..
                     },
                 ..
             }) = recipe.parsed_error
@@ -463,12 +462,14 @@ mod tests {
         let parsed = recipe.parsed_error.expect("generated error hint");
         let JsonSource {
             bytes: SourceBytes::Inline(value),
+            ..
         } = parsed.value
         else {
             panic!("generated value is not inline");
         };
         let JsonSource {
             bytes: SourceBytes::Inline(code_value),
+            ..
         } = parsed.code_value
         else {
             panic!("generated code value is not inline");

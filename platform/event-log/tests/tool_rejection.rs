@@ -23,7 +23,10 @@ use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::ToolOutcome;
-use maka_agent_facts::model::{ModelEvent, ModelToolCall, ToolInput};
+use maka_agent_facts::model::{
+    ModelPart, ModelToolCall, ToolInput,
+    recorded::{ModelObservation, ModelPartRecord},
+};
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_call::ToolOrigin;
 use maka_agent_facts::tool_call::ToolRejection;
@@ -73,12 +76,20 @@ async fn malformed_accepted_call_cannot_dispatch_and_recovers_exactly_once() {
         }),
         write(Fact::ModelObserved {
             step_id: "step".into(),
-            event: ModelEvent::ToolCall(ModelToolCall {
-                id: "call".into(),
-                name: "read".into(),
-                input: input.clone(),
-                provider_options: None,
-                provider_executed: false,
+            event: ModelObservation::Part(ModelPartRecord {
+                ordinal: 0,
+                message_id: maka_agent_facts::tool_call::tool_use_id("invocation", "step:call"),
+                started_at: std::time::SystemTime::now(),
+                provider_part_id: None,
+                part: std::sync::Arc::new(ModelPart::ToolCall {
+                    call: ModelToolCall {
+                        id: "call".into(),
+                        name: "read".into(),
+                        input: input.clone(),
+                        provider_options: None,
+                        provider_executed: false,
+                    },
+                }),
             }),
         }),
     ])

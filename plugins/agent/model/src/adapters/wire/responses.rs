@@ -40,10 +40,10 @@ fn text(value: TextSource) -> Vec<F> {
     source::quoted(value)
 }
 fn generated(value: &'static str) -> TextSource {
-    TextSource {
-        bytes: SourceBytes::Inline(Bytes::from_static(value.as_bytes())),
-        encoding: TextEncoding::Utf8,
-    }
+    TextSource::new(
+        SourceBytes::Inline(Bytes::from_static(value.as_bytes())),
+        TextEncoding::Utf8,
+    )
 }
 fn item(fragments: Vec<F>) -> SourceItem {
     SourceItem {
@@ -319,14 +319,16 @@ async fn encode_message(
                                     .await?
                                     .filter(|value| value.kind == recipe::json::JsonKind::Array)
                             {
-                                let mut fields = vec![("type", text(generated("reasoning")))];
+                                let mut fields = vec![
+                                    ("type", text(generated("reasoning"))),
+                                    ("summary", vec![F::Raw(summary.source)]),
+                                ];
                                 if let Some(id) =
                                     string_field(&provider_options, &[namespace, "itemId"], &budget)
                                         .await?
                                 {
                                     fields.push(("id", vec![F::Raw(id.source)]));
                                 }
-                                fields.push(("summary", vec![F::Raw(summary.source)]));
                                 items.push(item(object(fields, &budget).await?));
                             }
                         } else if let Some(replay) =
@@ -350,15 +352,17 @@ async fn encode_message(
                         )
                         .await?
                         {
-                            let mut fields = vec![("type", text(generated("reasoning")))];
+                            let mut fields = vec![
+                                ("type", text(generated("reasoning"))),
+                                ("summary", vec![literal(b"[]")]),
+                                ("encrypted_content", vec![F::Raw(encrypted.source)]),
+                            ];
                             if let Some(id) =
                                 string_field(&provider_options, &[namespace, "itemId"], &budget)
                                     .await?
                             {
                                 fields.push(("id", vec![F::Raw(id.source)]));
                             }
-                            fields.push(("summary", vec![literal(b"[]")]));
-                            fields.push(("encrypted_content", vec![F::Raw(encrypted.source)]));
                             items.push(item(object(fields, &budget).await?));
                         } else if store
                             && let Some(id) =
@@ -898,6 +902,13 @@ mod tests {
                         provider_options: Some(
                             json!({"openai":{"itemId":"reason","reasoningEncryptedContent":"opaque\\\"","responsesReplay":{"version":1,"fields":{"type":"reasoning","id":"reason"},"textField":"summary","parts":[{"bytes":10,"key":"text","fields":{"type":"summary_text"}}],"encrypted":true}},"openResponses":{"itemId":"reason","reasoningSummary":[{"type":"summary_text","text":"Check 🙂"}]}}),
                         ),
+                    },
+                    AssistantPart::Reasoning {
+                        text: "Reasoning without replay metadata".into(),
+                        provider_options: Some(json!({"openai":{
+                            "itemId":"reason-without-replay",
+                            "reasoningEncryptedContent":"opaque-without-replay"
+                        }})),
                     },
                     AssistantPart::ToolCall {
                         tool_call_id: "function-id".into(),

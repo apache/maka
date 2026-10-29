@@ -104,12 +104,63 @@ pub struct SourceRead {
 }
 pub type ReadSource<'a> = Pin<Box<dyn Future<Output = io::Result<SourceRead>> + Send + 'a>>;
 
+/// Identity of one captured source domain or one request arena, never storage authority.
+#[derive(Debug)]
+pub struct SourceIdentity;
+
+/// Existing immutable backing descriptors. Only their original captured owner resolves them.
+#[derive(Clone, Debug)]
+pub enum SourceBacking {
+    Row {
+        rowid: i64,
+        bytes: u64,
+    },
+    Canonical {
+        key: crate::history::RowPosition,
+        offset: u64,
+        bytes: u64,
+    },
+    Pieces {
+        key: crate::history::RowPosition,
+        bytes: u64,
+    },
+    Artifact {
+        rowid: i64,
+        bytes: u64,
+        digest: [u8; 32],
+    },
+    ArtifactMetadata {
+        rowid: i64,
+        bytes: u64,
+        payload_bytes: u64,
+        digest: [u8; 32],
+    },
+}
+/// A compact original range, or a range already materialized in its request arena.
+#[derive(Clone, Debug)]
+pub enum SourceLocator {
+    Captured {
+        identity: Arc<SourceIdentity>,
+        backing: SourceBacking,
+        range: Range<u64>,
+    },
+    Arena {
+        identity: Arc<SourceIdentity>,
+        range: Range<u64>,
+    },
+}
+
 /// A single immutable byte stream; its implementation retains the original read authority.
 ///
 /// Database handles cannot escape into this object. Each read returns after its
 /// bounded worker operation and transaction have settled. Multiple fragment JSON
 /// envelopes must be decoded by their adapter, never concatenated as UTF-8 text.
 pub trait ByteSource: Send + Sync {
+    /// Describe exactly the bytes read by this view, including its slice range.
+    /// Generated, decoded or joined streams have no single original representation.
+    fn locator(&self) -> Option<SourceLocator> {
+        None
+    }
     /// Encoded stream length, when already known without scanning the source.
     fn len(&self) -> Option<u64>;
     fn is_empty(&self) -> bool {
@@ -233,21 +284,99 @@ pub enum TextEncoding {
     Utf8,
     JsonString,
 }
+/// Commitment to the decoded UTF-8 sequence of one whole text value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DecodedTextMeasure {
+    pub bytes: u64,
+    pub sha256: [u8; 32],
+}
+/// Commitment to the exact encoded bytes of one whole JSON value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RawJsonMeasure {
+    pub bytes: u64,
+    pub sha256: [u8; 32],
+}
 /// `JsonString` includes both quotes; `Utf8` is decoded text.
 #[derive(Clone, Debug)]
 pub struct TextSource {
-    pub bytes: SourceBytes,
-    pub encoding: TextEncoding,
+    bytes: SourceBytes,
+    encoding: TextEncoding,
+    measure: Option<DecodedTextMeasure>,
+}
+impl TextSource {
+    pub fn new(bytes: SourceBytes, encoding: TextEncoding) -> Self {
+        Self {
+            bytes,
+            encoding,
+            measure: None,
+        }
+    }
+    /// The caller guarantees that the measure describes this complete decoded value.
+    pub fn measured(
+        bytes: SourceBytes,
+        encoding: TextEncoding,
+        measure: DecodedTextMeasure,
+    ) -> Self {
+        Self {
+            bytes,
+            encoding,
+            measure: Some(measure),
+        }
+    }
+    pub fn bytes(&self) -> &SourceBytes {
+        &self.bytes
+    }
+    pub fn encoding(&self) -> TextEncoding {
+        self.encoding
+    }
+    pub fn measure(&self) -> Option<DecodedTextMeasure> {
+        self.measure
+    }
+    pub fn into_bytes(self) -> SourceBytes {
+        self.bytes
+    }
+    pub fn into_parts(self) -> (SourceBytes, TextEncoding) {
+        (self.bytes, self.encoding)
+    }
 }
 /// One already-validated JSON value, preserving its insertion order.
 #[derive(Clone, Debug)]
 pub struct JsonSource {
-    pub bytes: SourceBytes,
+    bytes: SourceBytes,
+    measure: Option<RawJsonMeasure>,
 }
 impl JsonSource {
+    pub fn new(bytes: SourceBytes) -> Self {
+        Self {
+            bytes,
+            measure: None,
+        }
+    }
+    /// The caller guarantees that the measure describes these exact complete JSON bytes.
+    pub fn measured(bytes: SourceBytes, measure: RawJsonMeasure) -> Self {
+        Self {
+            bytes,
+            measure: Some(measure),
+        }
+    }
+    pub fn bytes(&self) -> &SourceBytes {
+        &self.bytes
+    }
+    pub fn measure(&self) -> Option<RawJsonMeasure> {
+        self.measure
+    }
+    pub fn into_bytes(self) -> SourceBytes {
+        self.bytes
+    }
     pub fn slice(&self, range: Range<u64>) -> io::Result<Self> {
+        let measure = if range.start == 0 && self.bytes.len() == Some(range.end) {
+            self.measure
+        } else {
+            None
+        };
         Ok(Self {
             bytes: self.bytes.slice(range)?,
+            measure,
         })
     }
 }
@@ -412,6 +541,44 @@ pub trait MessageSource: RecipeSource<MessageRecipe> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Budget;
+    impl SourceBudget for Budget {
+        fn allocate(&self, minimum: usize) -> Allocate<'_> {
+            Box::pin(async move { Ok(ChargedBuffer::new(vec![0; minimum], ())) })
+        }
+    }
+    #[test]
+    fn changed_values_drop_whole_leaf_measurements() {
+        let json = JsonSource::measured(
+            SourceBytes::Inline(Bytes::from_static(b"[1,2]")),
+            RawJsonMeasure {
+                bytes: 5,
+                sha256: [1; 32],
+            },
+        );
+        assert_eq!(json.slice(0..5).unwrap().measure(), json.measure());
+        assert_eq!(json.slice(1..2).unwrap().measure(), None);
+        let text = TextSource::measured(
+            SourceBytes::Inline(Bytes::from_static(b"<a>")),
+            TextEncoding::Utf8,
+            DecodedTextMeasure {
+                bytes: 3,
+                sha256: [2; 32],
+            },
+        );
+        let budget: Arc<dyn SourceBudget> = Arc::new(Budget);
+        assert_eq!(text::html(text.clone(), budget.clone()).measure(), None);
+        assert_eq!(
+            text::quote_label(text.clone(), budget.clone()).measure(),
+            None
+        );
+        assert_eq!(
+            text::json_string(text.clone(), budget.clone()).measure(),
+            None
+        );
+        let parts = Arc::new(generated::GeneratedRecipes::new(vec![text]));
+        assert_eq!(text::concat(parts, budget).measure(), None);
+    }
     struct Charge(Arc<AtomicUsize>);
     impl Drop for Charge {
         fn drop(&mut self) {

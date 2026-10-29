@@ -31,7 +31,7 @@ use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelStep;
+use maka_agent_facts::model::recorded::ModelCompletion;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_output::ToolSuccess;
 use maka_event_log::{
@@ -71,10 +71,28 @@ async fn retirement_fences_new_effects_without_rejecting_accepted_results_or_exa
         .await
         .unwrap();
     assert_eq!(log.append(&accepted).await.unwrap(), sequence);
-    let output = serde_json::from_value(json!({
-        "parts":[{"kind":"tool_call","call":{"id":"call","name":"Read","input":{"kind":"json","data":{"path":"file"}},"provider_executed":false}}],
-        "finish_reason":"tool-calls","usage":{}
-    })).unwrap();
+    let output = ModelCompletion {
+        parts: vec![model_part(
+            "run",
+            "step",
+            0,
+            maka_agent_facts::model::ModelPart::ToolCall {
+                call: maka_agent_facts::model::ModelToolCall {
+                    id: "call".into(),
+                    name: "Read".into(),
+                    input: json!({"path":"file"}).into(),
+                    provider_executed: false,
+                    provider_options: None,
+                },
+            },
+        )],
+        finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
+        usage: Default::default(),
+        provider_options: None,
+        response_id: None,
+        model: None,
+        timestamp: None,
+    };
     log.append(&event(
         "run",
         Fact::ModelCompleted {
@@ -775,7 +793,7 @@ async fn inherited_results_prune_and_compact_without_changing_siblings_or_frozen
     )))
     .await
     .unwrap();
-    let output: ModelStep = serde_json::from_value(json!({"parts":[{"kind":"text","text_kind":"text","text":SUMMARY}],"finish_reason":"stop","usage":{}})).unwrap();
+    let output = summary_completion("branch-compact", "summary", SUMMARY);
     log.append(&in_branch(event(
         "branch-compact",
         Fact::ModelCompleted {
@@ -793,7 +811,16 @@ async fn inherited_results_prune_and_compact_without_changing_siblings_or_frozen
                 covered_through: source.source_evidence.high_water,
                 source_digest: source.source_evidence.digest,
                 previous_checkpoint_id: None,
-                summary: TextSummary::from_model_step(&output).unwrap(),
+                summary: TextSummary::from_parts(
+                    output.finish_reason,
+                    output.parts.iter().filter_map(|part| match part {
+                        maka_agent_facts::model::recorded::CompletionPart::Own(record) => {
+                            Some(record.part.as_ref())
+                        }
+                        _ => None,
+                    }),
+                )
+                .unwrap(),
                 summary_step_id: "summary".into(),
             },
         },

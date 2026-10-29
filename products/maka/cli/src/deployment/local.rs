@@ -745,17 +745,9 @@ mod tests {
             let mut input = loaded.source().input.clone();
             input.instances.get_mut("settings").unwrap().package =
                 previous.application_ref().into();
-            let packages = loaded
-                .packages()
-                .iter()
-                .map(|package| {
-                    if package.application_ref() == settings.application_ref() {
-                        previous.clone()
-                    } else {
-                        package.clone()
-                    }
-                })
-                .collect();
+            // The settings UI still selects the current package revision.
+            let mut packages = loaded.packages().to_vec();
+            packages.push(previous);
             store
                 .commit_application(
                     record.deployment,
@@ -799,7 +791,6 @@ mod tests {
         }
         if let Some(desired) = desired {
             let mut input = loaded.source().input.clone();
-            let mut packages = loaded.packages().to_vec();
             match desired {
                 DesiredRevision::CurrentPackages => {
                     let mut reference = loaded.source().reference.clone();
@@ -813,11 +804,9 @@ mod tests {
                         .packages()
                         .iter()
                         .find(|package| package.application_ref().id == "maka.agent.settings")
-                        .unwrap()
-                        .clone();
+                        .unwrap();
                     input.instances.get_mut("settings").unwrap().package =
                         settings.application_ref().into();
-                    packages.push(settings);
                 }
                 DesiredRevision::ConfigurationOnly => {
                     input
@@ -835,7 +824,7 @@ mod tests {
                     loaded.source().reference.revision,
                     input,
                     vec![],
-                    packages,
+                    loaded.packages().to_vec(),
                 )
                 .await
                 .unwrap();

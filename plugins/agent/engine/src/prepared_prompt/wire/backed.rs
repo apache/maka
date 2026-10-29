@@ -691,13 +691,13 @@ impl Directory {
     async fn text(&self, offset: u64) -> Result<IdentifiedText, ModelError> {
         let record = read_record(&self.custody, offset).await?;
         Ok(IdentifiedText {
-            text: TextSource {
-                bytes: SourceBytes::Source(Arc::new(OwnedSource {
+            text: TextSource::new(
+                SourceBytes::Source(Arc::new(OwnedSource {
                     source: self.custody.arena.pending(record[0]..record[1]),
                     custody: self.custody.clone(),
                 })),
-                encoding: TextEncoding::Utf8,
-            },
+                TextEncoding::Utf8,
+            ),
             identity: digest_bytes(&record[2..6]),
         })
     }

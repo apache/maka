@@ -240,6 +240,7 @@ impl Cells {
                     "code_cell".into(),
                     // Source is already authoritative in the linked exec T1.
                     Value::Null,
+                    None,
                     token.clone(),
                     move |cancellation| {
                         Box::pin(async move {

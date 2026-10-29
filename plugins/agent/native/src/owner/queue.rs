@@ -240,6 +240,7 @@ impl Owner {
         runs.controls.insert(
             running.invocation().session_id.clone(),
             Control {
+                preview: running.preview(),
                 compacting: false,
                 invocation: running.invocation().clone(),
                 basis,

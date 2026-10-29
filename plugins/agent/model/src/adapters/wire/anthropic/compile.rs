@@ -62,10 +62,10 @@ fn invalid(message: &'static str) -> ModelError {
     ModelError::Adapter(message.into())
 }
 fn static_text(value: &'static str) -> TextSource {
-    TextSource {
-        bytes: SourceBytes::Inline(Bytes::from_static(value.as_bytes())),
-        encoding: TextEncoding::Utf8,
-    }
+    TextSource::new(
+        SourceBytes::Inline(Bytes::from_static(value.as_bytes())),
+        TextEncoding::Utf8,
+    )
 }
 fn literal(value: &'static [u8]) -> SourceFragment {
     SourceFragment::literal(value)
@@ -183,11 +183,11 @@ impl Compiler {
                 });
                 empty = !text_block && changes_count == 0;
                 let changes = match changes {
-                    Some(source) => Some(
+                    Some(source) => Some(Box::new(
                         json::ArrayCursor::open(source, budget.clone())
                             .await
                             .map_err(failure)?,
-                    ),
+                    )),
                     None => None,
                 };
                 MessageState::System {
@@ -256,10 +256,7 @@ impl Compiler {
                 let bytes = to.as_bytes().to_vec();
                 let capacity = bytes.capacity();
                 return Ok((
-                    TextSource {
-                        bytes: SourceBytes::Inline(Bytes::from(bytes)),
-                        encoding: TextEncoding::Utf8,
-                    },
+                    TextSource::new(SourceBytes::Inline(Bytes::from(bytes)), TextEncoding::Utf8),
                     capacity,
                 ));
             }
@@ -270,7 +267,7 @@ impl Compiler {
 enum MessageState {
     System {
         content: Option<TextSource>,
-        changes: Option<json::ArrayCursor>,
+        changes: Option<Box<json::ArrayCursor>>,
     },
     User(Box<dyn RecipeCursor<ContentRecipe>>),
     Assistant(Box<dyn RecipeCursor<AssistantRecipe>>),
@@ -991,9 +988,9 @@ impl Compiler {
                     Some(len) => len,
                     None => {
                         let mut len = 0;
-                        let mut cursor = FragmentCursor::new(SourceFragment::Raw(JsonSource {
-                            bytes: media.bytes.clone(),
-                        }));
+                        let mut cursor = FragmentCursor::new(SourceFragment::Raw(JsonSource::new(
+                            media.bytes.clone(),
+                        )));
                         while let Some(bytes) =
                             cursor.next(budget.clone()).await.map_err(failure)?
                         {
@@ -1310,9 +1307,9 @@ impl Compiler {
         plan.string("id", id.text.clone());
         let input = match input {
             ToolInputRecipe::Json(value) => value,
-            ToolInputRecipe::Text(_) => JsonSource {
-                bytes: SourceBytes::Inline(Bytes::from_static(b"{}")),
-            },
+            ToolInputRecipe::Text(_) => {
+                JsonSource::new(SourceBytes::Inline(Bytes::from_static(b"{}")))
+            }
         };
         let mut input_fragments = vec![SourceFragment::Raw(input.clone())];
         let mut output_name = if executed && !mcp {
@@ -1356,10 +1353,10 @@ impl Compiler {
                 {
                     let bytes = to.as_bytes().to_vec();
                     plan.owned_bytes += bytes.capacity();
-                    selected = Some(TextSource {
-                        bytes: SourceBytes::Inline(Bytes::from(bytes)),
-                        encoding: TextEncoding::Utf8,
-                    });
+                    selected = Some(TextSource::new(
+                        SourceBytes::Inline(Bytes::from(bytes)),
+                        TextEncoding::Utf8,
+                    ));
                     break;
                 }
             }
@@ -1436,13 +1433,11 @@ impl Compiler {
                     .pad_to_align()
                     .size();
                 vec![SourceFragment::owned_raw(
-                    JsonSource {
-                        bytes: SourceBytes::Source(Arc::new(ContentSource {
-                            source,
-                            options: self.options.clone(),
-                            language: self.language,
-                        })),
-                    },
+                    JsonSource::new(SourceBytes::Source(Arc::new(ContentSource {
+                        source,
+                        options: self.options.clone(),
+                        language: self.language,
+                    }))),
                     bytes,
                 )]
             }
@@ -1501,10 +1496,10 @@ impl Compiler {
                 {
                     let bytes = to.as_bytes().to_vec();
                     plan.owned_bytes += bytes.capacity();
-                    toolset = Some(TextSource {
-                        bytes: SourceBytes::Inline(Bytes::from(bytes)),
-                        encoding: TextEncoding::Utf8,
-                    });
+                    toolset = Some(TextSource::new(
+                        SourceBytes::Inline(Bytes::from(bytes)),
+                        TextEncoding::Utf8,
+                    ));
                     break;
                 }
             }

@@ -47,18 +47,13 @@ async fn actual_tool_images_are_immutable_scoped_and_reconstructed_without_paths
         provider_options: None,
         provider_executed: false,
     };
-    log.append(&event(
-        "images",
-        observe("images", ModelEvent::ToolCall(call.clone())),
-    ))
-    .await
-    .unwrap();
+
     log.append(&event(
         "images",
         Fact::ModelCompleted {
             step_id: "step-images".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall { call }],
+            output: ModelCompletion {
+                parts: completion_parts("step-images".into(), vec![ModelPart::ToolCall { call }]),
                 finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
                 usage: ModelUsage::default(),
                 provider_options: None,
@@ -423,18 +418,13 @@ async fn borrowed_upload_is_frozen_at_settlement_before_any_history_copy() {
         provider_options: None,
         provider_executed: false,
     };
-    log.append(&event(
-        "borrowed",
-        observe("borrowed", ModelEvent::ToolCall(call.clone())),
-    ))
-    .await
-    .unwrap();
+
     log.append(&event(
         "borrowed",
         Fact::ModelCompleted {
             step_id: "step-borrowed".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall { call }],
+            output: ModelCompletion {
+                parts: completion_parts("step-borrowed".into(), vec![ModelPart::ToolCall { call }]),
                 finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
                 usage: ModelUsage::default(),
                 provider_options: None,

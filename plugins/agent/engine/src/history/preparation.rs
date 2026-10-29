@@ -138,5 +138,5 @@ impl RequestPreparation {
     }
 }
 fn cancelled() -> io::Error {
-    io::Error::new(io::ErrorKind::Interrupted, "request preparation cancelled")
+    crate::preparation_cancelled("request preparation cancelled")
 }

@@ -114,13 +114,13 @@ impl ByteCursor for Cursor {
 }
 fn text(value: &str, opens: Arc<AtomicUsize>) -> IdentifiedText {
     IdentifiedText {
-        text: TextSource {
-            bytes: SourceBytes::Source(Arc::new(Blob {
+        text: TextSource::new(
+            SourceBytes::Source(Arc::new(Blob {
                 bytes: Bytes::copy_from_slice(value.as_bytes()),
                 opens,
             })),
-            encoding: TextEncoding::Utf8,
-        },
+            TextEncoding::Utf8,
+        ),
         identity: [0; 32],
     }
 }

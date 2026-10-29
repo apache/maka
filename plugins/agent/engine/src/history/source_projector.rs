@@ -19,6 +19,12 @@
 
 //! Project semantic payloads without owning their text or arbitrary JSON bodies.
 
+use maka_agent_facts::history::semantic::directory::{
+    ChildDirectory, InputDirectory, ListKind, PartDirectory, PayloadDirectory, RowDirectory,
+    TextSpan, ToolDirectory, ToolPartDirectory,
+};
+use maka_agent_facts::model::TextKind;
+use maka_agent_facts::model::prompt_source::source::ChargedBuffer;
 use maka_agent_facts::{
     language::Language,
     model::prompt_source::source::{
@@ -29,6 +35,7 @@ use maka_agent_facts::{
         text as source_text,
     },
 };
+use maka_event_log::context::semantic::{CapturedSource, ChildPage, PayloadSource};
 use maka_model::ProviderKind;
 use std::{io, sync::Arc};
 pub(super) mod arena;
@@ -44,6 +51,7 @@ pub(super) struct ProjectContext<'a> {
     pub provider: &'a ProviderKind,
     pub replay: Option<&'a maka_event_log::context::semantic::SemanticReplay>,
     pub captured: Option<&'a maka_event_log::context::semantic::CapturedSource>,
+    pub row_root: Option<&'a PayloadSource>,
     pub payload_root: Option<&'a maka_event_log::context::semantic::PayloadSource>,
     pub arena: Option<&'a super::capture_arena::CaptureArena>,
     pub internal_arena: bool,
@@ -63,6 +71,7 @@ impl ProjectContext<'_> {
             provider: self.provider,
             replay: self.replay,
             captured: self.captured,
+            row_root: self.row_root,
             payload_root,
             arena: self.arena,
             internal_arena: self.internal_arena,
@@ -70,6 +79,15 @@ impl ProjectContext<'_> {
             budget: self.budget.clone(),
             directory_owner: self.directory_owner.clone(),
         }
+    }
+    pub fn for_row<'row>(
+        &'row self,
+        row_root: &'row PayloadSource,
+        payload_root: Option<&'row PayloadSource>,
+    ) -> ProjectContext<'row> {
+        let mut context = self.for_payload(payload_root);
+        context.row_root = Some(row_root);
+        context
     }
     pub fn for_arena(&self) -> ProjectContext<'_> {
         let mut context = self.for_payload(self.payload_root);
@@ -93,18 +111,10 @@ fn invalid() -> io::Error {
     )
 }
 fn literal(value: &'static str) -> TextSource {
-    TextSource {
-        bytes: SourceBytes::Inline(value.as_bytes().into()),
-        encoding: TextEncoding::Utf8,
-    }
+    maka_agent_facts::model::prompt_source::source::generated::text(value)
 }
 fn required(value: Option<JsonValue>) -> io::Result<JsonValue> {
     value.ok_or_else(invalid)
-}
-fn options(value: Option<JsonValue>) -> Option<JsonSource> {
-    value
-        .filter(|value| value.kind != JsonKind::Null)
-        .map(|value| value.source)
 }
 async fn lookup(
     source: &JsonSource,
@@ -112,21 +122,6 @@ async fn lookup(
     context: &ProjectContext<'_>,
 ) -> io::Result<JsonValue> {
     required(json::field(source, &[name], context.budget.clone()).await?)
-}
-async fn tagged(source: &JsonSource, name: &str, context: &ProjectContext<'_>) -> io::Result<bool> {
-    json::text_eq(
-        &lookup(source, "kind", context).await?.text()?,
-        name,
-        context.budget.clone(),
-    )
-    .await
-}
-async fn flag(source: &JsonSource, name: &str, context: &ProjectContext<'_>) -> io::Result<bool> {
-    json::bool_value(
-        &lookup(source, name, context).await?.source,
-        context.budget.clone(),
-    )
-    .await
 }
 fn list<T: Clone + Send + Sync + 'static>(
     values: Vec<T>,
@@ -140,31 +135,14 @@ fn list<T: Clone + Send + Sync + 'static>(
 
 /// The caller groups adjacent assistant items by the checked row order.
 pub(super) async fn project_row(
-    metadata: JsonSource,
-    payload: Option<JsonSource>,
+    row: &RowDirectory,
+    payload: Option<&PayloadDirectory>,
     context: &ProjectContext<'_>,
 ) -> io::Result<ProjectedRow> {
-    let kind = lookup(&metadata, "kind", context).await?.source;
-    let names = [
-        "User",
-        "ImportedUser",
-        "ImportedAssistant",
-        "ExecutorText",
-        "AssistantPart",
-        "ToolResult",
-        "Notification",
-        "UnknownTool",
-    ];
-    let fields = json::fields(&kind, &names, context.budget.clone()).await?;
-    let (which, row) = fields
-        .into_iter()
-        .enumerate()
-        .find_map(|(i, v)| v.map(|v| (i, v.source)))
-        .ok_or_else(invalid)?;
-    if which == 7 {
+    if let RowDirectory::UnknownTool { .. } = row {
         return Ok(ProjectedRow::Tool(
             result(
-                &row,
+                row,
                 ToolOutputRecipe::ErrorText(literal(unknown(context.language))),
                 ToolResultKind::Settled,
                 context,
@@ -173,94 +151,101 @@ pub(super) async fn project_row(
         ));
     }
     let payload = payload.ok_or_else(invalid)?;
-    match which {
-        0 => {
-            let input = lookup(&payload, "User", context).await?.source;
-            super::source_projector::user(&input, flag(&row, "steering", context).await?, context)
-                .await
+    match (row, payload) {
+        (RowDirectory::User { steering, .. }, PayloadDirectory::User { .. }) => {
+            user(payload, *steering, context).await
         }
-        1 | 2 | 3 | 6 => {
-            let text = lookup(&payload, "Text", context).await?.text()?;
-            Ok(match which {
-                1 => ProjectedRow::User(list(
-                    vec![ContentRecipe::Text {
-                        text,
-                        provider_options: None,
-                    }],
-                    context,
-                )),
-                2 | 3 => ProjectedRow::Assistant(AssistantRecipe::Text {
-                    text,
+        (RowDirectory::ImportedUser { .. }, PayloadDirectory::Text(text)) => {
+            Ok(ProjectedRow::User(list(
+                vec![ContentRecipe::Text {
+                    text: located::text(*text, context)?,
                     provider_options: None,
-                }),
-                _ => ProjectedRow::Tool(
-                    result(
-                        &row,
-                        ToolOutputRecipe::Text(text),
-                        ToolResultKind::Notification,
-                        context,
-                    )
-                    .await?,
-                ),
-            })
+                }],
+                context,
+            )))
         }
-        4 => {
-            let part = lookup(&payload, "Part", context).await?.source;
-            if tagged(&part, "text", context).await? {
-                let thinking = json::text_eq(
-                    &lookup(&part, "text_kind", context).await?.text()?,
-                    "thinking",
-                    context.budget.clone(),
-                )
-                .await?;
-                check_route(&metadata, thinking, context).await?;
-            }
-            assistant(&part, context).await
-        }
-        5 => {
-            let fields = json::fields(&payload, &["Text", "Tool"], context.budget.clone()).await?;
-            let mut fields = fields.into_iter();
-            let text = fields.next().flatten();
-            let tool = fields.next().flatten();
-            let output = if let Some(text) = text {
-                ToolOutputRecipe::ErrorText(text.text()?)
-            } else {
-                let projection = tool.map_or(payload, |tool| tool.source);
-                tool_output(
-                    &projection,
-                    flag(&row, "archived", context).await?,
-                    flag(&row, "is_error", context).await?,
+        (
+            RowDirectory::ImportedAssistant { .. } | RowDirectory::ExecutorText { .. },
+            PayloadDirectory::Text(text),
+        ) => Ok(ProjectedRow::Assistant(AssistantRecipe::Text {
+            text: located::text(*text, context)?,
+            provider_options: None,
+        })),
+        (RowDirectory::Notification { .. }, PayloadDirectory::Text(text)) => {
+            Ok(ProjectedRow::Tool(
+                result(
+                    row,
+                    ToolOutputRecipe::Text(located::text(*text, context)?),
+                    ToolResultKind::Notification,
                     context,
                 )
-                .await?
+                .await?,
+            ))
+        }
+        (RowDirectory::AssistantPart { .. }, PayloadDirectory::Part(part)) => {
+            if let PartDirectory::Text { text_kind, .. } = part {
+                check_route(row, matches!(text_kind, TextKind::Thinking), context).await?;
+            }
+            assistant(part, context).await
+        }
+        (
+            RowDirectory::ToolResult {
+                archived, is_error, ..
+            },
+            payload,
+        ) => {
+            let output = match payload {
+                PayloadDirectory::Text(text) => {
+                    ToolOutputRecipe::ErrorText(located::text(*text, context)?)
+                }
+                PayloadDirectory::Tool(tool) => {
+                    tool_output(tool, *archived, *is_error, context).await?
+                }
+                _ => return Err(invalid()),
             };
             Ok(ProjectedRow::Tool(
-                result(&row, output, ToolResultKind::Settled, context).await?,
+                result(row, output, ToolResultKind::Settled, context).await?,
             ))
         }
         _ => Err(invalid()),
     }
 }
-
+fn row_text(span: TextSpan, context: &ProjectContext<'_>) -> io::Result<TextSource> {
+    context
+        .captured
+        .ok_or_else(invalid)?
+        .text(context.row_root.ok_or_else(invalid)?, span)
+        .map_err(io::Error::other)
+}
 async fn result(
-    row: &JsonSource,
+    row: &RowDirectory,
     output: ToolOutputRecipe,
     kind: ToolResultKind,
     context: &ProjectContext<'_>,
 ) -> io::Result<ToolResultRecipe> {
-    let mut fields = json::fields(row, &["call_id", "name", "custom"], context.budget.clone())
-        .await?
-        .into_iter();
-    let tool_call_id = required(fields.next().flatten())?.text()?;
-    let tool_name = match fields.next().flatten() {
-        Some(value) => value.text()?,
-        None => literal("exec"),
+    let (call_id, name, custom) = match row {
+        RowDirectory::ToolResult {
+            call_id,
+            name,
+            custom,
+            ..
+        }
+        | RowDirectory::UnknownTool {
+            call_id,
+            name,
+            custom,
+        } => (*call_id, Some(*name), *custom),
+        RowDirectory::Notification {
+            call_id, custom, ..
+        } => (*call_id, None, *custom),
+        _ => return Err(invalid()),
     };
-    let custom = required(fields.next().flatten())?;
-    let custom = json::bool_value(&custom.source, context.budget.clone()).await?;
     let mut result = ToolResultRecipe {
-        tool_call_id,
-        tool_name,
+        tool_call_id: row_text(call_id, context)?,
+        tool_name: name
+            .map(|span| row_text(span, context))
+            .transpose()?
+            .unwrap_or_else(|| literal("exec")),
         kind,
         call_kind: if custom {
             ToolCallKind::Custom
@@ -275,139 +260,121 @@ async fn result(
     freeze_error(&mut result, context).await?;
     Ok(result)
 }
-
-async fn assistant(part: &JsonSource, context: &ProjectContext<'_>) -> io::Result<ProjectedRow> {
-    let kind = lookup(part, "kind", context).await?.text()?;
-    if json::text_eq(&kind, "source", context.budget.clone()).await? {
-        return Ok(ProjectedRow::Skip);
-    }
-    if json::text_eq(&kind, "text", context.budget.clone()).await? {
-        let fields = json::fields(
-            part,
-            &["text", "provider_options", "text_kind"],
-            context.budget.clone(),
-        )
-        .await?;
-        let mut fields = fields.into_iter();
-        let text = required(fields.next().flatten())?.text()?;
-        let options = options(fields.next().flatten());
-        let thinking = json::text_eq(
-            &required(fields.next().flatten())?.text()?,
-            "thinking",
-            context.budget.clone(),
-        )
-        .await?;
-        return project_text(text, options, thinking, context).await;
-    }
-    if json::text_eq(&kind, "tool_call", context.budget.clone()).await? {
-        let call = lookup(part, "call", context).await?.source;
-        let mut fields = json::fields(
-            &call,
-            &[
-                "id",
-                "name",
-                "input",
-                "provider_executed",
-                "provider_options",
-            ],
-            context.budget.clone(),
-        )
-        .await?
-        .into_iter();
-        let tool_call_id = required(fields.next().flatten())?.text()?;
-        let tool_name = required(fields.next().flatten())?.text()?;
-        let input = required(fields.next().flatten())?.source;
-        let executed = required(fields.next().flatten())?.source;
-        let provider_options = options(fields.next().flatten());
-        let data = lookup(&input, "data", context).await?.source;
-        let input = if tagged(&input, "json", context).await? {
-            ToolInputRecipe::Json(data)
-        } else {
-            ToolInputRecipe::Text(lookup(&data, "raw", context).await?.text()?)
-        };
-        let provider_executed = Some(json::bool_value(&executed, context.budget.clone()).await?);
-        let mut kind = call_kind(provider_options.as_ref(), context).await?;
-        if kind == ToolCallKind::Function
-            && let Some(options) = provider_options.as_ref()
-            && let Some(value) = json::field(
-                options,
-                &["openResponses", "toolKind"],
-                context.budget.clone(),
+async fn assistant(part: &PartDirectory, context: &ProjectContext<'_>) -> io::Result<ProjectedRow> {
+    match part {
+        PartDirectory::Source => Ok(ProjectedRow::Skip),
+        PartDirectory::Text {
+            text_kind,
+            text,
+            provider_options,
+        } => {
+            project_text(
+                located::text(*text, context)?,
+                provider_options
+                    .map(|v| located::json(v, context))
+                    .transpose()?,
+                matches!(text_kind, TextKind::Thinking),
+                context,
             )
-            .await?
-            && value.kind == JsonKind::String
-            && json::text_eq(&value.text()?, "custom", context.budget.clone()).await?
-        {
-            kind = ToolCallKind::Custom;
+            .await
         }
-        return Ok(ProjectedRow::Assistant(AssistantRecipe::ToolCall {
-            tool_call_id,
-            tool_name,
+        PartDirectory::ToolCall {
+            id,
+            name,
             input,
-            kind,
             provider_executed,
             provider_options,
-        }));
-    }
-    if json::text_eq(&kind, "tool_result", context.budget.clone()).await? {
-        let mut fields = json::fields(
-            part,
-            &["id", "name", "output", "is_error", "provider_options"],
-            context.budget.clone(),
-        )
-        .await?
-        .into_iter();
-        let tool_call_id = required(fields.next().flatten())?.text()?;
-        let tool_name = required(fields.next().flatten())?.text()?;
-        let output = required(fields.next().flatten())?.source;
-        let error = required(fields.next().flatten())?.source;
-        let provider_options = options(fields.next().flatten());
-        let error = json::bool_value(&error, context.budget.clone()).await?;
-        let call_kind = call_kind(provider_options.as_ref(), context).await?;
-        let mut result = ToolResultRecipe {
-            tool_call_id,
-            tool_name,
-            kind: ToolResultKind::Settled,
-            call_kind,
-            parsed_error: None,
-            replay: ToolResultReplay::Ordinary,
-            output: if error {
-                ToolOutputRecipe::ErrorJson(output)
-            } else {
-                ToolOutputRecipe::Json(output)
-            },
+        } => {
+            let provider_options = provider_options
+                .map(|v| located::json(v, context))
+                .transpose()?;
+            let input = match input {
+                InputDirectory::Json(value) => {
+                    ToolInputRecipe::Json(located::json(*value, context)?)
+                }
+                InputDirectory::Text(value) => {
+                    ToolInputRecipe::Text(located::text(*value, context)?)
+                }
+            };
+            let mut kind = call_kind(provider_options.as_ref(), context).await?;
+            if kind == ToolCallKind::Function
+                && let Some(options) = &provider_options
+                && let Some(value) = json::field(
+                    options,
+                    &["openResponses", "toolKind"],
+                    context.budget.clone(),
+                )
+                .await?
+                && value.kind == JsonKind::String
+                && json::text_eq(&value.text()?, "custom", context.budget.clone()).await?
+            {
+                kind = ToolCallKind::Custom;
+            }
+            Ok(ProjectedRow::Assistant(AssistantRecipe::ToolCall {
+                tool_call_id: located::text(*id, context)?,
+                tool_name: located::text(*name, context)?,
+                input,
+                kind,
+                provider_executed: Some(*provider_executed),
+                provider_options,
+            }))
+        }
+        PartDirectory::ToolResult {
+            id,
+            name,
+            output,
+            is_error,
             provider_options,
-        };
-        freeze_error(&mut result, context).await?;
-        return Ok(ProjectedRow::Assistant(AssistantRecipe::ToolResult(result)));
+        } => {
+            let provider_options = provider_options
+                .map(|v| located::json(v, context))
+                .transpose()?;
+            let output = located::json(*output, context)?;
+            let mut result = ToolResultRecipe {
+                tool_call_id: located::text(*id, context)?,
+                tool_name: located::text(*name, context)?,
+                kind: ToolResultKind::Settled,
+                call_kind: call_kind(provider_options.as_ref(), context).await?,
+                output: if *is_error {
+                    ToolOutputRecipe::ErrorJson(output)
+                } else {
+                    ToolOutputRecipe::Json(output)
+                },
+                parsed_error: None,
+                replay: ToolResultReplay::Ordinary,
+                provider_options,
+            };
+            freeze_error(&mut result, context).await?;
+            Ok(ProjectedRow::Assistant(AssistantRecipe::ToolResult(result)))
+        }
     }
-    Err(invalid())
 }
-
 async fn check_route(
-    metadata: &JsonSource,
+    row: &RowDirectory,
     thinking: bool,
     context: &ProjectContext<'_>,
 ) -> io::Result<()> {
-    if !thinking {
-        return Ok(());
-    }
-    if let Some(replay) = context.replay {
-        let row = json::field(metadata, &["kind", "AssistantPart"], context.budget.clone())
-            .await?
-            .ok_or_else(invalid)?
-            .source;
-        let mut fields = json::fields(
-            &row,
-            &["model_id", "route_identity"],
+    if thinking && let Some(replay) = context.replay {
+        let RowDirectory::AssistantPart {
+            model_id,
+            route_identity,
+            ..
+        } = row
+        else {
+            return Err(invalid());
+        };
+        if !json::text_eq(
+            &row_text(*model_id, context)?,
+            &replay.model,
             context.budget.clone(),
         )
         .await?
-        .into_iter();
-        let model = required(fields.next().flatten())?.text()?;
-        let route = required(fields.next().flatten())?.text()?;
-        if !json::text_eq(&model, &replay.model, context.budget.clone()).await?
-            || !json::text_eq(&route, &replay.route, context.budget.clone()).await?
+            || !json::text_eq(
+                &row_text(*route_identity, context)?,
+                &replay.route,
+                context.budget.clone(),
+            )
+            .await?
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -434,102 +401,6 @@ async fn call_kind(
     Ok(ToolCallKind::Function)
 }
 
-pub(super) async fn project_text_part(
-    metadata: JsonSource,
-    text: TextSource,
-    provider_options: Option<JsonSource>,
-    context: &ProjectContext<'_>,
-) -> io::Result<ProjectedRow> {
-    let text_kind = json::field(
-        &metadata,
-        &["kind", "AssistantPart", "payload", "Text", "text_kind"],
-        context.budget.clone(),
-    )
-    .await?
-    .ok_or_else(invalid)?
-    .text()?;
-    let thinking = json::text_eq(&text_kind, "thinking", context.budget.clone()).await?;
-    check_route(&metadata, thinking, context).await?;
-    project_text(text, provider_options, thinking, context).await
-}
-/// A contribution-wise upper bound; streamed text and option-overlay storage are charged separately.
-pub(super) async fn footprint_text_policy(
-    metadata: &JsonSource,
-    contribution: Option<&JsonSource>,
-    context: &ProjectContext<'_>,
-) -> io::Result<usize> {
-    let kind = json::field(
-        metadata,
-        &["kind", "AssistantPart", "payload", "Text", "text_kind"],
-        context.budget.clone(),
-    )
-    .await?
-    .ok_or_else(invalid)?
-    .text()?;
-    if !json::text_eq(&kind, "thinking", context.budget.clone()).await? {
-        return Ok(0);
-    }
-    if matches!(context.provider, ProviderKind::OpenaiCompatible { .. }) {
-        return super::joined_source::metadata_bytes(3);
-    }
-    let ProviderKind::OpenResponses(contract) = context.provider else {
-        return Ok(0);
-    };
-    if contract.reasoning_replay
-        != maka_agent_facts::model::PlaintextReasoningReplay::PlaintextSummary
-    {
-        return Ok(0);
-    }
-    let span = super::joined_source::span_metadata_bytes();
-    let mut weight = span;
-    let mut retained = 0usize;
-    let mut count = 0usize;
-    if let Some(contribution) = contribution {
-        weight = weight.max(raw_footprint(&contribution.bytes)?);
-        if let Some(state) =
-            json::field(contribution, &["makaResponses"], context.budget.clone()).await?
-            && state.kind == JsonKind::Object
-        {
-            for field in json::fields(
-                &state.source,
-                &["profile", "itemId", "summaryPartLengths"],
-                context.budget.clone(),
-            )
-            .await?
-            .into_iter()
-            .flatten()
-            {
-                let bytes = raw_footprint(&field.source.bytes)?;
-                weight = weight.max(bytes);
-                footprint_add(&mut retained, bytes)?;
-            }
-            if let Some(lengths) = json::field(
-                &state.source,
-                &["summaryPartLengths"],
-                context.budget.clone(),
-            )
-            .await?
-                && lengths.kind == JsonKind::Array
-            {
-                let mut cursor =
-                    json::ArrayCursor::open(lengths.source, context.budget.clone()).await?;
-                while cursor.next().await?.is_some() {
-                    count = count.checked_add(1).ok_or_else(invalid)?;
-                }
-            }
-        }
-    }
-    let parts = count
-        .checked_mul(4)
-        .and_then(|count| count.checked_add(10))
-        .ok_or_else(invalid)?;
-    let mut bytes = super::joined_source::metadata_bytes(parts)?;
-    footprint_add(&mut bytes, count.checked_mul(span).ok_or_else(invalid)?)?;
-    footprint_add(&mut bytes, retained)?;
-    footprint_add(&mut bytes, weight.checked_mul(3).ok_or_else(invalid)?)?;
-    Ok(bytes)
-}
-
 async fn project_text(
     text: TextSource,
     mut provider_options: Option<JsonSource>,
@@ -549,7 +420,7 @@ async fn project_text(
         && (json::text_eq(&field.text()?, "reasoning", context.budget.clone()).await?
             || json::text_eq(&field.text()?, "reasoning_content", context.budget.clone()).await?)
     {
-        if text.encoding != TextEncoding::JsonString {
+        if text.encoding() != TextEncoding::JsonString {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "compatible reasoning requires captured quoted text source",
@@ -561,11 +432,15 @@ async fn project_text(
             "{\"openaiCompatible\":{\"reasoning_content\":"
         };
         let bytes = super::joined_source::join(
-            vec![literal(prefix).bytes, text.bytes, literal("}}").bytes],
+            vec![
+                literal(prefix).into_bytes(),
+                text.into_bytes(),
+                literal("}}").into_bytes(),
+            ],
             context.directory_owner.clone(),
         )?;
         return Ok(ProjectedRow::AssistantMetadata {
-            options: JsonSource { bytes },
+            options: JsonSource::new(bytes),
         });
     }
     if thinking && let ProviderKind::OpenResponses(contract) = context.provider {
@@ -606,23 +481,161 @@ fn concat(parts: Vec<TextSource>, context: &ProjectContext<'_>) -> TextSource {
     source_text::concat(list(parts, context), context.budget.clone())
 }
 fn raw_json(value: JsonSource) -> TextSource {
-    TextSource {
-        bytes: value.bytes,
-        encoding: TextEncoding::Utf8,
+    TextSource::new(value.into_bytes(), TextEncoding::Utf8)
+}
+struct Children {
+    captured: CapturedSource,
+    root: PayloadSource,
+    kind: ListKind,
+    page: Option<ChildPage<ChargedBuffer>>,
+    buffer: Option<ChargedBuffer>,
+    after: Option<u64>,
+    remaining: u64,
+    finished: bool,
+    cancellation: tokio_util::sync::CancellationToken,
+}
+impl Children {
+    async fn open(kind: ListKind, count: u64, context: &ProjectContext<'_>) -> io::Result<Self> {
+        Ok(Self {
+            captured: context.captured.ok_or_else(invalid)?.clone(),
+            root: context.payload_root.ok_or_else(invalid)?.clone(),
+            kind,
+            page: None,
+            buffer: Some(context.budget.allocate(32 * 1024).await?),
+            after: None,
+            remaining: count,
+            finished: false,
+            cancellation: context.cancellation.clone(),
+        })
+    }
+    async fn next(&mut self) -> io::Result<Option<ChildDirectory>> {
+        loop {
+            if self.cancellation.is_cancelled() {
+                return Err(crate::preparation_cancelled("capture cancelled"));
+            }
+            if let Some(page) = &mut self.page {
+                if let Some(child) = page.next_child().map_err(io::Error::other)? {
+                    self.remaining = self.remaining.checked_sub(1).ok_or_else(invalid)?;
+                    return Ok(Some(child));
+                }
+                let page = self.page.take().expect("page is present");
+                self.after = page.next;
+                self.finished = self.after.is_none();
+                self.buffer = Some(page.into_buffer());
+            }
+            if self.finished {
+                if self.remaining != 0 {
+                    return Err(invalid());
+                }
+                return Ok(None);
+            }
+            self.page = Some(
+                self.captured
+                    .child_page(
+                        &self.root,
+                        self.kind,
+                        self.after,
+                        self.buffer
+                            .take()
+                            .expect("page buffer is returned before refill"),
+                    )
+                    .await
+                    .map_err(io::Error::other)?,
+            );
+        }
     }
 }
+fn steering_prefix(language: Language) -> &'static str {
+    match language {
+        Language::En => "The user sent a message while you were working:\n<user_query>\n",
+        Language::ZhCn => "用户在你工作期间发来消息：\n<user_query>\n",
+        Language::ZhTw => "使用者在你工作期間傳來訊息：\n<user_query>\n",
+    }
+}
+fn quote_pieces(
+    quote: ChildDirectory,
+    first: bool,
+    context: &ProjectContext<'_>,
+) -> io::Result<Vec<TextSource>> {
+    let ChildDirectory::Quote {
+        label,
+        source,
+        text,
+    } = quote
+    else {
+        return Err(invalid());
+    };
+    let mut pieces = Vec::with_capacity(11);
+    pieces.push(literal(if first { "\n\n" } else { "\n" }));
+    pieces.push(literal("<quoted_excerpt"));
+    if let Some(label) = label {
+        pieces.push(literal(" label=\""));
+        pieces.push(source_text::quote_label(
+            located::text(label, context)?,
+            context.budget.clone(),
+        ));
+        pieces.push(literal("\""));
+    }
+    pieces.push(literal(">\n"));
+    if let Some(source) = source {
+        pieces.push(literal(match context.language {
+            Language::En => "Session snapshot provenance (display-only): ",
+            Language::ZhCn => "会话快照来源（仅供展示）：",
+            Language::ZhTw => "工作階段快照來源（僅供顯示）：",
+        }));
+        pieces.push(source_text::html(
+            raw_json(located::json(source, context)?),
+            context.budget.clone(),
+        ));
+        pieces.push(literal("\n"));
+    }
+    pieces.push(located::text(text, context)?);
+    pieces.push(literal("\n</quoted_excerpt>"));
+    Ok(pieces)
+}
+async fn reference_pieces(
+    references: Option<maka_agent_facts::history::semantic::directory::JsonSpan>,
+    context: &ProjectContext<'_>,
+) -> io::Result<Vec<TextSource>> {
+    let Some(references) = references else {
+        return Ok(Vec::new());
+    };
+    let references = located::json(references, context)?;
+    let mut cursor = json::ArrayCursor::open(references.clone(), context.budget.clone()).await?;
+    if cursor.next().await?.is_none() {
+        return Ok(Vec::new());
+    }
+    Ok(vec![
+        literal("\n\n<directory_references>\n"),
+        literal(match context.language {
+            Language::En => {
+                "Live directory paths on the originating Runtime Host, accessible with Glob/Read. The project and working directory are unchanged.\n"
+            }
+            Language::ZhCn => {
+                "原始运行时主机上的实时目录路径，可通过 Glob/Read 访问。项目与工作目录不变。\n"
+            }
+            Language::ZhTw => {
+                "原始執行階段主機上的即時目錄路徑，可透過 Glob/Read 存取。專案與工作目錄不變。\n"
+            }
+        }),
+        source_text::html(raw_json(references), context.budget.clone()),
+        literal("\n</directory_references>"),
+    ])
+}
 async fn user(
-    input: &JsonSource,
+    input: &PayloadDirectory,
     steering: bool,
     context: &ProjectContext<'_>,
 ) -> io::Result<ProjectedRow> {
-    let mut fields = json::fields(
-        input,
-        &["text", "quotes", "attachments", "directory_references"],
-        context.budget.clone(),
-    )
-    .await?
-    .into_iter();
+    let PayloadDirectory::User {
+        text,
+        quotes,
+        attachments,
+        directory_references,
+    } = input
+    else {
+        return Err(invalid());
+    };
     let (_, piece_count, content_count) = user_layout(input, steering, context).await?;
     let mut content = Vec::with_capacity(content_count);
     content.push(ContentRecipe::Text {
@@ -630,165 +643,89 @@ async fn user(
         provider_options: None,
     });
     let mut pieces = Vec::with_capacity(piece_count);
-    pieces.push(required(fields.next().flatten())?.text()?);
-    if let Some(quotes) = options(fields.next().flatten()) {
-        let mut quotes = json::ArrayCursor::open(quotes, context.budget.clone()).await?;
-        let mut first = true;
-        while let Some(quote) = quotes.next().await? {
-            pieces.push(literal(if first { "\n\n" } else { "\n" }));
-            first = false;
-            pieces.push(literal("<quoted_excerpt"));
-            let mut fields = json::fields(
-                &quote.source,
-                &["label", "source", "text"],
-                context.budget.clone(),
-            )
-            .await?
-            .into_iter();
-            if let Some(label) = fields
-                .next()
-                .flatten()
-                .filter(|value| value.kind != JsonKind::Null)
-            {
-                pieces.push(literal(" label=\""));
-                pieces.push(source_text::quote_label(
-                    label.text()?,
-                    context.budget.clone(),
-                ));
-                pieces.push(literal("\""));
-            }
-            pieces.push(literal(">\n"));
-            if let Some(source) = options(fields.next().flatten()) {
-                pieces.push(literal(match context.language {
-                    Language::En => "Session snapshot provenance (display-only): ",
-                    Language::ZhCn => "会话快照来源（仅供展示）：",
-                    Language::ZhTw => "工作階段快照來源（僅供顯示）：",
-                }));
-                pieces.push(source_text::html(raw_json(source), context.budget.clone()));
-                pieces.push(literal("\n"));
-            }
-            pieces.push(required(fields.next().flatten())?.text()?);
-            pieces.push(literal("\n</quoted_excerpt>"));
-        }
-    }
-    if let Some(attachments) = options(fields.next().flatten()) {
-        let mut cursor =
-            located::Values::open(attachments, located::attachments(context).await?, context)
-                .await?;
-        let mut first = true;
-        while let Some(attachment) = cursor.next().await? {
-            pieces.push(literal(if first { "\n\n" } else { "\n" }));
-            first = false;
-            let projected = media::attachment(
-                &attachment.value.source,
-                attachment.location.as_ref(),
-                media::Mode::Capture,
-                context,
-            )
-            .await?;
-            pieces.extend(projected.pieces);
-            if let Some(part) = projected.content {
-                content.push(part);
-            }
-        }
-    }
-    if let Some(references) = options(fields.next().flatten()) {
-        let mut cursor =
-            json::ArrayCursor::open(references.clone(), context.budget.clone()).await?;
-        if cursor.next().await?.is_some() {
-            pieces.push(literal("\n\n<directory_references>\n"));
-            pieces.push(literal(match context.language {Language::En=>"Live directory paths on the originating Runtime Host, accessible with Glob/Read. The project and working directory are unchanged.\n",Language::ZhCn=>"原始运行时主机上的实时目录路径，可通过 Glob/Read 访问。项目与工作目录不变。\n",Language::ZhTw=>"原始執行階段主機上的即時目錄路徑，可透過 Glob/Read 存取。專案與工作目錄不變。\n"}));
-            pieces.push(source_text::html(
-                raw_json(references),
-                context.budget.clone(),
-            ));
-            pieces.push(literal("\n</directory_references>"));
-        }
-    }
     if steering {
-        pieces.insert(
-            0,
-            literal(match context.language {
-                Language::En => "The user sent a message while you were working:\n<user_query>\n",
-                Language::ZhCn => "用户在你工作期间发来消息：\n<user_query>\n",
-                Language::ZhTw => "使用者在你工作期間傳來訊息：\n<user_query>\n",
-            }),
-        );
+        pieces.push(literal(steering_prefix(context.language)));
+    }
+    pieces.push(located::text(*text, context)?);
+    let mut cursor = Children::open(ListKind::Quotes, *quotes, context).await?;
+    let mut first = true;
+    while let Some(quote) = cursor.next().await? {
+        pieces.extend(quote_pieces(quote, first, context)?);
+        first = false;
+    }
+    drop(cursor);
+    let mut cursor = Children::open(ListKind::Attachments, *attachments, context).await?;
+    let mut first = true;
+    while let Some(child) = cursor.next().await? {
+        let ChildDirectory::Attachment(attachment) = child else {
+            return Err(invalid());
+        };
+        pieces.push(literal(if first { "\n\n" } else { "\n" }));
+        first = false;
+        let projected = media::attachment(&attachment, media::Mode::Capture, context).await?;
+        pieces.extend(projected.pieces);
+        if let Some(part) = projected.content {
+            content.push(part);
+        }
+    }
+    pieces.extend(reference_pieces(*directory_references, context).await?);
+    if steering {
         pieces.push(literal("\n</user_query>"));
     }
-    let text = concat(pieces, context);
     content[0] = ContentRecipe::Text {
-        text,
+        text: concat(pieces, context),
         provider_options: None,
     };
     Ok(ProjectedRow::User(list(content, context)))
 }
-
 async fn tool_output(
-    projection: &JsonSource,
+    projection: &ToolDirectory,
     archived: bool,
     error: bool,
     context: &ProjectContext<'_>,
 ) -> io::Result<ToolOutputRecipe> {
-    let kind = lookup(projection, "kind", context).await?.text()?;
-    if json::text_eq(&kind, "text", context.budget.clone()).await? {
-        return Ok(ToolOutputRecipe::Text(
-            lookup(projection, "text", context).await?.text()?,
-        ));
-    }
-    if json::text_eq(&kind, "json", context.budget.clone()).await? {
-        let mut value = lookup(projection, "value", context).await?.source;
-        if archived {
-            value = archive(value, context).await?;
+    Ok(match projection {
+        ToolDirectory::Text(text) => ToolOutputRecipe::Text(located::text(*text, context)?),
+        ToolDirectory::Json(value) => {
+            let mut value = located::json(*value, context)?;
+            if archived {
+                value = archive(value, context).await?;
+            }
+            if error && archived {
+                ToolOutputRecipe::ErrorJson(value)
+            } else {
+                ToolOutputRecipe::Json(value)
+            }
         }
-        return Ok(if error && archived {
-            ToolOutputRecipe::ErrorJson(value)
-        } else {
-            ToolOutputRecipe::Json(value)
-        });
-    }
-    if json::text_eq(&kind, "failure", context.budget.clone()).await? {
-        return Ok(ToolOutputRecipe::ErrorText(literal(
-            match context.language {
-                Language::En => {
-                    maka_agent_facts::tool_output::DURABLE_TOOL_PROJECTION_FAILURE_MESSAGE
-                }
-                Language::ZhCn => "工具已完成，但无法安全投影其供模型读取的结果。",
-                Language::ZhTw => "工具已完成，但無法安全投影其供模型讀取的結果。",
-            },
-        )));
-    }
-    let parts = lookup(projection, "parts", context).await?.source;
-    let mut cursor =
-        located::Values::open(parts.clone(), located::tool_parts(context).await?, context).await?;
-    let mut count_cursor = json::ArrayCursor::open(parts.clone(), context.budget.clone()).await?;
-    let mut part_count = 0usize;
-    while count_cursor.next().await?.is_some() {
-        part_count = part_count.checked_add(1).ok_or_else(invalid)?;
-    }
-    let mut content = Vec::with_capacity(part_count);
-    while let Some(part) = cursor.next().await? {
-        if tagged(&part.value.source, "text", context).await? {
-            content.push(ContentRecipe::Text {
-                text: lookup(&part.value.source, "text", context).await?.text()?,
-                provider_options: None,
-            });
-        } else {
-            content.push(
-                media::tool(
-                    &part.value.source,
-                    part.location.as_ref(),
-                    media::Mode::Capture,
-                    context,
-                )
-                .await?
-                .content
-                .ok_or_else(invalid)?,
-            );
+        ToolDirectory::Failure => ToolOutputRecipe::ErrorText(literal(match context.language {
+            Language::En => maka_agent_facts::tool_output::DURABLE_TOOL_PROJECTION_FAILURE_MESSAGE,
+            Language::ZhCn => "工具已完成，但无法安全投影其供模型读取的结果。",
+            Language::ZhTw => "工具已完成，但無法安全投影其供模型讀取的結果。",
+        })),
+        ToolDirectory::Content { parts } => {
+            let mut content =
+                Vec::with_capacity(usize::try_from(*parts).map_err(io::Error::other)?);
+            let mut cursor = Children::open(ListKind::ToolParts, *parts, context).await?;
+            while let Some(child) = cursor.next().await? {
+                let ChildDirectory::ToolPart(part) = child else {
+                    return Err(invalid());
+                };
+                content.push(match part {
+                    ToolPartDirectory::Text(text) => ContentRecipe::Text {
+                        text: located::text(text, context)?,
+                        provider_options: None,
+                    },
+                    part => media::tool(&part, media::Mode::Capture, context)
+                        .await?
+                        .content
+                        .ok_or_else(invalid)?,
+                });
+            }
+            ToolOutputRecipe::Content(list(content, context))
         }
-    }
-    Ok(ToolOutputRecipe::Content(list(content, context)))
+    })
 }
+
 fn archive_instruction(language: Language) -> &'static str {
     match language {
         Language::En => {
@@ -812,17 +749,20 @@ async fn archive_placement(
 ) -> io::Result<ArchivePlacement> {
     let mut cursor = json::ObjectCursor::open(value.clone(), context.budget.clone()).await?;
     let mut nonempty = false;
-    while let Some(field) = cursor.next_spans().await? {
+    let mut replacement = None;
+    while let Some((field, selected)) = cursor
+        .next_named_spans(["readInstructions"].into_iter())
+        .await?
+    {
         nonempty = true;
-        let key = TextSource {
-            bytes: value.bytes.slice(field.key_range)?,
-            encoding: TextEncoding::JsonString,
-        };
-        if json::text_eq(&key, "readInstructions", context.budget.clone()).await? {
-            return Ok(ArchivePlacement::Replace(field.value_range));
+        if selected.is_some() && replacement.is_none() {
+            replacement = Some(field.value_range);
         }
     }
-    Ok(ArchivePlacement::Append { nonempty })
+    Ok(match replacement {
+        Some(range) => ArchivePlacement::Replace(range),
+        None => ArchivePlacement::Append { nonempty },
+    })
 }
 async fn archive_shape(
     value: &JsonSource,
@@ -832,36 +772,37 @@ async fn archive_shape(
         ArchivePlacement::Replace(_) => (3, 2),
         ArchivePlacement::Append { .. } => (5, 1),
     };
-    let mut bytes = raw_footprint(&value.bytes)?
+    let mut bytes = raw_footprint(value.bytes())?
         .checked_mul(spans)
         .ok_or_else(invalid)?;
     footprint_add(&mut bytes, super::joined_source::metadata_bytes(parts)?)?;
     Ok((parts, bytes))
 }
 async fn archive(value: JsonSource, context: &ProjectContext<'_>) -> io::Result<JsonSource> {
-    let length = match &value.bytes {
+    let length = match value.bytes() {
         SourceBytes::Inline(bytes) => bytes.len() as u64,
         SourceBytes::Source(source) => source.len().ok_or_else(invalid)?,
     };
     let pieces = match archive_placement(&value, context).await? {
         ArchivePlacement::Replace(range) => vec![
-            value.bytes.slice(0..range.start)?,
-            literal(archive_instruction(context.language)).bytes,
-            value.bytes.slice(range.end..length)?,
+            value.bytes().slice(0..range.start)?,
+            literal(archive_instruction(context.language)).into_bytes(),
+            value.bytes().slice(range.end..length)?,
         ],
         ArchivePlacement::Append { nonempty } => vec![
             value
-                .bytes
+                .bytes()
                 .slice(0..length.checked_sub(1).ok_or_else(invalid)?)?,
-            literal(if nonempty { "," } else { "" }).bytes,
-            literal(r#""readInstructions":"#).bytes,
-            literal(archive_instruction(context.language)).bytes,
-            literal("}").bytes,
+            literal(if nonempty { "," } else { "" }).into_bytes(),
+            literal(r#""readInstructions":"#).into_bytes(),
+            literal(archive_instruction(context.language)).into_bytes(),
+            literal("}").into_bytes(),
         ],
     };
-    Ok(JsonSource {
-        bytes: super::joined_source::join(pieces, context.directory_owner.clone())?,
-    })
+    Ok(JsonSource::new(super::joined_source::join(
+        pieces,
+        context.directory_owner.clone(),
+    )?))
 }
 
 fn unknown(language: Language) -> &'static str {
@@ -879,8 +820,8 @@ fn unknown(language: Language) -> &'static str {
 }
 
 pub(super) async fn chat_shape_row(
-    metadata: JsonSource,
-    payload: Option<JsonSource>,
+    row: &RowDirectory,
+    payload: Option<&PayloadDirectory>,
     context: &ProjectContext<'_>,
 ) -> io::Result<super::chat_source::ChatShape> {
     let mut shape = super::chat_source::ChatShape::default();
@@ -889,49 +830,22 @@ pub(super) async fn chat_shape_row(
             context.provider,
             ProviderKind::OpenaiChatCompletions | ProviderKind::OpenaiCompatible { .. }
         )
+        || !matches!(row, RowDirectory::ToolResult { .. })
     {
         return Ok(shape);
     }
-    if json::field(&metadata, &["kind", "ToolResult"], context.budget.clone())
-        .await?
-        .is_none()
-    {
-        return Ok(shape);
-    }
-    let Some(payload) = payload else {
+    let Some(PayloadDirectory::Tool(ToolDirectory::Content { parts })) = payload else {
         return Ok(shape);
     };
-    let mut fields = json::fields(&payload, &["Text", "Tool", "kind"], context.budget.clone())
-        .await?
-        .into_iter();
-    if fields.next().flatten().is_some() {
-        return Ok(shape);
-    }
-    let projection = match fields.next().flatten() {
-        Some(value) => value.source,
-        None => {
-            if fields.next().flatten().is_none() {
-                return Ok(shape);
+    shape.content_parts = usize::try_from(*parts).map_err(io::Error::other)?;
+    let mut cursor = Children::open(ListKind::ToolParts, *parts, context).await?;
+    while let Some(child) = cursor.next().await? {
+        match child {
+            ChildDirectory::ToolPart(ToolPartDirectory::Text(_)) => {}
+            ChildDirectory::ToolPart(_) => {
+                shape.media_parts = shape.media_parts.checked_add(1).ok_or_else(invalid)?
             }
-            payload
-        }
-    };
-    if !tagged(&projection, "content", context).await? {
-        return Ok(shape);
-    }
-    let mut cursor = located::Values::open(
-        lookup(&projection, "parts", context).await?.source,
-        located::tool_parts(context).await?,
-        context,
-    )
-    .await?;
-    while let Some(part) = cursor.next().await? {
-        shape.content_parts = shape.content_parts.checked_add(1).ok_or_else(invalid)?;
-        let kind = lookup(&part.value.source, "kind", context).await?.text()?;
-        if json::text_eq(&kind, "artifact", context.budget.clone()).await?
-            || json::text_eq(&kind, "audio", context.budget.clone()).await?
-        {
-            shape.media_parts = shape.media_parts.checked_add(1).ok_or_else(invalid)?;
+            _ => return Err(invalid()),
         }
     }
     shape.media_results = usize::from(shape.media_parts != 0);
@@ -975,194 +889,179 @@ fn items_footprint<T>(count: usize) -> io::Result<usize> {
     body.checked_add(arc_bytes(array, std::mem::align_of::<T>())?)
         .ok_or_else(invalid)
 }
-fn value_footprint(value: Option<JsonValue>) -> io::Result<usize> {
-    match value {
-        Some(value) => raw_footprint(&value.source.bytes),
-        None => Ok(0),
-    }
-}
-
-/// Count only nested retained allocations before reserving the frozen directory.
-/// The engine separately charges top-level message, assistant, and tool arrays.
+/// Count retained allocations before reserving the frozen directory.
 pub(super) async fn footprint_row(
-    metadata: JsonSource,
-    payload: Option<JsonSource>,
+    row: &RowDirectory,
+    payload: Option<&PayloadDirectory>,
     context: &ProjectContext<'_>,
 ) -> io::Result<usize> {
-    let kind = lookup(&metadata, "kind", context).await?.source;
-    let names = [
-        "User",
-        "ImportedUser",
-        "ImportedAssistant",
-        "ExecutorText",
-        "AssistantPart",
-        "ToolResult",
-        "Notification",
-        "UnknownTool",
-    ];
-    let fields = json::fields(&kind, &names, context.budget.clone()).await?;
-    let (which, row) = fields
-        .into_iter()
-        .enumerate()
-        .find_map(|(index, value)| value.map(|value| (index, value.source)))
-        .ok_or_else(invalid)?;
-    let mut bytes = 0usize;
-    if matches!(which, 5..=7) {
-        for value in json::fields(&row, &["call_id", "name"], context.budget.clone()).await? {
-            footprint_add(&mut bytes, value_footprint(value)?)?;
-        }
+    let mut bytes = 0;
+    if matches!(
+        row,
+        RowDirectory::ToolResult { .. }
+            | RowDirectory::Notification { .. }
+            | RowDirectory::UnknownTool { .. }
+    ) {
+        // Tool builders own one box until conversion into the frozen recipe list.
+        footprint_add(&mut bytes, std::mem::size_of::<ToolResultRecipe>())?;
     }
-    if which == 7 {
-        return Ok(bytes);
-    }
-    if matches!(which, 4 | 5) {
-        footprint_add(
-            &mut bytes,
-            error_metadata_bytes(metadata.clone(), payload.clone(), context).await?,
-        )?;
-    }
-    let payload = payload.ok_or_else(invalid)?;
-    match which {
-        0 => footprint_add(
-            &mut bytes,
-            user_footprint(
-                &lookup(&payload, "User", context).await?.source,
-                flag(&row, "steering", context).await?,
-                context,
-            )
-            .await?,
-        )?,
-        1 | 2 | 3 | 6 => {
+    match row {
+        RowDirectory::ToolResult { call_id, name, .. }
+        | RowDirectory::UnknownTool { call_id, name, .. } => {
             footprint_add(
                 &mut bytes,
-                value_footprint(Some(lookup(&payload, "Text", context).await?))?,
+                raw_footprint(row_text(*call_id, context)?.bytes())?,
             )?;
-            if which == 1 {
+            footprint_add(
+                &mut bytes,
+                raw_footprint(row_text(*name, context)?.bytes())?,
+            )?;
+        }
+        RowDirectory::Notification { call_id, .. } => footprint_add(
+            &mut bytes,
+            raw_footprint(row_text(*call_id, context)?.bytes())?,
+        )?,
+        _ => {}
+    }
+    if matches!(row, RowDirectory::UnknownTool { .. }) {
+        return Ok(bytes);
+    }
+    footprint_add(
+        &mut bytes,
+        error_metadata_bytes(row, payload, context).await?,
+    )?;
+    match payload.ok_or_else(invalid)? {
+        payload @ PayloadDirectory::User { .. } => {
+            let RowDirectory::User { steering, .. } = row else {
+                return Err(invalid());
+            };
+            footprint_add(
+                &mut bytes,
+                user_layout(payload, *steering, context).await?.0,
+            )?;
+        }
+        PayloadDirectory::Text(text) => {
+            footprint_add(
+                &mut bytes,
+                raw_footprint(located::text(*text, context)?.bytes())?,
+            )?;
+            if matches!(row, RowDirectory::ImportedUser { .. }) {
                 footprint_add(&mut bytes, items_footprint::<ContentRecipe>(1)?)?;
             }
         }
-        4 => {
-            let part = lookup(&payload, "Part", context).await?.source;
-            let kind = lookup(&part, "kind", context).await?.text()?;
-            if json::text_eq(&kind, "text", context.budget.clone()).await? {
-                let mut fields = json::fields(
-                    &part,
-                    &["text", "provider_options", "text_kind"],
-                    context.budget.clone(),
-                )
-                .await?
-                .into_iter();
-                let text = required(fields.next().flatten())?.text()?;
-                let options = options(fields.next().flatten());
-                let thinking = json::text_eq(
-                    &required(fields.next().flatten())?.text()?,
-                    "thinking",
-                    context.budget.clone(),
-                )
-                .await?;
+        PayloadDirectory::Part(part) => match part {
+            PartDirectory::Source => {}
+            PartDirectory::Text {
+                text,
+                text_kind,
+                provider_options,
+            } => {
+                let text = located::text(*text, context)?;
+                let options = provider_options
+                    .map(|value| located::json(value, context))
+                    .transpose()?;
                 footprint_add(
                     &mut bytes,
-                    text_footprint(&text, options.as_ref(), thinking, context).await?,
-                )?;
-            } else if json::text_eq(&kind, "tool_call", context.budget.clone()).await? {
-                let call = lookup(&part, "call", context).await?.source;
-                let mut retained = json::fields(
-                    &call,
-                    &["id", "name", "provider_options"],
-                    context.budget.clone(),
-                )
-                .await?
-                .into_iter();
-                footprint_add(&mut bytes, value_footprint(retained.next().flatten())?)?;
-                footprint_add(&mut bytes, value_footprint(retained.next().flatten())?)?;
-                if let Some(options) = options(retained.next().flatten()) {
-                    footprint_add(&mut bytes, raw_footprint(&options.bytes)?)?;
-                }
-                let input = lookup(&call, "input", context).await?.source;
-                let data = lookup(&input, "data", context).await?;
-                let retained = if tagged(&input, "json", context).await? {
-                    data
-                } else {
-                    lookup(&data.source, "raw", context).await?
-                };
-                footprint_add(&mut bytes, value_footprint(Some(retained))?)?;
-            } else if json::text_eq(&kind, "tool_result", context.budget.clone()).await? {
-                let mut retained = json::fields(
-                    &part,
-                    &["id", "name", "output", "provider_options"],
-                    context.budget.clone(),
-                )
-                .await?
-                .into_iter();
-                for _ in 0..3 {
-                    footprint_add(&mut bytes, value_footprint(retained.next().flatten())?)?;
-                }
-                if let Some(options) = options(retained.next().flatten()) {
-                    footprint_add(&mut bytes, raw_footprint(&options.bytes)?)?;
-                }
-            }
-        }
-        5 => {
-            let mut fields = json::fields(&payload, &["Text", "Tool"], context.budget.clone())
-                .await?
-                .into_iter();
-            if let Some(text) = fields.next().flatten() {
-                footprint_add(&mut bytes, value_footprint(Some(text))?)?;
-            } else {
-                let projection = fields
-                    .next()
-                    .flatten()
-                    .map_or(payload, |value| value.source);
-                let kind = lookup(&projection, "kind", context).await?.text()?;
-                if json::text_eq(&kind, "text", context.budget.clone()).await? {
-                    footprint_add(
-                        &mut bytes,
-                        value_footprint(Some(lookup(&projection, "text", context).await?))?,
-                    )?;
-                } else if json::text_eq(&kind, "json", context.budget.clone()).await? {
-                    let value = lookup(&projection, "value", context).await?.source;
-                    let footprint = if flag(&row, "archived", context).await? {
-                        archive_shape(&value, context).await?.1
-                    } else {
-                        raw_footprint(&value.bytes)?
-                    };
-                    footprint_add(&mut bytes, footprint)?;
-                } else if json::text_eq(&kind, "content", context.budget.clone()).await? {
-                    let mut cursor = located::Values::open(
-                        lookup(&projection, "parts", context).await?.source,
-                        located::tool_parts(context).await?,
+                    text_footprint(
+                        &text,
+                        options.as_ref(),
+                        matches!(text_kind, TextKind::Thinking),
                         context,
                     )
-                    .await?;
-                    let mut count = 0usize;
-                    while let Some(part) = cursor.next().await? {
-                        if tagged(&part.value.source, "text", context).await? {
-                            footprint_add(
-                                &mut bytes,
-                                value_footprint(Some(
-                                    lookup(&part.value.source, "text", context).await?,
-                                ))?,
-                            )?;
-                        } else {
-                            footprint_add(
-                                &mut bytes,
-                                media::tool(
-                                    &part.value.source,
-                                    part.location.as_ref(),
-                                    media::Mode::Probe,
-                                    context,
-                                )
-                                .await?
-                                .metadata_bytes,
-                            )?;
-                        }
-                        count = count.checked_add(1).ok_or_else(invalid)?;
-                    }
-                    footprint_add(&mut bytes, items_footprint::<ContentRecipe>(count)?)?;
+                    .await?,
+                )?;
+            }
+            PartDirectory::ToolCall {
+                id,
+                name,
+                input,
+                provider_options,
+                ..
+            } => {
+                for span in [id, name] {
+                    footprint_add(
+                        &mut bytes,
+                        raw_footprint(located::text(*span, context)?.bytes())?,
+                    )?;
+                }
+                let input = match input {
+                    InputDirectory::Json(value) => located::json(*value, context)?.into_bytes(),
+                    InputDirectory::Text(value) => located::text(*value, context)?.into_bytes(),
+                };
+                footprint_add(&mut bytes, raw_footprint(&input)?)?;
+                if let Some(options) = provider_options {
+                    footprint_add(
+                        &mut bytes,
+                        raw_footprint(located::json(*options, context)?.bytes())?,
+                    )?;
                 }
             }
-        }
-        _ => return Err(invalid()),
+            PartDirectory::ToolResult {
+                id,
+                name,
+                output,
+                provider_options,
+                ..
+            } => {
+                for span in [id, name] {
+                    footprint_add(
+                        &mut bytes,
+                        raw_footprint(located::text(*span, context)?.bytes())?,
+                    )?;
+                }
+                footprint_add(
+                    &mut bytes,
+                    raw_footprint(located::json(*output, context)?.bytes())?,
+                )?;
+                if let Some(options) = provider_options {
+                    footprint_add(
+                        &mut bytes,
+                        raw_footprint(located::json(*options, context)?.bytes())?,
+                    )?;
+                }
+            }
+        },
+        PayloadDirectory::Tool(tool) => match tool {
+            ToolDirectory::Text(text) => footprint_add(
+                &mut bytes,
+                raw_footprint(located::text(*text, context)?.bytes())?,
+            )?,
+            ToolDirectory::Json(value) => {
+                let value = located::json(*value, context)?;
+                let size = if matches!(row, RowDirectory::ToolResult { archived: true, .. }) {
+                    archive_shape(&value, context).await?.1
+                } else {
+                    raw_footprint(value.bytes())?
+                };
+                footprint_add(&mut bytes, size)?;
+            }
+            ToolDirectory::Failure => {}
+            ToolDirectory::Content { parts } => {
+                let mut cursor = Children::open(ListKind::ToolParts, *parts, context).await?;
+                while let Some(child) = cursor.next().await? {
+                    let ChildDirectory::ToolPart(part) = child else {
+                        return Err(invalid());
+                    };
+                    let size = match part {
+                        ToolPartDirectory::Text(text) => {
+                            raw_footprint(located::text(text, context)?.bytes())?
+                        }
+                        part => {
+                            media::tool(&part, media::Mode::Probe, context)
+                                .await?
+                                .metadata_bytes
+                        }
+                    };
+                    footprint_add(&mut bytes, size)?;
+                }
+                footprint_add(
+                    &mut bytes,
+                    items_footprint::<ContentRecipe>(
+                        usize::try_from(*parts).map_err(io::Error::other)?,
+                    )?,
+                )?;
+            }
+        },
     }
     Ok(bytes)
 }
@@ -1173,7 +1072,7 @@ async fn text_footprint(
     thinking: bool,
     context: &ProjectContext<'_>,
 ) -> io::Result<usize> {
-    let mut bytes = raw_footprint(&text.bytes)?;
+    let mut bytes = raw_footprint(text.bytes())?;
     if thinking
         && matches!(context.provider, ProviderKind::OpenaiCompatible { .. })
         && let Some(options) = options
@@ -1215,7 +1114,7 @@ async fn text_footprint(
         return Ok(bytes);
     }
     if let Some(options) = options {
-        footprint_add(&mut bytes, raw_footprint(&options.bytes)?)?;
+        footprint_add(&mut bytes, raw_footprint(options.bytes())?)?;
     }
     Ok(bytes)
 }
@@ -1232,10 +1131,10 @@ async fn error_text(
         ToolOutputRecipe::ErrorJson(value)
             if json::kind(value, context.budget.clone()).await? == JsonKind::String =>
         {
-            Ok(Some(TextSource {
-                bytes: value.bytes.clone(),
-                encoding: TextEncoding::JsonString,
-            }))
+            Ok(Some(TextSource::new(
+                value.bytes().clone(),
+                TextEncoding::JsonString,
+            )))
         }
         _ => Ok(None),
     }
@@ -1278,10 +1177,7 @@ async fn validated_error(
     let bytes = source_text::bytes(text, context.budget.clone());
     match json::validate_value_bytes(&bytes, context.budget.clone()).await {
         Ok(kind) => {
-            let text = TextSource {
-                bytes,
-                encoding: TextEncoding::Utf8,
-            };
+            let text = TextSource::new(bytes, TextEncoding::Utf8);
             let length = decoded_bytes(text.clone(), context).await?;
             Ok(Some((text, kind, length)))
         }
@@ -1304,10 +1200,7 @@ async fn error_plan(text: TextSource, context: &ProjectContext<'_>) -> io::Resul
             bytes: length,
         });
     }
-    let nested = TextSource {
-        bytes: value.bytes.clone(),
-        encoding: TextEncoding::JsonString,
-    };
+    let nested = TextSource::new(value.bytes().clone(), TextEncoding::JsonString);
     let Some((second, _, second_length)) = validated_error(nested, context).await? else {
         return Ok(ErrorPlan {
             value: Some(value),
@@ -1324,9 +1217,7 @@ async fn error_plan(text: TextSource, context: &ProjectContext<'_>) -> io::Resul
 }
 
 fn null_json() -> JsonSource {
-    JsonSource {
-        bytes: literal("null").bytes,
-    }
+    JsonSource::new(literal("null").into_bytes())
 }
 async fn freeze_error(
     result: &mut ToolResultRecipe,
@@ -1376,155 +1267,85 @@ async fn freeze_error(
 }
 
 async fn row_error_text(
-    metadata: JsonSource,
-    payload: Option<JsonSource>,
+    row: &RowDirectory,
+    payload: Option<&PayloadDirectory>,
     context: &ProjectContext<'_>,
 ) -> io::Result<Option<TextSource>> {
     if !matches!(context.provider, ProviderKind::Anthropic) {
         return Ok(None);
     }
-    let Some(payload) = payload else {
-        return Ok(None);
-    };
-    let row_kind = lookup(&metadata, "kind", context).await?.source;
-    if json::fields(
-        &row_kind,
-        &["AssistantPart", "ToolResult"],
-        context.budget.clone(),
-    )
-    .await?
-    .iter()
-    .all(Option::is_none)
-    {
-        return Ok(None);
-    }
-    let mut fields = json::fields(&payload, &["Part", "Text"], context.budget.clone())
-        .await?
-        .into_iter();
-    let candidate = if let Some(part) = fields.next().flatten() {
-        if !tagged(&part.source, "tool_result", context).await?
-            || !flag(&part.source, "is_error", context).await?
-        {
-            return Ok(None);
+    match (row, payload) {
+        (
+            RowDirectory::AssistantPart { .. },
+            Some(PayloadDirectory::Part(PartDirectory::ToolResult {
+                output,
+                is_error: true,
+                ..
+            })),
+        ) => {
+            error_text(
+                &ToolOutputRecipe::ErrorJson(located::json(*output, context)?),
+                context,
+            )
+            .await
         }
-        let output =
-            ToolOutputRecipe::ErrorJson(lookup(&part.source, "output", context).await?.source);
-        error_text(&output, context).await?
-    } else if let Some(text) = fields.next().flatten() {
-        let Some(_) =
-            json::field(&metadata, &["kind", "ToolResult"], context.budget.clone()).await?
-        else {
-            return Ok(None);
-        };
-        error_text(&ToolOutputRecipe::ErrorText(text.text()?), context).await?
-    } else {
-        None
-    };
-    Ok(candidate)
+        (RowDirectory::ToolResult { .. }, Some(PayloadDirectory::Text(text))) => {
+            Ok(Some(located::text(*text, context)?))
+        }
+        _ => Ok(None),
+    }
 }
-
-/// The derived JSON backing is separate from retained recipe metadata.
+/// Derived backing is separate from retained recipe metadata.
 pub(super) async fn backing_bytes_row(
-    metadata: JsonSource,
-    payload: Option<JsonSource>,
+    row: &RowDirectory,
+    payload: Option<&PayloadDirectory>,
     context: &ProjectContext<'_>,
 ) -> io::Result<usize> {
-    let row_kind = lookup(&metadata, "kind", context).await?.source;
-    let media = json::fields(&row_kind, &["User", "ToolResult"], context.budget.clone())
-        .await?
-        .iter()
-        .any(Option::is_some);
-    let mut bytes = if media {
-        media_backing_bytes(payload.as_ref(), context).await?
-    } else {
-        0
+    let mut bytes = 0;
+    let (kind, count) = match payload {
+        Some(PayloadDirectory::User { attachments, .. })
+            if matches!(row, RowDirectory::User { .. }) =>
+        {
+            (ListKind::Attachments, *attachments)
+        }
+        Some(PayloadDirectory::Tool(ToolDirectory::Content { parts }))
+            if matches!(row, RowDirectory::ToolResult { .. }) =>
+        {
+            (ListKind::ToolParts, *parts)
+        }
+        _ => (ListKind::ToolParts, 0),
     };
-    if let Some(text) = row_error_text(metadata, payload, context).await? {
+    if count != 0 {
+        let mut cursor = Children::open(kind, count, context).await?;
+        while let Some(child) = cursor.next().await? {
+            let size = match child {
+                ChildDirectory::Attachment(value) => {
+                    media::attachment(&value, media::Mode::Probe, context)
+                        .await?
+                        .backing_bytes
+                }
+                ChildDirectory::ToolPart(ToolPartDirectory::Text(_)) => 0,
+                ChildDirectory::ToolPart(part) => {
+                    media::tool(&part, media::Mode::Probe, context)
+                        .await?
+                        .backing_bytes
+                }
+                _ => return Err(invalid()),
+            };
+            footprint_add(&mut bytes, size)?;
+        }
+    }
+    if let Some(text) = row_error_text(row, payload, context).await? {
         footprint_add(&mut bytes, error_plan(text, context).await?.bytes)?;
     }
     Ok(bytes)
 }
-async fn media_backing_bytes(
-    payload: Option<&JsonSource>,
-    context: &ProjectContext<'_>,
-) -> io::Result<usize> {
-    let Some(payload) = payload else { return Ok(0) };
-    if let Some(user) = json::field(payload, &["User"], context.budget.clone()).await? {
-        let Some(attachments) =
-            json::field(&user.source, &["attachments"], context.budget.clone()).await?
-        else {
-            return Ok(0);
-        };
-        if attachments.kind == JsonKind::Null {
-            return Ok(0);
-        }
-        let mut cursor = located::Values::open(
-            attachments.source,
-            located::attachments(context).await?,
-            context,
-        )
-        .await?;
-        let mut bytes = 0usize;
-        while let Some(attachment) = cursor.next().await? {
-            footprint_add(
-                &mut bytes,
-                media::attachment(
-                    &attachment.value.source,
-                    attachment.location.as_ref(),
-                    media::Mode::Probe,
-                    context,
-                )
-                .await?
-                .backing_bytes,
-            )?;
-        }
-        return Ok(bytes);
-    }
-    let tool = match json::field(payload, &["Tool"], context.budget.clone()).await? {
-        Some(tool) => tool.source,
-        None => {
-            if json::field(payload, &["kind"], context.budget.clone())
-                .await?
-                .is_none()
-            {
-                return Ok(0);
-            }
-            payload.clone()
-        }
-    };
-    if !tagged(&tool, "content", context).await? {
-        return Ok(0);
-    }
-    let mut cursor = located::Values::open(
-        lookup(&tool, "parts", context).await?.source,
-        located::tool_parts(context).await?,
-        context,
-    )
-    .await?;
-    let mut bytes = 0usize;
-    while let Some(part) = cursor.next().await? {
-        if !tagged(&part.value.source, "text", context).await? {
-            footprint_add(
-                &mut bytes,
-                media::tool(
-                    &part.value.source,
-                    part.location.as_ref(),
-                    media::Mode::Probe,
-                    context,
-                )
-                .await?
-                .backing_bytes,
-            )?;
-        }
-    }
-    Ok(bytes)
-}
 async fn error_metadata_bytes(
-    metadata: JsonSource,
-    payload: Option<JsonSource>,
+    row: &RowDirectory,
+    payload: Option<&PayloadDirectory>,
     context: &ProjectContext<'_>,
 ) -> io::Result<usize> {
-    let Some(text) = row_error_text(metadata, payload, context).await? else {
+    let Some(text) = row_error_text(row, payload, context).await? else {
         return Ok(0);
     };
     let plan = error_plan(text, context).await?;
@@ -1532,103 +1353,95 @@ async fn error_metadata_bytes(
         + usize::from(matches!(plan.second, SecondError::Decoded(_)));
     super::capture_arena::source_metadata_bytes(count)
 }
-
 async fn user_layout(
-    input: &JsonSource,
+    input: &PayloadDirectory,
     steering: bool,
     context: &ProjectContext<'_>,
 ) -> io::Result<(usize, usize, usize)> {
-    let mut bytes = 0usize;
+    let PayloadDirectory::User {
+        text,
+        quotes,
+        attachments,
+        directory_references,
+    } = input
+    else {
+        return Err(invalid());
+    };
+    let mut bytes = raw_footprint(located::text(*text, context)?.bytes())?;
     let mut content_count = 1usize;
     let mut pieces = 1usize + usize::from(steering) * 2;
-    let mut fields = json::fields(
-        input,
-        &["text", "quotes", "attachments", "directory_references"],
-        context.budget.clone(),
-    )
-    .await?
-    .into_iter();
-    footprint_add(&mut bytes, value_footprint(fields.next().flatten())?)?;
-    if let Some(quotes) = options(fields.next().flatten()) {
-        let mut cursor = json::ArrayCursor::open(quotes, context.budget.clone()).await?;
-        while let Some(quote) = cursor.next().await? {
-            pieces = pieces.checked_add(5).ok_or_else(invalid)?;
-            let mut fields = json::fields(
-                &quote.source,
-                &["label", "source", "text"],
-                context.budget.clone(),
-            )
-            .await?
-            .into_iter();
-            if let Some(label) = fields
-                .next()
-                .flatten()
-                .filter(|value| value.kind != JsonKind::Null)
-            {
-                pieces = pieces.checked_add(3).ok_or_else(invalid)?;
-                footprint_add(&mut bytes, value_footprint(Some(label))?)?;
-                footprint_add(
-                    &mut bytes,
-                    source_text::transform_metadata_bytes(TextEncoding::JsonString)?,
-                )?;
-            }
-            if let Some(source) = options(fields.next().flatten()) {
-                pieces = pieces.checked_add(3).ok_or_else(invalid)?;
-                footprint_add(&mut bytes, raw_footprint(&source.bytes)?)?;
-                footprint_add(
-                    &mut bytes,
-                    source_text::transform_metadata_bytes(TextEncoding::Utf8)?,
-                )?;
-            }
-            footprint_add(&mut bytes, value_footprint(fields.next().flatten())?)?;
+    let mut cursor = Children::open(ListKind::Quotes, *quotes, context).await?;
+    while let Some(child) = cursor.next().await? {
+        let ChildDirectory::Quote {
+            label,
+            source,
+            text,
+        } = child
+        else {
+            return Err(invalid());
+        };
+        pieces = pieces.checked_add(5).ok_or_else(invalid)?;
+        if let Some(label) = label {
+            pieces = pieces.checked_add(3).ok_or_else(invalid)?;
+            footprint_add(
+                &mut bytes,
+                raw_footprint(located::text(label, context)?.bytes())?,
+            )?;
+            footprint_add(
+                &mut bytes,
+                source_text::transform_metadata_bytes(TextEncoding::JsonString)?,
+            )?;
         }
-    }
-    if let Some(attachments) = options(fields.next().flatten()) {
-        let mut cursor =
-            located::Values::open(attachments, located::attachments(context).await?, context)
-                .await?;
-        while let Some(attachment) = cursor.next().await? {
-            let attachment = media::attachment(
-                &attachment.value.source,
-                attachment.location.as_ref(),
-                media::Mode::Probe,
-                context,
-            )
-            .await?;
-            pieces = pieces
-                .checked_add(1)
-                .and_then(|count| count.checked_add(attachment.pieces.len()))
-                .ok_or_else(invalid)?;
-            footprint_add(&mut bytes, attachment.metadata_bytes)?;
-            content_count = content_count
-                .checked_add(usize::from(attachment.has_content))
-                .ok_or_else(invalid)?;
-        }
-    }
-    if let Some(references) = options(fields.next().flatten()) {
-        let mut cursor =
-            json::ArrayCursor::open(references.clone(), context.budget.clone()).await?;
-        if cursor.next().await?.is_some() {
-            pieces = pieces.checked_add(4).ok_or_else(invalid)?;
-            footprint_add(&mut bytes, raw_footprint(&references.bytes)?)?;
+        if let Some(source) = source {
+            pieces = pieces.checked_add(3).ok_or_else(invalid)?;
+            footprint_add(
+                &mut bytes,
+                raw_footprint(located::json(source, context)?.bytes())?,
+            )?;
             footprint_add(
                 &mut bytes,
                 source_text::transform_metadata_bytes(TextEncoding::Utf8)?,
             )?;
         }
+        footprint_add(
+            &mut bytes,
+            raw_footprint(located::text(text, context)?.bytes())?,
+        )?;
+    }
+    drop(cursor);
+    let mut cursor = Children::open(ListKind::Attachments, *attachments, context).await?;
+    while let Some(child) = cursor.next().await? {
+        let ChildDirectory::Attachment(value) = child else {
+            return Err(invalid());
+        };
+        let attachment = media::attachment(&value, media::Mode::Probe, context).await?;
+        pieces = pieces
+            .checked_add(1)
+            .and_then(|v| v.checked_add(attachment.pieces.len()))
+            .ok_or_else(invalid)?;
+        footprint_add(&mut bytes, attachment.metadata_bytes)?;
+        content_count = content_count
+            .checked_add(usize::from(attachment.has_content))
+            .ok_or_else(invalid)?;
+    }
+    let references = reference_pieces(*directory_references, context).await?;
+    if !references.is_empty() {
+        pieces = pieces.checked_add(references.len()).ok_or_else(invalid)?;
+        if let Some(span) = directory_references {
+            footprint_add(
+                &mut bytes,
+                raw_footprint(located::json(*span, context)?.bytes())?,
+            )?;
+        }
+        footprint_add(
+            &mut bytes,
+            source_text::transform_metadata_bytes(TextEncoding::Utf8)?,
+        )?;
     }
     footprint_add(&mut bytes, items_footprint::<TextSource>(pieces)?)?;
     footprint_add(&mut bytes, source_text::concat_metadata_bytes()?)?;
     footprint_add(&mut bytes, items_footprint::<ContentRecipe>(content_count)?)?;
     Ok((bytes, pieces, content_count))
-}
-
-async fn user_footprint(
-    input: &JsonSource,
-    steering: bool,
-    context: &ProjectContext<'_>,
-) -> io::Result<usize> {
-    Ok(user_layout(input, steering, context).await?.0)
 }
 
 #[cfg(test)]
@@ -1642,125 +1455,7 @@ mod tests {
         }
     }
     fn json_literal(value: &'static str) -> JsonSource {
-        JsonSource {
-            bytes: SourceBytes::Inline(value.as_bytes().into()),
-        }
-    }
-    #[tokio::test]
-    async fn opaque_json_tool_output_does_not_become_media() {
-        let context = ProjectContext {
-            language: Language::En,
-            vision: false,
-            provider: &ProviderKind::Anthropic,
-            replay: None,
-            captured: None,
-            payload_root: None,
-            arena: None,
-            internal_arena: false,
-            cancellation: &tokio_util::sync::CancellationToken::new(),
-            budget: Arc::new(Budget),
-            directory_owner: Arc::new(()),
-        };
-        let metadata = json_literal(
-            r#"{"kind":{"ToolResult":{"call_id":"call","name":"read","custom":false,"archived":false,"is_error":false}}}"#,
-        );
-        let payload = json_literal(
-            r#"{"Tool":{"kind":"json","value":{"kind":"artifact","image":{"ref":"not-authority"}}}}"#,
-        );
-        let ProjectedRow::Tool(result) = project_row(metadata, Some(payload), &context)
-            .await
-            .unwrap()
-        else {
-            panic!("expected tool recipe")
-        };
-        let ToolOutputRecipe::Json(value) = result.output else {
-            panic!("opaque JSON must remain JSON")
-        };
-        let kind = json::field(&value, &["kind"], context.budget.clone())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(
-            json::text_eq(&kind.text().unwrap(), "artifact", context.budget.clone())
-                .await
-                .unwrap()
-        );
-    }
-    #[tokio::test]
-    async fn malformed_tool_input_preserves_raw_text_and_execution_flag() {
-        let context = ProjectContext {
-            language: Language::En,
-            vision: false,
-            provider: &ProviderKind::Anthropic,
-            replay: None,
-            captured: None,
-            payload_root: None,
-            arena: None,
-            internal_arena: false,
-            cancellation: &tokio_util::sync::CancellationToken::new(),
-            budget: Arc::new(Budget),
-            directory_owner: Arc::new(()),
-        };
-        let payload = json_literal(
-            r#"{"kind":"tool_call","call":{"id":"call","name":"read","input":{"kind":"invalid_json","data":{"raw":"{\\n"}},"provider_executed":true,"provider_options":null}}"#,
-        );
-        let ProjectedRow::Assistant(AssistantRecipe::ToolCall {
-            input,
-            provider_executed,
-            ..
-        }) = assistant(&payload, &context).await.unwrap()
-        else {
-            panic!("expected tool call")
-        };
-        assert_eq!(provider_executed, Some(true));
-        let ToolInputRecipe::Text(raw) = input else {
-            panic!("malformed input must remain text")
-        };
-        assert!(
-            json::text_eq(&raw, "{\\n", context.budget.clone())
-                .await
-                .unwrap()
-        );
-    }
-    #[tokio::test]
-    async fn steering_quotes_preserve_text_and_escape_display_provenance() {
-        let context = ProjectContext {
-            language: Language::En,
-            vision: false,
-            provider: &ProviderKind::Anthropic,
-            replay: None,
-            captured: None,
-            payload_root: None,
-            arena: None,
-            internal_arena: false,
-            cancellation: &tokio_util::sync::CancellationToken::new(),
-            budget: Arc::new(Budget),
-            directory_owner: Arc::new(()),
-        };
-        let input = json_literal(
-            r#"{"text":"ask","quotes":[{"label":"a\"b","text":"<quoted>","source":{"sessionName":"<&>"}}],"attachments":[],"directory_references":[]}"#,
-        );
-        let ProjectedRow::User(content) = user(&input, true, &context).await.unwrap() else {
-            panic!("expected user")
-        };
-        let mut cursor = content.open(0);
-        let Some(ContentRecipe::Text { text, .. }) = cursor.next().await.unwrap() else {
-            panic!("expected source text")
-        };
-        assert!(
-            json::text_eq(
-                &text,
-                concat!(
-                    "The user sent a message while you were working:\n<user_query>\nask\n\n",
-                    "<quoted_excerpt label=\"a'b\">\nSession snapshot provenance (display-only): ",
-                    r#"{"sessionName":"\u003c\u0026\u003e"}"#,
-                    "\n<quoted>\n</quoted_excerpt>\n</user_query>"
-                ),
-                context.budget.clone()
-            )
-            .await
-            .unwrap()
-        );
+        JsonSource::new(SourceBytes::Inline(value.as_bytes().into()))
     }
     #[tokio::test]
     async fn archived_instruction_replaces_in_place_and_remains_indexed() {
@@ -1770,6 +1465,7 @@ mod tests {
             provider: &ProviderKind::Anthropic,
             replay: None,
             captured: None,
+            row_root: None,
             payload_root: None,
             arena: None,
             internal_arena: false,
@@ -1777,6 +1473,26 @@ mod tests {
             budget: Arc::new(Budget),
             directory_owner: Arc::new(()),
         };
+        let duplicate = r#"{"read\u0049nstructions":"first","readInstructions":"second"}"#;
+        let ArchivePlacement::Replace(range) =
+            archive_placement(&json_literal(duplicate), &context)
+                .await
+                .unwrap()
+        else {
+            panic!("existing instruction must be replaced")
+        };
+        assert_eq!(
+            &duplicate[range.start as usize..range.end as usize],
+            r#""first""#
+        );
+        assert!(
+            archive_placement(
+                &json_literal(r#"{"readInstructions":"first","later":[true,]}"#),
+                &context,
+            )
+            .await
+            .is_err()
+        );
         let value = archive(
             json_literal(r#"{"before":1,"readInstructions":"old","after":{"x":2}}"#),
             &context,
@@ -1819,6 +1535,7 @@ mod tests {
             provider: &ProviderKind::Anthropic,
             replay: None,
             captured: None,
+            row_root: None,
             payload_root: None,
             arena: None,
             internal_arena: false,
@@ -1871,6 +1588,7 @@ mod tests {
             provider: &provider,
             replay: None,
             captured: None,
+            row_root: None,
             payload_root: None,
             arena: None,
             internal_arena: false,
@@ -1918,6 +1636,7 @@ mod tests {
             provider: &provider,
             replay: None,
             captured: None,
+            row_root: None,
             payload_root: None,
             arena: None,
             internal_arena: false,
@@ -1983,6 +1702,7 @@ mod tests {
             provider: &provider,
             replay: None,
             captured: None,
+            row_root: None,
             payload_root: None,
             arena: None,
             internal_arena: false,
@@ -2013,6 +1733,7 @@ mod tests {
             provider: &ProviderKind::Anthropic,
             replay: None,
             captured: None,
+            row_root: None,
             payload_root: None,
             arena: None,
             internal_arena: false,
@@ -2068,6 +1789,7 @@ mod tests {
             provider: &ProviderKind::Anthropic,
             replay: None,
             captured: None,
+            row_root: None,
             payload_root: None,
             arena: None,
             internal_arena: false,
@@ -2075,10 +1797,7 @@ mod tests {
             budget: Arc::new(Budget),
             directory_owner: Arc::new(()),
         };
-        let source = TextSource {
-            bytes: SourceBytes::Source(Arc::new(Failure)),
-            encoding: TextEncoding::Utf8,
-        };
+        let source = TextSource::new(SourceBytes::Source(Arc::new(Failure)), TextEncoding::Utf8);
         let error = match error_plan(source, &context).await {
             Ok(_) => panic!("storage failure must not become a null hint"),
             Err(error) => error,
@@ -2093,6 +1812,7 @@ mod tests {
             provider: &ProviderKind::Anthropic,
             replay: None,
             captured: None,
+            row_root: None,
             payload_root: None,
             arena: None,
             internal_arena: false,

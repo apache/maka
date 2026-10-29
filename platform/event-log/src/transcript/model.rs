@@ -221,7 +221,7 @@ mod tests {
                     sequence += 1;
                     let event = if step == "with-report" && delta == 0 {
                         json!({"kind":"response_metadata","data":{"model":"reported-early"}})
-                    } else { json!({"kind":"part_delta","data":{"id":"part","text":"text"}}) };
+                    } else { json!({"kind":"provider_options","data":{"provider_part_id":"part","options":{"opaque":"metadata"}}}) };
                     let observed = json!({"invocation":{"session_id":"source"},"fact":{"kind":"model_observed","step_id":step,"event":event}});
                     crate::canonical_insert::insert(crate::canonical_insert::Record {
                         sequence: Some(sequence), event_id: &format!("event-{sequence}"), invocation_id: Some("invocation"),

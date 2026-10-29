@@ -17,149 +17,33 @@
  * under the License.
  */
 
-//! Checked positions only for original payload navigation that contains artifact references.
+//! Bind directory leaves to their original immutable payload bytes.
 use super::*;
-use maka_event_log::context::semantic::{PayloadEncoding, PayloadSource};
+use maka_agent_facts::history::semantic::directory::{ByteRange, JsonSpan, TextSpan};
 use std::ops::Range;
 
-#[derive(Clone)]
-pub(super) struct LocatedJson {
-    pub root: PayloadSource,
-    pub range: Range<u64>,
+pub(super) fn range(value: ByteRange) -> io::Result<Range<u64>> {
+    Ok(value.start..value.start.checked_add(value.len).ok_or_else(invalid)?)
 }
-pub(super) struct Value {
-    pub value: JsonValue,
-    pub location: Option<LocatedJson>,
+fn bytes(value: ByteRange, context: &ProjectContext<'_>) -> io::Result<SourceBytes> {
+    let captured = context.captured.ok_or_else(invalid)?;
+    let root = context.payload_root.ok_or_else(invalid)?;
+    Ok(SourceBytes::Source(
+        captured
+            .byte_range(root, value.start, value.len)
+            .map_err(io::Error::other)?,
+    ))
 }
-impl LocatedJson {
-    pub fn child(&self, relative: Range<u64>) -> io::Result<Self> {
-        if relative.start > relative.end || relative.end > self.range.end - self.range.start {
-            return Err(invalid());
-        }
-        let start = self
-            .range
-            .start
-            .checked_add(relative.start)
-            .ok_or_else(invalid)?;
-        let end = self
-            .range
-            .start
-            .checked_add(relative.end)
-            .ok_or_else(invalid)?;
-        Ok(Self {
-            root: self.root.clone(),
-            range: start..end,
-        })
-    }
-    fn source(&self, context: &ProjectContext<'_>) -> io::Result<JsonSource> {
-        let captured = context.captured.ok_or_else(invalid)?;
-        Ok(JsonSource {
-            bytes: SourceBytes::Source(
-                captured
-                    .byte_range(
-                        &self.root,
-                        self.range.start,
-                        self.range.end - self.range.start,
-                    )
-                    .map_err(io::Error::other)?,
-            ),
-        })
-    }
-    async fn field(&self, name: &str, context: &ProjectContext<'_>) -> io::Result<Option<Self>> {
-        let source = self.source(context)?;
-        let mut fields = fields(&source, Some(self), &[name], context).await?;
-        Ok(fields.pop().flatten().and_then(|value| value.location))
-    }
+pub(super) fn text(value: TextSpan, context: &ProjectContext<'_>) -> io::Result<TextSource> {
+    Ok(TextSource::measured(
+        bytes(value.range, context)?,
+        TextEncoding::JsonString,
+        value.measure,
+    ))
 }
-fn payload(context: &ProjectContext<'_>) -> io::Result<Option<LocatedJson>> {
-    let Some(root) = context.payload_root else {
-        return Ok(None);
-    };
-    let end = root.byte_len().ok_or_else(invalid)?;
-    Ok(Some(LocatedJson {
-        root: root.clone(),
-        range: 0..end,
-    }))
-}
-pub(super) async fn attachments(context: &ProjectContext<'_>) -> io::Result<Option<LocatedJson>> {
-    let Some(payload) = payload(context)? else {
-        return Ok(None);
-    };
-    let user = payload.field("User", context).await?.ok_or_else(invalid)?;
-    user.field("attachments", context).await
-}
-pub(super) async fn tool_parts(context: &ProjectContext<'_>) -> io::Result<Option<LocatedJson>> {
-    let Some(payload) = payload(context)? else {
-        return Ok(None);
-    };
-    let tool = if payload.root.encoding() == PayloadEncoding::CanonicalProjection {
-        payload
-    } else {
-        payload.field("Tool", context).await?.ok_or_else(invalid)?
-    };
-    tool.field("parts", context).await
-}
-pub(super) async fn fields(
-    source: &JsonSource,
-    location: Option<&LocatedJson>,
-    names: &[&str],
-    context: &ProjectContext<'_>,
-) -> io::Result<Vec<Option<Value>>> {
-    let mut output: Vec<Option<Value>> = (0..names.len()).map(|_| None).collect();
-    let mut cursor = json::ObjectCursor::open(source.clone(), context.budget.clone()).await?;
-    while let Some(spans) = cursor.next_spans().await? {
-        let key = TextSource {
-            bytes: source.bytes.slice(spans.key_range)?,
-            encoding: TextEncoding::JsonString,
-        };
-        for (index, name) in names.iter().enumerate() {
-            if json::text_eq(&key, name, context.budget.clone()).await? {
-                output[index] = Some(Value {
-                    value: JsonValue {
-                        source: source.slice(spans.value_range.clone())?,
-                        kind: spans.kind,
-                    },
-                    location: location
-                        .map(|parent| parent.child(spans.value_range.clone()))
-                        .transpose()?,
-                });
-            }
-        }
-    }
-    Ok(output)
-}
-pub(super) struct Values {
-    source: JsonSource,
-    location: Option<LocatedJson>,
-    cursor: json::ArrayCursor,
-}
-impl Values {
-    pub async fn open(
-        source: JsonSource,
-        location: Option<LocatedJson>,
-        context: &ProjectContext<'_>,
-    ) -> io::Result<Self> {
-        let cursor = json::ArrayCursor::open(source.clone(), context.budget.clone()).await?;
-        Ok(Self {
-            source,
-            location,
-            cursor,
-        })
-    }
-    pub async fn next(&mut self) -> io::Result<Option<Value>> {
-        let Some(span) = self.cursor.next_span().await? else {
-            return Ok(None);
-        };
-        Ok(Some(Value {
-            value: JsonValue {
-                source: self.source.slice(span.value_range.clone())?,
-                kind: span.kind,
-            },
-            location: self
-                .location
-                .as_ref()
-                .map(|parent| parent.child(span.value_range))
-                .transpose()?,
-        }))
-    }
+pub(super) fn json(value: JsonSpan, context: &ProjectContext<'_>) -> io::Result<JsonSource> {
+    Ok(JsonSource::measured(
+        bytes(value.range, context)?,
+        value.measure,
+    ))
 }

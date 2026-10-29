@@ -159,11 +159,12 @@ impl RequestBackingBuilder {
         offset: u64,
         mut buffer: ChargedBuffer,
         size: usize,
+        read_owner: impl Send + Sync + 'static,
     ) -> io::Result<ChargedBuffer> {
         self.read_exact_at(offset, &mut buffer.as_mut()[..size])?;
         Ok(match self.storage.as_ref().expect("unfinished backing") {
-            Building::Resident { owner, .. } => buffer.retain_owner(owner.clone()),
-            Building::File { source, .. } => buffer.retain_owner(source.clone()),
+            Building::Resident { owner, .. } => buffer.retain_owner((owner.clone(), read_owner)),
+            Building::File { source, .. } => buffer.retain_owner((source.clone(), read_owner)),
         })
     }
 

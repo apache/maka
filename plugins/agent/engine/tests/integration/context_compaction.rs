@@ -22,6 +22,8 @@ use crate::support::store::SessionFixture;
 use maka_agent_facts::context::CompactOutcome;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
+use maka_agent_facts::model::recorded::{CompletionPart, ModelObservation};
+use maka_agent_facts::model::{ModelPart, TextKind};
 use std::sync::Arc;
 use support::*;
 use tokio::net::TcpListener;
@@ -190,7 +192,7 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
     assert!(
         !prefix.events.iter().any(|event| matches!(&event.event.fact,
         Fact::ModelObserved { step_id, event } if step_id == summary_step
-            && !matches!(event, maka_agent_facts::model::ModelEvent::Finished { .. }))),
+            && !matches!(event, ModelObservation::Finished { .. }))),
         "successful summary prose has only its completed durable representation"
     );
     let completed = prefix
@@ -205,12 +207,15 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
         .parts
         .iter()
         .filter_map(|part| match part {
-            maka_agent_facts::model::ModelPart::Text {
-                text_kind: maka_agent_facts::model::TextKind::Text,
-                text,
-                ..
-            } => Some(text.as_str()),
-            _ => None,
+            CompletionPart::Own(record) => match record.part.as_ref() {
+                ModelPart::Text {
+                    text_kind: TextKind::Text,
+                    text,
+                    ..
+                } => Some(text.chunks().collect::<String>()),
+                _ => None,
+            },
+            CompletionPart::Ref(_) => None,
         })
         .collect();
     assert_eq!(
@@ -447,10 +452,24 @@ async fn incomplete_summary_fails_without_repair_and_main_retains_incomplete_tex
             .iter()
             .any(|event| matches!(event.event.fact, Fact::ModelCompleted { .. }))
     );
-    assert!(truncated.iter().any(|event| matches!(&event.event.fact,
-        Fact::ModelObserved { event: maka_agent_facts::model::ModelEvent::PartDelta { text, .. }, .. }
-            if text.contains("truncated-main"))),
-        "main partial prose remains durable despite summary filtering");
+    assert!(truncated.iter().any(|event| match &event.event.fact {
+        Fact::ModelCompleted { output, .. } => output.parts.iter().any(|part| match part {
+            CompletionPart::Own(record) => matches!(record.part.as_ref(), ModelPart::Text { text, .. } if text.chunks().collect::<String>() == "truncated-main"),
+            CompletionPart::Ref(_) => false,
+        }),
+        _ => false,
+    }), "Main incomplete prose is durably owned by its terminal completion");
+    assert!(!prefix.events.iter().any(|event| match &event.event.fact {
+        Fact::ModelCompleted { output, .. } => output.parts.iter().any(|part| match part {
+            CompletionPart::Own(record) => matches!(record.part.as_ref(), ModelPart::Text { text, .. } if text.chunks().collect::<String>() == "cut"),
+            CompletionPart::Ref(_) => false,
+        }),
+        Fact::ModelInterrupted { partial: Some(partial), .. } => partial.parts.iter().any(|part| match part {
+            CompletionPart::Own(record) => matches!(record.part.as_ref(), ModelPart::Text { text, .. } if text.chunks().collect::<String>() == "cut"),
+            CompletionPart::Ref(_) => false,
+        }),
+        _ => false,
+    }), "a failed Summary does not publish its private prose");
 
     worker.drain().await;
 }
@@ -662,13 +681,20 @@ async fn summary_advertised_tools_never_execute() {
         let summary = read_request(&mut socket).await;
         assert_eq!(summary["tools"], main["tools"]);
         let call = serde_json::json!({"id":"summary","object":"chat.completion.chunk","created":1,"model":"test",
-            "choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"forbidden","type":"function",
+            "choices":[{"index":0,"delta":{"content":"private forbidden summary prose","tool_calls":[{"index":0,"id":"forbidden","type":"function",
             "function":{"name":"echo","arguments":"{}"}}]},"finish_reason":null}]});
         let end = serde_json::json!({"id":"summary","object":"chat.completion.chunk","created":1,"model":"test",
             "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
             "usage":{"prompt_tokens":13,"completion_tokens":7,"total_tokens":20}});
         let body = format!("data: {call}\n\ndata: {end}\n\ndata: [DONE]\n\n");
         socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let recovered = read_request(&mut socket).await;
+        let messages = recovered["messages"].to_string();
+        assert!(messages.contains("ordinary answer"));
+        assert!(!messages.contains("private forbidden summary prose"));
+        assert!(!messages.contains("forbidden"));
+        respond(&mut socket, "recovered answer", "stop").await;
     });
     let effects = Arc::new(AtomicUsize::new(0));
     let worker = engine();
@@ -697,6 +723,15 @@ async fn summary_advertised_tools_never_execute() {
             .is_err()
     );
     worker.drain().await;
+    worker
+        .run(
+            log.store(),
+            input(&base, "recovered", false),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    worker.drain().await;
     server.await.unwrap();
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     assert!(
@@ -720,15 +755,22 @@ async fn summary_advertised_tools_never_execute() {
         })
         .unwrap();
     assert!(
-        events.events.iter().any(|event| matches!(&event.event.fact,
-        Fact::ModelObserved { step_id, event: maka_agent_facts::model::ModelEvent::ToolCall(call) }
-            if step_id == summary_step && call.id == "forbidden" && call.name == "echo")),
-        "attempted summary tool effects must remain durable safety evidence"
+        !events.events.iter().any(|event| matches!(&event.event.fact,
+        Fact::ModelObserved { step_id, event: ModelObservation::Part(_) }
+            if step_id == summary_step)),
+        "an unexecuted local Summary request stays private"
     );
     assert!(
         !events.events.iter().any(|event| matches!(&event.event.fact,
         Fact::ModelCompleted { step_id, .. } if step_id == summary_step)),
         "invalid tool output has no completed summary to supply usage"
+    );
+    assert!(events.events.iter().any(|event| matches!(&event.event.fact,
+        Fact::ModelInterrupted { step_id, partial: None, .. } if step_id == summary_step)));
+    assert!(
+        !serde_json::to_string(&events.events)
+            .unwrap()
+            .contains("private forbidden summary prose")
     );
     let summary_request = events
         .events

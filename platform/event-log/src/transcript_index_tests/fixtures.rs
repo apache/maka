@@ -20,7 +20,7 @@
 use super::*;
 
 pub(super) fn event(session: &str, fact: Fact) -> maka_agent_facts::event::EventWrite {
-    maka_agent_facts::event::EventWrite::plain(RuntimeEvent::new(
+    let mut event = RuntimeEvent::new(
         Invocation {
             session_id: session.into(),
             turn_id: format!("turn-{session}"),
@@ -28,8 +28,33 @@ pub(super) fn event(session: &str, fact: Fact) -> maka_agent_facts::event::Event
             invocation_id: format!("inv-{session}"),
         },
         fact,
-    ))
-    .unwrap()
+    );
+    if let Fact::ModelObserved {
+        step_id,
+        event: ModelObservation::Part(part),
+    } = &mut event.fact
+    {
+        if let ModelPart::ToolCall { call } = part.part.as_ref() {
+            part.message_id = maka_agent_facts::tool_call::tool_use_id(
+                &event.invocation.invocation_id,
+                &format!("{step_id}:{}", call.id),
+            );
+        }
+        event.id = format!("record-{step_id}-{}", part.ordinal);
+    }
+    if let Fact::ModelCompleted { step_id, output } = &mut event.fact {
+        for part in &mut output.parts {
+            if let CompletionPart::Own(part) = part
+                && let ModelPart::ToolCall { call } = part.part.as_ref()
+            {
+                part.message_id = maka_agent_facts::tool_call::tool_use_id(
+                    &event.invocation.invocation_id,
+                    &format!("{step_id}:{}", call.id),
+                );
+            }
+        }
+    }
+    maka_agent_facts::event::EventWrite::plain(event).unwrap()
 }
 pub(super) fn opening() -> Fact {
     Fact::InvocationOpened {
@@ -58,44 +83,50 @@ pub(super) fn request(session: &str) -> Fact {
         route_identity: "route".into(),
     }
 }
-pub(super) fn observe(session: &str, event: ModelEvent) -> Fact {
+pub(super) fn observe(session: &str, event: ModelObservation) -> Fact {
     Fact::ModelObserved {
         step_id: format!("step-{session}"),
         event,
     }
 }
-pub(super) async fn partial(log: &EventLog, session: &str, text: &str) -> (String, u64) {
-    log.append(&event(session, opening())).await.unwrap();
-    log.append(&event(session, request(session))).await.unwrap();
-    let start = event(
-        session,
-        observe(
-            session,
-            ModelEvent::PartStarted {
-                id: "provider-part".into(),
-                text_kind: TextKind::Text,
-                provider_options: None,
-            },
-        ),
-    );
-    log.append(&start).await.unwrap();
-    let seq = log
-        .append(&event(
-            session,
-            observe(
-                session,
-                ModelEvent::PartDelta {
-                    id: "provider-part".into(),
-                    text: text.into(),
-                    provider_options: None,
-                },
-            ),
-        ))
-        .await
-        .unwrap();
-    (start.event().id.clone(), seq)
+pub(super) fn record(_step: &str, ordinal: u64, part: ModelPart) -> ModelPartRecord {
+    ModelPartRecord {
+        ordinal,
+        message_id: uuid::Uuid::new_v4().to_string(),
+        started_at: std::time::UNIX_EPOCH,
+        provider_part_id: None,
+        part: std::sync::Arc::new(part),
+    }
 }
-pub(super) async fn interrupt(log: &EventLog, session: &str) -> u64 {
+
+pub(super) fn completion_parts(step: String, parts: Vec<ModelPart>) -> Vec<CompletionPart> {
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, part)| CompletionPart::Own(record(&step, ordinal as u64, part)))
+        .collect()
+}
+pub(super) fn tool_observation(
+    step: &str,
+    call: maka_agent_facts::model::ModelToolCall,
+) -> ModelObservation {
+    ModelObservation::Part(record(step, 0, ModelPart::ToolCall { call }))
+}
+pub(super) async fn partial(log: &EventLog, session: &str, text: &str) -> (ModelPartRecord, u64) {
+    log.append(&event(session, opening())).await.unwrap();
+    let sequence = log.append(&event(session, request(session))).await.unwrap();
+    let part = record(
+        &format!("step-{session}"),
+        0,
+        ModelPart::Text {
+            text_kind: TextKind::Text,
+            text: text.into(),
+            provider_options: None,
+        },
+    );
+    (part, sequence)
+}
+pub(super) async fn interrupt(log: &EventLog, session: &str, part: ModelPartRecord) -> u64 {
     log.append(&event(
         session,
         Fact::ModelInterrupted {
@@ -103,6 +134,13 @@ pub(super) async fn interrupt(log: &EventLog, session: &str) -> u64 {
             diagnostic: None,
             step_id: format!("step-{session}"),
             status: ModelInterruption::Cancelled,
+            partial: Some(ModelPartial {
+                parts: vec![CompletionPart::Own(part)],
+                tool_inputs: Vec::new(),
+                response_id: None,
+                model: None,
+                timestamp: None,
+            }),
         },
     ))
     .await

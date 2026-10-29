@@ -87,7 +87,7 @@ pub async fn request(log: &SessionFixture) {
     .await;
 }
 
-use maka_agent_facts::model::{ModelPart, ModelStep, ModelToolCall, ModelUsage};
+use maka_agent_facts::model::{ModelPart, ModelToolCall};
 use serde_json::json;
 pub async fn tool_call(log: &SessionFixture) {
     request(log).await;
@@ -95,8 +95,10 @@ pub async fn tool_call(log: &SessionFixture) {
         log,
         Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall {
+            output: crate::support::model_records::completion(
+                invocation(),
+                "step",
+                vec![ModelPart::ToolCall {
                     call: ModelToolCall {
                         id: "call".into(),
                         name: "write_file".into(),
@@ -105,13 +107,8 @@ pub async fn tool_call(log: &SessionFixture) {
                         provider_executed: false,
                     },
                 }],
-                finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
-                usage: ModelUsage::default(),
-                provider_options: None,
-                response_id: None,
-                model: None,
-                timestamp: None,
-            },
+                maka_agent_facts::model::ModelFinishReason::ToolCalls,
+            ),
         },
     )
     .await;

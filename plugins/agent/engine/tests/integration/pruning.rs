@@ -148,8 +148,7 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
             // this case verifies a genuinely failed summary, not terminal abort.
             let mut commits = observed.subscribe_commits();
             loop {
-                // Forty calls also retain their input start/delta/end observations;
-                // together with dispatch, settlement and archive facts they exceed 200.
+                // Include the complete forty-call batch and its archived results.
                 let prefix = observed.prefix(512, 16 * 1024 * 1024).await.unwrap();
                 let summary_steps: Vec<_> = prefix
                     .events
@@ -288,27 +287,106 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
                 .iter()
                 .filter(|stored| matches!(stored.event.fact, Fact::ModelInterrupted { .. }))
                 .count(),
-            usize::from(interrupted)
+            usize::from(spent)
         );
-        if interrupted {
-            assert!(!prefix.events.iter().any(|stored| matches!(&stored.event.fact,
-                Fact::ModelObserved { event, .. } if serde_json::to_string(event).unwrap().contains("partial-summary-must-not-replay"))),
-                "unfinished private summary prose has no durable history representation");
-            assert_eq!(
-                prefix
+        if spent {
+            use maka_agent_facts::event::ModelInterruption;
+            use maka_agent_facts::model::error::{ModelFailureCause, ProviderFailureReason};
+            use maka_agent_facts::model::recorded::ModelObservation;
+            let summary_steps: Vec<_> = prefix
+                .events
+                .iter()
+                .filter_map(|stored| match &stored.event.fact {
+                    Fact::ModelRequested {
+                        step_id,
+                        purpose: maka_agent_facts::context::ModelPurpose::Summary,
+                        ..
+                    } if stored.event.invocation.invocation_id == "invocation-first" => {
+                        Some(step_id)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(summary_steps.len(), 1);
+            let summary_step = summary_steps[0];
+            let failed = prefix
+                .events
+                .iter()
+                .find_map(|stored| match &stored.event.fact {
+                    Fact::ModelInterrupted {
+                        step_id,
+                        status,
+                        diagnostic,
+                        model_failure,
+                        partial,
+                    } if step_id == summary_step => {
+                        Some((status, diagnostic, model_failure, partial))
+                    }
+                    _ => None,
+                })
+                .expect("the failed Summary seals its original attempt");
+            assert!(failed.3.is_none(), "failed Summary prose stays private");
+            assert!(
+                !prefix
                     .events
                     .iter()
-                    .filter(|stored| stored.event.invocation.invocation_id == "invocation-first")
-                    .filter(|stored| matches!(
-                        stored.event.fact,
-                        Fact::ModelRequested {
-                            purpose: maka_agent_facts::context::ModelPurpose::Summary,
-                            ..
-                        }
-                    ))
-                    .count(),
-                1
+                    .any(|stored| matches!(&stored.event.fact,
+                Fact::ModelCompleted { step_id, .. } if step_id == summary_step)),
+                "neither a failed stream nor an invalid complete summary is successful output"
             );
+            let finished: Vec<_> = prefix
+                .events
+                .iter()
+                .filter_map(|stored| match &stored.event.fact {
+                    Fact::ModelObserved {
+                        step_id,
+                        event: ModelObservation::Finished { reason, usage, .. },
+                    } if step_id == summary_step => Some((reason, usage)),
+                    _ => None,
+                })
+                .collect();
+            let private_text = if interrupted {
+                assert_eq!(*failed.0, ModelInterruption::RetryableFailure);
+                assert_eq!(
+                    failed.2.as_ref(),
+                    Some(&ModelFailureCause::Provider {
+                        reason: ProviderFailureReason::ProviderUnavailable
+                    })
+                );
+                assert!(
+                    failed
+                        .1
+                        .as_deref()
+                        .unwrap()
+                        .contains("summary stream failed")
+                );
+                assert!(
+                    finished.is_empty(),
+                    "the provider failed before reporting a finish"
+                );
+                "partial-summary-must-not-replay"
+            } else {
+                assert_eq!(*failed.0, ModelInterruption::Failed);
+                assert_eq!(failed.2.as_ref(), Some(&ModelFailureCause::Adapter));
+                assert!(
+                    failed
+                        .1
+                        .as_deref()
+                        .unwrap()
+                        .contains("summary_has_invalid_finish_reason")
+                );
+                assert_eq!(finished.len(), 1);
+                assert_eq!(
+                    *finished[0].0,
+                    maka_agent_facts::model::ModelFinishReason::Length
+                );
+                assert_eq!(finished[0].1.input_tokens, Some(20));
+                assert_eq!(finished[0].1.output_tokens, Some(50));
+                "incomplete summary"
+            };
+            assert!(!prefix.events.iter().any(|stored| matches!(&stored.event.fact,
+                Fact::ModelObserved { step_id, event } if step_id == summary_step && serde_json::to_string(event).unwrap().contains(private_text))),
+                "failed Summary prose has no durable body representation");
         }
         for stored in prefix.events {
             if let Fact::ModelRequested {

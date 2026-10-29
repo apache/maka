@@ -7332,6 +7332,7 @@ dependencies = [
  "maka-provider-protocol",
  "maka-sandbox",
  "regress",
+ "ropey",
  "ryu-js",
  "schemars 1.2.3",
  "serde",

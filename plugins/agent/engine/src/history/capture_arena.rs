@@ -57,6 +57,7 @@ pub(crate) fn source_metadata_bytes(count: usize) -> io::Result<usize> {
 }
 struct Inner {
     captured: CapturedSource,
+    identity: Arc<SourceIdentity>,
     builder: Mutex<Option<RequestBackingBuilder>>,
     published: AtomicU64,
     close_result: Mutex<Option<Result<(), String>>>,
@@ -64,9 +65,16 @@ struct Inner {
     access: Arc<tokio::sync::Mutex<()>>,
 }
 impl CaptureArena {
+    pub(super) fn captured(&self) -> &CapturedSource {
+        &self.0.captured
+    }
+    pub(super) fn owns_arena_locator(&self, identity: &Arc<SourceIdentity>) -> bool {
+        Arc::ptr_eq(&self.0.identity, identity)
+    }
     pub fn metadata_bytes() -> usize {
         2 * std::mem::size_of::<usize>()
             + std::mem::size_of::<Inner>()
+            + 2 * std::mem::size_of::<usize>()
             + RequestBackingBuilder::metadata_bytes()
             + 2 * std::mem::size_of::<usize>()
             + std::mem::size_of::<tokio::sync::Mutex<()>>()
@@ -80,6 +88,7 @@ impl CaptureArena {
     ) -> io::Result<Self> {
         let inner = Arc::new(Inner {
             captured: captured.clone(),
+            identity: Arc::new(SourceIdentity),
             builder: Mutex::new(None),
             published: AtomicU64::new(0),
             close_result: Mutex::new(None),
@@ -162,23 +171,10 @@ impl CaptureArena {
 
     /// Internal fixed metadata reads may run while an append sequence consumes
     /// recipes from this same arena. This never publishes or mutates a range.
-    #[cfg(test)]
-    pub async fn read_control<const N: usize>(&self, offset: u64) -> io::Result<[u8; N]> {
-        self.read_control_with_owner(offset, ()).await
-    }
-
     pub async fn read_control_owned<const N: usize>(
         &self,
         offset: u64,
         owner: Arc<dyn Send + Sync>,
-    ) -> io::Result<[u8; N]> {
-        self.read_control_with_owner(offset, owner).await
-    }
-
-    async fn read_control_with_owner<const N: usize>(
-        &self,
-        offset: u64,
-        owner: impl Send + 'static,
     ) -> io::Result<[u8; N]> {
         self.write_job(move |builder| {
             let _owner = owner;
@@ -201,8 +197,7 @@ impl CaptureArena {
         let mut buffer = budget.allocate(32 * 1024).await?;
         loop {
             if cancellation.is_cancelled() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
+                return Err(crate::preparation_cancelled(
                     "capture arena append cancelled",
                 ));
             }
@@ -239,12 +234,8 @@ impl CaptureArena {
             .append(text::bytes(source, budget.clone()), budget, cancellation)
             .await?;
         Ok(ArenaValue {
-            source: JsonSource {
-                bytes: self.pending(range.clone()),
-            },
-            inspection: JsonSource {
-                bytes: self.inspect(range),
-            },
+            source: JsonSource::new(self.pending(range.clone())),
+            inspection: JsonSource::new(self.inspect(range)),
         })
     }
 
@@ -349,6 +340,12 @@ struct RangeSource {
     inspection: bool,
 }
 impl ByteSource for RangeSource {
+    fn locator(&self) -> Option<SourceLocator> {
+        Some(SourceLocator::Arena {
+            identity: self.arena.0.identity.clone(),
+            range: self.range.clone(),
+        })
+    }
     fn len(&self) -> Option<u64> {
         Some(self.range.end - self.range.start)
     }
@@ -411,7 +408,7 @@ impl ByteCursor for Cursor {
                     let _access = access;
                     arena
                         .with_writer_sync(|builder| {
-                            builder.read_buffer_at(offset, buffer, available)
+                            builder.read_buffer_at(offset, buffer, available, ())
                         })
                         .map_err(Into::into)
                 })

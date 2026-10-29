@@ -184,12 +184,12 @@ fn assistant_part(part: &ModelPart) -> Option<AssistantPart> {
             provider_options,
         } => match text_kind {
             TextKind::Thinking => AssistantPart::Reasoning {
-                text: text.clone(),
-                provider_options: provider_options.clone(),
+                text: text.chunks().collect(),
+                provider_options: provider_options.as_deref().cloned(),
             },
             TextKind::Text => AssistantPart::Text {
-                text: text.clone(),
-                provider_options: provider_options.clone(),
+                text: text.chunks().collect(),
+                provider_options: provider_options.as_deref().cloned(),
             },
         },
         ModelPart::ToolCall { call } => AssistantPart::ToolCall {

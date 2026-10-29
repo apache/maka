@@ -147,12 +147,13 @@ async fn require_safe_through_policy(
               AND NOT EXISTS(SELECT 1 FROM runtime_events d WHERE d.invocation_id = e.invocation_id
                 AND d.operation_id = e.operation_id || ':' || json_extract(p.call, '$.id')
                 AND d.kind IN ('tool_dispatched','tool_rejected'))))
-           OR (e.kind = 'model_completed' AND EXISTS(SELECT 1 FROM json_each(e.event_json, '$.fact.output.parts') p
-              WHERE json_extract(p.value, '$.kind') = 'tool_call' AND json_extract(p.value, '$.call.provider_executed') = 1
-              AND NOT EXISTS(SELECT 1 FROM json_each(e.event_json, '$.fact.output.parts') result
-                WHERE json_extract(result.value, '$.kind') = 'tool_result'
-                  AND json_extract(result.value, '$.id') = json_extract(p.value, '$.call.id')
-                  AND json_extract(result.value, '$.name') = json_extract(p.value, '$.call.name'))))))",
+           OR (e.kind='model_completed' AND EXISTS(
+             SELECT 1 FROM model_selected_parts s JOIN model_part_bodies p ON p.event_id=s.body_event_id AND p.ordinal=s.ordinal
+             WHERE s.sequence=e.sequence AND json_extract(p.part,'$.kind')='tool_call' AND json_extract(p.part,'$.call.provider_executed')=1
+               AND NOT EXISTS(SELECT 1 FROM model_selected_parts rs JOIN model_part_bodies result ON result.event_id=rs.body_event_id AND result.ordinal=rs.ordinal
+                 WHERE rs.sequence=e.sequence AND json_extract(result.part,'$.kind')='tool_result'
+                   AND json_extract(result.part,'$.id')=json_extract(p.part,'$.call.id')
+                   AND json_extract(result.part,'$.name')=json_extract(p.part,'$.call.name'))))))",
     )).bind(session).bind(current).bind(through as i64).bind(allow_sealed_unknown).fetch_one(&mut *connection).await?;
     if unsafe_history {
         return Err(StoreError::HistoryUnsettled);
@@ -160,22 +161,18 @@ async fn require_safe_through_policy(
     // An interrupted model step closes the request, not an observed remote
     // effect. Only that step's durably observed matching result settles it.
     let unknown_provider_effect: bool = sqlx::query_scalar(
-        "WITH runtime_events AS NOT MATERIALIZED (SELECT * FROM main.runtime_events WHERE sequence <= ?3)
-         SELECT EXISTS(SELECT 1 FROM runtime_events interrupted JOIN runtime_events call
-           ON call.invocation_id = interrupted.invocation_id AND call.kind = 'model_observed'
-           AND json_extract(call.event_json, '$.fact.step_id') = json_extract(interrupted.event_json, '$.fact.step_id')
-           AND call.sequence < interrupted.sequence
-         WHERE interrupted.kind = 'model_interrupted'
-           AND json_extract(interrupted.event_json, '$.invocation.session_id') = ?1
-           AND (?2 IS NULL OR interrupted.invocation_id != ?2)
-           AND json_extract(call.event_json, '$.fact.event.kind') = 'tool_call'
-           AND json_extract(call.event_json, '$.fact.event.data.provider_executed') = 1
-           AND NOT EXISTS(SELECT 1 FROM runtime_events result WHERE result.invocation_id = call.invocation_id
-             AND result.kind = 'model_observed' AND result.sequence > call.sequence AND result.sequence < interrupted.sequence
-             AND json_extract(result.event_json, '$.fact.step_id') = json_extract(call.event_json, '$.fact.step_id')
-             AND json_extract(result.event_json, '$.fact.event.kind') = 'provider_tool_result'
-             AND json_extract(result.event_json, '$.fact.event.data.id') = json_extract(call.event_json, '$.fact.event.data.id')
-             AND json_extract(result.event_json, '$.fact.event.data.name') = json_extract(call.event_json, '$.fact.event.data.name')))",
+        "SELECT EXISTS(SELECT 1 FROM runtime_events interrupted JOIN model_part_bodies call
+           ON call.invocation_id=interrupted.invocation_id AND call.step_id=interrupted.operation_id
+           AND call.source_kind='model_observed' AND call.source_sequence<interrupted.sequence
+         WHERE interrupted.kind='model_interrupted' AND interrupted.event_session=?1
+           AND interrupted.sequence<=?3 AND (?2 IS NULL OR interrupted.invocation_id!=?2)
+           AND json_extract(call.part,'$.kind')='tool_call' AND json_extract(call.part,'$.call.provider_executed')=1
+           AND NOT EXISTS(SELECT 1 FROM model_part_bodies result WHERE result.invocation_id=call.invocation_id
+             AND result.step_id=call.step_id AND result.source_kind='model_observed'
+             AND result.source_sequence>call.source_sequence AND result.source_sequence<interrupted.sequence
+             AND json_extract(result.part,'$.kind')='tool_result'
+             AND json_extract(result.part,'$.id')=json_extract(call.part,'$.call.id')
+             AND json_extract(result.part,'$.name')=json_extract(call.part,'$.call.name')))",
     ).bind(session).bind(current).bind(through as i64).fetch_one(&mut *connection).await?;
     if unknown_provider_effect {
         return Err(StoreError::HistoryProviderEffectUnresolved);
@@ -290,10 +287,10 @@ pub(crate) async fn model_source_unchanged(
 
 const EXECUTION_BOUNDARY: &str = "WITH work AS (
            SELECT kind,operation_id FROM context_execution_work INDEXED BY context_execution_live
-             WHERE invocation_id=?1 AND closed_at IS NULL AND opened_at<=?2
+             WHERE invocation_id=?1 AND closed_at IS NULL AND opened_at<=?2 AND kind!='executor_tool'
            UNION ALL
            SELECT kind,operation_id FROM context_execution_work INDEXED BY context_execution_closed
-             WHERE invocation_id=?1 AND closed_at>?2 AND opened_at<=?2)
+             WHERE invocation_id=?1 AND closed_at>?2 AND opened_at<=?2 AND kind!='executor_tool')
          SELECT EXISTS(SELECT 1 FROM work w
            WHERE NOT (?3 AND w.kind='tool' AND EXISTS(
              SELECT 1 FROM context_independent_tools i WHERE i.invocation_id=?1

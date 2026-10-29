@@ -191,8 +191,7 @@ impl RequestBody {
                         state.last_message = Some(chunk.message_index);
                         continue;
                     }
-                    if chunk.bytes.len() > 16 * 1024
-                        || chunk.message_index < state.skip
+                    if chunk.message_index < state.skip
                         || chunk.message_index >= state.message_count
                         || state
                             .last_message
@@ -352,6 +351,105 @@ mod tests {
         assert_eq!(websocket["input"], first["input"]);
         assert_eq!(websocket["type"], "response.create");
         assert!(websocket.get("stream").is_none());
+    }
+
+    struct PreparedItems(Vec<http::Bytes>);
+    struct PreparedCursor {
+        items: Vec<http::Bytes>,
+        index: usize,
+        offset: usize,
+    }
+    impl maka_agent_facts::model::prompt_source::WireSource for PreparedItems {
+        fn open(&self, start_message: usize) -> Box<dyn WireCursor> {
+            Box::new(PreparedCursor {
+                items: self.0.clone(),
+                index: start_message,
+                offset: 0,
+            })
+        }
+    }
+    impl WireCursor for PreparedCursor {
+        fn next(&mut self) -> maka_agent_facts::model::prompt_source::NextWire<'_> {
+            Box::pin(async move {
+                let Some(item) = self.items.get(self.index) else {
+                    return Ok(None);
+                };
+                let end = (self.offset + 32 * 1024).min(item.len());
+                let chunk = maka_agent_facts::model::prompt_source::WireChunk {
+                    bytes: item.slice(self.offset..end),
+                    item_start: self.offset == 0,
+                    item_end: end == item.len(),
+                    message_index: self.index,
+                    metadata: None,
+                };
+                self.offset = end;
+                if chunk.item_end {
+                    self.index += 1;
+                    self.offset = 0;
+                }
+                Ok(Some(chunk))
+            })
+        }
+    }
+    struct RetainedItem {
+        bytes: Vec<u8>,
+        _owner: Arc<()>,
+    }
+    impl AsRef<[u8]> for RetainedItem {
+        fn as_ref(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
+
+    #[tokio::test]
+    async fn prepared_large_chunks_preserve_items_and_final_slice_custody() {
+        let expected = json!([
+            {"role":"user","content":[{"type":"input_text","text":"中\\\n\"".repeat(12_000)}]},
+            {"role":"user","content":[{"type":"input_text","text":"next item"}]}
+        ]);
+        let owner = Arc::new(());
+        let retained = Arc::downgrade(&owner);
+        let items = vec![
+            http::Bytes::from_owner(RetainedItem {
+                bytes: serde_json::to_vec(&expected[0]).unwrap(),
+                _owner: owner,
+            }),
+            http::Bytes::from(serde_json::to_vec(&expected[1]).unwrap()),
+        ];
+        let prompt = Prompt::from_messages(vec![Message::user(""), Message::user("")]).with_wire(
+            WireFormat::Responses,
+            "fixture-codec",
+            "fixture-root",
+            Arc::new(PreparedItems(items)),
+        );
+        let mut stream = Box::pin(body(prompt).chunks());
+        let mut bytes = Vec::new();
+        let mut last_slice = None;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.expect("legal prepared chunk reaches the request body");
+            bytes.extend_from_slice(&chunk);
+            if chunk.len() > 16 * 1024 {
+                last_slice = Some(chunk.slice(..1));
+            }
+        }
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["input"],
+            expected
+        );
+        assert!(
+            last_slice.is_some(),
+            "fixture crosses the backed chunk boundary"
+        );
+        drop(stream);
+        assert!(
+            retained.upgrade().is_some(),
+            "transport slice retains its source"
+        );
+        drop(last_slice);
+        assert!(
+            retained.upgrade().is_none(),
+            "final slice releases source custody"
+        );
     }
 
     struct Generated {

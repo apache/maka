@@ -67,6 +67,14 @@ struct FaultSink {
 
 impl EventSink for FaultSink {
     fn commit(self: Arc<Self>, write: EventWrite) -> CommitFuture {
+        self.commit_with_prefix(&[], write)
+    }
+    fn commit_with_prefix(
+        self: Arc<Self>,
+        prefix: &[EventWrite],
+        write: EventWrite,
+    ) -> CommitFuture {
+        let prefix = prefix.to_vec();
         Box::pin(async move {
             let event = write.event();
             self.attempts.lock().unwrap().push(event.clone());
@@ -92,7 +100,7 @@ impl EventSink for FaultSink {
                     }
                 });
             }
-            self.log.clone().commit(write).await
+            self.log.clone().commit_with_prefix(&prefix, write).await
         })
     }
 }
@@ -139,7 +147,7 @@ fn catalog(log: Arc<EventLog>, calls: Arc<AtomicUsize>) -> ToolCatalog {
     .unwrap()
 }
 
-async fn seed(log: &EventLog, invocation: &Invocation, call: &ModelToolCall) {
+async fn seed(log: &EventLog, invocation: &Invocation, call: &ModelToolCall) -> EventWrite {
     let append = async |fact| {
         log.append(&EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap())
             .await
@@ -180,19 +188,22 @@ async fn seed(log: &EventLog, invocation: &Invocation, call: &ModelToolCall) {
         context: None,
     })
     .await;
-    append(Fact::ModelCompleted {
-        step_id: "step".into(),
-        output: ModelStep {
-            parts: vec![ModelPart::ToolCall { call: call.clone() }],
-            finish_reason: ModelFinishReason::ToolCalls,
-            usage: Default::default(),
-            provider_options: None,
-            response_id: None,
-            model: None,
-            timestamp: None,
+    EventWrite::plain(RuntimeEvent::new(
+        invocation.clone(),
+        Fact::ModelCompleted {
+            step_id: "step".into(),
+            output: ModelStep {
+                parts: vec![ModelPart::ToolCall { call: call.clone() }],
+                finish_reason: ModelFinishReason::ToolCalls,
+                usage: Default::default(),
+                provider_options: None,
+                response_id: None,
+                model: None,
+                timestamp: None,
+            },
         },
-    })
-    .await;
+    ))
+    .unwrap()
 }
 
 async fn check_boundary(boundary: Boundary) {
@@ -216,7 +227,7 @@ async fn check_boundary(boundary: Boundary) {
     let expected_effects = usize::from(matches!(boundary, Boundary::ChildSettlement));
     let (digest, high_water, mut uncertain) = {
         let log = Arc::new(EventLog::open(&path).await.unwrap());
-        seed(&log, &invocation, &call).await;
+        let completion = seed(&log, &invocation, &call).await;
         let sink = Arc::new(FaultSink {
             log: log.clone(),
             boundary,
@@ -237,7 +248,7 @@ async fn check_boundary(boundary: Boundary) {
             .await
             .unwrap()
             .into_step("step")
-            .invoke(&call, CancellationToken::new())
+            .invoke(&call, Some(completion), CancellationToken::new())
             .await;
         assert!(matches!(
             run.shutdown().await,
@@ -342,7 +353,7 @@ async fn check_boundary(boundary: Boundary) {
             .await
             .unwrap()
             .into_step("step")
-            .invoke(&call, CancellationToken::new())
+            .invoke(&call, None, CancellationToken::new())
             .await,
         Err(ToolError::Persistence(_))
     ));
@@ -357,10 +368,10 @@ async fn notification_commit_failure_cancels_the_cell_without_fabricating_succes
         let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
         let invocation = Invocation { session_id:"session".into(), turn_id:"turn".into(), run_id:"run".into(), invocation_id:"invocation".into() };
         let call = ModelToolCall { id:"parent".into(), name:"exec".into(), input:json!({"code":"notify('progress'); await new Promise(resolve => setTimeout(resolve, 60000));"}).into(), provider_options:None, provider_executed:false };
-        seed(&log, &invocation, &call).await;
+        let completion = seed(&log, &invocation, &call).await;
         let sink = Arc::new(FaultSink { log:log.clone(), boundary:Boundary::Notification, attempts:Mutex::new(Vec::new()), faults:AtomicUsize::new(0) });
         let run = RunTools::new(maka_agent_facts::language::Language::En, sink.clone(), invocation, ToolCatalog::default(), ToolMode::CodeMode, CodeExecutor::new(CellLimits::default()).unwrap(), maka_tools::availability::LoadedTools::temporary().unwrap());
-        let result = run.capture(".", CancellationToken::new()).await.unwrap().into_step("step").invoke(&call, CancellationToken::new()).await;
+        let result = run.capture(".", CancellationToken::new()).await.unwrap().into_step("step").invoke(&call, Some(completion), CancellationToken::new()).await;
         assert!(matches!(result, Err(ToolError::Persistence(_))));
         assert!(matches!(run.shutdown().await, Err(ToolError::Persistence(_))));
         assert_eq!(sink.faults.load(Ordering::SeqCst), 1);

@@ -34,25 +34,21 @@ mod payloads;
 
 #[test]
 fn malformed_arguments_display_exact_raw_and_cannot_alias_a_parsed_dispatch() {
-    use maka_agent_facts::model::{ModelEvent, ModelPart, ToolInput};
+    use maka_agent_facts::model::recorded::CompletionPart;
+    use maka_agent_facts::model::{ModelPart, ToolInput};
     let raw = "  {\"code\":\n";
     let input = ToolInput::from_json(raw.into());
     let mut facts = vec![opening()];
     step(&mut facts, "step", false, false);
     for fact in &mut facts {
-        match fact {
-            Fact::ModelObserved {
-                event: ModelEvent::ToolCall(call),
-                ..
-            } => call.input = input.clone(),
-            Fact::ModelCompleted { output, .. } => {
-                for part in &mut output.parts {
-                    if let ModelPart::ToolCall { call } = part {
-                        call.input = input.clone();
-                    }
+        if let Fact::ModelCompleted { output, .. } = fact {
+            for part in &mut output.parts {
+                if let CompletionPart::Own(record) = part
+                    && let ModelPart::ToolCall { call } = std::sync::Arc::make_mut(&mut record.part)
+                {
+                    call.input = input.clone();
                 }
             }
-            _ => {}
         }
     }
     let mut forged = facts.clone();
@@ -296,6 +292,7 @@ fn accepted_tools_replay_with_distinct_ids_parentage_rejections() {
         assert_eq!(result["ts"], 999 + fact.sequence);
     }
     assert_eq!(results[3]["toolUseId"], calls[3]["id"]);
+    assert_eq!(results[3]["id"], "native:part:1");
 }
 
 fn success(output: &maka_agent_facts::tool_output::ToolOutput) -> ToolOutcome {

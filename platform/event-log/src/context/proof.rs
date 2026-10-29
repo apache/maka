@@ -191,9 +191,14 @@ pub(super) async fn validate(
     let Fact::ModelCompleted { output, .. } = &completion.fact else {
         return Err(invalid("missing summary completion"));
     };
+    let parts = crate::model_items::resolve_parts(connection, &completion).await?;
     if completion.invocation != event.invocation
         || !(opened < requested && requested < completed && completed < sequence)
-        || TextSummary::from_model_step(output).map_err(|_| invalid("invalid completed summary"))?
+        || TextSummary::from_parts(
+            output.finish_reason,
+            parts.iter().map(|record| record.part.as_ref()),
+        )
+        .map_err(|_| invalid("invalid completed summary"))?
             != checkpoint.summary
     {
         return Err(invalid("summary does not match its completed model step"));

@@ -55,9 +55,10 @@ pub(super) fn plan(
         })
         .ok_or_else(|| ModelError::Adapter("assistant metadata overflow".into()))?;
     Ok(vec![F::owned_raw(
-        JsonSource {
-            bytes: SourceBytes::Source(Arc::new(AssistantSource { parts, mode })),
-        },
+        JsonSource::new(SourceBytes::Source(Arc::new(AssistantSource {
+            parts,
+            mode,
+        }))),
         owned,
     )])
 }

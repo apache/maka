@@ -19,27 +19,6 @@
 
 use crate::EventLog;
 
-/// Run test inspection/fault injection on the original serialized writer. No
-/// borrowed SQLite state or connection escapes the native worker callback.
-pub(crate) async fn inspect<T: Send + 'static>(
-    log: &EventLog,
-    operation: impl FnOnce(&rusqlite::Connection) -> T + Send + 'static,
-) -> T {
-    log.connection
-        .run(move |db| {
-            Box::pin(async move {
-                db.run_on_worker(move |handle| {
-                    // SAFETY: SQLx owns this callback's handle and fences its statements.
-                    let borrowed = unsafe { rusqlite::Connection::from_handle(handle.as_ptr()) }?;
-                    Ok(operation(&borrowed))
-                })
-                .await?
-            })
-        })
-        .await
-        .unwrap()
-}
-
 /// Inspect or corrupt the observation owner's private cache; main stays read-only.
 pub(crate) async fn inspect_cache<T: Send + 'static>(
     log: &EventLog,

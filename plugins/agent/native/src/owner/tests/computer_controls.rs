@@ -162,6 +162,7 @@ async fn app_stop_is_user_only_and_streams_settled_activity_without_native_input
         .unwrap();
         store
             .append_computer_app_dispatch(
+                &[],
                 &event,
                 std::slice::from_ref(&broad),
                 &app,

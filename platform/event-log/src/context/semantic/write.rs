@@ -20,7 +20,9 @@
 //! Same-transaction semantic projection. Only a classified reducer failure can
 //! leave a canonical fact committed with an unavailable projection; SQL/IO and
 //! serialization errors always propagate to the existing transaction boundary.
-use super::source::{CanonicalToolProjectionSpan, SemanticPayloadSource};
+use super::source::{
+    CanonicalModelPartSpan, CanonicalToolProjectionSpan, SemanticPayloadSource, locate_model_parts,
+};
 use crate::StoreError;
 use futures_util::FutureExt;
 use maka_agent_facts::{
@@ -36,6 +38,7 @@ use maka_agent_facts::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::sqlite::SqliteWorkerConnection;
+use std::collections::BTreeMap;
 use std::io::Write;
 
 const PIECE_BYTES: usize = 32 * 1024;
@@ -105,9 +108,19 @@ async fn fragment(
     db: &mut SqliteWorkerConnection<'_>,
     fragment: &Fragment,
     canonical: Option<(&str, &DurableToolProjection)>,
+    model_parts: &BTreeMap<u64, CanonicalModelPartSpan>,
 ) -> Result<(), StoreError> {
     let (source, normalized_projection) = match &fragment.source {
         FragmentSource::Payload(_) => (SemanticPayloadSource::Pieces, None),
+        FragmentSource::CanonicalModelPart { ordinal } => {
+            if fragment.key.item_index != *ordinal {
+                return Err(invalid("canonical model ordinal differs from fragment"));
+            }
+            let span = *model_parts
+                .get(ordinal)
+                .ok_or_else(|| invalid("canonical model part lacks its typed source"))?;
+            (SemanticPayloadSource::CanonicalModelPart(span), None)
+        }
         FragmentSource::CanonicalToolProjection => {
             if fragment.key.item_index != 0 {
                 return Err(invalid(
@@ -126,54 +139,61 @@ async fn fragment(
     };
     let (storage_kind, offset, len) = match source {
         SemanticPayloadSource::Pieces => ("pieces", None, None),
+        SemanticPayloadSource::CanonicalModelPart(span) => (
+            "canonical_model_part",
+            Some(span.offset()),
+            Some(span.len()),
+        ),
         SemanticPayloadSource::CanonicalToolProjection(span) => (
             "canonical_tool_projection",
             Some(span.offset()),
             Some(span.len()),
         ),
     };
-    sqlx::query("INSERT INTO context_semantic_fragments VALUES(?,?,?,?,?,?,?)")
-        .bind(fragment.key.source_sequence as i64)
-        .bind(fragment.key.item_index as i64)
-        .bind(fragment.part.source_sequence as i64)
-        .bind(fragment.part.item_index as i64)
-        .bind(storage_kind)
-        .bind(offset)
-        .bind(len)
-        .execute(&mut *db)
-        .await?;
-    if matches!(&fragment.source, FragmentSource::CanonicalToolProjection)
-        && normalized_projection.is_none()
-    {
-        return Ok(());
-    }
     #[derive(Serialize)]
     enum BorrowedPayload<'a> {
         Tool(&'a DurableToolProjection),
     }
-    let mut pieces = Pieces {
-        db,
-        key: fragment.key,
-        index: 0,
-        buffer: Vec::with_capacity(PIECE_BYTES),
-        failure: None,
-    };
-    let serialized = match (&fragment.source, normalized_projection) {
-        (FragmentSource::Payload(payload), _) => serde_json::to_writer(&mut pieces, payload),
-        (FragmentSource::CanonicalToolProjection, Some(projection)) => {
-            serde_json::to_writer(&mut pieces, &BorrowedPayload::Tool(projection))
+    if matches!(source, SemanticPayloadSource::Pieces) {
+        let mut pieces = Pieces {
+            db,
+            key: fragment.key,
+            index: 0,
+            buffer: Vec::with_capacity(PIECE_BYTES),
+            failure: None,
+        };
+        let serialized = match (&fragment.source, normalized_projection) {
+            (FragmentSource::Payload(payload), _) => serde_json::to_writer(&mut pieces, payload),
+            (FragmentSource::CanonicalToolProjection, Some(projection)) => {
+                serde_json::to_writer(&mut pieces, &BorrowedPayload::Tool(projection))
+            }
+            (FragmentSource::CanonicalModelPart { .. }, _) => {
+                return Err(invalid("canonical model part cannot use extracted pieces"));
+            }
+            (FragmentSource::CanonicalToolProjection, None) => {
+                return Err(invalid("piece projection lacks its normalized value"));
+            }
+        };
+        if let Some(error) = pieces.failure.take() {
+            return Err(error);
         }
-        (FragmentSource::CanonicalToolProjection, None) => return Ok(()),
-    };
-    if let Some(error) = pieces.failure.take() {
-        return Err(error);
+        serialized?;
+        let flushed = pieces.flush();
+        if let Some(error) = pieces.failure.take() {
+            return Err(error);
+        }
+        flushed?;
     }
-    serialized?;
-    let flushed = pieces.flush();
-    if let Some(error) = pieces.failure {
-        return Err(error);
-    }
-    flushed?;
+    let (directory, payload_bytes) = super::directory::prepare_fragment(db, fragment.key, source)?;
+    sqlx::query("INSERT INTO context_semantic_fragments(source_sequence,source_index,storage_kind,byte_offset,byte_len,directory_json,payload_bytes) VALUES(?,?,?,?,?,?,?)")
+        .bind(fragment.key.source_sequence as i64)
+        .bind(fragment.key.item_index as i64)
+        .bind(storage_kind)
+        .bind(offset)
+        .bind(len)
+        .bind(json(&directory)?)
+        .bind(i64::try_from(payload_bytes).map_err(|_|invalid("payload length exceeds SQLite range"))?)
+        .execute(&mut *db).await?;
     Ok(())
 }
 
@@ -290,7 +310,9 @@ async fn save_row_mode(
         )
         .await?;
     }
-    sqlx::query("INSERT INTO context_semantic_rows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    let encoded_row = json(row)?;
+    let row_directory = super::directory::row(&encoded_row)?;
+    sqlx::query("INSERT INTO context_semantic_rows(owner_session_id,source_sequence,source_index,revision,order_sequence,order_index,invocation_id,revision_invocation,event_id,kind,archived,inherited,visible,unknown_only,row_json,directory_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
         .bind(owner)
         .bind(row.id.source_sequence as i64)
         .bind(row.id.item_index as i64)
@@ -305,7 +327,8 @@ async fn save_row_mode(
         .bind(inherited)
         .bind(visible)
         .bind(unknown_only)
-        .bind(json(row)?)
+        .bind(encoded_row)
+        .bind(json(&row_directory)?)
         .execute(&mut *db)
         .await?;
     change(
@@ -616,10 +639,10 @@ async fn archive(
         db,
         &Fragment {
             key,
-            part: key,
             source: FragmentSource::Payload(Box::new(Payload::Tool(projection))),
         },
         None,
+        &BTreeMap::new(),
     )
     .await?;
     *payload = key;
@@ -700,8 +723,17 @@ pub(crate) async fn record(
         } => Some((canonical_json, model_projection)),
         _ => None,
     };
+    let model_parts = if transition
+        .fragments
+        .iter()
+        .any(|fragment| matches!(fragment.source, FragmentSource::CanonicalModelPart { .. }))
+    {
+        locate_model_parts(stored.sequence, canonical_json)?
+    } else {
+        BTreeMap::new()
+    };
     for fragment_value in &transition.fragments {
-        fragment(db, fragment_value, canonical_projection).await?;
+        fragment(db, fragment_value, canonical_projection, &model_parts).await?;
     }
     for (row, event_id, inherited) in hidden {
         save_row(

@@ -241,10 +241,6 @@ mod bare_copy {
                 )
                 .unwrap();
             assert_eq!(members, 2);
-            if collision {
-                assert_eq!(db.query_row("SELECT source_sequence,claimant_source_sequence,claimant_item_index,attempted_item_index,reason FROM transcript_failures WHERE session_id='target'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?))).unwrap(),(3,1,0,0,"message identity is already claimed".into()));
-                assert_eq!(db.query_row("SELECT count(*) FROM transcript_directory WHERE session_id='target' AND source_sequence=3",[],|r|r.get::<_,i64>(0)).unwrap(),0);
-            }
             drop(db);
             let headers = log
                 .transcript_headers(
@@ -305,6 +301,29 @@ mod bare_copy {
                     .await,
                     Err(StoreError::TranscriptConflict)
                 ));
+                let cached_changes = crate::test_store::inspect_cache(&log, |db| {
+                    assert_eq!(db.query_row("SELECT source_sequence,claimant_source_sequence,claimant_item_index,attempted_item_index,reason FROM temp.transcript_failures WHERE session_id='target'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?))).unwrap(),(3,1,0,0,"message identity is already claimed".into()));
+                    assert_eq!(db.query_row("SELECT count(*) FROM temp.transcript_directory WHERE session_id='target' AND source_sequence=3",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+                    db.total_changes()
+                }).await;
+                assert!(matches!(
+                    log.transcript_headers(
+                        "target",
+                        &TranscriptRead {
+                            through: 4,
+                            position: None,
+                            direction: TranscriptDirection::Newer,
+                            limit: 8
+                        }
+                    )
+                    .await,
+                    Err(StoreError::TranscriptConflict)
+                ));
+                assert_eq!(
+                    crate::test_store::inspect_cache(&log, |db| db.total_changes()).await,
+                    cached_changes,
+                    "warm source failures must not rebuild or advance metadata"
+                );
             } else {
                 assert_eq!(
                     log.transcript_headers(
@@ -339,6 +358,25 @@ mod bare_copy {
                     .id,
                 "target"
             );
+            if collision {
+                assert!(
+                    matches!(
+                        log.transcript_headers(
+                            "target",
+                            &TranscriptRead {
+                                through: 4,
+                                position: None,
+                                direction: TranscriptDirection::Newer,
+                                limit: 8
+                            }
+                        )
+                        .await,
+                        Err(StoreError::TranscriptConflict)
+                    ),
+                    "cold reopen must reconstruct the same namespace failure"
+                );
+                assert_eq!(canonical(&path), before);
+            }
             log.close().await.unwrap();
             println!(
                 "COPY_BARE_SOURCE_FIRST={source_first} COLLISION={collision} COPY_ACCEPTED ORIGINAL_BYTES_UNCHANGED EARLY_FENCE_OK"

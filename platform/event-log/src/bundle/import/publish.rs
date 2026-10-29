@@ -100,8 +100,7 @@ pub(super) async fn all(
             .await?;
     }
     materials(destination, staged, positions).await?;
-    crate::transcript::directory::index_imported_sessions(destination, &receipt.session_ids)
-        .await?;
+
     crate::bundle::accounting::validate(staged, destination).await
 }
 

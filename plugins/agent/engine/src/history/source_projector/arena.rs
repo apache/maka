@@ -31,52 +31,38 @@ pub(in crate::history) enum ArenaProjectedRow {
 
 /// Only the intrinsic giant-directory path calls this producer.
 pub(in crate::history) async fn project_row(
-    metadata: JsonSource,
-    payload: Option<JsonSource>,
+    metadata: &RowDirectory,
+    payload: Option<&PayloadDirectory>,
     context: &ProjectContext<'_>,
     store: &ArenaRecipes,
 ) -> io::Result<ArenaProjectedRow> {
     let context = context.for_arena();
-    let kind = lookup(&metadata, "kind", &context).await?.source;
-    let user_row = json::field(&kind, &["User"], context.budget.clone()).await?;
-    if let Some(row) = user_row {
-        let input = lookup(payload.as_ref().ok_or_else(invalid)?, "User", &context)
-            .await?
-            .source;
-        return user(
-            &input,
-            flag(&row.source, "steering", &context).await?,
-            &context,
-            store,
-        )
-        .await;
+    if let RowDirectory::User { steering, .. } = metadata {
+        return user(payload.ok_or_else(invalid)?, *steering, &context, store).await;
     }
-    if let Some(row) = json::field(&kind, &["ToolResult"], context.budget.clone()).await? {
-        let payload = payload.as_ref().ok_or_else(invalid)?;
-        let fields = json::fields(payload, &["Text", "Tool"], context.budget.clone()).await?;
-        if fields[0].is_none() {
-            let projection = fields[1].as_ref().map_or(payload, |tool| &tool.source);
-            if tagged(projection, "content", &context).await? {
-                let content = tool_content(projection, &context, store).await?;
-                let result = super::result(
-                    &row.source,
-                    ToolOutputRecipe::Content(store.internal().contents(content)),
-                    ToolResultKind::Settled,
-                    &context,
+    if let (
+        RowDirectory::ToolResult { .. },
+        Some(PayloadDirectory::Tool(ToolDirectory::Content { parts })),
+    ) = (metadata, payload)
+    {
+        let content = tool_content(*parts, &context, store).await?;
+        let result = super::result(
+            metadata,
+            ToolOutputRecipe::Content(store.internal().contents(content)),
+            ToolResultKind::Settled,
+            &context,
+        )
+        .await?;
+        return Ok(ArenaProjectedRow::Tool(
+            store
+                .result_content(
+                    result,
+                    content,
+                    context.budget.clone(),
+                    context.cancellation,
                 )
-                .await?;
-                return Ok(ArenaProjectedRow::Tool(
-                    store
-                        .result_content(
-                            result,
-                            content,
-                            context.budget.clone(),
-                            context.cancellation,
-                        )
-                        .await?,
-                ));
-            }
-        }
+                .await?,
+        ));
     }
     match super::project_row(metadata, payload, &context).await? {
         ProjectedRow::User(content) => {
@@ -143,36 +129,27 @@ impl<'a, 'context> TextParts<'a, 'context> {
 }
 
 async fn tool_content(
-    projection: &JsonSource,
+    count: u64,
     context: &ProjectContext<'_>,
     store: &ArenaRecipes,
 ) -> io::Result<List> {
-    let parts = lookup(projection, "parts", context).await?.source;
-    let mut cursor = json::ArrayCursor::open(parts.clone(), context.budget.clone()).await?;
-    let mut count = 0usize;
-    while cursor.next().await?.is_some() {
-        count = count.checked_add(1).ok_or_else(invalid)?;
-    }
+    let count = usize::try_from(count).map_err(io::Error::other)?;
     let content = store.begin_list(count).await?;
-    let mut cursor =
-        located::Values::open(parts, located::tool_parts(context).await?, context).await?;
+    let mut cursor = Children::open(ListKind::ToolParts, count as u64, context).await?;
     let mut index = 0;
-    while let Some(part) = cursor.next().await? {
-        let part = if tagged(&part.value.source, "text", context).await? {
-            ContentRecipe::Text {
-                text: lookup(&part.value.source, "text", context).await?.text()?,
+    while let Some(child) = cursor.next().await? {
+        let ChildDirectory::ToolPart(part) = child else {
+            return Err(invalid());
+        };
+        let part = match part {
+            ToolPartDirectory::Text(text) => ContentRecipe::Text {
+                text: located::text(text, context)?,
                 provider_options: None,
-            }
-        } else {
-            media::tool(
-                &part.value.source,
-                part.location.as_ref(),
-                media::Mode::Capture,
-                context,
-            )
-            .await?
-            .content
-            .ok_or_else(invalid)?
+            },
+            part => media::tool(&part, media::Mode::Capture, context)
+                .await?
+                .content
+                .ok_or_else(invalid)?,
         };
         let node = store
             .content(part, context.budget.clone(), context.cancellation)
@@ -187,127 +164,64 @@ async fn tool_content(
 }
 
 async fn user(
-    input: &JsonSource,
+    input: &PayloadDirectory,
     steering: bool,
     context: &ProjectContext<'_>,
     store: &ArenaRecipes,
 ) -> io::Result<ArenaProjectedRow> {
-    let mut fields = json::fields(
-        input,
-        &["text", "quotes", "attachments", "directory_references"],
-        context.budget.clone(),
-    )
-    .await?
-    .into_iter();
+    let PayloadDirectory::User {
+        text,
+        quotes,
+        attachments,
+        directory_references,
+    } = input
+    else {
+        return Err(invalid());
+    };
     let (_, piece_count, content_count) = user_layout(input, steering, context).await?;
     let content = store.begin_list(content_count).await?;
     let mut content_index = 1;
     let mut pieces = TextParts::new(store, piece_count, context).await?;
     if steering {
         pieces
-            .push(literal(match context.language {
-                Language::En => "The user sent a message while you were working:\n<user_query>\n",
-                Language::ZhCn => "用户在你工作期间发来消息：\n<user_query>\n",
-                Language::ZhTw => "使用者在你工作期間傳來訊息：\n<user_query>\n",
-            }))
+            .push(literal(steering_prefix(context.language)))
             .await?;
     }
-    pieces
-        .push(required(fields.next().flatten())?.text()?)
-        .await?;
-    if let Some(quotes) = options(fields.next().flatten()) {
-        let mut quotes = json::ArrayCursor::open(quotes, context.budget.clone()).await?;
-        let mut first = true;
-        while let Some(quote) = quotes.next().await? {
-            pieces
-                .push(literal(if first { "\n\n" } else { "\n" }))
-                .await?;
-            first = false;
-            pieces.push(literal("<quoted_excerpt")).await?;
-            let mut fields = json::fields(
-                &quote.source,
-                &["label", "source", "text"],
-                context.budget.clone(),
-            )
-            .await?
-            .into_iter();
-            if let Some(label) = fields
-                .next()
-                .flatten()
-                .filter(|value| value.kind != JsonKind::Null)
-            {
-                pieces.push(literal(" label=\"")).await?;
-                pieces
-                    .push(source_text::quote_label(
-                        label.text()?,
-                        context.budget.clone(),
-                    ))
-                    .await?;
-                pieces.push(literal("\"")).await?;
-            }
-            pieces.push(literal(">\n")).await?;
-            if let Some(source) = options(fields.next().flatten()) {
-                pieces
-                    .push(literal(match context.language {
-                        Language::En => "Session snapshot provenance (display-only): ",
-                        Language::ZhCn => "会话快照来源（仅供展示）：",
-                        Language::ZhTw => "工作階段快照來源（僅供顯示）：",
-                    }))
-                    .await?;
-                pieces
-                    .push(source_text::html(raw_json(source), context.budget.clone()))
-                    .await?;
-                pieces.push(literal("\n")).await?;
-            }
-            pieces
-                .push(required(fields.next().flatten())?.text()?)
-                .await?;
-            pieces.push(literal("\n</quoted_excerpt>")).await?;
+    pieces.push(located::text(*text, context)?).await?;
+    let mut cursor = Children::open(ListKind::Quotes, *quotes, context).await?;
+    let mut first = true;
+    while let Some(quote) = cursor.next().await? {
+        for piece in quote_pieces(quote, first, context)? {
+            pieces.push(piece).await?;
         }
+        first = false;
     }
-    if let Some(attachments) = options(fields.next().flatten()) {
-        let mut cursor =
-            located::Values::open(attachments, located::attachments(context).await?, context)
-                .await?;
-        let mut first = true;
-        while let Some(attachment) = cursor.next().await? {
-            pieces
-                .push(literal(if first { "\n\n" } else { "\n" }))
-                .await?;
-            first = false;
-            let projected = media::attachment(
-                &attachment.value.source,
-                attachment.location.as_ref(),
-                media::Mode::Capture,
-                context,
-            )
+    drop(cursor);
+    let mut cursor = Children::open(ListKind::Attachments, *attachments, context).await?;
+    let mut first = true;
+    while let Some(child) = cursor.next().await? {
+        let ChildDirectory::Attachment(attachment) = child else {
+            return Err(invalid());
+        };
+        pieces
+            .push(literal(if first { "\n\n" } else { "\n" }))
             .await?;
-            for piece in projected.pieces {
-                pieces.push(piece).await?;
-            }
-            if let Some(part) = projected.content {
-                let part = store
-                    .content(part, context.budget.clone(), context.cancellation)
-                    .await?;
-                store.put(content, content_index, part).await?;
-                content_index += 1;
-            }
+        first = false;
+        let projected = media::attachment(&attachment, media::Mode::Capture, context).await?;
+        for piece in projected.pieces {
+            pieces.push(piece).await?;
+        }
+        if let Some(part) = projected.content {
+            let part = store
+                .content(part, context.budget.clone(), context.cancellation)
+                .await?;
+            store.put(content, content_index, part).await?;
+            content_index += 1;
         }
     }
-    if let Some(references) = options(fields.next().flatten()) {
-        let mut cursor =
-            json::ArrayCursor::open(references.clone(), context.budget.clone()).await?;
-        if cursor.next().await?.is_some() {
-            pieces.push(literal("\n\n<directory_references>\n")).await?;
-            pieces.push(literal(match context.language {Language::En=>"Live directory paths on the originating Runtime Host, accessible with Glob/Read. The project and working directory are unchanged.\n",Language::ZhCn=>"原始运行时主机上的实时目录路径，可通过 Glob/Read 访问。项目与工作目录不变。\n",Language::ZhTw=>"原始執行階段主機上的即時目錄路徑，可透過 Glob/Read 存取。專案與工作目錄不變。\n"})).await?;
-            pieces
-                .push(source_text::html(
-                    raw_json(references),
-                    context.budget.clone(),
-                ))
-                .await?;
-            pieces.push(literal("\n</directory_references>")).await?;
-        }
+    drop(cursor);
+    for piece in reference_pieces(*directory_references, context).await? {
+        pieces.push(piece).await?;
     }
     if steering {
         pieces.push(literal("\n</user_query>")).await?;
@@ -330,14 +244,13 @@ async fn user(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maka_agent_facts::event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent};
+    use maka_agent_facts::{
+        attachment::{AttachmentKind, AttachmentRef, StorageRef},
+        input::{DirectoryReference, MessageInput, QuoteRef, SessionQuoteSource},
+    };
     use maka_event_log::context::semantic::SemanticSelection;
-    use serde_json::json;
 
-    fn value(value: serde_json::Value) -> JsonSource {
-        JsonSource {
-            bytes: SourceBytes::Inline(serde_json::to_vec(&value).unwrap().into()),
-        }
-    }
     async fn text_bytes(text: TextSource, budget: Arc<dyn SourceBudget>) -> Vec<u8> {
         let mut cursor = source_text::cursor(text, budget.clone());
         let mut buffer = budget.allocate(256).await.unwrap();
@@ -374,19 +287,85 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn numeric_user_and_tool_arrays_preserve_projection_text_and_order() {
+    async fn numeric_user_preserves_captured_projection_text_and_order() {
         let (_directory, root) = crate::test_support::root().await;
         let session = crate::test_support::session(&root, "session").await;
         let execution = session.execution_scope(None).await.unwrap().accept();
-        let captured = execution
-            .store()
+        let log = execution.store();
+        let quotes = (0..12)
+            .map(|i| QuoteRef {
+                label: Some(format!("quote {i} <&\"")),
+                text: format!("text {i} 世界\n"),
+                source_turn_id: None,
+                source: Some(SessionQuoteSource {
+                    session_id: "origin".into(),
+                    session_name: "显示<&>".into(),
+                    captured_at: serde_json::Number::from(1).try_into().unwrap(),
+                    truncated: false,
+                }),
+            })
+            .collect();
+        let content = MessageInput {
+            preparation: Vec::new(),
+            text: "question 世界".into(),
+            display_text: None,
+            quotes: Some(quotes),
+            attachments: Some(vec![
+                AttachmentRef {
+                    kind: AttachmentKind::Other,
+                    name: "a<&>.txt".into(),
+                    mime_type: "text/plain".into(),
+                    bytes: 1,
+                    storage_ref: StorageRef::ExternalFile {
+                        absolute_path: "/tmp/a.txt".into(),
+                    },
+                },
+                AttachmentRef {
+                    kind: AttachmentKind::Other,
+                    name: "b.txt".into(),
+                    mime_type: "text/plain".into(),
+                    bytes: 1,
+                    storage_ref: StorageRef::WorkspaceFile {
+                        relative_path: "b.txt".into(),
+                    },
+                },
+            ]),
+            directory_references: Some(vec![DirectoryReference {
+                host_id: "host".into(),
+                path: "src/<&>".into(),
+            }]),
+            inline_references: None,
+        };
+        let through = log
+            .append(
+                &EventWrite::plain(RuntimeEvent::new(
+                    Invocation {
+                        session_id: "session".into(),
+                        turn_id: "turn".into(),
+                        run_id: "run".into(),
+                        invocation_id: "invocation".into(),
+                    },
+                    Fact::InvocationOpened {
+                        input: InvocationInput::Message {
+                            content,
+                            request_fingerprint: None,
+                            source_messages: Vec::new(),
+                        },
+                        configuration: None,
+                    },
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let captured = log
             .capture_source(SemanticSelection {
                 session: "session".into(),
                 lineage: None,
                 after: 0,
-                through: 0,
-                before: 1,
-                captured_through: 0,
+                through,
+                before: u64::MAX,
+                captured_through: through,
                 replay: None,
                 prior_unknown: false,
             })
@@ -400,6 +379,22 @@ mod tests {
         let work = resources.acquire_work().await.unwrap();
         let budget = work.budget();
         let cancel = tokio_util::sync::CancellationToken::new();
+        let mut page = captured
+            .directory_page(None, budget.allocate(32 * 1024).await.unwrap())
+            .await
+            .unwrap();
+        let entry = page.next_row().unwrap().unwrap();
+        let RowDirectory::User { payload, .. } = entry.directory else {
+            panic!("captured user directory")
+        };
+        let metadata = RowDirectory::User {
+            payload,
+            steering: true,
+        };
+        let payload = entry.payload.unwrap();
+        let row_root = captured.metadata_source(&entry.row).unwrap();
+        let payload_root = captured.describe_payload(&entry.row).unwrap().unwrap();
+        drop(page);
         for language in [Language::En, Language::ZhCn, Language::ZhTw] {
             let context = ProjectContext {
                 language,
@@ -407,27 +402,23 @@ mod tests {
                 provider: &ProviderKind::Anthropic,
                 replay: None,
                 captured: Some(&captured),
-                payload_root: None,
+                row_root: Some(&row_root),
+                payload_root: Some(&payload_root),
                 arena: Some(&arena),
                 internal_arena: false,
                 cancellation: &cancel,
                 budget: budget.clone(),
                 directory_owner: Arc::new(()),
             };
-            let quotes:Vec<_>=(0..12).map(|i|json!({"label":format!("quote {i} <&\""),"source":{"sessionId":"origin","label":"显示<&>"},"text":format!("text {i} 世界\n")})).collect();
-            let metadata = value(json!({"kind":{"User":{"steering":true}}}));
-            let payload = value(
-                json!({"User":{"text":"question 世界","quotes":quotes,"attachments":[{"kind":"file","name":"a<&>.txt","mimeType":"text/plain","ref":{"kind":"external_file","absolutePath":"/tmp/a.txt"}},{"kind":"file","name":"b.txt","mimeType":"text/plain","ref":{"kind":"workspace_file","relativePath":"b.txt"}}],"directory_references":[{"path":"src/<&>"}]}}),
-            );
             let ProjectedRow::User(expected) =
-                super::super::project_row(metadata.clone(), Some(payload.clone()), &context)
+                super::super::project_row(&metadata, Some(&payload), &context)
                     .await
                     .unwrap()
             else {
                 panic!("user")
             };
             let ArenaProjectedRow::User(actual) =
-                project_row(metadata, Some(payload), &context, &store)
+                project_row(&metadata, Some(&payload), &context, &store)
                     .await
                     .unwrap()
             else {
@@ -436,53 +427,6 @@ mod tests {
             arena.seal().await.unwrap();
             same_content(expected, store.contents(actual), budget.clone()).await;
         }
-        let context = ProjectContext {
-            language: Language::En,
-            vision: false,
-            provider: &ProviderKind::Anthropic,
-            replay: None,
-            captured: Some(&captured),
-            payload_root: None,
-            arena: Some(&arena),
-            internal_arena: false,
-            cancellation: &cancel,
-            budget: budget.clone(),
-            directory_owner: Arc::new(()),
-        };
-        let mut parts: Vec<_> = (0..24)
-            .map(|i| json!({"kind":"text","text":format!("part {i} 世界")}))
-            .collect();
-        parts.insert(9,json!({"kind":"artifact","image":{"ref":{"kind":"session_file","sessionId":"session","relativePath":"image"},"mimeType":"image/png","detail":"high"}}));
-        let metadata = value(
-            json!({"kind":{"ToolResult":{"call_id":"call","name":"tool","custom":false,"archived":false,"is_error":false}}}),
-        );
-        let payload = value(json!({"Tool":{"kind":"content","parts":parts}}));
-        let ProjectedRow::Tool(expected) =
-            super::super::project_row(metadata.clone(), Some(payload.clone()), &context)
-                .await
-                .unwrap()
-        else {
-            panic!("tool")
-        };
-        let ArenaProjectedRow::Tool(actual) =
-            project_row(metadata, Some(payload), &context, &store)
-                .await
-                .unwrap()
-        else {
-            panic!("numeric tool")
-        };
-        let list = store.begin_list(1).await.unwrap();
-        store.put(list, 0, actual).await.unwrap();
-        arena.seal().await.unwrap();
-        let mut results = store.results(list).open(0);
-        let actual = results.next().await.unwrap().unwrap();
-        let (ToolOutputRecipe::Content(expected), ToolOutputRecipe::Content(actual)) =
-            (expected.output, actual.output)
-        else {
-            panic!("content")
-        };
-        same_content(expected, actual, budget.clone()).await;
-        drop(results);
         arena.close().await.unwrap();
         drop(store);
         drop(arena);

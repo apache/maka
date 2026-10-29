@@ -127,6 +127,37 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 
+#[derive(Default)]
+struct CanonicalModelParts(BTreeMap<(String, u64), Arc<maka_agent_facts::model::ModelPart>>);
+impl CanonicalModelParts {
+    fn observe(&mut self, stored: &maka_agent_facts::event::StoredEvent) {
+        if let maka_agent_facts::event::Fact::ModelObserved {
+            event: maka_agent_facts::model::recorded::ModelObservation::Part(record),
+            ..
+        } = &stored.event.fact
+        {
+            self.0.insert(
+                (stored.event.id.clone(), record.ordinal),
+                record.part.clone(),
+            );
+        }
+    }
+
+    fn parts<'a>(
+        &'a self,
+        output: &'a maka_agent_facts::model::recorded::ModelCompletion,
+    ) -> impl Iterator<Item = &'a maka_agent_facts::model::ModelPart> {
+        output.parts.iter().map(move |part| match part {
+            maka_agent_facts::model::recorded::CompletionPart::Own(record) => record.part.as_ref(),
+            maka_agent_facts::model::recorded::CompletionPart::Ref(reference) => self
+                .0
+                .get(&(reference.event_id.clone(), reference.ordinal))
+                .expect("completion references an actual observed canonical part")
+                .as_ref(),
+        })
+    }
+}
+
 struct CallerGrant(maka_host_runtime::application::Caller);
 struct Grant(Issuer, Option<Arc<maka_transport::transport::PeerPolicy>>);
 impl Policy for Grant {
@@ -1175,7 +1206,12 @@ async fn actual_http_runs_overlap_and_observer_loss_does_not_cancel_execution() 
         assert!(completed["through"].as_u64().unwrap() >= active["through"].as_u64().unwrap());
         let observation = fixture.session(&first).await.session_projection::<Value>(&first).await.unwrap().unwrap();
         let events = fixture.session(&first).await.session_stream_events(&first,0,observation.through_sequence,32,64*1024).await.unwrap();
-        assert!(events.events.iter().any(|event| matches!(&event.fact,maka_event_log::observation::StreamFact::PartDelta{text,..} if text=="Elegant response")));
+        assert!(events.events.iter().any(|event| matches!(&event.fact,maka_event_log::observation::StreamFact::StepEnded { completed: true, .. })));
+        let history = fixture.query("history", json!({"sessionId":first,"through":observation.through_sequence,"position":{"kind":"start"}})).await.unwrap();
+        let response: String = history["chunks"].as_array().unwrap().iter()
+            .filter(|chunk| chunk["role"] == "assistant")
+            .map(|chunk| chunk["text"].as_str().unwrap()).collect();
+        assert_eq!(response, "Elegant response");
         let prefix = fixture.prefix(&first, 128, 1024*1024).await;
         let model_request = prefix.events.iter().find(|row| row.event.invocation.session_id == first && matches!(row.event.fact, maka_agent_facts::event::Fact::ModelRequested { .. })).unwrap();
         let composition = fixture.session(&first).await.request_composition(&first, &model_request.event.id).await.unwrap().unwrap();

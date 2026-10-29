@@ -26,9 +26,9 @@ use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::ToolOutcome;
 use maka_agent_facts::model::ModelFinishReason;
 use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::ModelToolCall;
 use maka_agent_facts::model::ModelUsage;
+use maka_agent_facts::model::recorded::ModelCompletion;
 use maka_agent_facts::tool_call::HostSdkParent;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_call::ToolOrigin;
@@ -329,19 +329,29 @@ async fn provider_dispatch_requires_the_exact_accepted_local_call() {
         "one",
         Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
+            output: ModelCompletion {
                 parts: [false, true]
                     .into_iter()
-                    .map(|native| ModelPart::ToolCall {
-                        call: ModelToolCall {
-                            id: if native { "native" } else { "call" }.into(),
-                            name: "composite".into(),
-                            input: serde_json::from_str::<serde_json::Value>("{\"b\":2,\"a\":1}")
-                                .unwrap()
-                                .into(),
-                            provider_options: None,
-                            provider_executed: native,
-                        },
+                    .enumerate()
+                    .map(|(ordinal, native)| {
+                        model_part(
+                            "one",
+                            "step",
+                            ordinal as u64,
+                            ModelPart::ToolCall {
+                                call: ModelToolCall {
+                                    id: if native { "native" } else { "call" }.into(),
+                                    name: "composite".into(),
+                                    input: serde_json::from_str::<serde_json::Value>(
+                                        "{\"b\":2,\"a\":1}",
+                                    )
+                                    .unwrap()
+                                    .into(),
+                                    provider_options: None,
+                                    provider_executed: native,
+                                },
+                            },
+                        )
                     })
                     .collect(),
                 finish_reason: ModelFinishReason::ToolCalls,
@@ -409,4 +419,29 @@ async fn provider_dispatch_requires_the_exact_accepted_local_call() {
         .await
         .is_err()
     );
+}
+
+fn model_part(
+    invocation: &str,
+    step: &str,
+    ordinal: u64,
+    part: maka_agent_facts::model::ModelPart,
+) -> maka_agent_facts::model::recorded::CompletionPart {
+    use maka_agent_facts::model::{
+        ModelPart,
+        recorded::{CompletionPart, ModelPartRecord},
+    };
+    let message_id = match &part {
+        ModelPart::ToolCall { call } => {
+            maka_agent_facts::tool_call::tool_use_id(invocation, &format!("{step}:{}", call.id))
+        }
+        _ => uuid::Uuid::new_v4().to_string(),
+    };
+    CompletionPart::Own(ModelPartRecord {
+        ordinal,
+        message_id,
+        started_at: std::time::SystemTime::now(),
+        provider_part_id: None,
+        part: std::sync::Arc::new(part),
+    })
 }

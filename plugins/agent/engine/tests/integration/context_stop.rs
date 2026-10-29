@@ -116,7 +116,7 @@ async fn stopping_summary_drains_attempt_without_checkpoint_or_retry() {
     assert!(
         !stopped.iter().any(|event| matches!(&event.event.fact,
         Fact::ModelObserved { step_id, event } if step_id == summary_step
-            && !matches!(event, maka_agent_facts::model::ModelEvent::Finished { .. }))),
+            && !matches!(event, maka_agent_facts::model::recorded::ModelObservation::Finished { .. }))),
         "cancelled private summary prose must not become durable history"
     );
     assert!(stopped.iter().any(|event| matches!(
@@ -124,6 +124,7 @@ async fn stopping_summary_drains_attempt_without_checkpoint_or_retry() {
         Fact::ModelInterrupted {
             status: ModelInterruption::Cancelled,
             model_failure: None,
+            partial: None,
             ..
         }
     )));

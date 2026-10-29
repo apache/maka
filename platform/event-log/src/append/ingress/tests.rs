@@ -22,7 +22,10 @@ use crate::EventLog;
 use maka_agent_facts::{
     event::{EventWrite, Fact, Invocation, InvocationOutcome, LogScope, ModelInterruption},
     input::InvocationInput,
-    model::{ModelEvent, ModelToolCall},
+    model::{
+        ModelPart, ModelToolCall,
+        recorded::{ModelObservation, ModelPartRecord},
+    },
     tool_call::ToolCallIdentity,
     tool_output::{DurableToolProjection, ToolOutput, ToolSuccess},
 };
@@ -71,6 +74,7 @@ fn counts(path: &std::path::Path) -> Vec<i64> {
         "context_semantic_frontiers",
         "context_semantic_rows",
         "context_semantic_fragments",
+        "model_part_records",
         "context_obligations",
         "context_safety_heads",
         "context_execution_steps",
@@ -114,7 +118,7 @@ async fn autocommit_is_rejected_before_any_canonical_insert() {
             .contains("requires an existing transaction")
     );
     log.close().await.unwrap();
-    assert_eq!(counts(&path), vec![0; 12]);
+    assert_eq!(counts(&path), vec![0; 13]);
 }
 
 #[tokio::test]
@@ -149,7 +153,7 @@ async fn projection_faults_roll_back_canonical_and_prior_batch_events_before_reo
         events.extend(closed("second"));
         assert!(log.append_batch(&events).await.is_err(), "{name}");
         log.close().await.unwrap();
-        assert_eq!(counts(&path), vec![0; 12], "{name}");
+        assert_eq!(counts(&path), vec![0; 13], "{name}");
         let reopened = EventLog::open(&path).await.unwrap();
         assert_eq!(reopened.append_batch(&events).await.unwrap(), [1, 2, 3, 4]);
         reopened.close().await.unwrap();
@@ -191,11 +195,7 @@ async fn explicit_import_sequence_is_captured_before_projection_inserts() {
         earlier_invocation.invocation.session_id = "other-session".into();
         earlier_invocation.fact = Fact::ModelObserved {
             step_id: "earlier-step".into(),
-            event: ModelEvent::PartDelta {
-                id: "part".into(),
-                text: "a".into(),
-                provider_options: None,
-            },
+            event: ModelObservation::ResponseMetadata { id: Some("response".into()), model: None, timestamp: None },
         };
         for earlier in [opening("earlier-session"), earlier_invocation] {
             let mut tx = db.begin().await?;
@@ -244,13 +244,25 @@ fn visible_tool_prefix() -> Vec<EventWrite> {
         },
         Fact::ModelObserved {
             step_id: "step".into(),
-            event: ModelEvent::ToolCall(ModelToolCall {
-                id: "call".into(),
-                name: "exec".into(),
-                input: serde_json::json!({"model_projection": "decoy before projection 中🦀"})
-                    .into(),
-                provider_options: None,
-                provider_executed: false,
+            event: ModelObservation::Part(ModelPartRecord {
+                ordinal: 0,
+                message_id: maka_agent_facts::tool_call::tool_use_id(
+                    "tool-invocation",
+                    "step:call",
+                ),
+                started_at: std::time::UNIX_EPOCH,
+                provider_part_id: None,
+                part: std::sync::Arc::new(ModelPart::ToolCall {
+                    call: ModelToolCall {
+                        id: "call".into(),
+                        name: "exec".into(),
+                        input:
+                            serde_json::json!({"model_projection": "decoy before projection 中🦀"})
+                                .into(),
+                        provider_options: None,
+                        provider_executed: false,
+                    },
+                }),
             }),
         },
         Fact::ToolDispatched {
@@ -266,6 +278,7 @@ fn visible_tool_prefix() -> Vec<EventWrite> {
             status: ModelInterruption::Cancelled,
             diagnostic: None,
             model_failure: None,
+            partial: None,
         },
     ];
     let mut events = vec![EventWrite::plain(opened).unwrap()];
@@ -464,7 +477,7 @@ async fn canonical_tool_span_publication_failure_rolls_back_the_whole_batch() {
         "failed span publication cannot publish receipts"
     );
     log.close().await.unwrap();
-    assert_eq!(counts(&path), vec![0; 12]);
+    assert_eq!(counts(&path), vec![0; 13]);
     let reopened = EventLog::open(&path).await.unwrap();
     assert_eq!(
         reopened.append_batch(&events).await.unwrap(),

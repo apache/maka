@@ -511,6 +511,7 @@ impl Computer {
             },
             "cua_operation".into(),
             input,
+            None,
             cancellation,
             effect,
         )

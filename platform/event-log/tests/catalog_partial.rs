@@ -28,6 +28,8 @@ use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::StoredEvent;
 use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::TextKind;
+use maka_agent_facts::model::assembly::{AttemptBinding, AttemptWriter};
+use maka_agent_facts::model::recorded::{CompletionPart, ModelObservation};
 use maka_event_log::{EventLog, sessions::SessionExecutionState};
 use maka_presentation::{Content, InvocationView};
 use rusqlite::Connection;
@@ -59,7 +61,7 @@ async fn append(
         view.push(&StoredEvent { sequence, event }).unwrap(),
     )
 }
-fn observe(event: ModelEvent) -> Fact {
+fn observe(event: ModelObservation) -> Fact {
     Fact::ModelObserved {
         step_id: "step".into(),
         event,
@@ -75,16 +77,18 @@ fn source(db: &Connection) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn interrupted_and_terminal_fallback_catalog_match_committed_presentation_and_rebuild() {
-    for (interrupt, outcome) in [
+async fn sealed_partial_catalog_matches_committed_presentation_and_rebuild() {
+    for (large, status, outcome) in [
         (
             true,
+            ModelInterruption::Cancelled,
             InvocationOutcome::Cancelled {
                 source: "user".into(),
             },
         ),
         (
             false,
+            ModelInterruption::Failed,
             InvocationOutcome::Failed {
                 model_failure: None,
                 class: "event_commit".into(),
@@ -93,6 +97,7 @@ async fn interrupted_and_terminal_fallback_catalog_match_committed_presentation_
         ),
         (
             false,
+            ModelInterruption::Cancelled,
             InvocationOutcome::Cancelled {
                 source: "shutdown".into(),
             },
@@ -119,7 +124,7 @@ async fn interrupted_and_terminal_fallback_catalog_match_committed_presentation_
             1000,
         )
         .await;
-        append(
+        let live = append(
             &log,
             &mut view,
             Fact::ModelRequested {
@@ -139,133 +144,152 @@ async fn interrupted_and_terminal_fallback_catalog_match_committed_presentation_
             },
             1100,
         )
-        .await;
-        append(
-            &log,
-            &mut view,
-            observe(ModelEvent::PartStarted {
-                id: "part".into(),
-                text_kind: TextKind::Text,
-                provider_options: None,
-            }),
-            2000,
-        )
-        .await;
-        let mut live = 0;
-        for chunk in [" \n par", "tial\t", " \n", "😀  tail "] {
-            live = append(
-                &log,
-                &mut view,
-                observe(ModelEvent::PartDelta {
-                    id: "part".into(),
-                    text: chunk.into(),
-                    provider_options: None,
-                }),
-                2100,
-            )
-            .await
-            .0;
-        }
-        // Deltas alone do not advertise a sealed catalog message.
-        let before = log.get_session::<Value>("a").await.unwrap().unwrap();
-        assert_eq!(before.last_message.as_ref().unwrap().recorded_at, 1000);
-        let mut assistant = None;
-        if interrupt {
-            // The preview becomes full before a giant later delta. The boundary
-            // index reads only enough committed text for the normalized prefix.
-            for chunk in ["答".repeat(120), "x".repeat(9 * 1024 * 1024)] {
-                append(
-                    &log,
-                    &mut view,
-                    observe(ModelEvent::PartDelta {
-                        id: "part".into(),
-                        text: chunk,
-                        provider_options: None,
-                    }),
-                    2150,
-                )
-                .await;
-            }
-            let (boundary, rows) = append(
-                &log,
-                &mut view,
-                Fact::ModelInterrupted {
-                    model_failure: None,
-                    diagnostic: None,
-                    step_id: "step".into(),
-                    status: ModelInterruption::Cancelled,
+        .await
+        .0;
+        let mut writer = AttemptWriter::new(
+            AttemptBinding {
+                invocation: Invocation {
+                    session_id: "a".into(),
+                    turn_id: "turn".into(),
+                    run_id: "run".into(),
+                    invocation_id: "invocation".into(),
                 },
-                3000,
-            )
-            .await;
-            assistant = rows
-                .into_iter()
-                .find(|row| matches!(row.message.content, Content::Assistant { .. }));
-            let interrupted = log.get_session::<Value>("a").await.unwrap().unwrap();
-            assert_eq!(interrupted.revision, before.revision + 1);
-            assert_eq!(
-                interrupted.execution.as_ref().unwrap().state,
-                SessionExecutionState::Live { recorded_at: 1000 }
-            );
-            assert_eq!(
-                log.session_catalog_changes(live, boundary, 129)
-                    .await
-                    .unwrap(),
-                [(boundary, "a".into())]
-            );
+                step_id: "step".into(),
+                purpose: maka_agent_facts::context::ModelPurpose::Main,
+            },
+            false,
+        )
+        .unwrap();
+        writer.fenced(live);
+        assert!(
+            writer
+                .push(
+                    ModelEvent::PartStarted {
+                        id: "part".into(),
+                        text_kind: TextKind::Text,
+                        provider_options: None
+                    },
+                    UNIX_EPOCH + Duration::from_millis(2000)
+                )
+                .unwrap()
+                .is_empty()
+        );
+        let mut expected_text = String::new();
+        for chunk in [" \n par", "tial\t", " \n", "😀  tail "] {
+            expected_text.push_str(chunk);
             assert!(
-                log.append(
-                    &EventWrite::plain(
-                        (RuntimeEvent::new(
-                            Invocation {
-                                session_id: "a".into(),
-                                turn_id: "turn".into(),
-                                run_id: "run".into(),
-                                invocation_id: "invocation".into(),
-                            },
-                            observe(ModelEvent::PartDelta {
-                                id: "part".into(),
-                                text: "uncommitted".into(),
-                                provider_options: None
-                            })
-                        ))
-                        .clone()
+                writer
+                    .push(
+                        ModelEvent::PartDelta {
+                            id: "part".into(),
+                            text: chunk.into(),
+                            provider_options: None
+                        },
+                        UNIX_EPOCH + Duration::from_millis(2100)
                     )
                     .unwrap()
-                )
+                    .is_empty()
+            );
+        }
+        if large {
+            for chunk in ["答".repeat(120), "x".repeat(9 * 1024 * 1024)] {
+                expected_text.push_str(&chunk);
+                assert!(
+                    writer
+                        .push(
+                            ModelEvent::PartDelta {
+                                id: "part".into(),
+                                text: chunk,
+                                provider_options: None
+                            },
+                            UNIX_EPOCH + Duration::from_millis(2150)
+                        )
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+        }
+        // Valid live ingress has not sealed any catalog message.
+        let before = log.get_session::<Value>("a").await.unwrap().unwrap();
+        assert_eq!(before.last_message.as_ref().unwrap().recorded_at, 1000);
+        let partial = writer.partial().unwrap();
+        let CompletionPart::Own(part) = &partial.parts[0] else {
+            unreachable!()
+        };
+        let part_id = part.message_id.clone();
+        assert_eq!(part.started_at, UNIX_EPOCH + Duration::from_millis(2000));
+        let (boundary, rows) = append(
+            &log,
+            &mut view,
+            Fact::ModelInterrupted {
+                model_failure: None,
+                diagnostic: None,
+                step_id: "step".into(),
+                status,
+                partial: Some(partial),
+            },
+            3000,
+        )
+        .await;
+        let assistant = rows
+            .into_iter()
+            .find(|row| matches!(row.message.content, Content::Assistant { .. }))
+            .unwrap()
+            .message;
+        assert_eq!(assistant.id, part_id);
+        let interrupted = log.get_session::<Value>("a").await.unwrap().unwrap();
+        assert_eq!(interrupted.revision, before.revision + 1);
+        assert_eq!(
+            interrupted.execution.as_ref().unwrap().state,
+            SessionExecutionState::Live { recorded_at: 1000 }
+        );
+        assert_eq!(
+            log.session_catalog_changes(live, boundary, 129)
                 .await
-                .is_err()
-            );
-        }
-        let (terminal, rows) =
-            append(&log, &mut view, Fact::InvocationEnded { outcome }, 900).await;
-        if !interrupt {
-            assistant = rows
-                .into_iter()
-                .find(|row| matches!(row.message.content, Content::Assistant { .. }));
-            assert_eq!(
-                log.session_catalog_changes(live, terminal, 129)
-                    .await
-                    .unwrap(),
-                [(terminal, "a".into())]
-            );
-        }
-        let assistant = assistant.unwrap().message;
+                .unwrap(),
+            [(boundary, "a".into())]
+        );
+        assert!(
+            log.append(
+                &EventWrite::plain(RuntimeEvent::new(
+                    Invocation {
+                        session_id: "a".into(),
+                        turn_id: "turn".into(),
+                        run_id: "run".into(),
+                        invocation_id: "invocation".into()
+                    },
+                    observe(ModelObservation::ResponseMetadata {
+                        id: Some("too-late".into()),
+                        model: None,
+                        timestamp: None
+                    }),
+                ))
+                .unwrap()
+            )
+            .await
+            .is_err()
+        );
+        let (_, rows) = append(&log, &mut view, Fact::InvocationEnded { outcome }, 900).await;
+        assert!(
+            rows.iter()
+                .all(|row| !matches!(row.message.content, Content::Assistant { .. }))
+        );
         let Content::Assistant { text, .. } = assistant.content else {
             unreachable!()
         };
-        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let expected = if normalized.chars().count() > 96 {
-            format!("{}…", normalized.chars().take(95).collect::<String>())
+        assert_eq!(text, expected_text);
+        let expected = if large {
+            format!("partial 😀 tail {}…", "答".repeat(80))
         } else {
-            normalized
+            "partial 😀 tail".into()
         };
         let ended = log.get_session::<Value>("a").await.unwrap().unwrap();
         let message = ended.last_message.as_ref().unwrap();
+        assert_eq!(message.tail_message_id, part_id);
         assert_eq!(message.recorded_at, assistant.ts);
         assert_eq!(message.recorded_at, 2000); // Not interruption@3000 or terminal@900.
         assert_eq!(message.preview.as_deref(), Some(expected.as_str()));
-        assert_eq!(ended.revision, if interrupt { 4 } else { 3 });
+        assert_eq!(ended.revision, interrupted.revision + 1);
         let db = Connection::open(&path).unwrap();
         assert_eq!(
             db.query_row(

@@ -122,7 +122,7 @@ async fn selected_session_sink_rejects_foreign_tool_before_effect_and_accepts_it
             .await
             .unwrap()
             .into_step("step")
-            .invoke(&call, CancellationToken::new())
+            .invoke(&call, None, CancellationToken::new())
             .await;
         if foreign {
             assert!(matches!(result, Err(ToolError::Persistence(_))));
@@ -331,7 +331,7 @@ async fn direct_and_nested_tools_carry_selected_execution_into_spawned_host_work
             .await
             .unwrap()
             .into_step("step")
-            .invoke(&call, CancellationToken::new())
+            .invoke(&call, None, CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1, "{result}");

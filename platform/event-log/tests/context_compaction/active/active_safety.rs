@@ -42,28 +42,49 @@ async fn active_cuts_require_settled_effects_or_explicit_retry_safety() {
             .unwrap();
         if provider {
             log.append(&event("active", Fact::ModelCompleted { step_id: "main".into(),
-                output: serde_json::from_value(json!({
+                output: fixtures::model_output("active", "main", json!({
                     "parts":[{"kind":"tool_call","call":{"id":"remote","name":"search","input":{"kind":"json","data":{}},"provider_executed":true}}],
                     "finish_reason":"stop","usage":{}
-                })).unwrap()
+                }))
             })).await.unwrap();
         } else {
-            log.append(&event(
-                "active",
-                Fact::ModelObserved {
-                    step_id: "main".into(),
-                    event: ModelEvent::PartDelta {
-                        id: "partial".into(),
-                        text: "visible".into(),
-                        provider_options: barrier.then(|| json!({"signature":"provider state"})),
+            if barrier {
+                log.append(&event(
+                    "active",
+                    Fact::ModelObserved {
+                        step_id: "main".into(),
+                        event: ModelObservation::ProviderOptions {
+                            provider_part_id: Some("partial".into()),
+                            options: std::sync::Arc::new(json!({"signature":"provider state"})),
+                        },
                     },
-                },
-            ))
-            .await
-            .unwrap();
+                ))
+                .await
+                .unwrap();
+            }
             log.append(&event(
                 "active",
                 Fact::ModelInterrupted {
+                    partial: Some(maka_agent_facts::model::recorded::ModelPartial {
+                        parts: vec![maka_agent_facts::model::recorded::CompletionPart::Own(
+                            fixtures::record(
+                                "active",
+                                "main",
+                                0,
+                                maka_agent_facts::model::ModelPart::Text {
+                                    text_kind: maka_agent_facts::model::TextKind::Text,
+                                    text: "visible".into(),
+                                    provider_options: barrier.then(|| {
+                                        std::sync::Arc::new(json!({"signature":"provider state"}))
+                                    }),
+                                },
+                            ),
+                        )],
+                        tool_inputs: Vec::new(),
+                        response_id: None,
+                        model: None,
+                        timestamp: None,
+                    }),
                     model_failure: None,
                     diagnostic: None,
                     step_id: "main".into(),
@@ -147,33 +168,34 @@ async fn private_summary_failure_allows_main_progress_only_without_provider_effe
         ))
         .await
         .unwrap();
-        let observation = if provider_effect {
-            ModelEvent::ToolCall(maka_agent_facts::model::ModelToolCall {
-                id: "remote".into(),
-                name: "search".into(),
-                input: json!({}).into(),
-                provider_executed: true,
-                provider_options: None,
-            })
-        } else {
-            ModelEvent::PartDelta {
-                id: "text".into(),
-                text: "private partial text".into(),
-                provider_options: None,
-            }
-        };
-        log.append(&event(
-            "active",
-            Fact::ModelObserved {
-                step_id: "summary".into(),
-                event: observation,
-            },
-        ))
-        .await
-        .unwrap();
+        if provider_effect {
+            log.append(&event(
+                "active",
+                Fact::ModelObserved {
+                    step_id: "summary".into(),
+                    event: ModelObservation::Part(fixtures::record(
+                        "active",
+                        "summary",
+                        0,
+                        maka_agent_facts::model::ModelPart::ToolCall {
+                            call: maka_agent_facts::model::ModelToolCall {
+                                id: "remote".into(),
+                                name: "search".into(),
+                                input: json!({}).into(),
+                                provider_executed: true,
+                                provider_options: None,
+                            },
+                        },
+                    )),
+                },
+            ))
+            .await
+            .unwrap();
+        }
         log.append(&event(
             "active",
             Fact::ModelInterrupted {
+                partial: None,
                 model_failure: None,
                 diagnostic: None,
                 step_id: "summary".into(),

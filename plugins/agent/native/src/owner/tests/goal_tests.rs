@@ -347,7 +347,7 @@ async fn goal_prepared_report_cannot_override_a_newer_user_pause() {
         let input = json!({"status":"achieved","note":"A prepared report cannot overrule later user intent"});
         let pending = f.owner.goals.prepare("GoalStatus".into(),input.clone(),ToolCallContext{invocation:invocation.clone(),operation_id:"late-report".into(),execution:Some(execution_store.execution_custody().unwrap())},CancellationToken::new()).await.unwrap();
         assert_eq!(control(&f,&session,"pause").await["kind"],"committed");
-        assert!(ToolJournal::new(execution_store,invocation).invoke_prepared_call("late-report".into(),ToolCallIdentity::standalone("late-report".into()),"GoalStatus".into(),input,CancellationToken::new(),pending).await.is_err());
+        assert!(ToolJournal::new(execution_store,invocation).invoke_prepared_call("late-report".into(),ToolCallIdentity::standalone("late-report".into()),"GoalStatus".into(),input,None,CancellationToken::new(),pending).await.is_err());
         response(&mut socket).await;
         let paused = wait_status(&f,&session,"paused").await;
         drop(scope);

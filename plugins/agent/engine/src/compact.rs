@@ -21,7 +21,6 @@ use crate::{RunContext, RunError, RunSettings, context_input, model_attempt};
 use maka_agent_facts::context::CheckpointMode;
 use maka_agent_facts::context::CompactOutcome;
 use maka_agent_facts::context::ContextCheckpoint;
-use maka_agent_facts::context::TextSummary;
 use maka_agent_facts::context::default_compaction_prompt;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
@@ -251,7 +250,7 @@ impl Job {
                     &mut None,
                 )
                 .await;
-                let (step_id, output) = match result {
+                let output = match result {
                     Ok(output) => output,
                     Err(RunError::Model(maka_model::ModelError::ContextOverflow {
                         observed_output: false,
@@ -265,7 +264,10 @@ impl Job {
                     }
                     Err(error) => return Err(error),
                 };
-                let summary = match TextSummary::from_model_step(&output) {
+                let model_attempt::AttemptOutput::Summary { step_id, summary } = output else {
+                    unreachable!("Summary request returns its summary business result");
+                };
+                let summary = match summary {
                     Ok(summary) => summary,
                     Err(defect) => return Ok(failed(&defect.to_string())),
                 };

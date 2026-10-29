@@ -22,7 +22,7 @@ use super::{F, JsonSource, SourceBudget, SourceBytes, TextSource, recipe};
 use crate::adapters::wire::source::FragmentSequence;
 use bytes::Bytes;
 use maka_agent_facts::model::prompt_source::source::{
-    ByteCursor, ByteSource, ChargedBuffer, ReadSource, SourceRead, TextEncoding,
+    ByteCursor, ByteSource, ChargedBuffer, ReadSource, SourceRead,
     json::{self, ArrayCursor, ObjectCursor},
 };
 use maka_provider_protocol::json_stream::pull::{JsonEscape, Transform};
@@ -32,9 +32,7 @@ pub(super) fn content(text: TextSource, parts: JsonSource) -> io::Result<F> {
         .extend(std::alloc::Layout::new::<Content>())
         .map_err(io::Error::other)?;
     Ok(F::owned_raw(
-        JsonSource {
-            bytes: SourceBytes::Source(Arc::new(Content { text, parts })),
-        },
+        JsonSource::new(SourceBytes::Source(Arc::new(Content { text, parts }))),
         layout.pad_to_align().size(),
     ))
 }
@@ -152,28 +150,20 @@ impl Cursor {
     }
     async fn field(&mut self) -> io::Result<()> {
         let mut fragments = Vec::with_capacity(5);
-        if let Some(field) = self
+        if let Some((field, selected)) = self
             .fields
             .as_mut()
             .expect("field cursor")
-            .next_spans()
+            .next_named_spans([self.key].into_iter())
             .await?
         {
             let source = self.fields_source.as_ref().expect("section fields");
-            let key = source.bytes.slice(field.key_range)?;
-            let is_text = json::text_eq(
-                &TextSource {
-                    bytes: key.clone(),
-                    encoding: TextEncoding::JsonString,
-                },
-                self.key,
-                self.budget.clone(),
-            )
-            .await?;
+            let key = source.bytes().slice(field.key_range)?;
+            let is_text = selected.is_some();
             if !std::mem::replace(&mut self.first_field, false) {
                 fragments.push(F::literal(b","));
             }
-            fragments.push(F::Raw(JsonSource { bytes: key }));
+            fragments.push(F::Raw(JsonSource::new(key)));
             fragments.push(F::literal(b":"));
             if is_text {
                 if self.injected {
@@ -183,9 +173,9 @@ impl Cursor {
                 self.phase = Phase::Text;
                 fragments.push(F::literal(b"\""));
             } else {
-                fragments.push(F::Raw(JsonSource {
-                    bytes: source.bytes.slice(field.value_range)?,
-                }));
+                fragments.push(F::Raw(JsonSource::new(
+                    source.bytes().slice(field.value_range)?,
+                )));
             }
         } else if !self.injected {
             self.injected = true;
@@ -393,10 +383,10 @@ mod tests {
         let text = recipe::text::concat(
             Arc::new(GeneratedRecipes::new(vec![
                 generated::text("First "),
-                TextSource {
-                    bytes: SourceBytes::Inline(Bytes::from_static(b"\"\\ud83d\\ude42\"")),
-                    encoding: TextEncoding::JsonString,
-                },
+                TextSource::new(
+                    SourceBytes::Inline(Bytes::from_static(b"\"\\ud83d\\ude42\"")),
+                    TextEncoding::JsonString,
+                ),
                 generated::text("第二\n"),
             ])),
             budget.clone(),

@@ -49,7 +49,7 @@ pub(super) async fn hidden(
     stored
 }
 
-pub(super) fn observation(event: ModelEvent) -> Fact {
+pub(super) fn observation(event: ModelObservation) -> Fact {
     Fact::ModelObserved {
         step_id: "summary".into(),
         event,
@@ -59,12 +59,18 @@ pub(super) fn observation(event: ModelEvent) -> Fact {
 pub(super) fn accepted(text: &str) -> Fact {
     Fact::ModelCompleted {
         step_id: "summary".into(),
-        output: ModelStep {
-            parts: vec![ModelPart::Text {
-                text_kind: TextKind::Text,
-                text: text.into(),
-                provider_options: None,
-            }],
+        output: ModelCompletion {
+            parts: vec![CompletionPart::Own(ModelPartRecord {
+                ordinal: 0,
+                message_id: uuid::Uuid::new_v4().to_string(),
+                started_at: std::time::SystemTime::now(),
+                provider_part_id: None,
+                part: std::sync::Arc::new(ModelPart::Text {
+                    text_kind: TextKind::Text,
+                    text: text.into(),
+                    provider_options: None,
+                }),
+            })],
             finish_reason: ModelFinishReason::Stop,
             usage: Default::default(),
             provider_options: None,

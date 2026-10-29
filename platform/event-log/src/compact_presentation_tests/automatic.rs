@@ -48,36 +48,20 @@ async fn automatic_summary_is_hidden_without_interrupting_main_delivery_or_read_
         )
         .await;
         let mut expected = view.push(&opened).unwrap();
-        let (main_fence, main_id) = step(
-            &log,
-            &mut view,
-            &inv,
-            "main-a",
-            ModelPurpose::Main,
-            "first answer",
-        )
-        .await;
+        let (main_fence, main_id) = step(&log, &mut view, &inv, "main-a", ModelPurpose::Main).await;
         let before = log
             .observe_session::<Value>("session")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(before.active_streams.len(), 1);
-        assert_eq!(before.active_streams[0].message_id, main_id);
-        expected.extend(finish(&log, &mut view, &inv, "main-a", "first answer").await);
+        assert!(before.active_streams.is_empty());
+        expected.extend(finish(&log, &mut view, &inv, "main-a", &main_id, "first answer").await);
         let read = log
             .set_session_read_marker::<Value>("session", &main_id)
             .await
             .unwrap();
-        let (summary_fence, _) = step(
-            &log,
-            &mut view,
-            &inv,
-            "summary",
-            ModelPurpose::Summary,
-            &"secret ".repeat(1024),
-        )
-        .await;
+        let (summary_fence, summary_id) =
+            step(&log, &mut view, &inv, "summary", ModelPurpose::Summary).await;
         assert!(view.overlay().is_empty());
         let during = log
             .observe_session::<Value>("session")
@@ -156,12 +140,14 @@ async fn automatic_summary_is_hidden_without_interrupting_main_delivery_or_read_
                 break;
             }
         }
-        assert_eq!(facts.len(), 3);
-        assert!(matches!(&facts[2], StreamFact::ContextChanged));
         assert!(
-            matches!(&facts[0], StreamFact::PartFinished { step_id, .. } if step_id == "main-a")
+            facts
+                .iter()
+                .any(|fact| matches!(fact, StreamFact::ContextChanged))
         );
-        assert!(matches!(&facts[1], StreamFact::StepEnded { step_id, .. } if step_id == "main-a"));
+        assert!(facts.iter().any(
+            |fact| matches!(fact, StreamFact::StepEnded { step_id, completed: true, failed: false, .. } if step_id == "main-a")
+        ));
         crate::transcript_cache::materialize_all_rows(&log, "session", summary_fence)
             .await
             .unwrap();
@@ -169,9 +155,16 @@ async fn automatic_summary_is_hidden_without_interrupting_main_delivery_or_read_
         let before_rows = crate::test_store::inspect_cache(&log, transcript).await;
         if ending == "success" {
             assert!(
-                finish(&log, &mut view, &inv, "summary", &"secret ".repeat(1024))
-                    .await
-                    .is_empty()
+                finish(
+                    &log,
+                    &mut view,
+                    &inv,
+                    "summary",
+                    &summary_id,
+                    &"secret ".repeat(1024)
+                )
+                .await
+                .is_empty()
             );
         } else if ending == "interrupted" {
             let interrupted = append(
@@ -182,6 +175,7 @@ async fn automatic_summary_is_hidden_without_interrupting_main_delivery_or_read_
                     diagnostic: None,
                     step_id: "summary".into(),
                     status: ModelInterruption::Failed,
+                    partial: None,
                 },
             )
             .await;
@@ -191,21 +185,13 @@ async fn automatic_summary_is_hidden_without_interrupting_main_delivery_or_read_
         assert_eq!(unchanged.last_message, read.last_message);
         assert_eq!(unchanged.read_state, read.read_state);
         if ending != "cancelled" {
-            let (later, later_id) = step(
-                &log,
-                &mut view,
-                &inv,
-                "main-b",
-                ModelPurpose::Main,
-                "second answer",
-            )
-            .await;
+            let (later, later_id) = step(&log, &mut view, &inv, "main-b", ModelPurpose::Main).await;
             let active = log
                 .observe_session::<Value>("session")
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(active.active_streams.len(), 1);
+            assert!(active.active_streams.is_empty());
             assert!(active.compacting.is_none());
             let main = log.session_events("session", waiting.sequence, later, 32, 128 * 1024)
                 .await.unwrap().events.into_iter().find(|event| matches!(&event.event.fact,
@@ -222,12 +208,10 @@ async fn automatic_summary_is_hidden_without_interrupting_main_delivery_or_read_
                     .any(|change| change.id == main.event.id
                         && matches!(change.fact, StreamFact::ContextChanged))
             );
-            assert_eq!(active.active_streams[0].message_id, later_id);
-            assert_eq!(
-                log.active_transcript(&inv, later).await.unwrap()[0].id,
-                later_id
-            );
-            expected.extend(finish(&log, &mut view, &inv, "main-b", "second answer").await);
+            assert!(log.active_transcript(&inv, later).await.unwrap().is_empty());
+            assert_ne!(later_id, main_id);
+            expected
+                .extend(finish(&log, &mut view, &inv, "main-b", &later_id, "second answer").await);
         }
         let end = append(
             &log,
@@ -270,9 +254,7 @@ async fn automatic_summary_is_hidden_without_interrupting_main_delivery_or_read_
             StreamFact::InvocationEnded { .. }
         ));
         assert!(tail.events.iter().all(|event| match &event.fact {
-            StreamFact::PartStarted { step_id, .. }
-            | StreamFact::PartDelta { step_id, .. }
-            | StreamFact::PartFinished { step_id, .. }
+            StreamFact::ModelPartCommitted { step_id, .. }
             | StreamFact::StepEnded { step_id, .. } => step_id != "summary",
             _ => true,
         }));

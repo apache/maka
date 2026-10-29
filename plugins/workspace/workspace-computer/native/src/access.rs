@@ -386,12 +386,24 @@ pub(super) struct Journal {
 }
 impl EventSink for Journal {
     fn commit(self: Arc<Self>, event: EventWrite) -> CommitFuture {
+        self.commit_with_prefix(&[], event)
+    }
+
+    fn commit_with_prefix(
+        self: Arc<Self>,
+        prefix: &[EventWrite],
+        event: EventWrite,
+    ) -> CommitFuture {
+        let mut events = prefix.to_vec();
+        events.push(event);
         Box::pin(async move {
+            let (event, prefix) = events.split_last().expect("last event is present");
             if matches!(event.event().fact, Fact::ToolDispatched { .. }) {
                 if let Some((app, display)) = &self.app {
                     self.store
                         .append_computer_app_dispatch(
-                            &event,
+                            prefix,
+                            event,
                             &self.targets,
                             app,
                             display,
@@ -400,11 +412,14 @@ impl EventSink for Journal {
                         .await
                 } else {
                     self.store
-                        .append_capability_dispatch(&event, &self.targets, &self.basis)
+                        .append_capability_dispatch(prefix, event, &self.targets, &self.basis)
                         .await
                 }
             } else {
-                self.store.append(&event).await
+                self.store
+                    .append_batch(&events)
+                    .await
+                    .map(|sequences| *sequences.last().expect("last event has a sequence"))
             }
         })
     }

@@ -161,7 +161,7 @@ pub enum Fact {
     /// arrive; completion-only requests accept history at ModelCompleted.
     ModelObserved {
         step_id: String,
-        event: crate::model::ModelEvent,
+        event: crate::model::recorded::ModelObservation,
     },
     ModelInterrupted {
         step_id: String,
@@ -172,10 +172,12 @@ pub enum Fact {
         diagnostic: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model_failure: Option<crate::model::error::ModelFailureCause>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<crate::model::recorded::ModelPartial>,
     },
     ModelCompleted {
         step_id: String,
-        output: crate::model::ModelStep,
+        output: crate::model::recorded::ModelCompletion,
     },
     ToolDispatched {
         /// Opaque renderer key captured by the tool before admission, never a grant.
@@ -434,6 +436,14 @@ pub trait EventSink: Send + Sync + 'static {
         None
     }
     fn commit(self: std::sync::Arc<Self>, event: EventWrite) -> CommitFuture;
+    /// Atomically append ordinary prefix facts and the designated final event.
+    /// Capture owned event handles before returning; the receipt is the final
+    /// event's actual sequence, including when the prefix was already committed.
+    fn commit_with_prefix(
+        self: std::sync::Arc<Self>,
+        prefix: &[EventWrite],
+        last: EventWrite,
+    ) -> CommitFuture;
 }
 
 pub type CommitFuture = std::pin::Pin<Box<dyn Future<Output = Result<u64, CommitError>> + Send>>;

@@ -329,6 +329,7 @@ async fn unavailable_borrowed_media_preserves_the_completed_effect_and_raw_resul
                 ToolCallIdentity::standalone("image-call".into()),
                 "Read".into(),
                 json!({}),
+                None,
                 CancellationToken::new(),
                 move |_| {
                     Box::pin(async move {

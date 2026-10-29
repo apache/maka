@@ -18,8 +18,11 @@
  */
 
 //! Capture media and reference aliases through the original immutable source.
-use super::located::{self, LocatedJson};
+use super::located;
 use super::*;
+use maka_agent_facts::history::semantic::directory::{
+    AttachmentDirectory, StorageDirectory, ToolPartDirectory,
+};
 use maka_agent_facts::model::prompt_source::source::{ChargedBuffer, MediaSource};
 use maka_event_log::context::semantic::{
     ArtifactIdentityValidity, ArtifactLookup, ArtifactLookupResult, PayloadSource,
@@ -63,8 +66,7 @@ fn copy_body(
     }
 }
 pub(super) async fn artifact(
-    reference: &JsonSource,
-    location: Option<&LocatedJson>,
+    reference: &StorageDirectory,
     body: bool,
     audio: bool,
     mode: Mode,
@@ -78,35 +80,29 @@ pub(super) async fn artifact(
         backing_bytes: 0,
         source_bytes: 0,
     };
-    if !tagged(reference, "session_file", context).await? {
+    let StorageDirectory::SessionFile {
+        session_id,
+        relative_path,
+    } = reference
+    else {
         return Ok(unavailable("unsupported_ref_kind"));
-    }
+    };
     let captured = context.captured.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "media capture requires original source",
         )
     })?;
-    let location = location.ok_or_else(|| {
+    let root = context.payload_root.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "artifact reference requires original payload token positions",
         )
     })?;
-    let mut fields = located::fields(
-        reference,
-        Some(location),
-        &["sessionId", "relativePath"],
-        context,
-    )
-    .await?
-    .into_iter();
-    let session = fields.next().flatten().ok_or_else(invalid)?;
-    let id = fields.next().flatten().ok_or_else(invalid)?;
-    let session_token = session.location.as_ref().ok_or_else(invalid)?.range.clone();
-    let artifact_token = id.location.as_ref().ok_or_else(invalid)?.range.clone();
-    let session = session.value.text()?;
-    let id = id.value.text()?;
+    let session_token = located::range(session_id.range)?;
+    let artifact_token = located::range(relative_path.range)?;
+    let session = located::text(*session_id, context)?;
+    let id = located::text(*relative_path, context)?;
     let local = json::text_eq(
         &session,
         &captured.selection().session,
@@ -114,7 +110,7 @@ pub(super) async fn artifact(
     )
     .await?;
     let work = context.budget.allocate(4096).await?;
-    let selection = ArtifactLookup::new(location.root.clone(), session_token, artifact_token, work)
+    let selection = ArtifactLookup::new(root.clone(), session_token, artifact_token, work)
         .map_err(io::Error::other)?;
     if local && !body {
         let validity = captured
@@ -252,11 +248,9 @@ pub(super) async fn artifact(
             )
         })?;
         lookup(
-            &JsonSource {
-                bytes: SourceBytes::Source(
-                    captured.byte_source(&metadata).map_err(io::Error::other)?,
-                ),
-            },
+            &JsonSource::new(SourceBytes::Source(
+                captured.byte_source(&metadata).map_err(io::Error::other)?,
+            )),
             "id",
             context,
         )
@@ -293,12 +287,15 @@ fn unavailable_text(audio: bool, reason: &'static str, context: &ProjectContext<
     )
 }
 pub(super) async fn tool(
-    part: &JsonSource,
-    location: Option<&LocatedJson>,
+    part: &ToolPartDirectory,
     mode: Mode,
     context: &ProjectContext<'_>,
 ) -> io::Result<Part> {
-    let audio = tagged(part, "audio", context).await?;
+    let (media, audio) = match part {
+        ToolPartDirectory::Audio(media) => (media, true),
+        ToolPartDirectory::Artifact(media) => (media, false),
+        ToolPartDirectory::Text(_) => return Err(invalid()),
+    };
     if !audio && !context.vision {
         return Ok(Part {
             content: Some(ContentRecipe::Text {
@@ -309,38 +306,12 @@ pub(super) async fn tool(
             backing_bytes: 0,
         });
     }
-    let field = if audio { "audio" } else { "image" };
-    let value = located::fields(part, location, &[field], context)
-        .await?
-        .pop()
-        .flatten()
-        .ok_or_else(invalid)?;
-    let mut fields = located::fields(
-        &value.value.source,
-        value.location.as_ref(),
-        &["ref", "mimeType", "detail"],
-        context,
-    )
-    .await?
-    .into_iter();
-    let reference = fields.next().flatten().ok_or_else(invalid)?;
-    let mime = fields.next().flatten().ok_or_else(invalid)?.value.text()?;
-    let detail = fields
-        .next()
-        .flatten()
-        .map(|value| value.value)
-        .filter(|value| value.kind != JsonKind::Null)
-        .map(|value| value.text())
+    let mime = located::text(media.mime_type, context)?;
+    let detail = media
+        .detail
+        .map(|value| located::text(value, context))
         .transpose()?;
-    let artifact = artifact(
-        &reference.value.source,
-        reference.location.as_ref(),
-        true,
-        audio,
-        mode,
-        context,
-    )
-    .await?;
+    let artifact = artifact(&media.reference, true, audio, mode, context).await?;
     if !artifact.available {
         let metadata_bytes = items_footprint::<TextSource>(3)?
             .checked_add(source_text::concat_metadata_bytes()?)
@@ -355,9 +326,9 @@ pub(super) async fn tool(
         });
     }
     let mut metadata_bytes = artifact.source_bytes;
-    footprint_add(&mut metadata_bytes, raw_footprint(&mime.bytes)?)?;
+    footprint_add(&mut metadata_bytes, raw_footprint(mime.bytes())?)?;
     if let Some(detail) = &detail {
-        footprint_add(&mut metadata_bytes, raw_footprint(&detail.bytes)?)?;
+        footprint_add(&mut metadata_bytes, raw_footprint(detail.bytes())?)?;
     }
     let content = artifact.body.map(|bytes| ContentRecipe::Media {
         media: MediaSource {
@@ -382,41 +353,17 @@ pub(super) struct Attachment {
     pub backing_bytes: usize,
 }
 pub(super) async fn attachment(
-    value: &JsonSource,
-    location: Option<&LocatedJson>,
+    value: &AttachmentDirectory,
     mode: Mode,
     context: &ProjectContext<'_>,
 ) -> io::Result<Attachment> {
-    let mut fields = located::fields(
-        value,
-        location,
-        &["kind", "name", "mimeType", "ref"],
-        context,
-    )
-    .await?
-    .into_iter();
-    let image = json::text_eq(
-        &fields.next().flatten().ok_or_else(invalid)?.value.text()?,
-        "image",
-        context.budget.clone(),
-    )
-    .await?;
-    let name = fields.next().flatten().ok_or_else(invalid)?.value.text()?;
-    let mime = fields.next().flatten().ok_or_else(invalid)?.value.text()?;
-    let reference = fields.next().flatten().ok_or_else(invalid)?;
+    let image = value.image;
+    let name = located::text(value.name, context)?;
+    let mime = located::text(value.mime_type, context)?;
     let want_media = image && context.vision;
-    let artifact = artifact(
-        &reference.value.source,
-        reference.location.as_ref(),
-        want_media,
-        false,
-        mode,
-        context,
-    )
-    .await?;
-    let reference = reference.value.source;
-    let mut metadata_bytes = raw_footprint(&name.bytes)?;
-    footprint_add(&mut metadata_bytes, raw_footprint(&mime.bytes)?)?;
+    let artifact = artifact(&value.reference, want_media, false, mode, context).await?;
+    let mut metadata_bytes = raw_footprint(name.bytes())?;
+    footprint_add(&mut metadata_bytes, raw_footprint(mime.bytes())?)?;
     let mut pieces = Vec::with_capacity(if artifact.id.is_some() {
         if image { 13 } else { 10 }
     } else {
@@ -429,7 +376,7 @@ pub(super) async fn attachment(
         Language::ZhTw => "Read 參數: {\"path\":",
     };
     if let Some(id) = artifact.id {
-        footprint_add(&mut metadata_bytes, raw_footprint(&id.bytes)?)?;
+        footprint_add(&mut metadata_bytes, raw_footprint(id.bytes())?)?;
         footprint_add(&mut metadata_bytes, items_footprint::<TextSource>(2)?)?;
         footprint_add(&mut metadata_bytes, source_text::concat_metadata_bytes()?)?;
         footprint_add(
@@ -464,18 +411,16 @@ pub(super) async fn attachment(
             Language::ZhTw => "工作階段資源；上面的 Read 路徑與顯示名稱不同。\n",
         }));
     } else {
-        let kind = lookup(&reference, "kind", context).await?.text()?;
-        let path = if json::text_eq(&kind, "workspace_file", context.budget.clone()).await? {
-            Some(lookup(&reference, "relativePath", context).await?)
-        } else if json::text_eq(&kind, "external_file", context.budget.clone()).await? {
-            Some(lookup(&reference, "absolutePath", context).await?)
-        } else {
-            None
+        let path = match value.reference {
+            StorageDirectory::WorkspaceFile { relative_path } => Some(relative_path),
+            StorageDirectory::ExternalFile { absolute_path } => Some(absolute_path),
+            StorageDirectory::SessionFile { .. } | StorageDirectory::SessionContext { .. } => None,
         };
         if let Some(path) = path {
-            footprint_add(&mut metadata_bytes, raw_footprint(&path.source.bytes)?)?;
+            let path = located::text(path, context)?;
+            footprint_add(&mut metadata_bytes, raw_footprint(path.bytes())?)?;
             pieces.push(literal(read_prefix));
-            pieces.push(raw_json(path.source));
+            pieces.push(raw_json(JsonSource::new(path.into_bytes())));
             pieces.push(literal("}\n"));
         } else {
             pieces.push(literal(match context.language {
@@ -486,13 +431,9 @@ pub(super) async fn attachment(
         }
     }
     pieces.push(literal("name: "));
-    pieces.push(raw_json(JsonSource {
-        bytes: name.bytes.clone(),
-    }));
+    pieces.push(raw_json(JsonSource::new(name.bytes().clone())));
     pieces.push(literal("\nmime_type: "));
-    pieces.push(raw_json(JsonSource {
-        bytes: mime.bytes.clone(),
-    }));
+    pieces.push(raw_json(JsonSource::new(mime.bytes().clone())));
     pieces.push(literal("\n</attachment>"));
     let content = if !want_media {
         None

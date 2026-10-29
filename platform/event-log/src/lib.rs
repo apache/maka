@@ -140,6 +140,18 @@ pub enum StoreError {
     MaterialCollected,
     #[error("derived transcript identity conflicts with its committed bytes")]
     TranscriptConflict,
+    #[error("history source {source_sequence} could not be rendered: {cause}")]
+    TranscriptSource {
+        source_sequence: u64,
+        #[source]
+        cause: Box<StoreError>,
+    },
+    #[error("{cause}; read-cache transaction failed: {transaction}")]
+    ReadCacheTransaction {
+        #[source]
+        cause: Box<StoreError>,
+        transaction: sqlx::Error,
+    },
     #[error(transparent)]
     Projection(#[from] maka_presentation::ProjectionError),
     #[error("event log mutex poisoned")]

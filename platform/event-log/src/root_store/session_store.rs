@@ -379,16 +379,19 @@ impl SessionStore {
 
     pub async fn append_capability_dispatch(
         &self,
+        prefix: &[EventWrite],
         event: &EventWrite,
         targets: &[maka_agent_facts::interaction::GrantTarget],
         basis: &maka_agent_facts::workspace::PermissionBasis,
     ) -> Result<u64, CommitError> {
-        self.check_session(&event.event().invocation.session_id)
-            .map_err(commit_error)?;
+        for write in prefix.iter().chain(std::iter::once(event)) {
+            self.check_session(&write.event().invocation.session_id)
+                .map_err(commit_error)?;
+        }
         self.scoped()
             .await
             .map_err(commit_error)?
-            .append_capability_dispatch(event, targets, basis)
+            .append_capability_dispatch(prefix, event, targets, basis)
             .await
     }
 
@@ -958,6 +961,20 @@ impl SessionStore {
 }
 
 impl EventSink for SessionStore {
+    fn commit_with_prefix(
+        self: std::sync::Arc<Self>,
+        prefix: &[EventWrite],
+        last: EventWrite,
+    ) -> CommitFuture {
+        let mut events = prefix.to_vec();
+        events.push(last);
+        Box::pin(async move {
+            self.append_batch(&events)
+                .await
+                .map(|sequences| *sequences.last().expect("last event has a sequence"))
+        })
+    }
+
     fn execution_custody(
         self: std::sync::Arc<Self>,
     ) -> Option<std::sync::Arc<dyn maka_agent_facts::tools::ExecutionCustody>> {

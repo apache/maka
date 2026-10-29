@@ -371,16 +371,67 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
             input: json!({}),
         })
     };
-    log.append_capability_dispatch(
-        &dispatch("before"),
-        std::slice::from_ref(&target),
-        &PermissionBasis {
-            boundary_revision: 0,
-            ..basis
+    bound_session(&log, "ordinary-session", 0).await;
+    let ordinary_invocation = Invocation {
+        session_id: "ordinary-session".into(),
+        turn_id: "ordinary-turn".into(),
+        run_id: "ordinary-run".into(),
+        invocation_id: "ordinary-invocation".into(),
+    };
+    let prefix = EventWrite::plain(RuntimeEvent::new(
+        ordinary_invocation.clone(),
+        Fact::InvocationOpened {
+            input: InvocationInput::Message {
+                content: "ordinary prefix without a capability grant".into(),
+                source_messages: vec![],
+                request_fingerprint: None,
+            },
+            configuration: None,
         },
-    )
-    .await
+    ))
     .unwrap();
+    let admitted = dispatch("before");
+    let admitted_sequence = log
+        .append_capability_dispatch(
+            std::slice::from_ref(&prefix),
+            &admitted,
+            std::slice::from_ref(&target),
+            &PermissionBasis {
+                boundary_revision: 0,
+                ..basis
+            },
+        )
+        .await
+        .unwrap();
+    assert!(log.append(&prefix).await.unwrap() < admitted_sequence);
+    let later_prefix = EventWrite::plain(RuntimeEvent::new(
+        ordinary_invocation,
+        Fact::ToolDispatched {
+            presentation: None,
+            title: None,
+            operation_id: "ordinary-prefix".into(),
+            call: ToolCallIdentity::standalone("ordinary-prefix-call".into()),
+            name: "ordinary".into(),
+            input: json!({}),
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        log.append_capability_dispatch(
+            std::slice::from_ref(&later_prefix),
+            &admitted,
+            std::slice::from_ref(&target),
+            &PermissionBasis {
+                boundary_revision: 0,
+                ..basis
+            },
+        )
+        .await
+        .unwrap(),
+        admitted_sequence,
+        "receipt belongs to the designated last dispatch, including exact replay"
+    );
+    assert!(log.append(&later_prefix).await.unwrap() > admitted_sequence);
     log.establish_run_interaction(&invocation, &make_request("pending", 0))
         .await
         .unwrap();
@@ -400,8 +451,10 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
             .unwrap()
             .is_none()
     );
+    let rejected_prefix = dispatch("rejected-prefix");
     assert!(matches!(
         log.append_capability_dispatch(
+            std::slice::from_ref(&rejected_prefix),
             &dispatch("revoked"),
             std::slice::from_ref(&target),
             &PermissionBasis {
@@ -412,6 +465,13 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
         .await,
         Err(CommitError::PermissionRevoked)
     ));
+    assert!(
+        log.execution_event(&invocation, &rejected_prefix.event().id, u64::MAX >> 1)
+            .await
+            .unwrap()
+            .is_none(),
+        "grant rejection must roll back its ordinary prefix"
+    );
     let late = log
         .commit_interaction_outcome("pending", decision(Decision::Allow, 31))
         .await
@@ -457,6 +517,7 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
     assert!(
         matches!(
             log.append_capability_dispatch(
+                &[],
                 &dispatch("stale_worker"),
                 std::slice::from_ref(&target),
                 &PermissionBasis {
@@ -470,6 +531,7 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
         "renewal cannot revive a worker captured under the old boundary"
     );
     log.append_capability_dispatch(
+        &[],
         &dispatch("after"),
         std::slice::from_ref(&target),
         &PermissionBasis {
@@ -586,12 +648,12 @@ async fn native_audio_dispatch_requires_both_current_capability_grants() {
     };
     approve("computer", &targets[0], basis).await;
     assert!(matches!(
-        log.append_capability_dispatch(&dispatch("missing-audio"), &targets, &basis)
+        log.append_capability_dispatch(&[], &dispatch("missing-audio"), &targets, &basis)
             .await,
         Err(CommitError::PermissionRevoked)
     ));
     approve("audio", &targets[1], basis).await;
-    log.append_capability_dispatch(&dispatch("both"), &targets, &basis)
+    log.append_capability_dispatch(&[], &dispatch("both"), &targets, &basis)
         .await
         .unwrap();
     let current = log.get_session::<Value>("session").await.unwrap().unwrap();
@@ -607,17 +669,17 @@ async fn native_audio_dispatch_requires_both_current_capability_grants() {
     };
     approve("renewed-audio", &targets[1], renewed).await;
     assert!(matches!(
-        log.append_capability_dispatch(&dispatch("missing-computer"), &targets, &renewed)
+        log.append_capability_dispatch(&[], &dispatch("missing-computer"), &targets, &renewed)
             .await,
         Err(CommitError::PermissionRevoked)
     ));
     approve("renewed-computer", &targets[0], renewed).await;
     assert!(matches!(
-        log.append_capability_dispatch(&dispatch("old-worker"), &targets, &basis)
+        log.append_capability_dispatch(&[], &dispatch("old-worker"), &targets, &basis)
             .await,
         Err(CommitError::PermissionRevoked)
     ));
-    log.append_capability_dispatch(&dispatch("renewed"), &targets, &renewed)
+    log.append_capability_dispatch(&[], &dispatch("renewed"), &targets, &renewed)
         .await
         .unwrap();
     let events = log

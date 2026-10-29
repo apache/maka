@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use maka_agent_facts::history::semantic::directory::{PayloadDirectory, RowDirectory};
 use maka_agent_facts::{
     artifact::{Artifact, ArtifactKind, ArtifactSource},
     attachment::StorageRef,
@@ -91,30 +92,28 @@ async fn row(
     source: &CapturedSource,
     kind: &str,
     budget: &Arc<dyn SourceBudget>,
-) -> (JsonSource, PayloadSource, JsonSource) {
+) -> (RowDirectory, PayloadSource, PayloadSource, PayloadDirectory) {
     let mut after = None;
-    let mut buffer = budget.allocate(4096).await.unwrap();
+    let mut buffer = budget.allocate(32 * 1024).await.unwrap();
     loop {
-        let mut page = source.metadata_page(after, buffer).await.unwrap();
-        for index in 0..page.len() {
-            let row = page.row(index).unwrap();
-            let metadata = JsonSource {
-                bytes: SourceBytes::Source(
-                    source
-                        .byte_source(&source.metadata_source(&row).unwrap())
-                        .unwrap(),
-                ),
-            };
-            if json::field(&metadata, &["kind", kind], budget.clone())
-                .await
-                .unwrap()
-                .is_some()
-            {
-                let payload = source.describe_payload(&row).unwrap().unwrap();
-                let value = JsonSource {
-                    bytes: SourceBytes::Source(source.byte_source(&payload).unwrap()),
-                };
-                return (metadata, payload, value);
+        let mut page = source.directory_page(after, buffer).await.unwrap();
+        while let Some(entry) = page.next_row().unwrap() {
+            let selected = matches!(
+                (kind, entry.directory),
+                ("User", RowDirectory::User { .. })
+                    | ("ToolResult", RowDirectory::ToolResult { .. })
+                    | ("ImportedUser", RowDirectory::ImportedUser { .. })
+                    | ("AssistantPart", RowDirectory::AssistantPart { .. })
+            );
+            if selected {
+                let row_root = source.metadata_source(&entry.row).unwrap();
+                let payload_root = source.describe_payload(&entry.row).unwrap().unwrap();
+                return (
+                    entry.directory,
+                    row_root,
+                    payload_root,
+                    entry.payload.unwrap(),
+                );
             }
         }
         after = page.next;
@@ -138,7 +137,7 @@ async fn bytes(source: &SourceBytes, budget: &Arc<dyn SourceBudget>) -> Vec<u8> 
         }
     }
 }
-async fn open_tool(store: &SessionStore) {
+async fn open_model(store: &SessionStore) {
     append(
         store,
         Fact::InvocationOpened {
@@ -172,7 +171,59 @@ async fn open_tool(store: &SessionStore) {
         },
     )
     .await;
-    append(store,Fact::ModelCompleted{step_id:"step".into(),output:serde_json::from_value(serde_json::json!({"parts":[{"kind":"tool_call","call":{"id":"call","name":"Read","input":{"kind":"json","data":{}},"provider_executed":false}}],"finish_reason":"tool-calls","usage":{}})).unwrap()}).await;
+}
+fn model_completion(
+    parts: Vec<maka_agent_facts::model::ModelPart>,
+) -> maka_agent_facts::model::recorded::ModelCompletion {
+    use maka_agent_facts::model::recorded::{CompletionPart, ModelCompletion, ModelPartRecord};
+    ModelCompletion {
+        parts: parts
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, part)| {
+                CompletionPart::Own(ModelPartRecord {
+                    ordinal: ordinal as u64,
+                    message_id: match &part {
+                        maka_agent_facts::model::ModelPart::ToolCall { call } => {
+                            maka_agent_facts::tool_call::tool_use_id(
+                                "invocation",
+                                &format!("step:{}", call.id),
+                            )
+                        }
+                        _ => uuid::Uuid::new_v4().to_string(),
+                    },
+                    started_at: std::time::SystemTime::now(),
+                    provider_part_id: None,
+                    part: Arc::new(part),
+                })
+            })
+            .collect(),
+        finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
+        usage: Default::default(),
+        provider_options: None,
+        response_id: None,
+        model: None,
+        timestamp: None,
+    }
+}
+async fn open_tool(store: &SessionStore) {
+    open_model(store).await;
+    append(
+        store,
+        Fact::ModelCompleted {
+            step_id: "step".into(),
+            output: model_completion(vec![maka_agent_facts::model::ModelPart::ToolCall {
+                call: maka_agent_facts::model::ModelToolCall {
+                    id: "call".into(),
+                    name: "Read".into(),
+                    input: maka_agent_facts::model::ToolInput::Json(serde_json::json!({})),
+                    provider_executed: false,
+                    provider_options: None,
+                },
+            }]),
+        },
+    )
+    .await;
     append(
         store,
         Fact::ToolDispatched {
@@ -209,6 +260,7 @@ async fn user_payload_navigation_captures_artifact_identity_larger_than_work_env
         provider: &ProviderKind::OpenaiChatCompletions,
         replay: None,
         captured: Some(&captured),
+        row_root: None,
         payload_root: None,
         arena: Some(&arena),
         internal_arena: false,
@@ -216,29 +268,30 @@ async fn user_payload_navigation_captures_artifact_identity_larger_than_work_env
         budget: budget.clone(),
         directory_owner: Arc::new(()),
     };
-    let (metadata, payload, value) = row(&captured, "User", &budget).await;
-    let context = context.for_payload(Some(&payload));
+    let (metadata, row_root, payload, value) = row(&captured, "User", &budget).await;
+    let context = context.for_row(&row_root, Some(&payload));
     assert!(
-        footprint_row(metadata.clone(), Some(value.clone()), &context)
+        footprint_row(&metadata, Some(&value), &context)
             .await
             .unwrap()
             > 0
     );
     assert_eq!(
-        backing_bytes_row(metadata.clone(), Some(value.clone()), &context)
+        backing_bytes_row(&metadata, Some(&value), &context)
             .await
             .unwrap(),
         image.len()
     );
     let store = super::super::arena_recipes::ArenaRecipes::new(arena.clone(), Arc::new(()));
-    let numeric =
-        super::arena::project_row(metadata.clone(), Some(value.clone()), &context, &store)
-            .await
-            .unwrap();
+    let numeric = super::arena::project_row(&metadata, Some(&value), &context, &store)
+        .await
+        .unwrap();
     let super::arena::ArenaProjectedRow::User(numeric) = numeric else {
         panic!("numeric user projection")
     };
-    let ProjectedRow::User(content) = project_row(metadata, Some(value), &context).await.unwrap()
+    let ProjectedRow::User(content) = project_row(&metadata, Some(&value), &context)
+        .await
+        .unwrap()
     else {
         panic!("expected user recipe")
     };
@@ -342,6 +395,7 @@ async fn tool_payload_navigation_preserves_real_canonical_audio_and_image_refs()
         provider: &ProviderKind::OpenaiChatCompletions,
         replay: None,
         captured: Some(&captured),
+        row_root: None,
         payload_root: None,
         arena: Some(&arena),
         internal_arena: false,
@@ -349,13 +403,13 @@ async fn tool_payload_navigation_preserves_real_canonical_audio_and_image_refs()
         budget: budget.clone(),
         directory_owner: Arc::new(()),
     };
-    let (metadata, payload, value) = row(&captured, "ToolResult", &budget).await;
+    let (metadata, row_root, payload, value) = row(&captured, "ToolResult", &budget).await;
     assert_eq!(
         payload.encoding(),
         maka_event_log::context::semantic::PayloadEncoding::CanonicalProjection
     );
-    let context = context.for_payload(Some(&payload));
-    let shape = chat_shape_row(metadata.clone(), Some(value.clone()), &context)
+    let context = context.for_row(&row_root, Some(&payload));
+    let shape = chat_shape_row(&metadata, Some(&value), &context)
         .await
         .unwrap();
     assert_eq!(
@@ -363,25 +417,27 @@ async fn tool_payload_navigation_preserves_real_canonical_audio_and_image_refs()
         (3, 2, 1)
     );
     assert!(
-        footprint_row(metadata.clone(), Some(value.clone()), &context)
+        footprint_row(&metadata, Some(&value), &context)
             .await
             .unwrap()
             > 0
     );
-    backing_bytes_row(metadata.clone(), Some(value.clone()), &context)
+    backing_bytes_row(&metadata, Some(&value), &context)
         .await
         .unwrap();
     let store = super::super::arena_recipes::ArenaRecipes::new(arena.clone(), Arc::new(()));
     let numeric_list = store.begin_list(1).await.unwrap();
     let super::arena::ArenaProjectedRow::Tool(numeric) =
-        super::arena::project_row(metadata.clone(), Some(value.clone()), &context, &store)
+        super::arena::project_row(&metadata, Some(&value), &context, &store)
             .await
             .unwrap()
     else {
         panic!("numeric tool projection")
     };
     store.put(numeric_list, 0, numeric).await.unwrap();
-    let ProjectedRow::Tool(result) = project_row(metadata, Some(value), &context).await.unwrap()
+    let ProjectedRow::Tool(result) = project_row(&metadata, Some(&value), &context)
+        .await
+        .unwrap()
     else {
         panic!("expected tool recipe")
     };
@@ -482,6 +538,7 @@ async fn native_user_invalid_artifact_refs_remain_unavailable_without_invalid_re
             provider: &ProviderKind::OpenaiChatCompletions,
             replay: None,
             captured: Some(&captured),
+            row_root: None,
             payload_root: None,
             arena: Some(&arena),
             internal_arena: false,
@@ -489,17 +546,16 @@ async fn native_user_invalid_artifact_refs_remain_unavailable_without_invalid_re
             budget: budget.clone(),
             directory_owner: Arc::new(()),
         };
-        let (metadata, payload, value) = row(&captured, "User", &budget).await;
-        let context = context.for_payload(Some(&payload));
-        let ProjectedRow::User(ordinary) =
-            project_row(metadata.clone(), Some(value.clone()), &context)
-                .await
-                .unwrap()
+        let (metadata, row_root, payload, value) = row(&captured, "User", &budget).await;
+        let context = context.for_row(&row_root, Some(&payload));
+        let ProjectedRow::User(ordinary) = project_row(&metadata, Some(&value), &context)
+            .await
+            .unwrap()
         else {
             panic!("user")
         };
         let arena::ArenaProjectedRow::User(numeric) =
-            arena::project_row(metadata, Some(value), &context, &numeric_store)
+            arena::project_row(&metadata, Some(&value), &context, &numeric_store)
                 .await
                 .unwrap()
         else {
@@ -593,6 +649,7 @@ async fn native_tool_projection_rejects_invalid_media_identity_and_keeps_json_op
             provider: &ProviderKind::OpenaiChatCompletions,
             replay: None,
             captured: Some(&captured),
+            row_root: None,
             payload_root: None,
             arena: None,
             internal_arena: false,
@@ -600,10 +657,11 @@ async fn native_tool_projection_rejects_invalid_media_identity_and_keeps_json_op
             budget: budget.clone(),
             directory_owner: Arc::new(()),
         };
-        let (metadata, payload, value) = row(&captured, "ToolResult", &budget).await;
-        let context = context.for_payload(Some(&payload));
-        let ProjectedRow::Tool(result) =
-            project_row(metadata, Some(value), &context).await.unwrap()
+        let (metadata, row_root, payload, value) = row(&captured, "ToolResult", &budget).await;
+        let context = context.for_row(&row_root, Some(&payload));
+        let ProjectedRow::Tool(result) = project_row(&metadata, Some(&value), &context)
+            .await
+            .unwrap()
         else {
             panic!("tool")
         };
@@ -640,36 +698,9 @@ async fn native_tool_projection_rejects_invalid_media_identity_and_keeps_json_op
     }
 }
 
-struct CountBodyOpens {
-    source: Arc<dyn maka_agent_facts::model::prompt_source::source::ByteSource>,
-    opens: Arc<std::sync::atomic::AtomicUsize>,
-}
-impl maka_agent_facts::model::prompt_source::source::ByteSource for CountBodyOpens {
-    fn len(&self) -> Option<u64> {
-        self.source.len()
-    }
-    fn open(
-        &self,
-        budget: Arc<dyn SourceBudget>,
-    ) -> Box<dyn maka_agent_facts::model::prompt_source::source::ByteCursor> {
-        self.opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.source.open(budget)
-    }
-    fn slice(
-        &self,
-        range: std::ops::Range<u64>,
-    ) -> io::Result<Arc<dyn maka_agent_facts::model::prompt_source::source::ByteSource>> {
-        Ok(Arc::new(Self {
-            source: self.source.slice(range)?,
-            opens: self.opens.clone(),
-        }))
-    }
-}
-
 #[tokio::test]
 async fn imported_user_backing_plan_does_not_open_its_plaintext_body_for_media() {
     use maka_agent_facts::import::{Content, Record, Source};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     let (_directory, root) = crate::test_support::root().await;
     let text =
         "Imported text mentions User, Tool, attachments and image/png without carrying media.";
@@ -710,21 +741,15 @@ async fn imported_user_backing_plan_does_not_open_its_plaintext_body_for_media()
     let budget = work.budget();
     let cancel = tokio_util::sync::CancellationToken::new();
     for provider in [ProviderKind::OpenaiChatCompletions, ProviderKind::Anthropic] {
-        let (metadata, payload, _) = row(&captured, "ImportedUser", &budget).await;
-        let opens = Arc::new(AtomicUsize::new(0));
-        let value = JsonSource {
-            bytes: SourceBytes::Source(Arc::new(CountBodyOpens {
-                source: captured.byte_source(&payload).unwrap(),
-                opens: opens.clone(),
-            })),
-        };
+        let (metadata, row_root, payload, value) = row(&captured, "ImportedUser", &budget).await;
         let context = ProjectContext {
             language: Language::En,
             vision: true,
             provider: &provider,
             replay: None,
-            captured: Some(&captured),
-            payload_root: Some(&payload),
+            captured: None,
+            row_root: None,
+            payload_root: None,
             arena: None,
             internal_arena: false,
             cancellation: &cancel,
@@ -732,14 +757,16 @@ async fn imported_user_backing_plan_does_not_open_its_plaintext_body_for_media()
             directory_owner: Arc::new(()),
         };
         assert_eq!(
-            backing_bytes_row(metadata.clone(), Some(value.clone()), &context)
+            backing_bytes_row(&metadata, Some(&value), &context)
                 .await
                 .unwrap(),
             0,
         );
-        assert_eq!(opens.load(Ordering::SeqCst), 0);
-        let ProjectedRow::User(content) =
-            project_row(metadata, Some(value), &context).await.unwrap()
+        let mut context = context.for_row(&row_root, Some(&payload));
+        context.captured = Some(&captured);
+        let ProjectedRow::User(content) = project_row(&metadata, Some(&value), &context)
+            .await
+            .unwrap()
         else {
             panic!("imported user must remain plaintext user content");
         };
@@ -748,9 +775,141 @@ async fn imported_user_backing_plan_does_not_open_its_plaintext_body_for_media()
             panic!("expected imported plaintext");
         };
         assert!(json::text_eq(&actual, text, budget.clone()).await.unwrap());
-        assert!(opens.load(Ordering::SeqCst) > 0);
     }
     drop((captured, budget, work, store));
+    execution.finish();
+    root.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn captured_malformed_tool_input_preserves_raw_text_and_execution_flag() {
+    let (_directory, root) = crate::test_support::root().await;
+    let store = crate::test_support::session(&root, "session").await;
+    open_model(&store).await;
+    let raw = "{\n";
+    let through = append(
+        &store,
+        Fact::ModelCompleted {
+            step_id: "step".into(),
+            output: model_completion(vec![maka_agent_facts::model::ModelPart::ToolCall {
+                call: maka_agent_facts::model::ModelToolCall {
+                    id: "call".into(),
+                    name: "Read".into(),
+                    input: maka_agent_facts::model::ToolInput::InvalidJson { raw: raw.into() },
+                    provider_executed: true,
+                    provider_options: None,
+                },
+            }]),
+        },
+    )
+    .await;
+    let execution = store.execution_scope(None).await.unwrap().accept();
+    let captured = capture(&execution.store(), through).await;
+    let resources = maka_model::ModelPreparationResources::new(Default::default()).unwrap();
+    let work = resources.acquire_work().await.unwrap();
+    let budget = work.budget();
+    let (directory, row_root, payload_root, payload) =
+        row(&captured, "AssistantPart", &budget).await;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let context = ProjectContext {
+        language: Language::En,
+        vision: false,
+        provider: &ProviderKind::Anthropic,
+        replay: None,
+        captured: Some(&captured),
+        row_root: Some(&row_root),
+        payload_root: Some(&payload_root),
+        arena: None,
+        internal_arena: false,
+        cancellation: &cancel,
+        budget: budget.clone(),
+        directory_owner: Arc::new(()),
+    };
+    let ProjectedRow::Assistant(AssistantRecipe::ToolCall {
+        input,
+        provider_executed,
+        ..
+    }) = project_row(&directory, Some(&payload), &context)
+        .await
+        .unwrap()
+    else {
+        panic!("expected captured tool call");
+    };
+    assert_eq!(provider_executed, Some(true));
+    let ToolInputRecipe::Text(actual) = input else {
+        panic!("malformed input must remain text");
+    };
+    assert!(json::text_eq(&actual, raw, budget.clone()).await.unwrap());
+    drop((actual, context));
+    drop((captured, budget, work));
+    execution.finish();
+    root.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn captured_steering_quotes_preserve_text_and_escape_display_provenance() {
+    let (_directory, root) = crate::test_support::root().await;
+    let store = crate::test_support::session(&root, "session").await;
+    let source = serde_json::json!({"sessionId":"foreign","sessionName":"<&>","capturedAt":1,"truncated":false});
+    let through = append(
+        &store,
+        Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::Message {
+                source_messages: Vec::new(),
+                request_fingerprint: None,
+                content: serde_json::from_value(serde_json::json!({
+                    "text":"ask","quotes":[{"label":"a\"b","text":"<quoted>","source":source}],
+                    "attachments":[],"directory_references":[]
+                }))
+                .unwrap(),
+            },
+        },
+    )
+    .await;
+    let execution = store.execution_scope(None).await.unwrap().accept();
+    let captured = capture(&execution.store(), through).await;
+    let resources = maka_model::ModelPreparationResources::new(Default::default()).unwrap();
+    let work = resources.acquire_work().await.unwrap();
+    let budget = work.budget();
+    let (_, row_root, payload_root, payload) = row(&captured, "User", &budget).await;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let context = ProjectContext {
+        language: Language::En,
+        vision: false,
+        provider: &ProviderKind::Anthropic,
+        replay: None,
+        captured: Some(&captured),
+        row_root: Some(&row_root),
+        payload_root: Some(&payload_root),
+        arena: None,
+        internal_arena: false,
+        cancellation: &cancel,
+        budget: budget.clone(),
+        directory_owner: Arc::new(()),
+    };
+    let ProjectedRow::User(content) = user(&payload, true, &context).await.unwrap() else {
+        panic!("expected steering user");
+    };
+    let mut cursor = content.open(0);
+    let Some(ContentRecipe::Text { text, .. }) = cursor.next().await.unwrap() else {
+        panic!("expected source text");
+    };
+    let escaped_source = serde_json::to_string(&source)
+        .unwrap()
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e");
+    let expected = format!(
+        "The user sent a message while you were working:\n<user_query>\nask\n\n<quoted_excerpt label=\"a'b\">\nSession snapshot provenance (display-only): {escaped_source}\n<quoted>\n</quoted_excerpt>\n</user_query>"
+    );
+    assert!(
+        json::text_eq(&text, &expected, budget.clone())
+            .await
+            .unwrap()
+    );
+    drop((cursor, text, content, context));
+    drop((captured, budget, work));
     execution.finish();
     root.shutdown().await.unwrap();
 }

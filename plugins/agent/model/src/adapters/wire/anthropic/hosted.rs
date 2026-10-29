@@ -219,15 +219,13 @@ fn generated(value: impl serde::Serialize) -> SourceFragment {
     SourceFragment::owned(serde_json::to_vec(&value).expect("hosted protocol literal"))
 }
 fn text(value: &'static str) -> TextSource {
-    TextSource {
-        bytes: SourceBytes::Inline(Bytes::from_static(value.as_bytes())),
-        encoding: TextEncoding::Utf8,
-    }
+    TextSource::new(
+        SourceBytes::Inline(Bytes::from_static(value.as_bytes())),
+        TextEncoding::Utf8,
+    )
 }
 fn normalized(source: JsonSource, schema: Schema) -> JsonSource {
-    JsonSource {
-        bytes: SourceBytes::Source(Arc::new(Normalized { source, schema })),
-    }
+    JsonSource::new(SourceBytes::Source(Arc::new(Normalized { source, schema })))
 }
 fn normalized_fragment(source: JsonSource, schema: Schema) -> SourceFragment {
     let (layout, _) = std::alloc::Layout::new::<[usize; 2]>()
@@ -312,8 +310,8 @@ impl Cursor {
                 continue;
             }
             if let Some((cursor, omit)) = &mut self.object {
-                if let Some(field) = cursor.next().await? {
-                    if json::text_eq(&field.key, omit, self.budget.clone()).await? {
+                if let Some((field, selected)) = cursor.next_named([*omit].into_iter()).await? {
+                    if selected.is_some() {
                         continue;
                     }
                     if !self.first {
@@ -529,7 +527,7 @@ async fn number(
         return Err(invalid("hosted result field is not a number"));
     }
     let mut number = json::number::NumberValidator::new();
-    let mut cursor = source.bytes.open(budget.clone());
+    let mut cursor = source.bytes().open(budget.clone());
     loop {
         let read = cursor.read_chunk(budget.allocate(2048).await?).await?;
         if read.bytes_read == 0 && !read.eof {

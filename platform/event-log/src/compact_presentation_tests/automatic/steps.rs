@@ -25,7 +25,6 @@ pub(super) async fn step(
     inv: &Invocation,
     id: &str,
     purpose: ModelPurpose,
-    text: &str,
 ) -> (u64, String) {
     let source = log
         .capture_model_context(
@@ -60,35 +59,21 @@ pub(super) async fn step(
     )
     .await;
     assert!(view.push(&request).unwrap().is_empty());
-    let start = append(
+    let metadata = append(
         log,
         inv,
         Fact::ModelObserved {
             step_id: id.into(),
-            event: ModelEvent::PartStarted {
-                id: "part".into(),
-                text_kind: TextKind::Text,
+            event: ModelObservation::Finished {
+                reason: ModelFinishReason::Stop,
+                usage: Default::default(),
                 provider_options: None,
             },
         },
     )
     .await;
-    assert!(view.push(&start).unwrap().is_empty());
-    let delta = append(
-        log,
-        inv,
-        Fact::ModelObserved {
-            step_id: id.into(),
-            event: ModelEvent::PartDelta {
-                id: "part".into(),
-                text: text.into(),
-                provider_options: None,
-            },
-        },
-    )
-    .await;
-    assert!(view.push(&delta).unwrap().is_empty());
-    (delta.sequence, start.event.id)
+    assert!(view.push(&metadata).unwrap().is_empty());
+    (metadata.sequence, uuid::Uuid::new_v4().to_string())
 }
 
 pub(super) async fn finish(
@@ -96,28 +81,16 @@ pub(super) async fn finish(
     view: &mut InvocationView,
     inv: &Invocation,
     id: &str,
+    message_id: &str,
     text: &str,
 ) -> Vec<maka_presentation::Row> {
-    let event = append(
-        log,
-        inv,
-        Fact::ModelObserved {
-            step_id: id.into(),
-            event: ModelEvent::PartFinished {
-                id: "part".into(),
-                provider_options: None,
-            },
-        },
-    )
-    .await;
-    view.push(&event).unwrap();
     let Fact::ModelCompleted { mut output, .. } = accepted(text) else {
         unreachable!()
     };
-    if id == "summary" {
-        output.usage.input_tokens = Some(500);
-        output.usage.output_tokens = Some(100);
-    }
+    let CompletionPart::Own(record) = &mut output.parts[0] else {
+        unreachable!()
+    };
+    record.message_id = message_id.to_owned();
     let completed = append(
         log,
         inv,

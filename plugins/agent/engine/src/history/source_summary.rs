@@ -44,11 +44,7 @@ pub(crate) enum FitError {
     Run(#[from] RunError),
 }
 fn failure(error: io::Error) -> FitError {
-    FitError::Run(if error.kind() == io::ErrorKind::Interrupted {
-        RunError::Cancelled
-    } else {
-        RunError::Preparation(error)
-    })
+    FitError::Run(RunError::preparation(error))
 }
 fn overflow() -> io::Error {
     io::Error::other("summary allocation footprint overflow")
@@ -129,22 +125,22 @@ impl ByteCursor for ResidentCursor {
 fn resident(text: String, owner: &Arc<Owner>) -> TextSource {
     let bytes = text.into_bytes().into_boxed_slice();
     let end = bytes.len();
-    TextSource {
-        bytes: SourceBytes::Source(Arc::new(Resident {
+    TextSource::new(
+        SourceBytes::Source(Arc::new(Resident {
             allocation: Arc::new(Allocation {
                 bytes,
                 _owner: owner.clone(),
             }),
             range: 0..end,
         })),
-        encoding: TextEncoding::Utf8,
-    }
+        TextEncoding::Utf8,
+    )
 }
 fn literal(text: &'static str) -> TextSource {
-    TextSource {
-        bytes: SourceBytes::Inline(text.as_bytes().into()),
-        encoding: TextEncoding::Utf8,
-    }
+    TextSource::new(
+        SourceBytes::Inline(text.as_bytes().into()),
+        TextEncoding::Utf8,
+    )
 }
 fn prefix_parts(language: Language) -> (&'static str, &'static str, &'static str) {
     match language {
@@ -1110,7 +1106,7 @@ mod tests {
                     let Some(ContentRecipe::Text { text, .. }) = parts.next().await.unwrap() else {
                         panic!("expected summary excerpt")
                     };
-                    text.bytes.slice(0..1).unwrap()
+                    text.bytes().slice(0..1).unwrap()
                 });
             }
             drop(fitted);
@@ -1395,7 +1391,7 @@ mod tests {
             let Some(ContentRecipe::Text { text, .. }) = parts.next().await.unwrap() else {
                 panic!("expected retained native media label");
             };
-            text.bytes.slice(0..1).unwrap()
+            text.bytes().slice(0..1).unwrap()
         };
         let mut competing = Box::pin(resources.reserve_staging(0).await.unwrap().promote(full));
         drop((fitted, prompt, active));

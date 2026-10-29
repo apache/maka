@@ -273,9 +273,9 @@ fn reference_digest(invocation: &Invocation, rows: &[(u64, &str)]) -> String {
 }
 
 #[tokio::test]
-async fn cumulative_raw_observation_bytes_do_not_limit_source_evidence() {
+async fn cumulative_model_metadata_bytes_do_not_limit_source_evidence() {
     use maka_agent_facts::event::{LogScope, ModelInterruption};
-    use maka_agent_facts::model::{ModelEvent, TextKind};
+    use maka_agent_facts::model::recorded::ModelObservation;
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("large-source.sqlite");
     let log = EventLog::open(&path).await.unwrap();
@@ -310,30 +310,32 @@ async fn cumulative_raw_observation_bytes_do_not_limit_source_evidence() {
         &log,
         event(Fact::ModelObserved {
             step_id: "step".into(),
-            event: ModelEvent::PartStarted {
-                id: "part".into(),
-                text_kind: TextKind::Text,
-                provider_options: None,
+            event: ModelObservation::ResponseMetadata {
+                id: Some("response".into()),
+                model: None,
+                timestamp: None,
             },
         }),
     )
     .await;
-    let mut raw_observation_bytes = 0;
+    let mut metadata_bytes = 0;
     for _ in 0..9 {
         let observation = event(Fact::ModelObserved {
             step_id: "step".into(),
-            event: ModelEvent::PartDelta {
-                id: "part".into(),
-                text: "x".into(),
-                provider_options: Some(serde_json::json!({"evidence":"p".repeat(1024 * 1024)})),
+            event: ModelObservation::ProviderOptions {
+                provider_part_id: Some("provider-part".into()),
+                options: std::sync::Arc::new(
+                    serde_json::json!({"evidence":"p".repeat(1024 * 1024)}),
+                ),
             },
         });
-        raw_observation_bytes += serde_json::to_vec(&observation).unwrap().len();
+        metadata_bytes += serde_json::to_vec(&observation).unwrap().len();
         append(&log, observation).await;
     }
     append(
         &log,
         event(Fact::ModelInterrupted {
+            partial: None,
             step_id: "step".into(),
             status: ModelInterruption::Cancelled,
             diagnostic: None,
@@ -347,7 +349,7 @@ async fn cumulative_raw_observation_bytes_do_not_limit_source_evidence() {
         },
     });
     append(&log, terminal.clone()).await;
-    assert!(raw_observation_bytes > 8 * 1024 * 1024);
+    assert!(metadata_bytes > 8 * 1024 * 1024);
     assert!(matches!(
         log.prefix(100, 8 * 1024 * 1024).await,
         Err(StoreError::PrefixTooLarge)
@@ -397,7 +399,7 @@ async fn cumulative_raw_observation_bytes_do_not_limit_source_evidence() {
 async fn ordinal_fences_stay_indexed_as_a_copied_sessions_run_grows() {
     use maka_agent_facts::{
         event::{LogScope, ModelInterruption},
-        model::{ModelEvent, TextKind},
+        model::recorded::ModelObservation,
         session::CopyPurpose,
     };
     use maka_event_log::sessions::SessionCopy;
@@ -483,10 +485,10 @@ async fn ordinal_fences_stay_indexed_as_a_copied_sessions_run_grows() {
         &log,
         event(Fact::ModelObserved {
             step_id: "step".into(),
-            event: ModelEvent::PartStarted {
-                id: "part".into(),
-                text_kind: TextKind::Text,
-                provider_options: None,
+            event: ModelObservation::ResponseMetadata {
+                id: Some("response".into()),
+                model: None,
+                timestamp: None,
             },
         }),
     )
@@ -505,10 +507,9 @@ async fn ordinal_fences_stay_indexed_as_a_copied_sessions_run_grows() {
             .map(|_| {
                 EventWrite::plain(event(Fact::ModelObserved {
                     step_id: "step".into(),
-                    event: ModelEvent::PartDelta {
-                        id: "part".into(),
-                        text: "x".into(),
-                        provider_options: None,
+                    event: ModelObservation::ProviderOptions {
+                        provider_part_id: Some("provider-part".into()),
+                        options: std::sync::Arc::new(serde_json::json!({"evidence":"x"})),
                     },
                 }))
                 .unwrap()
@@ -566,7 +567,7 @@ async fn ordinal_fences_stay_indexed_as_a_copied_sessions_run_grows() {
     }
     assert!(
         lookup_steps[1] <= 2 * lookup_steps[0],
-        "32 times more deltas must not turn an exact ordinal fence into a history scan: {lookup_steps:?}"
+        "32 times more observations must not turn an exact ordinal fence into a history scan: {lookup_steps:?}"
     );
     assert!(
         log.run_source("branch", "stream", Some(4100))
@@ -576,6 +577,7 @@ async fn ordinal_fences_stay_indexed_as_a_copied_sessions_run_grows() {
     append(
         &log,
         event(Fact::ModelInterrupted {
+            partial: None,
             step_id: "step".into(),
             status: ModelInterruption::Cancelled,
             diagnostic: None,

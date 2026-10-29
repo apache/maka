@@ -396,9 +396,18 @@ pub struct HistorySource {
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<Tool>")]
     pub tool: Option<Tool>,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelPartIdentity {
+    pub step_id: String,
+    pub ordinal: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Chunk {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_part: Option<ModelPartIdentity>,
     /// This body belongs to the final output of a successfully completed native
     /// Turn at the page's fence. Includes every text part and source citation;
     /// absence does not establish liveness or identify an imported final answer.

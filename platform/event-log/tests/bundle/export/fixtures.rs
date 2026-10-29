@@ -22,6 +22,8 @@ use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::RuntimeEvent;
+use maka_agent_facts::model::assembly::{AttemptBinding, AttemptWriter};
+use maka_agent_facts::model::{ModelEvent, ModelFinishReason};
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_output::ToolSuccess;
 use maka_event_log::EventLog;
@@ -96,25 +98,47 @@ pub(super) async fn output(
     )
     .await
     .unwrap();
-    log.append(&event(Fact::ModelObserved {
-        step_id: step.into(),
-        event: maka_agent_facts::model::ModelEvent::ToolCall(
-            serde_json::from_value(json!({
-                    "id":step,"name":"Read","input":{"kind":"json","data":{"path":"file"}},"provider_executed":false
-            }))
-            .unwrap(),
-        ),
-    }))
-    .await
+    let mut writer = AttemptWriter::new(
+        AttemptBinding {
+            invocation: invocation.clone(),
+            step_id: step.into(),
+            purpose: ModelPurpose::Main,
+        },
+        false,
+    )
     .unwrap();
+    writer
+        .push(
+            ModelEvent::ToolCall(
+                serde_json::from_value(json!({
+                    "id":step,"name":"Read","input":{"kind":"json","data":{"path":"file"}},"provider_executed":false
+                }))
+                .unwrap(),
+            ),
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+    let observations = writer
+        .push(
+            ModelEvent::Finished {
+                reason: ModelFinishReason::ToolCalls,
+                usage: Default::default(),
+                provider_options: None,
+            },
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+    for observation in observations {
+        log.append(&event(Fact::ModelObserved {
+            step_id: step.into(),
+            event: observation,
+        }))
+        .await
+        .unwrap();
+    }
     log.append(&event(Fact::ModelCompleted {
         step_id: step.into(),
-        output: serde_json::from_value(json!({
-            "parts":[{"kind":"tool_call","call":{
-                "id":step,"name":"Read","input":{"kind":"json","data":{"path":"file"}},"provider_executed":false
-            }}],"finish_reason":"tool-calls","usage":{}
-        }))
-        .unwrap(),
+        output: writer.completed().unwrap().completion(),
     }))
     .await
     .unwrap();

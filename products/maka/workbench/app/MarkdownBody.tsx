@@ -19,7 +19,7 @@
 
 import { cleanup, platform, signal, Text, View } from 'nsh';
 import { TextView } from 'nsh/base';
-import { hasCompletePrefix, type Row } from './history';
+import { hasTextPrefix, type Row } from './history';
 import { MarkdownImageView } from './MarkdownImage';
 import { SourceText } from './SourceText';
 import { tr } from './locale';
@@ -43,7 +43,7 @@ export function MarkdownBody(props: {
   return (
     <View selectable>
       <If
-        when={hasCompletePrefix(props.row())}
+        when={hasTextPrefix(props.row())}
         else={
           <Text style={[{ ...readingStyle, color: color() }, { userSelect: 'text' }]}>
             <SourceText row={props.row} sourceId={props.sourceId} />
@@ -70,7 +70,7 @@ export function MarkdownBody(props: {
                 props.sourceId === sourceId &&
                 current.messageId === row.messageId &&
                 current.field === row.field &&
-                hasCompletePrefix(current) &&
+                hasTextPrefix(current) &&
                 current.text.startsWith(row.text)
               );
             };

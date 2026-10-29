@@ -179,10 +179,7 @@ async fn prefix(
     let mut eof = false;
     while bytes.len() < capacity && !eof {
         if cancel.is_cancelled() {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Chat projection cancelled",
-            ));
+            return Err(crate::preparation_cancelled("Chat projection cancelled"));
         }
         let read = cursor.read_chunk(buffer).await?;
         let take = read.bytes_read.min(capacity - bytes.len());
@@ -271,14 +268,14 @@ pub(super) async fn label(
         bytes: text.into_bytes(),
         _owner: owner,
     });
-    Ok(TextSource {
-        bytes: SourceBytes::Source(Arc::new(LabelRange {
+    Ok(TextSource::new(
+        SourceBytes::Source(Arc::new(LabelRange {
             label,
             start: 0,
             end,
         })),
-        encoding: TextEncoding::Utf8,
-    })
+        TextEncoding::Utf8,
+    ))
 }
 
 pub(super) async fn project(
@@ -335,10 +332,10 @@ pub(super) async fn project(
             text: label(result, audio, language, budget, owner.clone(), cancel).await?,
             provider_options: None,
         });
-        let placeholder = ToolOutputRecipe::Text(TextSource {
-            bytes: SourceBytes::Inline((&b""[..]).into()),
-            encoding: TextEncoding::Utf8,
-        });
+        let placeholder = ToolOutputRecipe::Text(TextSource::new(
+            SourceBytes::Inline((&b""[..]).into()),
+            TextEncoding::Utf8,
+        ));
         let ToolOutputRecipe::Content(content) = std::mem::replace(&mut result.output, placeholder)
         else {
             unreachable!()
@@ -356,10 +353,10 @@ pub(super) async fn project(
         drop(content);
         if kept.is_empty() {
             kept.push(ContentRecipe::Text {
-                text: TextSource {
-                    bytes: SourceBytes::Inline(fallback(language, audio).as_bytes().into()),
-                    encoding: TextEncoding::Utf8,
-                },
+                text: TextSource::new(
+                    SourceBytes::Inline(fallback(language, audio).as_bytes().into()),
+                    TextEncoding::Utf8,
+                ),
                 provider_options: None,
             });
         }
@@ -426,7 +423,7 @@ mod tests {
             let cancel = CancellationToken::new();
             let (projected, deferred) = project(
                 vec![
-                    MessageBuilder::Tool(result),
+                    MessageBuilder::Tool(Box::new(result)),
                     MessageBuilder::Assistant {
                         parts: 0..1,
                         options: None,
@@ -449,7 +446,7 @@ mod tests {
             for message in projected {
                 let recipe = match message {
                     MessageBuilder::Tool(result) => MessageRecipe::Tool {
-                        content: Arc::new(Items::new(vec![result], owner.clone())),
+                        content: Arc::new(Items::new(vec![*result], owner.clone())),
                         provider_options: None,
                     },
                     MessageBuilder::DeferredUser { parts } => MessageRecipe::User {

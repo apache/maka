@@ -6847,6 +6847,16 @@ export const contracts = {
               AgentHistoryChunk: {
                 type: 'object',
                 properties: {
+                  modelPart: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ModelPartIdentity',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   finalOutput: {
                     description:
                       "Part of the successfully completed native Turn's final output at `through`.\nIncludes all body parts and source citations; never a Thinking field.",
@@ -6957,6 +6967,21 @@ export const contracts = {
                   'text',
                   'tool',
                 ],
+              },
+              ModelPartIdentity: {
+                type: 'object',
+                properties: {
+                  stepId: {
+                    type: 'string',
+                  },
+                  ordinal: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stepId', 'ordinal'],
               },
               HistoryModel: {
                 description: 'Model identity recorded for the exact historical assistant step.',
@@ -21452,6 +21477,20 @@ export const contracts = {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'preview',
+                  },
+                  page: {
+                    $ref: '#/$defs/AgentPreviewPage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'page'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'queue',
                   },
                   queue: {
@@ -21578,23 +21617,22 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'part_started',
-                      },
-                      messageId: {
-                        type: 'string',
+                        const: 'part_committed',
                       },
                       stepId: {
                         type: 'string',
                       },
-                      partId: {
+                      messageId: {
                         type: 'string',
                       },
-                      textKind: {
-                        $ref: '#/$defs/AgentContentKind',
+                      ordinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'messageId', 'stepId', 'partId', 'textKind'],
+                    required: ['kind', 'stepId', 'messageId', 'ordinal'],
                   },
                   {
                     type: 'object',
@@ -21615,65 +21653,6 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'stepId', 'partId', 'text'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'part_finished',
-                      },
-                      stepId: {
-                        type: 'string',
-                      },
-                      partId: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'stepId', 'partId'],
-                  },
-                  {
-                    description:
-                      'Model input observations are display-only; they cannot authorize a tool effect.',
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'tool_input_started',
-                      },
-                      toolUseId: {
-                        type: 'string',
-                      },
-                      stepId: {
-                        type: 'string',
-                      },
-                      name: {
-                        type: 'string',
-                      },
-                      providerExecuted: {
-                        type: 'boolean',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'toolUseId', 'stepId', 'name', 'providerExecuted'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'tool_input_delta',
-                      },
-                      toolUseId: {
-                        type: 'string',
-                      },
-                      text: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'toolUseId', 'text'],
                   },
                   {
                     description:
@@ -21848,10 +21827,6 @@ export const contracts = {
                   },
                 ],
               },
-              AgentContentKind: {
-                type: 'string',
-                enum: ['text', 'thinking'],
-              },
               DisplayText: {
                 description:
                   'Presentation text is distinct from the stable identity used for navigation.',
@@ -21876,6 +21851,163 @@ export const contracts = {
                   'Recorded Host settlement for presentation; returned is not business success.\nForeign/provider results do not establish this Host evidence.',
                 type: 'string',
                 enum: ['returned', 'failed', 'unknown', 'rejected'],
+              },
+              AgentPreviewPage: {
+                description: 'Current display material, independent of the durable Events cursor.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'empty',
+                      },
+                      hostEpoch: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'hostEpoch'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cut',
+                      },
+                      hostEpoch: {
+                        type: 'string',
+                      },
+                      invocationId: {
+                        type: 'string',
+                      },
+                      turnId: {
+                        type: 'string',
+                      },
+                      stepId: {
+                        type: 'string',
+                      },
+                      revision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      dependsOn: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      first: {
+                        type: 'boolean',
+                      },
+                      last: {
+                        type: 'boolean',
+                      },
+                      parts: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/AgentPreviewPart',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: [
+                      'kind',
+                      'hostEpoch',
+                      'invocationId',
+                      'turnId',
+                      'stepId',
+                      'revision',
+                      'dependsOn',
+                      'first',
+                      'last',
+                      'parts',
+                    ],
+                  },
+                ],
+              },
+              AgentPreviewPart: {
+                type: 'object',
+                properties: {
+                  ordinal: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                  providerPartId: {
+                    type: ['string', 'null'],
+                  },
+                  startedAt: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  field: {
+                    $ref: '#/$defs/AgentPreviewField',
+                  },
+                  offset: {
+                    description:
+                      'UTF-8 byte offset into the body, independent of JavaScript string length.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  totalBytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['messageId', 'startedAt', 'field', 'offset', 'totalBytes', 'text'],
+              },
+              AgentPreviewField: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'text',
+                      },
+                      textKind: {
+                        $ref: '#/$defs/AgentContentKind',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'textKind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool_input',
+                      },
+                      toolUseId: {
+                        type: 'string',
+                      },
+                      name: {
+                        type: 'string',
+                      },
+                      providerExecuted: {
+                        type: 'boolean',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'toolUseId', 'name', 'providerExecuted'],
+                  },
+                ],
+              },
+              AgentContentKind: {
+                type: 'string',
+                enum: ['text', 'thinking'],
               },
               AgentQueue: {
                 type: 'object',

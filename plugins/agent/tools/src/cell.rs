@@ -266,7 +266,7 @@ impl ToolExecutor for NestedTools {
                 Ok(effect) => effect,
                 Err(reason) => {
                     return journal
-                        .reject(operation_id, call, name, input.into(), reason)
+                        .reject(operation_id, call, name, input.into(), None, reason)
                         .await;
                 }
             };
@@ -276,6 +276,7 @@ impl ToolExecutor for NestedTools {
                     call,
                     name.clone(),
                     input,
+                    None,
                     cancellation,
                     effect,
                 )

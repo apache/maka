@@ -149,8 +149,9 @@ impl ToolCallContext {
     }
 }
 
-/// Preparation may parse a remote call and obtain policy approval, but must not
-/// admit its effect. A returned one-shot effect is invoked only after durable T1.
+/// Preparation may parse a remote call and read policy, but must not publish
+/// prompts or effects that depend on an uncommitted accepted call identity.
+/// Approval and effects run inside the returned one-shot effect after durable T1.
 /// A revocable registration checks its captured generation here; retirement must
 /// reject a new call, never resolve a replacement handler by name.
 pub trait ToolPreparer: Send + Sync + 'static {

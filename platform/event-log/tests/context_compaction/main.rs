@@ -27,8 +27,8 @@ use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelEvent;
-use maka_agent_facts::model::ModelStep;
+use maka_agent_facts::model::recorded::ModelCompletion;
+use maka_agent_facts::model::recorded::ModelObservation;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_event_log::{
     EventLog, StoreError,
@@ -69,13 +69,7 @@ async fn repeated_checkpoints_cross_old_history_limits_with_bounded_tail_and_exa
                 .unwrap();
             assert_eq!(source.source_evidence.digest, prefix.digest);
         }
-        last = prepare_trace(
-            &log,
-            &format!("compact-{round}"),
-            if round == 2 { 10_001 } else { 0 },
-            false,
-        )
-        .await;
+        last = prepare_trace(&log, &format!("compact-{round}"), false).await;
         let commits = log.subscribe_commits();
         assert!(
             log.append(&last[0]).await.is_err(),
@@ -84,7 +78,7 @@ async fn repeated_checkpoints_cross_old_history_limits_with_bounded_tail_and_exa
         assert!(!commits.has_changed().unwrap());
         log.append_batch(&last).await.unwrap();
     }
-    prepare_trace(&log, "failed-compact", 10_001, true).await;
+    prepare_trace(&log, "failed-compact", true).await;
     assert!(matches!(
         log.scoped_prefix(
             LogScope::Session {

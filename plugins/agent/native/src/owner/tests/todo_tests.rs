@@ -452,6 +452,7 @@ async fn todo_prepared_replacements_conflict_and_cancelled_or_closed_invocations
                     ToolCallIdentity::standalone(id.into()),
                     "todo_write".into(),
                     input(text),
+                    None,
                     CancellationToken::new(),
                     prepared,
                 )
@@ -506,6 +507,7 @@ async fn todo_prepared_replacements_conflict_and_cancelled_or_closed_invocations
                     ToolCallIdentity::standalone("late".into()),
                     "todo_write".into(),
                     input("Late"),
+                    None,
                     CancellationToken::new(),
                     pending
                 )

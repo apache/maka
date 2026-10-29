@@ -50,7 +50,8 @@ pub(crate) async fn insert(
                 let claimed: bool = sqlx::query_scalar(
                     "SELECT EXISTS(
                          SELECT 1 FROM session_message_sources WHERE owner_session_id=?1 AND message_id=?2
-                         UNION ALL SELECT 1 FROM message_admissions WHERE session_id=?1 AND message_id=?2)",
+                         UNION ALL SELECT 1 FROM message_admissions WHERE session_id=?1 AND message_id=?2
+                         UNION ALL SELECT 1 FROM model_part_records p JOIN session_history_events e ON e.event_id=p.event_id WHERE e.owner_session_id=?1 AND p.message_id=?2)",
                 ).bind(&event.invocation.session_id).bind(&event.id)
                     .fetch_one(&mut *worker).await?;
                 if claimed {
@@ -75,6 +76,7 @@ pub(crate) async fn insert(
         // Capture before the projections issue INSERTs on this same handle.
         let sequence = sequence_number(inserted.last_insert_rowid())?;
         let stored = StoredEvent { sequence, event };
+        crate::model_items::record(worker, &stored).await?;
         crate::context::projection::record(worker, &stored, &json).await?;
         crate::context::evidence::record(worker, &stored, &json).await?;
         crate::context::semantic::record(worker, &stored, &json).await?;

@@ -294,10 +294,7 @@ impl Index<'_> {
         let mut message = 0usize;
         while let Some(recipe) = cursor.next().await? {
             if self.fit.cancel.is_cancelled() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "summary indexing cancelled",
-                ));
+                return Err(crate::preparation_cancelled("summary indexing cancelled"));
             }
             match &recipe {
                 MessageRecipe::System { .. } => {
@@ -484,12 +481,12 @@ impl Utf8Range {
         let body_start = start.max(prefix).min(prefix + body);
         let body_end = end.max(prefix).min(prefix + body);
         if body_start < body_end {
-            output.push(TextSource {
-                bytes: arena.pending(
+            output.push(TextSource::new(
+                arena.pending(
                     self.body.start + body_start - prefix..self.body.start + body_end - prefix,
                 ),
-                encoding: TextEncoding::Utf8,
-            });
+                TextEncoding::Utf8,
+            ));
         }
         if end > prefix + body && self.suffix {
             output.push(literal("\u{fffd}"));
@@ -623,10 +620,10 @@ impl RecipeCursor<ContentRecipe> for ContentCursor {
                     .checked_add(record.label_bytes)
                     .ok_or_else(overflow)?;
                 Ok(Some(ContentRecipe::Text {
-                    text: TextSource {
-                        bytes: self.view.arena.pending(record.label_start..end),
-                        encoding: TextEncoding::Utf8,
-                    },
+                    text: TextSource::new(
+                        self.view.arena.pending(record.label_start..end),
+                        TextEncoding::Utf8,
+                    ),
                     provider_options: None,
                 }))
             } else {
@@ -811,7 +808,7 @@ async fn retained_tokens(
 }
 fn pieces_bytes(pieces: &[TextSource]) -> io::Result<u64> {
     pieces.iter().try_fold(0u64, |total, piece| {
-        let bytes = match &piece.bytes {
+        let bytes = match piece.bytes() {
             SourceBytes::Inline(bytes) => bytes.len() as u64,
             SourceBytes::Source(source) => source.len().ok_or_else(overflow)?,
         };

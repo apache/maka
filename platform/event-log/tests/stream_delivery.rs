@@ -17,18 +17,21 @@
  * under the License.
  */
 
-use maka_agent_facts::event::EventWrite;
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::Invocation;
-use maka_agent_facts::event::InvocationOutcome;
-use maka_agent_facts::event::LogScope;
-use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelEvent;
-use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
-use maka_agent_facts::model::TextKind;
+use maka_agent_facts::{
+    event::{
+        EventWrite, Fact, Invocation, InvocationOutcome, LogScope, ModelInterruption, RuntimeEvent,
+    },
+    model::{
+        ModelFinishReason, ModelPart, TextKind,
+        recorded::{
+            CompletionPart, ModelCompletion, ModelObservation, ModelPartRecord, ModelPartial,
+            RecordedPartRef,
+        },
+    },
+};
 use maka_event_log::{EventLog, observation::StreamFact};
 use serde_json::json;
+use std::sync::Arc;
 
 fn event(session: &str, fact: Fact) -> RuntimeEvent {
     RuntimeEvent::new(
@@ -42,21 +45,25 @@ fn event(session: &str, fact: Fact) -> RuntimeEvent {
     )
 }
 
-fn observed(step: &str, observation: ModelEvent) -> Fact {
-    Fact::ModelObserved {
-        step_id: step.into(),
-        event: observation,
+fn opening() -> Fact {
+    Fact::InvocationOpened {
+        configuration: None,
+        input: maka_agent_facts::input::InvocationInput::Message {
+            source_messages: Vec::new(),
+            content: "".into(),
+            request_fingerprint: None,
+        },
     }
 }
 
-fn request(step: &str) -> Fact {
+fn request(item_acceptance: bool) -> Fact {
     Fact::ModelRequested {
         context_breakdown: None,
-        item_acceptance: false,
+        item_acceptance,
         purpose: maka_agent_facts::context::ModelPurpose::Main,
         context: None,
         checkpoint_event_id: None,
-        step_id: step.into(),
+        step_id: "step".into(),
         model_id: "test".into(),
         source_scope: LogScope::Root,
         source_high_water: 0,
@@ -67,108 +74,84 @@ fn request(step: &str) -> Fact {
     }
 }
 
-fn delta(text: &str) -> Fact {
-    observed(
-        "second",
-        ModelEvent::PartDelta {
-            id: "part".into(),
-            text: text.into(),
-            provider_options: None,
+fn executor_start() -> Fact {
+    Fact::ExecutorStarted {
+        settings: Default::default(),
+        binding: maka_agent_facts::executor::Binding {
+            executor_id: "example".to_owned().try_into().unwrap(),
+            package_id: "example".into(),
+            entry_id: "example".into(),
+            activation: "activation".into(),
         },
-    )
+    }
+}
+
+fn delta(text: &str) -> Fact {
+    Fact::ExecutorObserved {
+        output: maka_agent_facts::executor::Output::OutputDelta { text: text.into() },
+    }
 }
 
 #[tokio::test]
-async fn tool_input_delivery_counts_escaped_text_and_full_provider_identity() {
+async fn committed_model_parts_keep_large_bodies_and_metadata_out_of_delivery() {
     let temp = tempfile::tempdir().unwrap();
-    let log = EventLog::open(&temp.path().join("events.sqlite"))
-        .await
-        .unwrap();
+    let path = temp.path().join("events.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
     let append = async |fact| {
         log.append(&EventWrite::plain(event("session", fact)).unwrap())
             .await
             .unwrap()
     };
-    append(Fact::InvocationOpened {
-        configuration: None,
-        input: maka_agent_facts::input::InvocationInput::Message {
-            source_messages: Vec::new(),
-            content: "".into(),
-            request_fingerprint: None,
-        },
-    })
-    .await;
-    append(request("step")).await;
-    // This is the full 4096-byte step:call budget. The original provider ID
-    // remains opaque, including characters that expand sixfold in JSON.
-    let call = "\u{1}".repeat(4091);
-    let start = append(observed(
-        "step",
-        ModelEvent::ToolInputStarted {
-            id: call.clone(),
-            name: "Counter".into(),
-            provider_executed: false,
-        },
-    ))
-    .await;
-    let text = "\0".repeat(1365);
-    assert_eq!(serde_json::to_string(&text).unwrap().len(), 8192);
-    let through = append(observed(
-        "step",
-        ModelEvent::ToolInputDelta {
-            id: call.clone(),
-            text: text.clone(),
-        },
-    ))
-    .await;
-    let page = log
-        .session_stream_events("session", start, through, 32, 48 * 1024)
-        .await
-        .unwrap();
-    assert_eq!(page.events.len(), 1);
-    assert_eq!(
-        page.events[0].fact,
-        StreamFact::ToolInputDelta {
-            step_id: "step".into(),
-            tool_call_id: call,
-            text,
-        }
-    );
-    assert!(serde_json::to_vec(&page.events[0]).unwrap().len() <= 48 * 1024);
-    assert_eq!(page.next_after, None);
-}
-
-#[tokio::test]
-async fn giant_bodies_and_metadata_do_not_block_stream_delivery() {
-    let temp = tempfile::tempdir().unwrap();
-    let log = EventLog::open(&temp.path().join("events.sqlite"))
-        .await
-        .unwrap();
-    let append = async |fact| {
-        log.append(&EventWrite::plain((event("session", fact)).clone()).unwrap())
-            .await
-            .unwrap()
-    };
-    let opened = append(Fact::InvocationOpened {
-        configuration: None,
-        input: maka_agent_facts::input::InvocationInput::Message {
-            source_messages: Vec::new(),
-            content: "".into(),
-            request_fingerprint: None,
-        },
-    })
-    .await;
-    let first_request = append(request("first")).await;
+    let opened = append(opening()).await;
+    let requested = append(request(true)).await;
     let giant = "x".repeat(2 * 1024 * 1024);
+    append(Fact::ModelObserved {
+        step_id: "step".into(),
+        event: ModelObservation::ProviderOptions {
+            provider_part_id: Some("part".into()),
+            options: Arc::new(json!({"opaque": giant})),
+        },
+    })
+    .await;
+    let record = ModelPartRecord {
+        ordinal: 0,
+        message_id: "original-message".into(),
+        started_at: std::time::UNIX_EPOCH,
+        provider_part_id: Some("part".into()),
+        part: Arc::new(ModelPart::Text {
+            text_kind: TextKind::Thinking,
+            text: giant.clone().into(),
+            provider_options: Some(Arc::new(json!({"opaque": giant}))),
+        }),
+    };
+    let original = event(
+        "session",
+        Fact::ModelObserved {
+            step_id: "step".into(),
+            event: ModelObservation::Part(record.clone()),
+        },
+    );
+    let committed = log
+        .append(&EventWrite::plain(original.clone()).unwrap())
+        .await
+        .unwrap();
+    append(Fact::ModelObserved {
+        step_id: "step".into(),
+        event: ModelObservation::Finished {
+            reason: ModelFinishReason::Stop,
+            usage: Default::default(),
+            provider_options: None,
+        },
+    })
+    .await;
     let completed = append(Fact::ModelCompleted {
-        step_id: "first".into(),
-        output: ModelStep {
-            parts: vec![ModelPart::Text {
-                text_kind: TextKind::Text,
-                text: giant.clone(),
-                provider_options: Some(json!({"large": giant})),
-            }],
-            finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
+        step_id: "step".into(),
+        output: ModelCompletion {
+            parts: vec![CompletionPart::Ref(RecordedPartRef {
+                event_id: original.id.clone(),
+                ordinal: 0,
+            })],
+            finish_reason: ModelFinishReason::Stop,
             usage: Default::default(),
             provider_options: None,
             response_id: None,
@@ -177,84 +160,8 @@ async fn giant_bodies_and_metadata_do_not_block_stream_delivery() {
         },
     })
     .await;
-    let steered = append({
-        let message = maka_agent_facts::input::DeliveredMessage {
-            origin: None,
-            message_id: "steering".into(),
-            content: "s".repeat(64 * 1024).into(),
-            submitted_content_digest: format!("sha256:{}", "b".repeat(64)),
-        };
-        let mut unprepared_content = message.content.clone();
-        unprepared_content.preparation.clear();
-        Fact::MessageSteered {
-            source: Box::new(maka_agent_facts::message::RootSourceMessage {
-                message: message.clone(),
-                unprepared_content,
-                submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
-                disposition: maka_agent_facts::message::MessageDisposition::Steering,
-                submitted_intent: None,
-            }),
-            message: Box::new(message),
-        }
-    })
-    .await;
-    let second_request = append(request("second")).await;
-    append(observed(
-        "second",
-        ModelEvent::ProviderToolResult {
-            id: "unknown-provider-tool".into(),
-            name: "provider-internal".into(),
-            output: json!({"large": giant}),
-            is_error: false,
-            provider_options: None,
-        },
-    ))
-    .await;
-    let start = event(
-        "session",
-        observed(
-            "second",
-            ModelEvent::PartStarted {
-                id: "part".into(),
-                text_kind: TextKind::Thinking,
-                provider_options: Some(json!({"large": giant})),
-            },
-        ),
-    );
-    let started = log
-        .append(&EventWrite::plain((start).clone()).unwrap())
-        .await
-        .unwrap();
-    let delta_sequence = append(observed(
-        "second",
-        ModelEvent::PartDelta {
-            id: "part".into(),
-            text: "a😀\n\"中".into(),
-            provider_options: Some(json!({"large": giant})),
-        },
-    ))
-    .await;
-    let finished = append(observed(
-        "second",
-        ModelEvent::PartFinished {
-            id: "part".into(),
-            provider_options: Some(json!({"large": giant})),
-        },
-    ))
-    .await;
-    let interrupted = append(Fact::ModelInterrupted {
-        model_failure: None,
-        diagnostic: None,
-        step_id: "second".into(),
-        status: maka_agent_facts::event::ModelInterruption::Failed,
-    })
-    .await;
     let terminal = append(Fact::InvocationEnded {
-        outcome: InvocationOutcome::Failed {
-            model_failure: None,
-            class: "provider".into(),
-            message: None,
-        },
+        outcome: InvocationOutcome::Completed,
     })
     .await;
     let page = log
@@ -263,68 +170,53 @@ async fn giant_bodies_and_metadata_do_not_block_stream_delivery() {
         .unwrap();
     assert_eq!(
         page.events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
-        [
-            opened,
-            first_request,
-            completed,
-            steered,
-            second_request,
-            started,
-            delta_sequence,
-            finished,
-            interrupted,
-            terminal
-        ]
+        [opened, requested, committed, completed, terminal]
     );
-    assert_eq!(page.events[5].id, start.id);
-    assert_eq!(page.events[5].invocation, start.invocation);
+    assert_eq!(page.events[2].id, original.id);
     assert_eq!(
-        page.events[6].fact,
-        StreamFact::PartDelta {
-            step_id: "second".into(),
-            part_id: "part".into(),
-            text: "a😀\n\"中".into()
+        page.events[2].fact,
+        StreamFact::ModelPartCommitted {
+            step_id: "step".into(),
+            message_id: record.message_id.clone(),
+            ordinal: 0,
         }
     );
-    assert!(matches!(page.events[0].fact, StreamFact::InvocationOpened));
-    assert!(matches!(page.events[1].fact, StreamFact::ContextChanged));
-    assert!(matches!(page.events[4].fact, StreamFact::ContextChanged));
-    assert!(matches!(page.events[2].fact, StreamFact::StepEnded { .. }));
     assert!(matches!(
-        page.events[7].fact,
-        StreamFact::PartFinished { .. }
-    ));
-    assert!(matches!(page.events[3].fact, StreamFact::MessageSteered));
-    assert!(matches!(
-        page.events[9].fact,
-        StreamFact::InvocationEnded { .. }
+        page.events[3].fact,
+        StreamFact::StepEnded {
+            completed: true,
+            failed: false,
+            ..
+        }
     ));
     assert_eq!(page.through_sequence, terminal);
     assert_eq!(page.next_after, None);
-    assert!(matches!(&page.events[8].fact,
-        StreamFact::StepEnded { failed: true, interrupted, .. }
-        if interrupted == std::slice::from_ref(&start.id)));
-    assert!(matches!(&page.events[9].fact,
-        StreamFact::InvocationEnded { failed: true, interrupted }
-        if interrupted.is_empty()));
-    // The derived interruption identities belong to the delivery byte budget.
-    let bytes = serde_json::to_vec(&page.events[8]).unwrap().len();
-    let soft = log
-        .session_stream_events("session", finished, interrupted, 1, bytes - 1)
+    assert!(serde_json::to_vec(&page.events).unwrap().len() < 4096);
+    log.close().await.unwrap();
+
+    let log = EventLog::open(&path).await.unwrap();
+    let reopened = log
+        .session_stream_events("session", requested, terminal, 512, 4096)
         .await
         .unwrap();
-    assert_eq!(soft.events, page.events[8..9]);
-    assert_eq!(soft.next_after, None);
-    let exact = log
-        .session_stream_events("session", finished, interrupted, 1, bytes)
+    assert_eq!(reopened.events, page.events[2..]);
+    let canonical = log
+        .session_events("session", committed - 1, committed, 1, 4096)
         .await
         .unwrap();
-    assert_eq!(exact.events, page.events[8..9]);
-    assert_eq!(exact.next_after, None);
+    assert_eq!(canonical.events[0].event, original);
+    assert!(
+        log.session_stream_events("other", 0, terminal, 512, 4096)
+            .await
+            .unwrap()
+            .events
+            .is_empty()
+    );
+    log.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn pages_obey_global_fences_and_never_skip_oversized_deltas() {
+async fn pages_obey_global_fences_and_never_skip_oversized_executor_deltas() {
     let temp = tempfile::tempdir().unwrap();
     let log = EventLog::open(&temp.path().join("events.sqlite"))
         .await
@@ -335,7 +227,33 @@ async fn pages_obey_global_fences_and_never_skip_oversized_deltas() {
                 (event(
                     "session",
                     Fact::InvocationOpened {
-                        configuration: None,
+                        configuration: Some(Box::new(
+                            maka_agent_facts::execution::InvocationConfiguration {
+                                language: maka_agent_facts::language::Language::En,
+                                compaction_prompt: None,
+                                workspace_origin:
+                                    maka_agent_facts::execution::WorkspaceOrigin::Selected,
+                                approval_policy:
+                                    maka_agent_facts::execution::ApprovalPolicy::OnRequest,
+                                boundary_revision: 0,
+                                cwd: temp.path().to_string_lossy().into_owned(),
+                                workspace_binding: None,
+                                workspace_identity: None,
+                                model: None,
+                                editing_tools: None,
+                                tool_discovery: false,
+                                tool_composition: None,
+                                system_prompt: None,
+                                thinking_level: None,
+                                sandbox_mode:
+                                    maka_agent_facts::execution::SandboxMode::WorkspaceWrite,
+                                collaboration_mode:
+                                    maka_agent_facts::execution::CollaborationMode::Agent,
+                                orchestration_mode: Default::default(),
+                                tool_mode: maka_agent_facts::execution::ToolMode::Direct,
+                                code_language: Default::default(),
+                            },
+                        )),
                         input: maka_agent_facts::input::InvocationInput::Message {
                             source_messages: Vec::new(),
                             content: "".into(),
@@ -350,7 +268,7 @@ async fn pages_obey_global_fences_and_never_skip_oversized_deltas() {
         .await
         .unwrap();
     let requested = log
-        .append(&EventWrite::plain((event("session", request("second"))).clone()).unwrap())
+        .append(&EventWrite::plain((event("session", executor_start())).clone()).unwrap())
         .await
         .unwrap();
     let first = log
@@ -391,7 +309,7 @@ async fn pages_obey_global_fences_and_never_skip_oversized_deltas() {
         .unwrap();
     assert_eq!(old.events.len(), 1);
     assert_eq!(old.events[0].sequence, requested);
-    assert!(matches!(old.events[0].fact, StreamFact::ContextChanged));
+    assert!(matches!(old.events[0].fact, StreamFact::ExecutorStarted));
     assert_eq!(old.next_after, Some(requested));
     assert_eq!(old.through_sequence, gap);
     let limited = log
@@ -406,6 +324,13 @@ async fn pages_obey_global_fences_and_never_skip_oversized_deltas() {
         .unwrap();
     assert_eq!(soft.events.len(), 1);
     assert_eq!(soft.events[0].sequence, large);
+    assert_eq!(
+        soft.events[0].fact,
+        StreamFact::ExecutorDelta {
+            text_kind: TextKind::Text,
+            text: "中".repeat(4096),
+        }
+    );
     assert_eq!(soft.next_after, Some(large));
     let next = log
         .session_stream_events("session", first, last, 1, 32 * 1024)
@@ -418,6 +343,13 @@ async fn pages_obey_global_fences_and_never_skip_oversized_deltas() {
         .await
         .unwrap();
     assert_eq!(tail.events[0].sequence, last);
+    assert_eq!(
+        tail.events[0].fact,
+        StreamFact::ExecutorDelta {
+            text_kind: TextKind::Text,
+            text: "last".into(),
+        }
+    );
     assert_eq!(tail.next_after, None);
     for (after, through, count, bytes) in [
         (0, last + 1, 1, 1024),
@@ -432,66 +364,53 @@ async fn pages_obey_global_fences_and_never_skip_oversized_deltas() {
                 .is_err()
         );
     }
+    log.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn soft_first_stream_and_raw_events_preserve_complete_fenced_records() {
+async fn soft_first_delivery_and_raw_events_keep_complete_sealed_partial_after_reopen() {
     let temp = tempfile::tempdir().unwrap();
-    let log = EventLog::open(&temp.path().join("singleton.sqlite"))
-        .await
-        .unwrap();
+    let path = temp.path().join("singleton.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
     let append = async |fact| {
         log.append(&EventWrite::plain(event("session", fact)).unwrap())
             .await
             .unwrap()
     };
-    append(Fact::InvocationOpened {
-        configuration: None,
-        input: maka_agent_facts::input::InvocationInput::Message {
-            source_messages: Vec::new(),
-            content: "".into(),
-            request_fingerprint: None,
-        },
-    })
-    .await;
-    append(request("second")).await;
-    let mut start = event(
-        "session",
-        observed(
-            "second",
-            ModelEvent::PartStarted {
-                id: "part".into(),
-                text_kind: TextKind::Text,
-                provider_options: None,
-            },
-        ),
-    );
-    start.id = "original-start-".repeat(5000);
-    let started = log
-        .append(&EventWrite::plain(start.clone()).unwrap())
-        .await
-        .unwrap();
+    append(opening()).await;
+    let requested = append(request(false)).await;
+    let message_id = "original-message-".repeat(5000);
     let text = "完整😀\"".repeat(8000);
-    let delta = event("session", delta(&text));
-    let delta_sequence = log
-        .append(&EventWrite::plain(delta.clone()).unwrap())
+    let interrupted = event(
+        "session",
+        Fact::ModelInterrupted {
+            model_failure: None,
+            diagnostic: None,
+            step_id: "step".into(),
+            status: ModelInterruption::Failed,
+            partial: Some(ModelPartial {
+                parts: vec![CompletionPart::Own(ModelPartRecord {
+                    ordinal: 0,
+                    message_id: message_id.clone(),
+                    started_at: std::time::UNIX_EPOCH,
+                    provider_part_id: Some("part".into()),
+                    part: Arc::new(ModelPart::Text {
+                        text_kind: TextKind::Text,
+                        text: text.into(),
+                        provider_options: None,
+                    }),
+                })],
+                tool_inputs: Vec::new(),
+                response_id: None,
+                model: None,
+                timestamp: None,
+            }),
+        },
+    );
+    let sequence = log
+        .append(&EventWrite::plain(interrupted.clone()).unwrap())
         .await
         .unwrap();
-    let finished = append(observed(
-        "second",
-        ModelEvent::PartFinished {
-            id: "part".into(),
-            provider_options: None,
-        },
-    ))
-    .await;
-    let interrupted = append(Fact::ModelInterrupted {
-        model_failure: None,
-        diagnostic: None,
-        step_id: "second".into(),
-        status: maka_agent_facts::event::ModelInterruption::Failed,
-    })
-    .await;
     append(Fact::InvocationEnded {
         outcome: InvocationOutcome::Failed {
             model_failure: None,
@@ -500,42 +419,39 @@ async fn soft_first_stream_and_raw_events_preserve_complete_fenced_records() {
         },
     })
     .await;
-    let projected = log
-        .session_stream_events("session", started, interrupted, 32, 48 * 1024)
-        .await;
-    let enriched = log
-        .session_stream_events("session", finished, interrupted, 32, 48 * 1024)
-        .await;
-    let raw = log
-        .session_events("session", started, interrupted, 32, 48 * 1024)
-        .await;
-    let foreign = log
-        .session_stream_events("other", started, interrupted, 32, 48 * 1024)
-        .await;
-    let beyond = log
-        .session_stream_events("session", 0, interrupted + 100, 32, 48 * 1024)
-        .await;
     log.close().await.unwrap();
-    let projected = projected.expect("first complete projected delta must progress");
+
+    let log = EventLog::open(&path).await.unwrap();
+    let projected = log
+        .session_stream_events("session", requested, sequence, 32, 48 * 1024)
+        .await
+        .unwrap();
     assert_eq!(projected.events.len(), 1);
-    assert_eq!(projected.events[0].sequence, delta_sequence);
-    assert!(
-        matches!(&projected.events[0].fact, StreamFact::PartDelta { text: actual, .. } if actual==&text)
-    );
-    assert_eq!(projected.next_after, Some(delta_sequence));
-    assert_eq!(projected.through_sequence, interrupted);
-    let enriched = enriched.expect("first enriched boundary must keep every interruption ID");
-    assert_eq!(enriched.events.len(), 1);
-    assert!(
-        matches!(&enriched.events[0].fact, StreamFact::StepEnded { interrupted: ids, .. } if ids==std::slice::from_ref(&start.id))
-    );
-    assert_eq!(enriched.events[0].sequence, interrupted);
-    assert_eq!(enriched.next_after, None);
-    let raw = raw.expect("first complete original event must progress");
+    assert_eq!(projected.events[0].sequence, sequence);
+    assert!(matches!(&projected.events[0].fact,
+        StreamFact::StepEnded { completed: false, failed: true, interrupted: ids, .. }
+            if ids == std::slice::from_ref(&message_id)));
+    assert_eq!(projected.next_after, None);
+    assert_eq!(projected.through_sequence, sequence);
+    let raw = log
+        .session_events("session", requested, sequence, 32, 48 * 1024)
+        .await
+        .unwrap();
     assert_eq!(raw.events.len(), 1);
-    assert_eq!(raw.events[0].event, delta);
-    assert_eq!(raw.next_after, Some(delta_sequence));
-    assert_eq!(raw.through_sequence, interrupted);
-    assert!(foreign.unwrap().events.is_empty());
-    assert!(beyond.is_err());
+    assert_eq!(raw.events[0].event, interrupted);
+    assert_eq!(raw.next_after, None);
+    assert_eq!(raw.through_sequence, sequence);
+    assert!(
+        log.session_stream_events("other", requested, sequence, 32, 48 * 1024)
+            .await
+            .unwrap()
+            .events
+            .is_empty()
+    );
+    assert!(
+        log.session_stream_events("session", 0, sequence + 100, 32, 48 * 1024)
+            .await
+            .is_err()
+    );
+    log.close().await.unwrap();
 }

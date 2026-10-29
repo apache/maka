@@ -22,8 +22,8 @@ use super::invalid;
 use crate::StoreError;
 use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelUsage;
+use maka_agent_facts::model::recorded::ModelObservation;
 use maka_agent_facts::pricing::Quote;
 use sqlx::SqliteConnection;
 
@@ -90,7 +90,7 @@ pub(crate) async fn append(
     let (step, usage) = match &event.fact {
         Fact::ModelObserved {
             step_id,
-            event: ModelEvent::Finished { usage, .. },
+            event: ModelObservation::Finished { usage, .. },
         } => (step_id, usage),
         Fact::ModelCompleted { step_id, output } => (step_id, &output.usage),
         _ => return Ok(()),

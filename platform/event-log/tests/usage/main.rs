@@ -21,10 +21,10 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::ModelInterruption;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelFinishReason;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::ModelUsage;
+use maka_agent_facts::model::recorded::ModelCompletion;
+use maka_agent_facts::model::recorded::ModelObservation;
 use maka_agent_facts::session::CopyPurpose;
 use maka_event_log::{
     EventLog,
@@ -68,7 +68,7 @@ async fn physical_attempt_usage_survives_rejection_copy_removal_and_reopen() {
         event(
             Fact::ModelObserved {
                 step_id: "rejected".into(),
-                event: ModelEvent::Finished {
+                event: ModelObservation::Finished {
                     reason: ModelFinishReason::Length,
                     usage: reported.clone(),
                     provider_options: None,
@@ -78,6 +78,7 @@ async fn physical_attempt_usage_survives_rejection_copy_removal_and_reopen() {
         ),
         event(
             Fact::ModelInterrupted {
+                partial: None,
                 model_failure: None,
                 diagnostic: None,
                 step_id: "rejected".into(),
@@ -88,6 +89,7 @@ async fn physical_attempt_usage_survives_rejection_copy_removal_and_reopen() {
         retry.clone(),
         event(
             Fact::ModelInterrupted {
+                partial: None,
                 model_failure: None,
                 diagnostic: None,
                 step_id: "retry".into(),
@@ -99,7 +101,7 @@ async fn physical_attempt_usage_survives_rejection_copy_removal_and_reopen() {
         event(
             Fact::ModelCompleted {
                 step_id: "success".into(),
-                output: ModelStep {
+                output: ModelCompletion {
                     parts: vec![],
                     finish_reason: ModelFinishReason::Stop,
                     usage: ModelUsage {

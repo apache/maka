@@ -19,13 +19,18 @@
 
 //! Numeric recipe records in the request's existing arena.
 
-use super::capture_arena::CaptureArena;
+use super::{
+    capture_arena::CaptureArena,
+    source_reference::{SourceRecord, WORDS as SOURCE_WORDS},
+};
 use maka_agent_facts::model::prompt_source::source::*;
 use std::{io, marker::PhantomData, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
-const WORDS: usize = 16;
-const RECORD_BYTES: usize = WORDS * 8;
+const MEASURE_WORD: usize = 2 + SOURCE_WORDS;
+const WORDS: usize = MEASURE_WORD + 6;
+pub(crate) type Record = [u64; WORDS];
+const RECORD_BYTES: usize = std::mem::size_of::<Record>();
 const LEAF: u64 = 1;
 const LIST: u64 = 2;
 const CONTENT_TEXT: u64 = 3;
@@ -71,7 +76,14 @@ struct Store {
 }
 impl ArenaRecipes {
     pub fn metadata_bytes() -> usize {
-        std::mem::size_of::<Store>()
+        // Message options, a result's identifiers/options and one media content
+        // recipe can hold eight original source views during numeric decoding.
+        let decoded_sources = 8
+            * (maka_event_log::context::semantic::CapturedSource::locator_metadata_bytes()
+                + std::mem::size_of::<OwnedBytes>()
+                + 2 * std::mem::size_of::<usize>());
+        decoded_sources
+            + std::mem::size_of::<Store>()
             + 2 * std::mem::size_of::<usize>()
             + std::mem::size_of::<ListSource<MessageRecipe>>()
             + 2 * std::mem::size_of::<usize>()
@@ -137,8 +149,7 @@ impl ArenaRecipes {
             .as_ref()
             .is_some_and(CancellationToken::is_cancelled)
         {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
+            return Err(crate::preparation_cancelled(
                 "numeric directory capture cancelled",
             ));
         }
@@ -162,7 +173,7 @@ impl ArenaRecipes {
             .with_writer(move |writer| writer.write_at(offset, &node.0.to_le_bytes()))
             .await
     }
-    pub(crate) async fn record(&self, words: [u64; WORDS]) -> io::Result<Node> {
+    pub(crate) async fn record(&self, words: Record) -> io::Result<Node> {
         self.0
             .arena
             .with_writer(move |writer| {
@@ -191,12 +202,24 @@ impl ArenaRecipes {
         &self,
         bytes: SourceBytes,
         encoding: u64,
+        measure: Option<(u64, [u8; 32])>,
         budget: Arc<dyn SourceBudget>,
         cancel: &CancellationToken,
     ) -> io::Result<Node> {
-        let range = self.0.arena.append(bytes, budget, cancel).await?;
-        self.record(words(LEAF, &[range.start, range.end, encoding]))
-            .await
+        let source = self.0.arena.retain_source(bytes, budget, cancel).await?;
+        let mut record = words(LEAF, &[encoding]);
+        record[2..2 + SOURCE_WORDS].copy_from_slice(&source.0);
+        if let Some((bytes, digest)) = measure {
+            record[MEASURE_WORD] = 1;
+            record[MEASURE_WORD + 1] = bytes;
+            for (word, chunk) in record[MEASURE_WORD + 2..WORDS]
+                .iter_mut()
+                .zip(digest.as_chunks::<8>().0)
+            {
+                *word = u64::from_le_bytes(*chunk);
+            }
+        }
+        self.record(record).await
     }
     pub(crate) async fn text(
         &self,
@@ -204,11 +227,15 @@ impl ArenaRecipes {
         budget: Arc<dyn SourceBudget>,
         cancel: &CancellationToken,
     ) -> io::Result<Node> {
-        let encoding = match text.encoding {
+        let encoding = match text.encoding() {
             TextEncoding::Utf8 => 0,
             TextEncoding::JsonString => 1,
         };
-        self.leaf(text.bytes, encoding, budget, cancel).await
+        let measure = text
+            .measure()
+            .map(|measure| (measure.bytes, measure.sha256));
+        self.leaf(text.into_bytes(), encoding, measure, budget, cancel)
+            .await
     }
     pub(crate) async fn json(
         &self,
@@ -217,7 +244,13 @@ impl ArenaRecipes {
         cancel: &CancellationToken,
     ) -> io::Result<Node> {
         match value {
-            Some(value) => self.leaf(value.bytes, 2, budget, cancel).await,
+            Some(value) => {
+                let measure = value
+                    .measure()
+                    .map(|measure| (measure.bytes, measure.sha256));
+                self.leaf(value.into_bytes(), 2, measure, budget, cancel)
+                    .await
+            }
             None => Ok(Node(0)),
         }
     }
@@ -240,7 +273,9 @@ impl ArenaRecipes {
                 media,
                 provider_options,
             } => {
-                let raw = self.leaf(media.bytes, 3, budget.clone(), cancel).await?;
+                let raw = self
+                    .leaf(media.bytes, 3, None, budget.clone(), cancel)
+                    .await?;
                 let mime = self.text(media.media_type, budget.clone(), cancel).await?;
                 let detail = match media.detail {
                     Some(detail) => self.text(detail, budget.clone(), cancel).await?,
@@ -341,7 +376,7 @@ impl ArenaRecipes {
         };
         let (error, code) = match result.parsed_error {
             Some(error) => {
-                let same = match (&error.value.bytes, &error.code_value.bytes) {
+                let same = match (error.value.bytes(), error.code_value.bytes()) {
                     (SourceBytes::Source(left), SourceBytes::Source(right)) => {
                         Arc::ptr_eq(left, right)
                     }
@@ -442,7 +477,7 @@ impl ArenaRecipes {
         };
         self.record(words(tag, &fields)).await
     }
-    pub(crate) async fn read(&self, node: Node) -> io::Result<[u64; WORDS]> {
+    pub(crate) async fn read(&self, node: Node) -> io::Result<Record> {
         let offset = node
             .0
             .checked_sub(1)
@@ -490,39 +525,80 @@ impl ArenaRecipes {
             len: usize::try_from(record[2]).map_err(io::Error::other)?,
         })
     }
-    async fn read_leaf(&self, node: Node) -> io::Result<(SourceBytes, u64)> {
+    async fn read_leaf(
+        &self,
+        node: Node,
+    ) -> io::Result<(SourceBytes, u64, Option<(u64, [u8; 32])>)> {
         let record = self.read(node).await?;
         if record[0] != LEAF {
             return Err(invalid("expected recipe leaf"));
         }
         let bytes = SourceBytes::Source(Arc::new(OwnedBytes {
-            bytes: if self.1 {
-                self.0.arena.inspect(record[1]..record[2])
-            } else {
-                self.0.arena.pending(record[1]..record[2])
-            },
+            bytes: self.0.arena.restore_source(
+                SourceRecord(
+                    record[2..2 + SOURCE_WORDS]
+                        .try_into()
+                        .expect("fixed source record"),
+                ),
+                self.1,
+            )?,
             owner: self.0.clone(),
         }));
-        Ok((bytes, record[3]))
+        let measure = match record[MEASURE_WORD] {
+            0 => None,
+            1 => {
+                let mut digest = [0; 32];
+                for (chunk, word) in digest
+                    .as_chunks_mut::<8>()
+                    .0
+                    .iter_mut()
+                    .zip(&record[MEASURE_WORD + 2..WORDS])
+                {
+                    *chunk = word.to_le_bytes();
+                }
+                Some((record[MEASURE_WORD + 1], digest))
+            }
+            _ => return Err(invalid("invalid leaf measure presence")),
+        };
+        Ok((bytes, record[1], measure))
     }
     pub(crate) async fn read_text(&self, node: Node) -> io::Result<TextSource> {
-        let (bytes, encoding) = self.read_leaf(node).await?;
+        let (bytes, encoding, measure) = self.read_leaf(node).await?;
         let encoding = match encoding {
             0 => TextEncoding::Utf8,
             1 => TextEncoding::JsonString,
             _ => return Err(invalid("expected text leaf")),
         };
-        Ok(TextSource { bytes, encoding })
+        Ok(match measure {
+            Some((bytes_count, sha256)) => TextSource::measured(
+                bytes,
+                encoding,
+                DecodedTextMeasure {
+                    bytes: bytes_count,
+                    sha256,
+                },
+            ),
+            None => TextSource::new(bytes, encoding),
+        })
     }
     pub(crate) async fn read_json(&self, node: Node) -> io::Result<Option<JsonSource>> {
         if node.0 == 0 {
             return Ok(None);
         }
-        let (bytes, encoding) = self.read_leaf(node).await?;
+        let (bytes, encoding, measure) = self.read_leaf(node).await?;
         if encoding != 2 {
             return Err(invalid("expected JSON leaf"));
         }
-        Ok(Some(JsonSource { bytes }))
+        Ok(Some(match measure {
+            Some((bytes_count, sha256)) => JsonSource::measured(
+                bytes,
+                RawJsonMeasure {
+                    bytes: bytes_count,
+                    sha256,
+                },
+            ),
+            None => JsonSource::new(bytes),
+        }))
     }
     fn source<T: Decode>(&self, list: List) -> Arc<dyn RecipeSource<T>> {
         Arc::new(ListSource::<T> {
@@ -662,13 +738,13 @@ impl Decode for ContentRecipe {
             let r = store.read(node).await?;
             Ok(Some(match r[0] {
                 CONTENT_TEXT_LIST => Self::Text {
-                    text: TextSource {
-                        bytes: SourceBytes::Source(Arc::new(ConcatBytes {
+                    text: TextSource::new(
+                        SourceBytes::Source(Arc::new(ConcatBytes {
                             store: store.clone(),
                             pieces: store.read_list(Node(r[1])).await?,
                         })),
-                        encoding: TextEncoding::Utf8,
-                    },
+                        TextEncoding::Utf8,
+                    ),
                     provider_options: store.read_json(Node(r[2])).await?,
                 },
                 CONTENT_TEXT => Self::Text {
@@ -854,6 +930,12 @@ struct OwnedBytes {
     owner: Arc<Store>,
 }
 impl ByteSource for OwnedBytes {
+    fn locator(&self) -> Option<SourceLocator> {
+        match &self.bytes {
+            SourceBytes::Inline(_) => None,
+            SourceBytes::Source(source) => source.locator(),
+        }
+    }
     fn len(&self) -> Option<u64> {
         self.bytes.len()
     }
@@ -883,7 +965,7 @@ impl ByteCursor for OwnedCursor {
         })
     }
 }
-fn words(tag: u64, fields: &[u64]) -> [u64; WORDS] {
+fn words(tag: u64, fields: &[u64]) -> Record {
     let mut words = [0; WORDS];
     words[0] = tag;
     words[1..1 + fields.len()].copy_from_slice(fields);

@@ -127,7 +127,7 @@ async fn invoke_result(
         .await
         .unwrap()
         .into_step(step)
-        .invoke(&call, CancellationToken::new())
+        .invoke(&call, None, CancellationToken::new())
         .await
 }
 

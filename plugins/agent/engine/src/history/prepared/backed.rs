@@ -110,6 +110,7 @@ pub(super) async fn capture(
             captured: Some(&captured),
             arena: Some(&arena),
             cancellation,
+            row_root: None,
             payload_root: None,
             internal_arena: true,
         };
@@ -124,15 +125,12 @@ pub(super) async fn capture(
         let mut page_buffer = budget.allocate(32 * 1024).await.map_err(error)?;
         loop {
             cancelled(cancellation)?;
-            let mut page = captured.metadata_page(after, page_buffer).await?;
-            for index in 0..page.len() {
+            let mut page = captured.directory_page(after, page_buffer).await?;
+            while let Some(entry) = page.next_row()? {
                 cancelled(cancellation)?;
-                let row = page.row(index).expect("source page declared this row");
-                let metadata = raw(&captured, &captured.metadata_source(&row)?)?;
-                let assistant = json::field(&metadata, &["kind", "AssistantPart"], budget.clone())
-                    .await
-                    .map_err(error)?
-                    .is_some();
+                let row = entry.row;
+                let metadata = entry.directory;
+                let assistant = matches!(metadata, RowDirectory::AssistantPart { .. });
                 if !assistant {
                     flush_group(
                         &mut group,
@@ -147,77 +145,17 @@ pub(super) async fn capture(
                     .map_err(error)?;
                 }
                 let payload = captured.describe_payload(&row)?;
-                let row_context = context.for_payload(payload.as_ref());
-                let projected = match &payload {
-                    Some(payload) if payload.encoding() == PayloadEncoding::TextFragments => {
-                        let text = super::super::part_text::quoted_backed(
-                            &captured,
-                            payload,
-                            &arena,
-                            budget.clone(),
-                            cancellation,
-                        )
-                        .await
-                        .map_err(error)?;
-                        let plan = super::super::source_json::text_options_footprint(
-                            &captured,
-                            payload,
-                            budget.clone(),
-                            cancellation,
-                        )
-                        .await
-                        .map_err(error)?
-                        .spilled()
-                        .map_err(error)?;
-                        let options = super::super::source_json::text_options(
-                            &captured,
-                            payload,
-                            &plan,
-                            &arena,
-                            budget.clone(),
-                            owner.clone(),
-                            cancellation,
-                        )
-                        .await
-                        .map_err(error)?;
-                        match super::super::source_projector::project_text_part(
-                            metadata,
-                            text,
-                            options,
-                            &row_context,
-                        )
-                        .await
-                        .map_err(error)?
-                        {
-                            ProjectedRow::Assistant(part) => ArenaProjectedRow::Assistant(
-                                store
-                                    .assistant(part, budget.clone(), cancellation)
-                                    .await
-                                    .map_err(error)?,
-                            ),
-                            ProjectedRow::AssistantMetadata { options } => {
-                                ArenaProjectedRow::AssistantMetadata(options)
-                            }
-                            ProjectedRow::Skip => ArenaProjectedRow::Skip,
-                            _ => {
-                                return Err(RunError::Internal(
-                                    "text part projected an invalid role".into(),
-                                ));
-                            }
-                        }
-                    }
-                    payload => super::super::source_projector::arena::project_row(
-                        metadata,
-                        payload
-                            .as_ref()
-                            .map(|payload| raw(&captured, payload))
-                            .transpose()?,
-                        &row_context,
-                        &store,
-                    )
-                    .await
-                    .map_err(error)?,
-                };
+                let row_root = captured.metadata_source(&row)?;
+                let row_context = context.for_row(&row_root, payload.as_ref());
+                let projected = super::super::source_projector::arena::project_row(
+                    &metadata,
+                    entry.payload.as_ref(),
+                    &row_context,
+                    &store,
+                )
+                .await
+                .map_err(error)?;
+
                 match projected {
                     ArenaProjectedRow::User(content) => {
                         let message = store

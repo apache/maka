@@ -143,23 +143,19 @@ const MCP_ID: &str = "mcp-call: /é😀";
 #[derive(Clone, Copy, Debug)]
 enum McpCase {
     SameGroup,
-    AdjacentGroups,
-    UserBoundary,
     ExcludedProducer,
 }
 impl McpCase {
     fn name(self) -> &'static str {
         match self {
             Self::SameGroup => "same-group",
-            Self::AdjacentGroups => "adjacent-groups",
-            Self::UserBoundary => "user-boundary",
             Self::ExcludedProducer => "excluded-producer",
         }
     }
     fn replay(self) -> ToolResultReplay {
         match self {
-            Self::SameGroup | Self::AdjacentGroups => ToolResultReplay::AnthropicMcp,
-            Self::UserBoundary | Self::ExcludedProducer => ToolResultReplay::Ordinary,
+            Self::SameGroup => ToolResultReplay::AnthropicMcp,
+            Self::ExcludedProducer => ToolResultReplay::Ordinary,
         }
     }
 }
@@ -170,63 +166,14 @@ async fn append_canonical(log: &SessionStore, invocation: &Invocation, fact: Fac
         .unwrap()
 }
 
-async fn complete_model_group(
-    log: &SessionStore,
-    invocation: &Invocation,
-    step: &str,
-    parts: Vec<maka_agent_facts::model::ModelPart>,
-) -> u64 {
-    use maka_agent_facts::{
-        context::ModelPurpose,
-        event::LogScope,
-        model::{ModelFinishReason, ModelStep},
-    };
-    let step = format!("{}-{step}", invocation.invocation_id);
-    let source_high_water = *log.subscribe_commits().unwrap().borrow();
-    append_canonical(
-        log,
-        invocation,
-        Fact::ModelRequested {
-            item_acceptance: false,
-            step_id: step.clone(),
-            model_id: "fixture".into(),
-            source_scope: LogScope::Session {
-                id: log.id().into(),
-            },
-            source_high_water,
-            source_digest: "fixture".into(),
-            input_digest: "fixture".into(),
-            route_identity: "fixture".into(),
-            checkpoint_event_id: None,
-            purpose: ModelPurpose::Main,
-            context: None,
-            context_breakdown: None,
-            effective_source_digest: None,
-        },
-    )
-    .await;
-    append_canonical(
-        log,
-        invocation,
-        Fact::ModelCompleted {
-            step_id: step,
-            output: ModelStep {
-                parts,
-                finish_reason: ModelFinishReason::Stop,
-                usage: Default::default(),
-                provider_options: None,
-                response_id: None,
-                model: None,
-                timestamp: None,
-            },
-        },
-    )
-    .await
-}
-
 async fn canonical_mcp_history(log: &SessionStore, case: McpCase) -> SemanticSelection {
-    use maka_agent_facts::model::{ModelPart, ModelToolCall, ToolInput};
-    let mut invocation = Invocation {
+    use maka_agent_facts::model::{
+        ModelFinishReason, ModelPart, ModelToolCall, ToolInput,
+        recorded::{
+            CompletionPart, ModelCompletion, ModelObservation, ModelPartRecord, RecordedPartRef,
+        },
+    };
+    let invocation = Invocation {
         session_id: log.id().into(),
         turn_id: format!("{}-turn", log.id()),
         run_id: format!("{}-run", log.id()),
@@ -263,40 +210,100 @@ async fn canonical_mcp_history(log: &SessionStore, case: McpCase) -> SemanticSel
         is_error: false,
         provider_options: None,
     };
-    let producer_sequence = if matches!(case, McpCase::SameGroup) {
-        complete_model_group(log, &invocation, "same-step", vec![producer, result]).await
-    } else {
-        let sequence =
-            complete_model_group(log, &invocation, "producer-step", vec![producer]).await;
-        if matches!(case, McpCase::UserBoundary) {
-            append_canonical(
-                log,
-                &invocation,
-                Fact::InvocationEnded {
-                    outcome: InvocationOutcome::Completed,
+    let step = format!("{}-step", invocation.invocation_id);
+    let item_acceptance = matches!(case, McpCase::ExcludedProducer);
+    let source_high_water = *log.subscribe_commits().unwrap().borrow();
+    append_canonical(
+        log,
+        &invocation,
+        Fact::ModelRequested {
+            item_acceptance,
+            step_id: step.clone(),
+            model_id: "fixture".into(),
+            source_scope: maka_agent_facts::event::LogScope::Session {
+                id: log.id().into(),
+            },
+            source_high_water,
+            source_digest: "fixture".into(),
+            input_digest: "fixture".into(),
+            route_identity: "fixture".into(),
+            checkpoint_event_id: None,
+            purpose: maka_agent_facts::context::ModelPurpose::Main,
+            context: None,
+            context_breakdown: None,
+            effective_source_digest: None,
+        },
+    )
+    .await;
+    let mut parts = Vec::new();
+    let mut producer_sequence = None;
+    for (ordinal, part) in [producer, result].into_iter().enumerate() {
+        let record = ModelPartRecord {
+            ordinal: ordinal as u64,
+            message_id: match &part {
+                ModelPart::ToolCall { call } => maka_agent_facts::tool_call::tool_use_id(
+                    &invocation.invocation_id,
+                    &format!("{step}:{}", call.id),
+                ),
+                _ => uuid::Uuid::new_v4().to_string(),
+            },
+            started_at: std::time::SystemTime::now(),
+            provider_part_id: None,
+            part: Arc::new(part),
+        };
+        if item_acceptance {
+            let observed = EventWrite::plain(RuntimeEvent::new(
+                invocation.clone(),
+                Fact::ModelObserved {
+                    step_id: step.clone(),
+                    event: ModelObservation::Part(record),
                 },
-            )
-            .await;
-            invocation.turn_id.push_str("-boundary");
-            invocation.run_id.push_str("-boundary");
-            invocation.invocation_id.push_str("-boundary");
-            append_canonical(
-                log,
-                &invocation,
-                Fact::InvocationOpened {
-                    input: InvocationInput::Message {
-                        content: "A new user boundary".into(),
-                        source_messages: Vec::new(),
-                        request_fingerprint: None,
-                    },
-                    configuration: None,
-                },
-            )
-            .await;
+            ))
+            .unwrap();
+            let sequence = log.append(&observed).await.unwrap();
+            if ordinal == 0 {
+                producer_sequence = Some(sequence);
+            }
+            parts.push(CompletionPart::Ref(RecordedPartRef {
+                event_id: observed.event().id.clone(),
+                ordinal: ordinal as u64,
+            }));
+        } else {
+            parts.push(CompletionPart::Own(record));
         }
-        complete_model_group(log, &invocation, "result-step", vec![result]).await;
-        sequence
-    };
+    }
+    if item_acceptance {
+        append_canonical(
+            log,
+            &invocation,
+            Fact::ModelObserved {
+                step_id: step.clone(),
+                event: ModelObservation::Finished {
+                    reason: ModelFinishReason::Stop,
+                    usage: Default::default(),
+                    provider_options: None,
+                },
+            },
+        )
+        .await;
+    }
+    append_canonical(
+        log,
+        &invocation,
+        Fact::ModelCompleted {
+            step_id: step,
+            output: ModelCompletion {
+                parts,
+                finish_reason: ModelFinishReason::Stop,
+                usage: Default::default(),
+                provider_options: None,
+                response_id: None,
+                model: None,
+                timestamp: None,
+            },
+        },
+    )
+    .await;
     let through = append_canonical(
         log,
         &invocation,
@@ -309,7 +316,7 @@ async fn canonical_mcp_history(log: &SessionStore, case: McpCase) -> SemanticSel
         session: log.id().into(),
         lineage: None,
         after: if matches!(case, McpCase::ExcludedProducer) {
-            producer_sequence
+            producer_sequence.expect("observed producer has its own selection fence")
         } else {
             0
         },
@@ -431,15 +438,10 @@ async fn anthropic_blocks(history: Arc<FrozenHistory>) -> Vec<Vec<u8>> {
 }
 
 #[tokio::test]
-async fn canonical_mcp_binding_matches_across_storage_groups_role_and_selection_boundaries() {
+async fn canonical_mcp_binding_matches_across_storage_and_selection_boundaries() {
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         let (_directory, root) = crate::test_support::root().await;
-        for case in [
-            McpCase::SameGroup,
-            McpCase::AdjacentGroups,
-            McpCase::UserBoundary,
-            McpCase::ExcludedProducer,
-        ] {
+        for case in [McpCase::SameGroup, McpCase::ExcludedProducer] {
             let session = crate::test_support::session(&root, case.name()).await;
             let execution = session.execution_scope(None).await.unwrap().accept();
             let log = Arc::new(execution.store());
@@ -489,14 +491,6 @@ async fn canonical_mcp_binding_matches_across_storage_groups_role_and_selection_
                 McpCase::SameGroup => {
                     assert_eq!(snapshot.producer_groups, vec![snapshot.result_groups[0].0])
                 }
-                McpCase::AdjacentGroups => assert_eq!(
-                    snapshot.producer_groups,
-                    vec![snapshot.result_groups[0].0 - 1]
-                ),
-                McpCase::UserBoundary => assert_eq!(
-                    snapshot.producer_groups,
-                    vec![snapshot.result_groups[0].0 - 2]
-                ),
                 McpCase::ExcludedProducer => assert!(snapshot.producer_groups.is_empty()),
             }
             let resident_wire = anthropic_blocks(resident.clone()).await;

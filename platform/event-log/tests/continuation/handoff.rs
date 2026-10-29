@@ -22,8 +22,11 @@ use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::event::ModelInterruption;
 use maka_agent_facts::handoff::HandoffIntent;
 use maka_agent_facts::handoff::HandoffPause;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelToolCall;
+use maka_agent_facts::model::{
+    ModelPart,
+    recorded::{CompletionPart, ModelObservation, ModelPartRecord, ModelPartial, RecordedPartRef},
+};
 
 pub(super) fn execution() -> Box<maka_agent_facts::handoff::HandoffExecution> {
     use maka_agent_facts::handoff::HandoffExecution;
@@ -117,37 +120,52 @@ async fn handoff_rejects_unresolved_provider_effects_but_accepts_effect_free_sum
             log.append(&seal).await.is_err(),
             "an open request cannot be paused"
         );
-        let observed = if provider_effect {
-            ModelEvent::ToolCall(ModelToolCall {
-                id: "remote".into(),
-                name: "search".into(),
-                input: serde_json::json!({}).into(),
-                provider_options: None,
-                provider_executed: true,
+        let partial = if provider_effect {
+            let record = ModelPartRecord {
+                ordinal: 0,
+                message_id: maka_agent_facts::tool_call::tool_use_id(
+                    &source.invocation.invocation_id,
+                    "step:remote",
+                ),
+                started_at: std::time::SystemTime::now(),
+                provider_part_id: None,
+                part: std::sync::Arc::new(ModelPart::ToolCall {
+                    call: ModelToolCall {
+                        id: "remote".into(),
+                        name: "search".into(),
+                        input: serde_json::json!({}).into(),
+                        provider_options: None,
+                        provider_executed: true,
+                    },
+                }),
+            };
+            let observed = RuntimeEvent::new(
+                source.invocation.clone(),
+                Fact::ModelObserved {
+                    step_id: "step".into(),
+                    event: ModelObservation::Part(record),
+                },
+            );
+            append(&log, &observed).await;
+            Some(ModelPartial {
+                parts: vec![CompletionPart::Ref(RecordedPartRef {
+                    event_id: observed.id,
+                    ordinal: 0,
+                })],
+                tool_inputs: vec![],
+                response_id: None,
+                model: None,
+                timestamp: None,
             })
         } else {
-            ModelEvent::PartDelta {
-                id: "partial".into(),
-                text: "unfinished summary".into(),
-                provider_options: None,
-            }
+            None
         };
         append(
             &log,
             &RuntimeEvent::new(
                 source.invocation.clone(),
-                Fact::ModelObserved {
-                    step_id: "step".into(),
-                    event: observed,
-                },
-            ),
-        )
-        .await;
-        append(
-            &log,
-            &RuntimeEvent::new(
-                source.invocation.clone(),
                 Fact::ModelInterrupted {
+                    partial,
                     model_failure: None,
                     diagnostic: None,
                     step_id: "step".into(),

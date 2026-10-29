@@ -38,6 +38,7 @@ export type Row = {
   text: string;
   position?: Position;
   fragments?: Fragment[];
+  prefix?: boolean;
   totalBytes?: number;
   tool?: any;
   attachments?: AgentHistoryAttachment[];
@@ -52,6 +53,8 @@ export type Row = {
   stepId?: string;
   sequence?: number;
   startSequence?: number;
+  modelPart?: { stepId: string; ordinal: number };
+  preview?: { stepOrder: number; ordinal: number; revision: number };
   closedAt?: number | null;
 };
 
@@ -79,10 +82,9 @@ export function messageBytes(text: string): number {
   return length;
 }
 
-// A live part starts at its original opening. A history window may instead
-// contain only a tail or separated fragments, without Markdown's opening context.
-export function hasCompletePrefix(row: Row): boolean {
-  if (!row.fragments) return row.startSequence !== undefined && row.sequence !== undefined;
+// History windows can contain tails or gaps; previews are assembled from byte zero.
+export function hasTextPrefix(row: Row): boolean {
+  if (!row.fragments) return row.prefix === true;
   let offset = 0;
   for (const fragment of row.fragments) {
     if (fragment.offset !== offset) return false;
@@ -98,6 +100,7 @@ export function historyMetadata(chunk: any, through: number, previous?: Row) {
       chunk.offset === 0 ? (chunk.attachments ?? []) : (previous?.attachments ?? chunk.attachments),
     timing: chunk.timing,
     model: chunk.model,
+    modelPart: chunk.modelPart,
     finalOutput: chunk.finalOutput,
     compaction: chunk.compaction,
     tool: chunk.tool,
