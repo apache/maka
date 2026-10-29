@@ -37,7 +37,24 @@ const pending = new Map();
 const tools = ['echo', 'error', 'media', 'slow', 'hang', 'change'].map((name) => ({
   name,
   description: `Fixture ${name}`,
-  inputSchema: { type: 'object', additionalProperties: true },
+  inputSchema:
+    mode === 'object-union' && name === 'echo'
+      ? {
+          $ref: '#/$defs/Arguments',
+          $defs: {
+            Arguments: {
+              type: 'object',
+              properties: { marker: { type: 'string' } },
+              required: ['marker'],
+              additionalProperties: false,
+            },
+          },
+          oneOf: [
+            { properties: { marker: { const: 'MCP_RESULT' } } },
+            { properties: { marker: { const: 'OTHER_RESULT' } } },
+          ],
+        }
+      : { type: 'object', additionalProperties: true },
   annotations: { readOnlyHint: true },
 }));
 function receive(message, send) {

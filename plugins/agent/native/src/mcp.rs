@@ -35,6 +35,7 @@ pub(crate) fn global(
     Ok(files::merge(configurations, &[&files::global(home)?]))
 }
 
+use crate::tools::input::Projection;
 use maka_agent_api::{contract::WorkspaceAccess, session::ResolvedConfiguration};
 use maka_agent_facts::{
     configuration::mcp::ServerConfiguration,
@@ -138,6 +139,9 @@ impl Servers {
             );
             for tool in connection.tools() {
                 let name = tool.definition.name.clone();
+                let mut definition = tool.definition.clone();
+                let (input_projection, input_schema) = Projection::project(definition.input_schema);
+                definition.input_schema = input_schema;
                 if tool.read_only {
                     servers.planning.push(name.clone());
                 }
@@ -145,7 +149,7 @@ impl Servers {
                     .bindings
                     .insert(name.clone(), Some(generation.clone()));
                 servers.registrations.push(ToolRegistration {
-                    definition: tool.definition.clone(),
+                    definition,
                     nesting: ToolNesting::Nestable,
                     semantics: ToolSemantics::Parallel,
                     handler: ToolHandler::Prepared(Arc::new(Binding {
@@ -157,6 +161,7 @@ impl Servers {
                         generation: generation.clone(),
                         preapproved: config.preapproved,
                         read_only: tool.read_only,
+                        input_projection,
                     })),
                 });
             }
@@ -183,6 +188,7 @@ struct Binding {
     generation: String,
     preapproved: bool,
     read_only: bool,
+    input_projection: Projection,
 }
 fn permitted(configuration: &ResolvedConfiguration, name: &str, read_only: bool) -> bool {
     configuration
@@ -210,6 +216,7 @@ impl ToolPreparer for Binding {
         let generation = self.generation.clone();
         let read_only = self.read_only;
         let preapproved = self.preapproved;
+        let input_projection = self.input_projection;
         Box::pin(async move {
             let store = Arc::new(
                 store
@@ -230,6 +237,10 @@ impl ToolPreparer for Binding {
             if cancellation.is_cancelled() {
                 return Err(ToolRejection::Cancelled);
             }
+            let approval_input = (!preapproved
+                && matches!(input_projection, Projection::RequestEnvelope))
+            .then(|| input.clone());
+            let input = input_projection.decode(input)?;
             let live = maka_agent_authority::permissions::live(&store, &context.invocation)
                 .await
                 .map_err(|error| ToolRejection::PreparationFailed {
@@ -252,7 +263,7 @@ impl ToolPreparer for Binding {
                                 binding: &generation,
                                 service: &format!("MCP server {server}"),
                             },
-                            &input,
+                            approval_input.as_ref().unwrap_or(&input),
                             &cancel,
                         )
                         .await?;

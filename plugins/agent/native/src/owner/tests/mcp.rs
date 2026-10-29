@@ -60,13 +60,13 @@ async fn mcp_native_direct_and_code_mode_calls_share_approval_permissions_and_jo
         .unwrap();
 }
 async fn exercise_mcp_permissions() {
-    for (code, decision, read_only, preapproved, trusted_readonly, revoke) in [
-        (false, "allow", false, false, false, false),
-        (false, "deny", false, false, false, false),
-        (true, "allow", false, true, false, false),
-        (false, "allow", true, true, false, false),
-        (false, "allow", true, true, true, false),
-        (false, "allow", false, false, false, true),
+    for (enveloped, code, decision, read_only, preapproved, trusted_readonly, revoke) in [
+        (true, false, "allow", false, false, false, false),
+        (false, false, "deny", false, false, false, false),
+        (false, true, "allow", false, true, false, false),
+        (false, false, "allow", true, true, false, false),
+        (false, false, "allow", true, true, true, false),
+        (false, false, "allow", false, false, false, true),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let record = directory.path().join("record");
@@ -78,6 +78,14 @@ async fn exercise_mcp_permissions() {
             None,
             |settings| {
                 let mut config = server(&record, preapproved);
+                if enveloped {
+                    let maka_mcp::TransportConfiguration::Stdio { args, .. } =
+                        &mut config.transport
+                    else {
+                        unreachable!("the MCP fixture uses stdio");
+                    };
+                    args[1] = "object-union".into();
+                }
                 if trusted_readonly {
                     config.read_only_tools = vec!["echo".into()];
                 }
@@ -114,17 +122,29 @@ async fn exercise_mcp_permissions() {
             );
             service_tools::named_tool_response(&mut first,"exec",json!({"code":"const r = await tools.mcp__fixture__echo({marker:'MCP_RESULT'}); if (r.isError || r.structuredContent.marker !== 'MCP_RESULT') throw Error('MCP result lost'); text(r.structuredContent);"})).await;
         } else {
-            assert!(
-                prompt["tools"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|tool| tool["function"]["name"] == "mcp__fixture__echo")
-            );
+            let tool = prompt["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["function"]["name"] == "mcp__fixture__echo")
+                .unwrap();
+            if enveloped {
+                let schema = &tool["function"]["parameters"];
+                assert_eq!(schema["type"], "object");
+                assert!(
+                    ["oneOf", "anyOf", "allOf", "$ref"]
+                        .iter()
+                        .all(|key| schema.get(*key).is_none())
+                );
+            }
             service_tools::named_tool_response(
                 &mut first,
                 "mcp__fixture__echo",
-                json!({"marker":"MCP_RESULT"}),
+                if enveloped {
+                    json!({"request":{"marker":"MCP_RESULT"}})
+                } else {
+                    json!({"marker":"MCP_RESULT"})
+                },
             )
             .await;
         }
@@ -145,6 +165,18 @@ async fn exercise_mcp_permissions() {
         let result = request(&mut next).await;
         let should_call = decision == "allow" && (!read_only || trusted_readonly) && !revoke;
         assert_eq!(calls(&record), usize::from(should_call));
+        if enveloped {
+            let observed = std::fs::read_to_string(&record)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .find(|event| event["method"] == "tools/call")
+                .unwrap();
+            assert_eq!(
+                observed["params"]["arguments"],
+                json!({"marker":"MCP_RESULT"})
+            );
+        }
         if should_call {
             assert!(
                 result["messages"]

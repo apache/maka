@@ -104,6 +104,25 @@ pub(super) async fn product_package(name: &'static str) -> Package {
     product_packages().await.remove(name).unwrap()
 }
 
+async fn product_installation(workspace: &Path) -> Value {
+    let source = std::fs::read_to_string(
+        PathBuf::from(env!("OUT_DIR")).join("product/authoring/composition.mjs"),
+    )
+    .unwrap();
+    let vm = maka_js_runtime::plugin::Vm::pure(Default::default()).unwrap();
+    let module = vm.load("real-host-installation".into(), source).unwrap();
+    let installation = module
+        .call(
+            vec!["installation".into()],
+            vec![json!({"workspace":workspace,"helper":env!("CARGO_BIN_EXE_maka")})],
+        )
+        .await
+        .unwrap();
+    module.close().await.unwrap();
+    vm.shutdown().await;
+    installation
+}
+
 async fn add_product_ui(plan: &mut Value, packages: &mut Vec<Package>, deployment: Uuid) {
     let bundled = product_packages().await;
     let references: BTreeMap<_, _> = bundled
@@ -232,12 +251,25 @@ enum InitialCatalog {
 
 enum AdditionalServices {
     None,
+    ManagementTools,
     #[cfg(unix)]
     Terminals,
     ObservedGateway(gateway::Publications),
 }
 
 impl Fixture {
+    pub async fn management_tools() -> Self {
+        Self::open_with_services(
+            false,
+            false,
+            InitialCatalog::Configured { reasoning: false },
+            false,
+            None,
+            None,
+            AdditionalServices::ManagementTools,
+        )
+        .await
+    }
     pub async fn oauth(authentication: Arc<dyn Handler>) -> Self {
         Self::open_with_services(
             false,
@@ -368,11 +400,12 @@ impl Fixture {
         file_tool: Option<Value>,
         services: AdditionalServices,
     ) -> Self {
-        let (terminals, gateway_publications) = match services {
-            AdditionalServices::None => (false, None),
+        let (terminals, gateway_publications, management_tools) = match services {
+            AdditionalServices::None => (false, None, false),
+            AdditionalServices::ManagementTools => (false, None, true),
             #[cfg(unix)]
-            AdditionalServices::Terminals => (true, None),
-            AdditionalServices::ObservedGateway(published) => (false, Some(published)),
+            AdditionalServices::Terminals => (true, None, false),
+            AdditionalServices::ObservedGateway(published) => (false, Some(published), false),
         };
         let has_files = images || file_tool.is_some();
         let directory = tempfile::tempdir().unwrap();
@@ -428,15 +461,20 @@ impl Fixture {
         let outcomes_contract = maka_skills_api::outcomes::contract();
         let logs_contract = maka_host_runtime::application::logs::contract();
         let empty = json!({"type":"object","additionalProperties":false});
+        let mut agent_imports = if has_files {
+            json!({"files":{"contract":files_contract,"cardinality":{"kind":"one"}}})
+        } else {
+            json!({})
+        };
+        if management_tools {
+            agent_imports["ui"] =
+                json!({"contract":management_contract,"cardinality":{"kind":"one"}});
+        }
         let agent = package(
             "test.nsh.agent",
             maka_agent_api::IMPLEMENTATION,
             maka_agent_api::configuration_schema(),
-            if has_files {
-                json!({"files":{"contract":files_contract,"cardinality":{"kind":"one"}}})
-            } else {
-                json!({})
-            },
+            agent_imports,
             json!({"agent":{"contract":agent_contract,"availability":"required"}}),
         );
         let files = package(
@@ -527,7 +565,17 @@ impl Fixture {
             })
         };
         let deployment = Uuid::new_v4();
-        let tools = if let Some(tool) = &file_tool {
+        let tools = if management_tools {
+            Value::Array(
+                product_installation(&workspace).await["agent"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|tool| tool["import"] == "ui")
+                    .cloned()
+                    .collect(),
+            )
+        } else if let Some(tool) = &file_tool {
             json!([tool])
         } else if images {
             json!([{"name":"Read","description":"Read an image in the selected workspace.","import":"files","method":"readImage","result":"image","confirmation":"preapproved"}])
@@ -537,20 +585,7 @@ impl Fixture {
         let permissions = if file_tool.is_some() {
             // File-tool workflows use the product's real fresh-installation
             // policy, so an allowed write exercises its default authority.
-            let bundle = PathBuf::from(env!("OUT_DIR")).join("product");
-            let source = std::fs::read_to_string(bundle.join("authoring/composition.mjs")).unwrap();
-            let vm = maka_js_runtime::plugin::Vm::pure(Default::default()).unwrap();
-            let module = vm.load("real-host-installation".into(), source).unwrap();
-            let installation = module
-                .call(
-                    vec!["installation".into()],
-                    vec![json!({"workspace":workspace,"helper":env!("CARGO_BIN_EXE_maka")})],
-                )
-                .await
-                .unwrap();
-            module.close().await.unwrap();
-            vm.shutdown().await;
-            installation["agent"]["permissions"].clone()
+            product_installation(&workspace).await["agent"]["permissions"].clone()
         } else {
             json!({"access":"read_only","requestPermissions":true})
         };
@@ -577,6 +612,10 @@ impl Fixture {
         plan["instances"]["management"] = node(&manager, 8, json!({}), json!({}));
         plan["instances"]["gateway"]["bindings"]["management"] =
             json!([{"kind":"instance","path":["management"],"export":"Management"}]);
+        if management_tools {
+            plan["instances"]["agent"]["bindings"]["ui"] =
+                json!([{"kind":"instance","path":["management"],"export":"Management"}]);
+        }
         if plugins {
             let optional_roots: Vec<_> = (0..40)
                 .map(|index| {
@@ -845,7 +884,16 @@ impl Fixture {
                     )
                 }))
                 .collect(),
-                native: if has_files {
+                native: if management_tools {
+                    vec![NativeGrant {
+                        origin: InstanceId(vec![Uuid::from_u128(1)]),
+                        consumer: InstanceId(vec![Uuid::from_u128(1)]),
+                        provider: InstanceId(vec![Uuid::from_u128(8)]),
+                        export: "Management".into(),
+                        methods: ["instances".into()].into_iter().collect(),
+                        recovery: false,
+                    }]
+                } else if has_files {
                     vec![NativeGrant {
                         origin: InstanceId(vec![Uuid::from_u128(1)]),
                         consumer: InstanceId(vec![Uuid::from_u128(1)]),
@@ -887,7 +935,7 @@ impl Fixture {
                         accepted = listener.accept() => {
                             let (stream, _) = accepted.unwrap(); let send = send.clone(); let count = count.clone(); let discovery = discovery.clone();
                             connections.spawn(async move {
-                                ModelRequest::serve(stream, send, count, discovery).await;
+                                ModelRequest::serve(stream, send, count, discovery, management_tools).await;
                             });
                         }
                         Some(result) = connections.join_next(), if !connections.is_empty() => { result.unwrap(); }
@@ -1144,6 +1192,7 @@ pub async fn mutate(client: &Client, method: &str, input: Value) -> Value {
 
 pub struct ModelRequest {
     pub body: Value,
+    pub tool_schema_error: Option<String>,
     response: mpsc::Sender<Bytes>,
     completed: Arc<Notify>,
 }
@@ -1155,6 +1204,7 @@ impl ModelRequest {
         requests: mpsc::Sender<Self>,
         count: Arc<AtomicUsize>,
         discovery: Arc<AtomicUsize>,
+        strict_tools: bool,
     ) {
         let completed = Arc::new(Notify::new());
         let notification = completed.clone();
@@ -1181,7 +1231,32 @@ impl ModelRequest {
                 assert_eq!(request.method(), Method::POST);
                 assert_eq!(request.uri().path(), "/v1/chat/completions");
                 let bytes = request.into_body().collect().await?.to_bytes();
-                let body = serde_json::from_slice(&bytes).unwrap();
+                let body: Value = serde_json::from_slice(&bytes).unwrap();
+                let tool_schema_error = strict_tools
+                    .then(|| {
+                        body["tools"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .filter_map(|tool| {
+                                let name = tool["function"]["name"].as_str().unwrap();
+                                let schema = &tool["function"]["parameters"];
+                                if schema["type"] != "object"
+                                    || ["oneOf", "anyOf", "allOf"]
+                                        .iter()
+                                        .any(|key| schema.get(*key).is_some())
+                                {
+                                    Some(format!("{name}: expected an object root without combinators: {schema}"))
+                                } else {
+                                    maka_plugin_core::validator(schema)
+                                        .err()
+                                        .map(|error| format!("{name}: {error}"))
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .filter(|error| !error.is_empty());
                 let (response, receiver) = mpsc::channel(1);
                 let events = stream::unfold(receiver, |mut receiver| async move {
                     receiver
@@ -1193,11 +1268,22 @@ impl ModelRequest {
                 requests
                     .send(Self {
                         body,
+                        tool_schema_error: tool_schema_error.clone(),
                         response,
                         completed,
                     })
                     .await
                     .unwrap();
+                if let Some(message) = tool_schema_error {
+                    return Ok(Response::builder()
+                        .status(hyper::StatusCode::BAD_REQUEST)
+                        .header(hyper::header::CONTENT_TYPE, "application/json")
+                        .body(Full::new(Bytes::from(
+                            json!({"error":{"type":"invalid_request_error","code":"invalid_function_parameters","message":message}})
+                                .to_string(),
+                        )).boxed_unsync())
+                        .unwrap());
+                }
                 Ok(Response::builder()
                     .header(hyper::header::CONTENT_TYPE, "text/event-stream")
                     .body(StreamBody::new(events).boxed_unsync())

@@ -23,12 +23,12 @@ The connected Host owns one deployment source containing Host, UI and compositio
 
 Use current tool metadata and generated input types. The default product provides direct management tools:
 
-- `UIRead` reads the deployment; `UIReadCatalog` lists enabled UI contributions.
-- `UIInstances`, `UIReadDocument` and `UIReadPackage` inspect the observed source.
-- `UIInstallSource` and `UIInstallUrl` install immutable packages.
-- `UIEditComposition` inserts, removes or updates instances; `UISetEnabled` enables or disables them.
-- `UIReadSettings`, `UIConfigure`, `UIBindingCandidates` and `UIPackageSettings` inspect and edit configuration and Host bindings.
-- `UIReplaceSource` replaces a complete source when that is the appropriate edit.
+- `PluginReadDeployment` reads the deployment; `PluginReadUiCatalog` lists enabled UI contributions.
+- `PluginInstances`, `PluginReadDeploymentDocument` and `PluginReadPackage` inspect the observed source.
+- `PluginInstallSource` and `PluginInstallUrl` install immutable packages.
+- `PluginEditComposition` inserts, removes or updates instances; `PluginSetEnabled` enables or disables them.
+- `PluginReadSettings`, `PluginConfigure`, `PluginBindingCandidates` and `PluginPackageSettings` inspect and edit configuration and Host bindings.
+- `PluginReplaceDeployment` replaces a complete source when that is the appropriate edit.
 
 Read the current source first, retain its `expectedRevision`, and preserve unrelated instance UUIDs. `usePackage` explicitly selects `host`, `ui` or `composition`. A UI entry can declare service `imports`, and the UI instance's `bindings` select Host providers in this same source. Pure UI plugins need no imports or placeholder Host service. Package and instance configuration still follow their declared schema.
 
