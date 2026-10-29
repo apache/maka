@@ -441,12 +441,35 @@ pub trait EventSink: Send + Sync + 'static {
     fn commit(self: std::sync::Arc<Self>, event: EventWrite) -> CommitFuture;
     /// Atomically append ordinary prefix facts and the designated final event.
     /// Capture owned event handles before returning; the receipt is the final
-    /// event's actual sequence, including when the prefix was already committed.
+    /// event's actual sequence and every original prefix sequence.
     fn commit_with_prefix(
         self: std::sync::Arc<Self>,
         prefix: &[EventWrite],
         last: EventWrite,
-    ) -> CommitFuture;
+    ) -> PrefixCommitFuture;
 }
 
 pub type CommitFuture = std::pin::Pin<Box<dyn Future<Output = Result<u64, CommitError>> + Send>>;
+
+/// Actual storage sequences for an ordered prefix and its designated final event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrefixReceipt {
+    pub prefix_sequences: Vec<u64>,
+    pub last_sequence: u64,
+}
+
+impl PrefixReceipt {
+    /// Split the actual nonempty append receipt without assuming contiguous sequences.
+    pub fn from_sequences(mut sequences: Vec<u64>) -> Self {
+        let last_sequence = sequences
+            .pop()
+            .expect("designated final event has a sequence");
+        Self {
+            prefix_sequences: sequences,
+            last_sequence,
+        }
+    }
+}
+
+pub type PrefixCommitFuture =
+    std::pin::Pin<Box<dyn Future<Output = Result<PrefixReceipt, CommitError>> + Send>>;

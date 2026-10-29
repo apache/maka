@@ -1021,3 +1021,253 @@ async fn tool_receipts_share_commit_without_losing_payload_or_rejection_boundari
         ["opened", "requested", "metadata", "dispatch", "settlement"]
     );
 }
+
+#[tokio::test]
+async fn derived_tool_part_admission_work_is_independent_of_settled_history() {
+    use maka_agent_facts::{model::ModelToolCall, tool_call::ToolCallIdentity};
+
+    async fn admission_work(history: usize) -> usize {
+        let dir = tempfile::tempdir().unwrap();
+        let log = open(&dir.path().join("events.sqlite")).await;
+        for index in 0..history {
+            let operation = format!("settled-{index}");
+            let dispatched = event(
+                &format!("dispatch-{index}"),
+                Fact::ToolDispatched {
+                    presentation: None,
+                    title: None,
+                    operation_id: operation.clone(),
+                    call: ToolCallIdentity::standalone(operation.clone()),
+                    name: "Read".into(),
+                    input: serde_json::json!({}),
+                },
+            );
+            let settled = EventWrite::tool_success(
+                format!("settlement-{index}"),
+                std::time::UNIX_EPOCH,
+                dispatched.event().invocation.clone(),
+                operation,
+                maka_agent_facts::tool_output::ToolOutput::Text("done".into()).into(),
+            )
+            .unwrap()
+            .0;
+            log.append_batch(&[dispatched, settled]).await.unwrap();
+        }
+        let message = maka_agent_facts::tool_call::tool_use_id("invocation", "step:fresh");
+        let candidate = event(
+            "fresh-part",
+            Fact::ModelObserved {
+                step_id: "step".into(),
+                event: ModelObservation::Part(ModelPartRecord {
+                    ordinal: 0,
+                    message_id: message,
+                    started_at: std::time::UNIX_EPOCH,
+                    provider_part_id: None,
+                    part: Arc::new(ModelPart::ToolCall {
+                        call: ModelToolCall {
+                            id: "fresh".into(),
+                            name: "Read".into(),
+                            input: serde_json::json!({}).into(),
+                            provider_executed: false,
+                            provider_options: None,
+                        },
+                    }),
+                }),
+            },
+        );
+        let candidate_event = candidate.event().clone();
+        let work = log
+            .connection
+            .run(move |db| {
+                Box::pin(async move {
+                    // Install inside this operation: the connection's cancellation
+                    // handler is installed before it invokes this callback.
+                    let steps = Arc::new(AtomicUsize::new(0));
+                    let counter = steps.clone();
+                    db.lock_handle().await?.set_progress_handler(1, move || {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                        true
+                    });
+                    let result = crate::model_items::validate(db, &candidate_event).await;
+                    db.lock_handle().await?.remove_progress_handler();
+                    result?;
+                    Ok(steps.load(Ordering::Relaxed))
+                })
+            })
+            .await
+            .unwrap();
+        // The measured boundary must agree with real canonical admission.
+        log.append(&candidate).await.unwrap();
+        let mut wrong = candidate.event().clone();
+        wrong.id = "wrong-derived-part".into();
+        if let Fact::ModelObserved {
+            event: ModelObservation::Part(record),
+            ..
+        } = &mut wrong.fact
+        {
+            record.ordinal = 1;
+            record.message_id = maka_agent_facts::tool_call::tool_use_id("other", "step:fresh");
+        }
+        assert!(matches!(
+            log.append(&EventWrite::plain(wrong).unwrap()).await,
+            Err(CommitError::Rejected(reason))
+                if reason.contains("tool part identity differs from its original call")
+        ));
+        log.shutdown().await.unwrap();
+        work
+    }
+
+    let short = admission_work(20).await;
+    let long = admission_work(220).await;
+    eprintln!("derived tool admission SQLite work: {short} -> {long} VM steps");
+    assert!(short > 0, "the operation's SQLite work was not measured");
+    assert!(
+        long <= short * 2,
+        "derived tool admission revisited settled history: {short} -> {long} VM steps"
+    );
+}
+
+#[tokio::test]
+async fn partial_tool_input_admission_checks_its_derived_identity() {
+    use maka_agent_facts::{
+        event::ModelInterruption,
+        model::recorded::{ToolInputPhase, ToolInputView},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let log = open(&dir.path().join("events.sqlite")).await;
+    let mut input = ToolInputView {
+        id: "partial".into(),
+        message_id: maka_agent_facts::tool_call::tool_use_id("other", "step:partial"),
+        started_at: std::time::UNIX_EPOCH,
+        name: "Read".into(),
+        provider_executed: false,
+        text: "{\"path\":".into(),
+        phase: ToolInputPhase::Open,
+    };
+    let interrupted = |input| {
+        event(
+            "partial-interrupted",
+            Fact::ModelInterrupted {
+                step_id: "step".into(),
+                status: ModelInterruption::Failed,
+                diagnostic: None,
+                model_failure: None,
+                partial: Some(ModelPartial {
+                    parts: Vec::new(),
+                    tool_inputs: vec![input],
+                    response_id: None,
+                    model: None,
+                    timestamp: None,
+                }),
+            },
+        )
+    };
+    assert!(matches!(log.append(&interrupted(input.clone())).await,
+        Err(CommitError::Rejected(reason)) if reason.contains("tool-input identity differs from its original call")));
+    input.message_id = maka_agent_facts::tool_call::tool_use_id("invocation", "step:partial");
+    log.append(&interrupted(input)).await.unwrap();
+    log.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn canonical_ingress_admission_work_is_independent_of_settled_history() {
+    use maka_agent_facts::{model::ModelToolCall, tool_call::ToolCallIdentity};
+    use sqlx::Connection;
+
+    async fn admission_work(history: usize) -> usize {
+        let dir = tempfile::tempdir().unwrap();
+        let log = open(&dir.path().join("events.sqlite")).await;
+        for index in 0..history {
+            let operation = format!("settled-{index}");
+            let dispatched = event(
+                &format!("dispatch-{index}"),
+                Fact::ToolDispatched {
+                    presentation: None,
+                    title: None,
+                    operation_id: operation.clone(),
+                    call: ToolCallIdentity::standalone(operation.clone()),
+                    name: "Read".into(),
+                    input: serde_json::json!({}),
+                },
+            );
+            let settled = EventWrite::tool_success(
+                format!("settlement-{index}"),
+                std::time::UNIX_EPOCH,
+                dispatched.event().invocation.clone(),
+                operation,
+                maka_agent_facts::tool_output::ToolOutput::Text("done".into()).into(),
+            )
+            .unwrap()
+            .0;
+            log.append_batch(&[dispatched, settled]).await.unwrap();
+        }
+        let message = maka_agent_facts::tool_call::tool_use_id("invocation", "step:fresh");
+        let candidate = event(
+            "fresh-part",
+            Fact::ModelObserved {
+                step_id: "step".into(),
+                event: ModelObservation::Part(ModelPartRecord {
+                    ordinal: 0,
+                    message_id: message,
+                    started_at: std::time::UNIX_EPOCH,
+                    provider_part_id: None,
+                    part: Arc::new(ModelPart::ToolCall {
+                        call: ModelToolCall {
+                            id: "fresh".into(),
+                            name: "Read".into(),
+                            input: serde_json::json!({}).into(),
+                            provider_executed: false,
+                            provider_options: None,
+                        },
+                    }),
+                }),
+            },
+        );
+        let candidate_event = candidate.event().clone();
+        let work = log
+            .connection
+            .run(move |db| {
+                Box::pin(async move {
+                    // Install inside this operation: the connection's cancellation
+                    // handler is installed before it invokes this callback.
+                    let mut transaction = db.begin().await?;
+                    let steps = Arc::new(AtomicUsize::new(0));
+                    let counter = steps.clone();
+                    transaction
+                        .lock_handle()
+                        .await?
+                        .set_progress_handler(1, move || {
+                            counter.fetch_add(1, Ordering::Relaxed);
+                            true
+                        });
+                    let json = serde_json::to_string(&candidate_event)?;
+                    let result = crate::append::ingress::insert(
+                        &mut transaction,
+                        &candidate_event,
+                        json,
+                        crate::append::ingress::Position::Admitted,
+                    )
+                    .await;
+                    transaction.lock_handle().await?.remove_progress_handler();
+                    transaction.rollback().await?;
+                    result?;
+                    Ok(steps.load(Ordering::Relaxed))
+                })
+            })
+            .await
+            .unwrap();
+        // The measured boundary must agree with real canonical admission.
+        log.append(&candidate).await.unwrap();
+        log.shutdown().await.unwrap();
+        work
+    }
+
+    let short = admission_work(20).await;
+    let long = admission_work(220).await;
+    eprintln!("canonical ingress SQLite work: {short} -> {long} VM steps");
+    assert!(short > 0, "the operation's SQLite work was not measured");
+    assert!(
+        long <= short * 2,
+        "canonical ingress revisited settled history: {short} -> {long} VM steps"
+    );
+}

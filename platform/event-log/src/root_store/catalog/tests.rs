@@ -495,3 +495,82 @@ async fn shared_binding_relocation_invalidates_vector_without_touching_partition
     assert_eq!(root.workspace_fence("/new").await.unwrap().0.len(), 8);
     root.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn pinned_sessions_lead_cross_partition_pages_and_unpin_invalidates_cursors() {
+    let (_dir, root) = fixture().await;
+    let mut ids = ids_for_partitions();
+    ids.extend((0..65).map(|n| format!("owner-extra-{n:03}")));
+    ids.sort();
+    for id in &ids {
+        root.create_session(id, id, &json!({"title":id}), 1)
+            .await
+            .unwrap();
+    }
+    let last = ids.last().unwrap();
+    let old = root.list_sessions::<Value>(None, None, 5).await.unwrap();
+    let record = root.get_session::<Value>(last).await.unwrap().unwrap();
+    root.update_session_metadata(last, record.revision, |value: &mut Value| {
+        value["pinned"] = json!(true);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let stale = root
+        .list_sessions::<Value>(Some(&old.revision), old.next_cursor.as_deref(), 5)
+        .await;
+    assert!(matches!(stale, Err(StoreError::RevisionConflict { .. })));
+    let mut expected = vec![last.clone()];
+    expected.extend(ids[..ids.len() - 1].iter().cloned());
+    let first = root.list_sessions::<Value>(None, None, 5).await.unwrap();
+    assert_eq!(page_ids(&first), expected[..5]);
+    let second = root
+        .list_sessions::<Value>(Some(&first.revision), first.next_cursor.as_deref(), 5)
+        .await
+        .unwrap();
+    let previous = root
+        .root_session_page::<Value>(
+            CatalogScope::Profile,
+            Some(&second.revision),
+            SessionPosition::Before(second.previous_cursor.as_deref().unwrap()),
+            5,
+            filter(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page_ids(&previous), expected[..5]);
+    let mut all = page_ids(&first);
+    let mut cursor = first.next_cursor;
+    while let Some(after) = cursor {
+        let page = root
+            .list_sessions::<Value>(Some(&first.revision), Some(&after), 5)
+            .await
+            .unwrap();
+        all.extend(page_ids(&page));
+        cursor = page.next_cursor;
+    }
+    assert_eq!(all, expected);
+    let anchor = root
+        .root_session_page::<Value>(
+            CatalogScope::Profile,
+            None,
+            SessionPosition::At(last),
+            5,
+            filter(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page_ids(&anchor), expected[..5]);
+    let record = root.get_session::<Value>(last).await.unwrap().unwrap();
+    root.update_session_metadata(last, record.revision, |value: &mut Value| {
+        value["pinned"] = json!(false);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        page_ids(&root.list_sessions::<Value>(None, None, 5).await.unwrap()),
+        ids[..5]
+    );
+    root.close().await.unwrap();
+}

@@ -65,13 +65,17 @@ struct FaultSink {
 
 impl EventSink for FaultSink {
     fn commit(self: Arc<Self>, write: EventWrite) -> CommitFuture {
-        self.commit_with_prefix(&[], write)
+        Box::pin(async move {
+            self.commit_with_prefix(&[], write)
+                .await
+                .map(|receipt| receipt.last_sequence)
+        })
     }
     fn commit_with_prefix(
         self: Arc<Self>,
         prefix: &[EventWrite],
         write: EventWrite,
-    ) -> CommitFuture {
+    ) -> maka_agent_facts::event::PrefixCommitFuture {
         let prefix = prefix.to_vec();
         Box::pin(async move {
             let event = write.event();
@@ -233,13 +237,19 @@ async fn check_boundary(boundary: Boundary) {
             CodeExecutor::new(CellLimits::default()).unwrap(),
             maka_tools::availability::LoadedTools::temporary().unwrap(),
         );
-        let result = run
-            .capture(".", tokio_util::sync::CancellationToken::new())
-            .await
-            .unwrap()
-            .into_step("step")
-            .invoke(&call, Some(completion), CancellationToken::new())
-            .await;
+        let result = async {
+            run.capture(".", tokio_util::sync::CancellationToken::new())
+                .await
+                .unwrap()
+                .into_step("step")
+                .prepare(call.clone(), CancellationToken::new())
+                .await?
+                .publish(&[completion])
+                .await?
+                .completion
+                .await
+        }
+        .await;
         assert!(matches!(
             run.shutdown().await,
             Err(ToolError::Persistence(_))
@@ -336,12 +346,19 @@ async fn check_boundary(boundary: Boundary) {
         maka_tools::availability::LoadedTools::temporary().unwrap(),
     );
     assert!(matches!(
-        run.capture(".", tokio_util::sync::CancellationToken::new())
-            .await
-            .unwrap()
-            .into_step("step")
-            .invoke(&call, None, CancellationToken::new())
-            .await,
+        async {
+            run.capture(".", tokio_util::sync::CancellationToken::new())
+                .await
+                .unwrap()
+                .into_step("step")
+                .prepare(call.clone(), CancellationToken::new())
+                .await?
+                .publish(&[])
+                .await?
+                .completion
+                .await
+        }
+        .await,
         Err(ToolError::Persistence(_))
     ));
     assert_eq!(effects.load(Ordering::SeqCst), expected_effects);
@@ -358,7 +375,11 @@ async fn notification_commit_failure_cancels_the_cell_without_fabricating_succes
         let completion = seed(&log, &invocation, &call).await;
         let sink = Arc::new(FaultSink { log:log.clone(), boundary:Boundary::Notification, attempts:Mutex::new(Vec::new()), faults:AtomicUsize::new(0) });
         let run = RunTools::new(maka_agent_facts::language::Language::En, sink.clone(), invocation, ToolCatalog::default(), ToolMode::CodeMode, CodeExecutor::new(CellLimits::default()).unwrap(), maka_tools::availability::LoadedTools::temporary().unwrap());
-        let result = run.capture(".", CancellationToken::new()).await.unwrap().into_step("step").invoke(&call, Some(completion), CancellationToken::new()).await;
+        let result = async {
+            run.capture(".", CancellationToken::new()).await.unwrap().into_step("step")
+                .prepare(call.clone(), CancellationToken::new()).await?
+                .publish(&[completion]).await?.completion.await
+        }.await;
         assert!(matches!(result, Err(ToolError::Persistence(_))));
         assert!(matches!(run.shutdown().await, Err(ToolError::Persistence(_))));
         assert_eq!(sink.faults.load(Ordering::SeqCst), 1);

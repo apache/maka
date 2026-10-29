@@ -1197,6 +1197,7 @@ pub(crate) fn summary_for(
         workspace: session.configuration.workspace,
         updated_at: session.updated_at,
         archived: session.archived,
+        pinned: session.configuration.pinned,
         has_unread: session.read_state.has_unread,
         tail_message_id: session.last_message.map(|message| message.tail_message_id),
     }

@@ -91,7 +91,10 @@ async fn selected_python_runs_through_exec_grammar_catalog_and_durable_journal()
                 Fact::ModelCompleted {step_id:step.into(),output:writer.completed().unwrap().completion()},
             ];
             log.append_batch(&facts.map(|fact|EventWrite::plain(RuntimeEvent::new(invocation.clone(),fact)).unwrap())).await.unwrap();
-            let result=request.into_step(step).invoke(&call,None,CancellationToken::new()).await.unwrap();
+            let result=request.into_step(step)
+                .prepare(call,CancellationToken::new()).await.unwrap()
+                .publish(&[]).await.unwrap()
+                .completion.await.unwrap();
             assert_eq!(result["state"],"completed","{result}");
             assert_eq!(result["result"]["ok"],true,"{result}");
             assert_eq!(result["content"],expected);

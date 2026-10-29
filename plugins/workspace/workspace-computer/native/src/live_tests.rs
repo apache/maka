@@ -306,6 +306,7 @@ impl Run {
             tools: Some(vec!["cua_repl".into(), "cua_reset".into()]),
             title: "Isolated native epoch".into(),
             title_is_manual: false,
+            pinned: false,
             labels: vec![],
             workspace: reference,
             permissions: WorkspacePermissions {

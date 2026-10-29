@@ -106,18 +106,15 @@ pub fn completion(
     step: &str,
     calls: &[ModelToolCall],
 ) -> maka_agent_facts::model::recorded::ModelCompletion {
-    use maka_agent_facts::{
-        context::ModelPurpose,
-        model::{
-            ModelEvent,
-            assembly::{AttemptBinding, AttemptWriter},
-        },
+    use maka_agent_facts::model::{
+        ModelEvent,
+        assembly::{AttemptBinding, AttemptWriter},
     };
     let mut writer = AttemptWriter::new(
         AttemptBinding {
             invocation: invocation.clone(),
             step_id: step.into(),
-            purpose: ModelPurpose::Main,
+            purpose: maka_agent_facts::context::ModelPurpose::Main,
         },
         false,
     )
@@ -126,7 +123,7 @@ pub fn completion(
         writer
             .push(
                 ModelEvent::ToolCall(call.clone()),
-                std::time::SystemTime::now(),
+                std::time::SystemTime::UNIX_EPOCH,
             )
             .unwrap();
     }
@@ -137,7 +134,7 @@ pub fn completion(
                 usage: Default::default(),
                 provider_options: None,
             },
-            std::time::SystemTime::now(),
+            std::time::SystemTime::UNIX_EPOCH,
         )
         .unwrap();
     writer.completed().unwrap().completion()

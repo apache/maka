@@ -48,7 +48,11 @@ CREATE TABLE session_control (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     archived INTEGER NOT NULL CHECK(archived IN (0, 1)),
-    configuration TEXT NOT NULL
+    configuration TEXT NOT NULL,
+    catalog_unpinned INTEGER
+    GENERATED ALWAYS AS (
+        CASE WHEN json_extract(configuration, '$.pinned') = 1 THEN 0 ELSE 1 END
+    ) VIRTUAL
 );
 
 CREATE TABLE session_catalog_revision (
@@ -1294,3 +1298,5 @@ CREATE UNIQUE INDEX native_turn_interruption_lookup ON event_log(
 CREATE INDEX artifacts_lookup_digest ON artifacts(lookup_digest);
 CREATE INDEX history_artifacts_lookup_digest ON session_history_artifacts(lookup_digest);
 CREATE INDEX history_artifacts_target_digest ON session_history_artifacts(target_digest);
+
+CREATE INDEX session_catalog_pin_order ON session_control(catalog_unpinned, id);

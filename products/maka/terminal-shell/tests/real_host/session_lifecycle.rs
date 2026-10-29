@@ -258,3 +258,108 @@ async fn real_session_lifecycle_keeps_original_revisions_history_and_separate_dr
         fixture.finish().await;
     }).await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pin_and_unpin_from_the_session_menu_keep_the_draft_and_survive_reopening() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let fixture = Fixture::open().await;
+        let client = fixture.client().await;
+        for title in ["Pin review A", "Pin review B"] {
+            support::mutate(
+                &client,
+                "create",
+                json!({"title":title,"automaticTitle":false,"labels":[],
+                "workspace":{"kind":"session","sessionId":fixture.session}}),
+            )
+            .await;
+        }
+        let original = client
+            .query(
+                "agent",
+                "list",
+                json!({"filter":"all","position":{"kind":"start"}}),
+            )
+            .await
+            .unwrap();
+        let target = original["sessions"].as_array().unwrap().last().unwrap();
+        let id = target["id"].as_str().unwrap();
+        let title = target["title"].as_str().unwrap();
+        let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+        wait_editable_composer(&mut view).await;
+        view.handle_event(Event::Paste("PIN_DRAFT_IS_KEPT".into()));
+        support::wait_draft(&client, &fixture.session, "PIN_DRAFT_IS_KEPT").await;
+        actions(&mut view, title).await;
+        wait_enabled_node(&mut view, "Pin conversation").await;
+        support::click_label(&mut view, "Pin conversation");
+        let screen = wait_view(&mut view, |screen| {
+            screen.contains("Pinned") && !screen.contains("Conversation actions")
+        })
+        .await;
+        support::evidence("session-pinned", &screen);
+        let pinned = client
+            .query(
+                "agent",
+                "list",
+                json!({"filter":"all","position":{"kind":"start"}}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pinned["sessions"][0]["id"], id);
+        assert_eq!(pinned["sessions"][0]["pinned"], true);
+        assert_eq!(
+            client
+                .load_draft("agent", &fixture.session, EDITOR)
+                .await
+                .unwrap()
+                .unwrap()
+                .text,
+            "PIN_DRAFT_IS_KEPT"
+        );
+        bindings.close().await.unwrap();
+        drop(view);
+        let client = fixture.client().await;
+        let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+        wait_view(&mut view, |screen| {
+            screen.contains("Pinned") && screen.contains("PIN_DRAFT_IS_KEPT")
+        })
+        .await;
+        actions(&mut view, title).await;
+        wait_enabled_node(&mut view, "Unpin conversation").await;
+        support::click_label(&mut view, "Unpin conversation");
+        wait_view(&mut view, |screen| {
+            !screen.contains("Pinned")
+                && !screen.contains("Conversation actions")
+                && screen.contains("PIN_DRAFT_IS_KEPT")
+        })
+        .await;
+        let unpinned = client
+            .query(
+                "agent",
+                "list",
+                json!({"filter":"all","position":{"kind":"start"}}),
+            )
+            .await
+            .unwrap();
+        let ids = |page: &Value| {
+            page["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["id"].clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&unpinned), ids(&original));
+        assert!(
+            unpinned["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["pinned"] == false)
+        );
+        bindings.close().await.unwrap();
+        drop(view);
+        fixture.finish().await;
+    })
+    .await
+    .unwrap();
+}

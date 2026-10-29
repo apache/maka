@@ -999,14 +999,18 @@ mod tests {
     struct FailOutcome(Arc<maka_event_log::SessionStore>);
     impl EventSink for FailOutcome {
         fn commit(self: Arc<Self>, write: EventWrite) -> CommitFuture {
-            self.commit_with_prefix(&[], write)
+            Box::pin(async move {
+                self.commit_with_prefix(&[], write)
+                    .await
+                    .map(|receipt| receipt.last_sequence)
+            })
         }
 
         fn commit_with_prefix(
             self: Arc<Self>,
             prefix: &[EventWrite],
             last: EventWrite,
-        ) -> CommitFuture {
+        ) -> maka_agent_facts::event::PrefixCommitFuture {
             let mut events = prefix.to_vec();
             events.push(last);
             Box::pin(async move {
@@ -1021,7 +1025,7 @@ mod tests {
                     self.0
                         .append_batch(&events)
                         .await
-                        .map(|sequences| *sequences.last().expect("last event has a sequence"))
+                        .map(maka_agent_facts::event::PrefixReceipt::from_sequences)
                 }
             })
         }

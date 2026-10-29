@@ -473,7 +473,7 @@ impl SessionStore {
         app: &GrantTarget,
         display: &maka_agent_facts::interaction::ComputerAppDisplay,
         basis: &PermissionBasis,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         self.append_app_dispatch_in_lane(
             prefix,
             event,
@@ -493,7 +493,7 @@ impl SessionStore {
         app: &GrantTarget,
         display: &maka_agent_facts::interaction::ComputerAppDisplay,
         basis: &PermissionBasis,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         self.append_app_dispatch_in_lane(
             prefix,
             event,
@@ -516,7 +516,7 @@ impl SessionStore {
         ),
         basis: &PermissionBasis,
         lane: crate::append::ComputerLane,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         let (app, display) = app;
         let Fact::ToolDispatched { operation_id, .. } = &event.event().fact else {
             return Err(CommitError::Rejected(

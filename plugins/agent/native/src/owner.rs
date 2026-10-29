@@ -817,6 +817,7 @@ impl Owner {
                     tools,
                     title: input.title,
                     title_is_manual: !input.automatic_title,
+                    pinned: false,
                     labels: input.labels,
                     workspace: binding,
                     permissions: self.settings.permissions.clone(),
@@ -930,13 +931,18 @@ impl Owner {
         let permissions = input.permissions.is_some() || mode_changed;
         let update = move |configuration: &mut StoredSessionConfiguration| {
             // Policy changes do not turn an automatic title into a manual title.
-            if (input.collaboration_mode.is_none() && input.permissions.is_none())
+            if (input.collaboration_mode.is_none()
+                && input.permissions.is_none()
+                && input.pinned.is_none())
                 || configuration.title != input.title
             {
                 configuration.title_is_manual = true;
             }
             configuration.title = input.title;
             configuration.labels = input.labels;
+            if let Some(pinned) = input.pinned {
+                configuration.pinned = pinned;
+            }
             if mode_changed
                 || input.permissions.as_ref().is_some_and(|change| {
                     change.settings != configuration.permissions || change.revoke_grants

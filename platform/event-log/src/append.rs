@@ -86,7 +86,7 @@ impl EventLog {
         event: &EventWrite,
         targets: &[maka_agent_facts::interaction::GrantTarget],
         basis: &maka_agent_facts::workspace::PermissionBasis,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         self.append_granted_dispatch(prefix, event, targets, basis, None, ComputerLane::Other)
             .await
     }
@@ -102,7 +102,7 @@ impl EventLog {
         ),
         basis: &maka_agent_facts::workspace::PermissionBasis,
         lane: ComputerLane,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         let (app, display) = app;
         self.append_granted_dispatch(
             prefix,
@@ -123,7 +123,7 @@ impl EventLog {
         event: &EventWrite,
         targets: &[maka_agent_facts::interaction::GrantTarget],
         basis: &maka_agent_facts::workspace::PermissionBasis,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         self.append_granted_dispatch(prefix, event, targets, basis, None, ComputerLane::Native)
             .await
     }
@@ -139,7 +139,7 @@ impl EventLog {
             maka_agent_facts::interaction::ComputerAppDisplay,
         )>,
         lane: ComputerLane,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         if !matches!(event.event().fact, Fact::ToolDispatched { .. }) {
             return Err(CommitError::Rejected(
                 "capability admission requires a tool dispatch".into(),
@@ -163,7 +163,7 @@ impl EventLog {
             )),
         )
         .await
-        .map(|sequences| *sequences.last().expect("dispatch has a sequence"))
+        .map(maka_agent_facts::event::PrefixReceipt::from_sequences)
         .map_err(commit_error)
     }
 
@@ -408,13 +408,13 @@ impl EventSink for EventLog {
         self: std::sync::Arc<Self>,
         prefix: &[EventWrite],
         last: EventWrite,
-    ) -> CommitFuture {
+    ) -> maka_agent_facts::event::PrefixCommitFuture {
         let mut events = prefix.to_vec();
         events.push(last);
         Box::pin(async move {
             self.append_batch(&events)
                 .await
-                .map(|sequences| *sequences.last().expect("last event has a sequence"))
+                .map(maka_agent_facts::event::PrefixReceipt::from_sequences)
         })
     }
 

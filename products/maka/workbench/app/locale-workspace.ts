@@ -37,6 +37,9 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const workspaceMessages = {
+  'Pin conversation': ['Pin conversation', '置顶会话', '置頂對話'],
+  'Unpin conversation': ['Unpin conversation', '取消置顶', '取消置頂'],
+  Pinned: ['Pinned', '已置顶', '已置頂'],
   'Actions for {title}': ['Actions for {title}', '{title} 的操作', '{title} 的操作'],
   Active: ['Active', '活动', '使用中'],
   'All workspaces': ['All workspaces', '全部工作区', '所有工作區'],
@@ -176,7 +179,8 @@ export const workspaceMessages = {
   ],
   'Folder · {name}': ['Folder · {name}', '文件夹 · {name}', '資料夾 · {name}'],
   'Fork conversation': ['Fork conversation', '分叉对话', '分支對話'],
-  'Fork of {title}': ['Fork of {title}', '{title} 的分叉', '{title} 的分支'],
+  'Fork · {title}': ['Fork · {title}', '分支 · {title}', '分支 · {title}'],
+  Fork: ['Fork', '分支', '分支'],
   'Full screen image viewer': ['Full screen image viewer', '全屏图片查看器', '全螢幕圖片檢視器'],
   'Host returned an unexpected conversation action result.': [
     'Host returned an unexpected conversation action result.',
@@ -302,6 +306,7 @@ export const workspaceMessages = {
     '调整工作区面板大小',
     '調整工作區面板大小',
   ],
+  'Resume following': ['Resume following', '继续跟随', '繼續跟隨'],
   Restore: msg_projectsRestore,
   'Restore conversation': msg_restoreSession,
   'Retry current changes': ['Retry current changes', '重试当前更改', '重試目前變更'],

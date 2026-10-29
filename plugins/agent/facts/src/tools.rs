@@ -32,7 +32,7 @@ mod journal;
 mod preparation;
 mod provider;
 use crate::tool_call::ToolCallIdentity;
-pub use journal::ToolJournal;
+pub use journal::{PublishedTool, ToolJournal};
 pub use preparation::{
     EffectAdmission, ExecutionCustody, PreparationFuture, PreparedEffect, ToolCallContext,
     ToolHandler, ToolNesting, ToolPreparer, ToolRegistration, ToolSemantics,

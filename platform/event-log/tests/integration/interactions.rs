@@ -403,7 +403,7 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
         )
         .await
         .unwrap();
-    assert!(log.append(&prefix).await.unwrap() < admitted_sequence);
+    assert!(log.append(&prefix).await.unwrap() < admitted_sequence.last_sequence);
     let later_prefix = EventWrite::plain(RuntimeEvent::new(
         ordinary_invocation,
         Fact::ToolDispatched {
@@ -427,11 +427,12 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
             },
         )
         .await
-        .unwrap(),
-        admitted_sequence,
+        .unwrap()
+        .last_sequence,
+        admitted_sequence.last_sequence,
         "receipt belongs to the designated last dispatch, including exact replay"
     );
-    assert!(log.append(&later_prefix).await.unwrap() > admitted_sequence);
+    assert!(log.append(&later_prefix).await.unwrap() > admitted_sequence.last_sequence);
     log.establish_run_interaction(&invocation, &make_request("pending", 0))
         .await
         .unwrap();

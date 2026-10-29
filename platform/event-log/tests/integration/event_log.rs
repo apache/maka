@@ -298,14 +298,18 @@ struct FaultSink {
 
 impl EventSink for FaultSink {
     fn commit(self: Arc<Self>, event: EventWrite) -> CommitFuture {
-        self.commit_with_prefix(&[], event)
+        Box::pin(async move {
+            self.commit_with_prefix(&[], event)
+                .await
+                .map(|receipt| receipt.last_sequence)
+        })
     }
 
     fn commit_with_prefix(
         self: Arc<Self>,
         prefix: &[EventWrite],
         last: EventWrite,
-    ) -> CommitFuture {
+    ) -> maka_agent_facts::event::PrefixCommitFuture {
         let mut events = prefix.to_vec();
         events.push(last);
         Box::pin(async move {
@@ -327,7 +331,7 @@ impl EventSink for FaultSink {
             self.log
                 .append_batch(&events)
                 .await
-                .map(|sequences| *sequences.last().expect("last event has a sequence"))
+                .map(maka_agent_facts::event::PrefixReceipt::from_sequences)
         })
     }
 }

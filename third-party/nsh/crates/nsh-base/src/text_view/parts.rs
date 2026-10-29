@@ -116,6 +116,9 @@ parts! {
     /// The row of a code block's actions (`codeBlockActions`), floating
     /// over its top right corner (only with actions).
     code_block_header => CodeBlockHeader,
+    /// The language a code block names (```` ```rust ````), at the start of
+    /// its header; empty when it names none.
+    code_block_language => CodeBlockLanguage,
     /// The horizontal scroll view of a code block's code.
     code_block_scroll => CodeBlockScroll,
     /// The code of a code block (monospace, as written).

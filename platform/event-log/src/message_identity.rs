@@ -118,7 +118,7 @@ pub(crate) async fn validate(
     }
     Ok(())
 }
-pub(crate) async fn validate_source_id(
+async fn validate_recorded_id(
     tx: &mut SqliteConnection,
     session: &str,
     message_id: &str,
@@ -127,8 +127,9 @@ pub(crate) async fn validate_source_id(
         "SELECT EXISTS(SELECT 1 FROM session_history_events WHERE event_id = ?1 AND owner_session_id = ?2
              UNION ALL SELECT 1 FROM session_message_sources
              WHERE owner_session_id=?2 AND source_session_id!=?2 AND message_id=?1
-             UNION ALL SELECT 1 FROM model_part_records p JOIN session_history_events e ON e.event_id=p.event_id
-             WHERE e.owner_session_id=?2 AND p.message_id=?1)",
+             UNION ALL SELECT 1 FROM model_part_records p WHERE p.message_id=?1
+             AND EXISTS(SELECT 1 FROM session_history_events e
+                 WHERE e.event_id=p.event_id AND e.owner_session_id=?2))",
     )
     .bind(message_id)
     .bind(session)
@@ -137,6 +138,44 @@ pub(crate) async fn validate_source_id(
     if used {
         return Err(conflict());
     }
+    Ok(())
+}
+
+pub(crate) async fn validate_derived_tool_id(
+    tx: &mut SqliteConnection,
+    session: &str,
+    message_id: &str,
+    invocation: &str,
+    operation: &str,
+) -> Result<(), StoreError> {
+    validate_recorded_id(tx, session, message_id).await?;
+    reject_claim(tx, session, message_id).await?;
+    let used: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1 FROM session_history_events
+            WHERE owner_session_id=?1 AND invocation_id=?2 AND operation_id=?3
+              AND kind IN ('tool_dispatched','tool_rejected')
+            UNION ALL
+            SELECT 1 FROM session_history_events
+            WHERE owner_session_id=?1 AND invocation_id=?2
+              AND kind IN ('executor_observed','executor_completed')
+              AND json_extract(event_json,'$.fact.output.toolCallId')=?3
+              AND json_extract(event_json,'$.fact.output.type')='tool_start')",
+    )
+    .bind(session)
+    .bind(invocation)
+    .bind(operation)
+    .fetch_one(tx)
+    .await?;
+    if used { Err(conflict()) } else { Ok(()) }
+}
+
+pub(crate) async fn validate_source_id(
+    tx: &mut SqliteConnection,
+    session: &str,
+    message_id: &str,
+) -> Result<(), StoreError> {
+    validate_recorded_id(tx, session, message_id).await?;
     if let Some(event_id) = maka_agent_facts::tool_call::parse_metered_usage_id(message_id) {
         let used: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM session_history_events WHERE event_id = ?1
@@ -311,6 +350,83 @@ mod tests {
                     .is_err(),
                 "wrong types must remain errors: {sql}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn derived_tool_identity_rejects_prior_native_and_executor_claims() {
+        use maka_agent_facts::{
+            event::{Fact, Invocation, RuntimeEvent},
+            executor::Output,
+            tool_call::{ToolCallIdentity, ToolRejection},
+        };
+        use sqlx::Connection;
+
+        for fact in [
+            Fact::ToolDispatched {
+                operation_id: "step:call".into(),
+                call: ToolCallIdentity::standalone("call".into()),
+                name: "Read".into(),
+                input: serde_json::json!({}),
+                presentation: None,
+                title: None,
+            },
+            Fact::ToolRejected {
+                operation_id: "step:call".into(),
+                call: ToolCallIdentity::standalone("call".into()),
+                name: "Read".into(),
+                input: serde_json::json!({}).into(),
+                reason: ToolRejection::Unavailable,
+            },
+            Fact::ExecutorObserved {
+                output: Output::ToolStart {
+                    tool_call_id: "step:call".into(),
+                    name: "Read".into(),
+                    input: serde_json::json!({}),
+                },
+            },
+        ] {
+            let mut db = sqlx::SqliteConnection::connect("sqlite::memory:")
+                .await
+                .unwrap();
+            sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|kind, _| {
+                kind != "trigger"
+            })))
+            .execute(&mut db)
+            .await
+            .unwrap();
+            let event = RuntimeEvent::new(
+                Invocation {
+                    session_id: "session".into(),
+                    turn_id: "turn".into(),
+                    run_id: "run".into(),
+                    invocation_id: "invocation".into(),
+                },
+                fact,
+            );
+            let json = serde_json::to_string(&event).unwrap();
+            crate::canonical_insert::insert(crate::canonical_insert::Record {
+                sequence: None,
+                event_id: &event.id,
+                invocation_id: Some("invocation"),
+                kind: event.fact.kind(),
+                operation_id: event.fact.operation_id(),
+                json: &json,
+            })
+            .execute(&mut db)
+            .await
+            .unwrap();
+            let id = super::tool_use_id("invocation", "step:call");
+            assert!(super::validate_derived_tool_id(
+                &mut db, "session", &id, "invocation", "step:call",
+            ).await.is_err(), "{} claim was missed", event.fact.kind());
+            let fresh = super::tool_use_id("invocation", "step:fresh");
+            super::validate_derived_tool_id(&mut db, "session", &fresh, "invocation", "step:fresh")
+                .await
+                .unwrap();
+            super::validate_derived_tool_id(&mut db, "other", &id, "invocation", "step:call")
+                .await
+                .unwrap();
         }
     }
 }

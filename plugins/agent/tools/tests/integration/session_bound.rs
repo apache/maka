@@ -108,13 +108,20 @@ async fn selected_session_sink_rejects_foreign_tool_before_effect_and_accepts_it
             CodeExecutor::new(CellLimits::default()).unwrap(),
             LoadedTools::temporary().unwrap(),
         );
-        let result = tools
-            .capture(".", CancellationToken::new())
-            .await
-            .unwrap()
-            .into_step("step")
-            .invoke(&call, None, CancellationToken::new())
-            .await;
+        let result = async {
+            tools
+                .capture(".", CancellationToken::new())
+                .await
+                .unwrap()
+                .into_step("step")
+                .prepare(call.clone(), CancellationToken::new())
+                .await?
+                .publish(&[])
+                .await?
+                .completion
+                .await
+        }
+        .await;
         if foreign {
             assert!(matches!(result, Err(ToolError::Persistence(_))));
             assert_eq!(effect.0.load(Ordering::SeqCst), 0);
@@ -314,7 +321,13 @@ async fn direct_and_nested_tools_carry_selected_execution_into_spawned_host_work
             .await
             .unwrap()
             .into_step("step")
-            .invoke(&call, None, CancellationToken::new())
+            .prepare(call.clone(), CancellationToken::new())
+            .await
+            .unwrap()
+            .publish(&[])
+            .await
+            .unwrap()
+            .completion
             .await
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1, "{result}");

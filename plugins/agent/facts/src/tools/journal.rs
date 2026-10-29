@@ -35,6 +35,12 @@ pub struct ToolJournal {
     invocation: Invocation,
 }
 
+/// Publication receipt and the unstarted effect/settlement continuation.
+pub struct PublishedTool<T> {
+    pub prefix_sequences: Vec<u64>,
+    pub completion: ToolFuture<T>,
+}
+
 impl ToolJournal {
     pub fn new(sink: Arc<dyn EventSink>, invocation: Invocation) -> Self {
         Self { sink, invocation }
@@ -82,6 +88,26 @@ impl ToolJournal {
         prior: Option<EventWrite>,
         reason: ToolRejection,
     ) -> ToolFuture {
+        let publication = self.publish_rejection(
+            operation_id,
+            call,
+            name,
+            input,
+            prior.into_iter().collect(),
+            reason,
+        );
+        Box::pin(async move { publication.await?.completion.await })
+    }
+
+    pub fn publish_rejection(
+        &self,
+        operation_id: String,
+        call: ToolCallIdentity,
+        name: String,
+        input: crate::model::ToolInput,
+        prefix: Vec<EventWrite>,
+        reason: ToolRejection,
+    ) -> ToolFuture<PublishedTool<Value>> {
         let sink = self.sink.clone();
         let invocation = self.invocation.clone();
         Box::pin(async move {
@@ -96,15 +122,18 @@ impl ToolJournal {
                     reason,
                 },
             );
-            sink.commit_with_prefix(
-                prior.as_slice(),
-                EventWrite::plain(event)
-                    .map_err(|error| ToolError::Persistence(error.to_string()))?,
-            )
-            .await
-            .map_err(|error| ToolError::Persistence(error.to_string()))?;
-            drop(prior);
-            Err(ToolError::Failed(message))
+            let receipt = sink
+                .commit_with_prefix(
+                    &prefix,
+                    EventWrite::plain(event)
+                        .map_err(|error| ToolError::Persistence(error.to_string()))?,
+                )
+                .await
+                .map_err(|error| ToolError::Persistence(error.to_string()))?;
+            Ok(PublishedTool {
+                prefix_sequences: receipt.prefix_sequences,
+                completion: Box::pin(async move { Err(ToolError::Failed(message)) }),
+            })
         })
     }
 
@@ -178,8 +207,69 @@ impl ToolJournal {
         input: Value,
         prior: Option<EventWrite>,
         cancellation: CancellationToken,
-        mut effect: PreparedEffect,
+        effect: PreparedEffect,
     ) -> ToolFuture<ToolOutput> {
+        let publication = self.publish_prepared_output(
+            operation_id,
+            call,
+            name,
+            input,
+            prior.into_iter().collect(),
+            cancellation,
+            effect,
+        );
+        Box::pin(async move { publication.await?.completion.await })
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "publication keeps the dispatch identity explicit"
+    )]
+    pub fn publish_prepared_call(
+        &self,
+        operation_id: String,
+        call: ToolCallIdentity,
+        name: String,
+        input: Value,
+        prefix: Vec<EventWrite>,
+        cancellation: CancellationToken,
+        effect: PreparedEffect,
+    ) -> ToolFuture<PublishedTool<Value>> {
+        let publication = self.publish_prepared_output(
+            operation_id,
+            call,
+            name,
+            input,
+            prefix,
+            cancellation,
+            effect,
+        );
+        Box::pin(async move {
+            let PublishedTool {
+                prefix_sequences,
+                completion,
+            } = publication.await?;
+            Ok(PublishedTool {
+                prefix_sequences,
+                completion: Box::pin(async move { completion.await.map(ToolOutput::into_json) }),
+            })
+        })
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "publication keeps the dispatch identity explicit"
+    )]
+    pub fn publish_prepared_output(
+        &self,
+        operation_id: String,
+        call: ToolCallIdentity,
+        name: String,
+        input: Value,
+        prefix: Vec<EventWrite>,
+        cancellation: CancellationToken,
+        mut effect: PreparedEffect,
+    ) -> ToolFuture<PublishedTool<ToolOutput>> {
         let sink = self.sink.clone();
         let invocation = self.invocation.clone();
         Box::pin(async move {
@@ -197,26 +287,35 @@ impl ToolJournal {
             let receipt = sink
                 .clone()
                 .commit_with_prefix(
-                    prior.as_slice(),
+                    &prefix,
                     EventWrite::plain(dispatch)
                         .map_err(|error| ToolError::Persistence(error.to_string()))?,
                 )
                 .await;
             let sequence = match receipt {
-                Ok(sequence) => sequence,
+                Ok(receipt) => receipt,
                 Err(
                     error @ (crate::event::CommitError::Retired
                     | crate::event::CommitError::PermissionRevoked
                     | crate::event::CommitError::NativeTurnInterrupted),
                 ) => {
-                    if let Some(prior) = prior {
-                        sink.commit(prior).await.map_err(|flush| {
-                            ToolError::Persistence(format!(
-                                "{error}; completion flush failed: {flush}"
-                            ))
-                        })?;
-                    }
-                    return Err(ToolError::Failed(match error {
+                    let prefix_sequences = if let Some((last, rest)) = prefix.split_last() {
+                        let receipt = sink
+                            .clone()
+                            .commit_with_prefix(rest, last.clone())
+                            .await
+                            .map_err(|flush| {
+                                ToolError::Persistence(format!(
+                                    "{error}; completion flush failed: {flush}"
+                                ))
+                            })?;
+                        let mut sequences = receipt.prefix_sequences;
+                        sequences.push(receipt.last_sequence);
+                        sequences
+                    } else {
+                        Vec::new()
+                    };
+                    let failure = ToolError::Failed(match error {
                         crate::event::CommitError::Retired => {
                             "session retired before effect".into()
                         }
@@ -227,100 +326,112 @@ impl ToolJournal {
                             "native Computer Use is stopped for this logical Turn".into()
                         }
                         _ => error.to_string(),
-                    }));
+                    });
+                    return Ok(PublishedTool {
+                        prefix_sequences,
+                        completion: Box::pin(async move { Err(failure) }),
+                    });
                 }
                 Err(error) => return Err(ToolError::Persistence(error.to_string())),
             };
-            drop(prior);
-            effect.admitted(sequence);
-
-            let result = if cancellation.is_cancelled() {
-                Err(ToolError::Failed("cancelled before effect".into()))
-            } else {
-                effect.start(cancellation).await
-            };
-            let id = RuntimeEvent::new_id();
-            let recorded_at = std::time::SystemTime::now();
-            if let Err(ToolError::OperationCleanupUnconfirmed {
-                message,
-                observation,
-            }) = result
-            {
-                let write = EventWrite::plain(RuntimeEvent {
-                    id,
-                    recorded_at,
-                    invocation,
-                    fact: Fact::ToolOperationObserved {
-                        operation_id,
-                        observation,
-                    },
-                });
-                // Recording an observation never releases the real cleanup fence.
-                let recorded = match write {
-                    Ok(write) => sink
-                        .commit(write)
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| error.to_string()),
-                    Err(error) => Err(error.to_string()),
+            drop(prefix);
+            let prefix_sequences = sequence.prefix_sequences;
+            effect.admitted(sequence.last_sequence);
+            let completion: ToolFuture<ToolOutput> = Box::pin(async move {
+                let result = if cancellation.is_cancelled() {
+                    Err(ToolError::Failed("cancelled before effect".into()))
+                } else {
+                    effect.start(cancellation).await
                 };
-                return Err(ToolError::CleanupUnconfirmed(match recorded {
-                    Ok(()) => message,
-                    Err(_) => {
-                        format!("{message}; original service observation could not be persisted")
-                    }
-                }));
-            }
-            let (write, result) = match result {
-                Ok(value) => {
-                    EventWrite::tool_success(id, recorded_at, invocation, operation_id, value)
-                        .map(|(write, output)| (write, Ok(output)))
-                }
-                Err(
-                    error @ (ToolError::Failed(_)
-                    | ToolError::Io { .. }
-                    | ToolError::OutcomeUnknown(_)
-                    | ToolError::OperationUnknown { .. }),
-                ) => {
-                    let outcome = match &error {
-                        ToolError::OutcomeUnknown(message) => ToolOutcome::Unknown {
-                            message: message.clone(),
-                            operation: None,
-                        },
-                        ToolError::OperationUnknown {
-                            message,
-                            observation,
-                        } => ToolOutcome::Unknown {
-                            message: message.clone(),
-                            operation: Some(observation.clone()),
-                        },
-                        ToolError::Failed(message) => ToolOutcome::Failed {
-                            message: message.clone(),
-                        },
-                        _ => ToolOutcome::Failed {
-                            message: error.to_string(),
-                        },
-                    };
-                    EventWrite::plain(RuntimeEvent {
+                let id = RuntimeEvent::new_id();
+                let recorded_at = std::time::SystemTime::now();
+                if let Err(ToolError::OperationCleanupUnconfirmed {
+                    message,
+                    observation,
+                }) = result
+                {
+                    let write = EventWrite::plain(RuntimeEvent {
                         id,
                         recorded_at,
                         invocation,
-                        fact: Fact::ToolSettled {
+                        fact: Fact::ToolOperationObserved {
                             operation_id,
-                            outcome,
+                            observation,
                         },
-                    })
-                    .map(|write| (write, Err(error)))
+                    });
+                    // Recording an observation never releases the real cleanup fence.
+                    let recorded = match write {
+                        Ok(write) => sink
+                            .commit(write)
+                            .await
+                            .map(|_| ())
+                            .map_err(|error| error.to_string()),
+                        Err(error) => Err(error.to_string()),
+                    };
+                    return Err(ToolError::CleanupUnconfirmed(match recorded {
+                        Ok(()) => message,
+                        Err(_) => {
+                            format!(
+                                "{message}; original service observation could not be persisted"
+                            )
+                        }
+                    }));
                 }
-                // Missing durable outcome remains uncertain on reconstruction.
-                Err(error) => return Err(error),
-            }
-            .map_err(|error| ToolError::Persistence(error.to_string()))?;
-            sink.commit(write)
-                .await
+                let (write, result) = match result {
+                    Ok(value) => {
+                        EventWrite::tool_success(id, recorded_at, invocation, operation_id, value)
+                            .map(|(write, output)| (write, Ok(output)))
+                    }
+                    Err(
+                        error @ (ToolError::Failed(_)
+                        | ToolError::Io { .. }
+                        | ToolError::OutcomeUnknown(_)
+                        | ToolError::OperationUnknown { .. }),
+                    ) => {
+                        let outcome = match &error {
+                            ToolError::OutcomeUnknown(message) => ToolOutcome::Unknown {
+                                message: message.clone(),
+                                operation: None,
+                            },
+                            ToolError::OperationUnknown {
+                                message,
+                                observation,
+                            } => ToolOutcome::Unknown {
+                                message: message.clone(),
+                                operation: Some(observation.clone()),
+                            },
+                            ToolError::Failed(message) => ToolOutcome::Failed {
+                                message: message.clone(),
+                            },
+                            _ => ToolOutcome::Failed {
+                                message: error.to_string(),
+                            },
+                        };
+                        EventWrite::plain(RuntimeEvent {
+                            id,
+                            recorded_at,
+                            invocation,
+                            fact: Fact::ToolSettled {
+                                operation_id,
+                                outcome,
+                            },
+                        })
+                        .map(|write| (write, Err(error)))
+                    }
+                    // Missing durable outcome remains uncertain on reconstruction.
+                    Err(error) => return Err(error),
+                }
                 .map_err(|error| ToolError::Persistence(error.to_string()))?;
-            drop(effect);
-            result
+                sink.commit(write)
+                    .await
+                    .map_err(|error| ToolError::Persistence(error.to_string()))?;
+                drop(effect);
+                result
+            });
+            Ok(PublishedTool {
+                prefix_sequences,
+                completion,
+            })
         })
     }
 }
@@ -352,13 +463,17 @@ mod admission_tests {
     }
     impl EventSink for Sink {
         fn commit(self: Arc<Self>, event: EventWrite) -> CommitFuture {
-            self.commit_with_prefix(&[], event)
+            Box::pin(async move {
+                self.commit_with_prefix(&[], event)
+                    .await
+                    .map(|receipt| receipt.last_sequence)
+            })
         }
         fn commit_with_prefix(
             self: Arc<Self>,
             prefix: &[EventWrite],
             last: EventWrite,
-        ) -> CommitFuture {
+        ) -> crate::event::PrefixCommitFuture {
             let mut events = prefix.to_vec();
             events.push(last);
             Box::pin(async move {
@@ -385,13 +500,19 @@ mod admission_tests {
                     return Err(CommitError::Rejected("completion flush rejected".into()));
                 }
                 let mut committed = self.committed.lock().unwrap();
+                let prefix_sequences = (0..events.len() - 1)
+                    .map(|index| 1 + index as u64 * 3)
+                    .collect();
                 for event in events {
                     if matches!(&event.event().fact, Fact::ToolSettled { .. }) {
                         self.settled.store(true, Ordering::SeqCst);
                     }
                     committed.push(event);
                 }
-                Ok(if dispatch { 7 } else { 8 })
+                Ok(crate::event::PrefixReceipt {
+                    prefix_sequences,
+                    last_sequence: if dispatch { 7 } else { 8 },
+                })
             })
         }
     }
@@ -436,6 +557,77 @@ mod admission_tests {
             },
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn publication_returns_actual_prefix_sequences_before_starting_the_effect() {
+        let sink = Arc::new(Sink {
+            dispatch_ready: AtomicBool::new(true),
+            ..Default::default()
+        });
+        let started = Arc::new(AtomicBool::new(false));
+        let effect_started = started.clone();
+        let prefix = vec![completion(&sink), completion(&sink)];
+        let mut publication = journal(sink.clone()).publish_prepared_output(
+            "operation".into(),
+            ToolCallIdentity::standalone("call".into()),
+            "effect".into(),
+            serde_json::json!({}),
+            prefix,
+            CancellationToken::new(),
+            PreparedEffect::new(move |_| {
+                Box::pin(async move {
+                    effect_started.store(true, Ordering::SeqCst);
+                    Ok(serde_json::json!({"done": true}).into())
+                })
+            }),
+        );
+        let mut context = Context::from_waker(Waker::noop());
+        let Poll::Ready(Ok(mut published)) = publication.as_mut().poll(&mut context) else {
+            panic!("ready T1 must publish without waiting for its effect");
+        };
+        assert_eq!(published.prefix_sequences, vec![1, 4]);
+        assert!(!started.load(Ordering::SeqCst));
+        assert!(!sink.settled.load(Ordering::SeqCst));
+        assert!(matches!(
+            published.completion.as_mut().poll(&mut context),
+            Poll::Ready(Ok(_))
+        ));
+        assert!(started.load(Ordering::SeqCst));
+        assert!(sink.settled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn revoked_publication_reports_the_independent_prefix_receipt_without_dispatch() {
+        let sink = Arc::new(Sink {
+            permission_revoked: true,
+            ..Default::default()
+        });
+        let mut publication = journal(sink.clone()).publish_prepared_output(
+            "operation".into(),
+            ToolCallIdentity::standalone("call".into()),
+            "effect".into(),
+            serde_json::json!({}),
+            vec![completion(&sink), completion(&sink)],
+            CancellationToken::new(),
+            PreparedEffect::new(|_| panic!("revoked effect must remain unstarted")),
+        );
+        let mut context = Context::from_waker(Waker::noop());
+        let Poll::Ready(Ok(mut published)) = publication.as_mut().poll(&mut context) else {
+            panic!("known refusal must return its independent prefix receipt");
+        };
+        assert_eq!(published.prefix_sequences, vec![1, 8]);
+        assert!(
+            sink.committed
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|write| !matches!(write.event().fact, Fact::ToolDispatched { .. }))
+        );
+        assert!(matches!(
+            published.completion.as_mut().poll(&mut context),
+            Poll::Ready(Err(ToolError::Failed(_)))
+        ));
     }
 
     #[test]

@@ -355,6 +355,7 @@ impl Owner {
                             tools: None,
                             title,
                             title_is_manual: true,
+                            pinned: false,
                             labels: vec![],
                             workspace,
                             permissions: self.settings.permissions.clone(),

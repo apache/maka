@@ -240,6 +240,10 @@ and `onFileDrop` as the native backends do. This is submitted upstream as
 longbridge/nsh#591; take upstream's version when a sync brings it, keeping
 the local rule that paused input (`AppView::pause_input`) lays no drop layer.
 
+A live code block's header starts with the language its fence names, as the
+`codeBlockLanguage` part, and ends with its actions. This is a local adaptation
+of the fork's live code block, which upstream does not have.
+
 Maka's workspace uses these local crates, including NSH's offscreen renderer and
 image codec; changing them here changes the code built and tested with Maka.
 

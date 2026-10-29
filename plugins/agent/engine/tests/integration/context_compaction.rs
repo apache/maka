@@ -198,6 +198,12 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
         })
         .unwrap();
     assert_eq!(completed.response_id.as_deref(), Some("reply"));
+    assert_eq!(completed.model.as_deref(), Some("test"));
+    assert_eq!(
+        completed.timestamp.as_deref(),
+        Some("1970-01-01T00:00:01.000Z")
+    );
+    let mut metadata_count = 0;
     for observation in prefix
         .events
         .iter()
@@ -212,6 +218,7 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
                 model,
                 timestamp,
             } => {
+                metadata_count += 1;
                 assert_eq!(id, &completed.response_id);
                 assert_eq!(model, &completed.model);
                 assert_eq!(timestamp, &completed.timestamp);
@@ -230,6 +237,7 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
             }
         }
     }
+    assert_eq!(metadata_count, 1);
     assert!(
         completed
             .parts
