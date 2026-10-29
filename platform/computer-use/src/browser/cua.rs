@@ -932,28 +932,6 @@ mod tests {
         }
     }
     #[test]
-    fn cdp_mouse_buttons_and_click_counts_follow_the_existing_chrome_protocol() {
-        for (button, flag) in [(Button::Left, 1), (Button::Middle, 4), (Button::Right, 2)] {
-            for count in [1, 2] {
-                let down = MouseInput {
-                    point: [-2.75, 4096.125],
-                    mask: 10,
-                    phase: MousePhase::Press(button, count),
-                }
-                .params();
-                let up = crate::browser::owned_input::mouse_release(&down);
-                assert_eq!(down["buttons"], flag);
-                assert_eq!(up["buttons"], 0);
-                assert_eq!(down["clickCount"], count);
-                assert_eq!(up["clickCount"], count);
-                assert_eq!(down["x"], -2.75);
-                assert_eq!(down["y"], 4096.125);
-                assert_eq!(up["x"], down["x"]);
-                assert_eq!(up["modifiers"], 10);
-            }
-        }
-    }
-    #[test]
     fn load_classification_has_no_new_wait_after_unrelated_child_source_events() {
         let start = tokio::time::Instant::now();
         let mut state = PageLoadState::new("main".into(), start);

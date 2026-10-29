@@ -19,8 +19,10 @@
 
 //! Typed values for the two effective browser capabilities.
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "native-desktop")]
 use std::collections::BTreeMap;
 
+#[cfg(feature = "native-desktop")]
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Kind {
@@ -31,6 +33,7 @@ pub(crate) enum Kind {
     Stylesheet,
     Video,
 }
+#[cfg(feature = "native-desktop")]
 impl Kind {
     pub(crate) fn bundleable(self) -> bool {
         matches!(
@@ -39,6 +42,7 @@ impl Kind {
         )
     }
 }
+#[cfg(feature = "native-desktop")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Source {
@@ -48,6 +52,7 @@ pub(crate) struct Source {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub property: Option<String>,
 }
+#[cfg(feature = "native-desktop")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct Asset {
     pub id: String,
@@ -56,12 +61,14 @@ pub(crate) struct Asset {
     pub sources: Vec<Source>,
     pub url: String,
 }
+#[cfg(feature = "native-desktop")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct InlineSvg {
     pub id: String,
     pub markup: String,
     pub name: String,
 }
+#[cfg(feature = "native-desktop")]
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Summary {
@@ -69,6 +76,7 @@ pub(crate) struct Summary {
     pub inline_svg_count: usize,
     pub total_count: usize,
 }
+#[cfg(feature = "native-desktop")]
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Inventory {
@@ -110,6 +118,7 @@ pub enum BundleKind {
     Stylesheet,
     Video,
 }
+#[cfg(feature = "native-desktop")]
 impl BundleKind {
     pub(crate) fn kind(self) -> Kind {
         match self {
@@ -120,6 +129,7 @@ impl BundleKind {
         }
     }
 }
+#[cfg(feature = "native-desktop")]
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BundledAsset {
@@ -130,6 +140,7 @@ pub(crate) struct BundledAsset {
     pub path: String,
     pub url: String,
 }
+#[cfg(feature = "native-desktop")]
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Failure {
@@ -139,6 +150,7 @@ pub(crate) struct Failure {
     pub reason: String,
     pub url: String,
 }
+#[cfg(feature = "native-desktop")]
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BundleSummary {
@@ -147,6 +159,7 @@ pub(crate) struct BundleSummary {
     pub failed_count: usize,
     pub requested_count: usize,
 }
+#[cfg(feature = "native-desktop")]
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Bundle {
@@ -165,6 +178,7 @@ pub struct Viewport {
     pub width: f64,
     pub height: f64,
 }
+#[cfg(feature = "native-desktop")]
 impl Viewport {
     pub(crate) fn validate(self) -> Result<Self, &'static str> {
         let valid =
