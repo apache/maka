@@ -163,6 +163,8 @@ function ActivityLog(props: {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
   reading(away: boolean): void;
+  /** Whether the activity list is scrolled to its end, following or not. */
+  settled?(atEnd: boolean): void;
   reveal(): void;
 }) {
   const state = props.state;
@@ -259,6 +261,7 @@ function ActivityLog(props: {
             if (!alive || lease !== state.lease) return;
             const away =
               event.offset.y < Math.max(0, event.contentSize.height - event.size.height) - 1;
+            props.settled?.(!away);
             // A capped tool reader can be at the turn's bottom while the user
             // is reading its original. Only an explicit return resumes follow.
             if (
@@ -405,6 +408,7 @@ export function TurnPanel(props: {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
   reading(away: boolean): void;
+  settled?(atEnd: boolean): void;
 }) {
   const active = () =>
     props.turn().active &&

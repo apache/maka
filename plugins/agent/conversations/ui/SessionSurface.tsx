@@ -27,6 +27,7 @@ import {
   Text,
   View,
   keymap,
+  platform,
   windowSize,
   type ViewRef,
   type JSX,
@@ -80,6 +81,7 @@ import {
   type RecallTarget,
 } from '../../../../products/maka/workbench/app/RecallSearch';
 import { createForeground } from '../../../../products/maka/workbench/app/activation';
+import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { Palette } from '../../../../products/maka/workbench/app/Palette';
 import type {
   CommandEntry,
@@ -169,6 +171,9 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   const controlsKnown = signal(false);
   const recovering = signal(false);
   const recoveredFork = signal<{ id: string; title: string } | null>(null);
+  // Shown once, in the fork just opened from a conversation action, until the
+  // user leaves it: the switch is otherwise silent and the titles look alike.
+  const forkNotice = signal<{ id: string; source: string; title: string } | null>(null);
   const handle = signal<ConversationHandle | null>(null);
   let dropFiles: ((event: { uris: string[] }) => void) | null = null;
   const fileDragging = signal(false);
@@ -256,6 +261,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     const current = () =>
       alive && selected() === source.sessionId && (overlay()?.instance ?? null) === source.instance;
     if (!current() || switching() || reloading()) return false;
+    if (forkNotice() && forkNotice()!.id !== id) forkNotice.set(null);
     const owner = handle();
     const sourceOverlay = overlay();
     if (selected() === id) {
@@ -516,6 +522,12 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       if (prefill !== undefined) prefills.set(result.session.id, prefill);
       opened = await switchSession(result.session.id, source);
       if (!opened) prefills.delete(result.session.id);
+      else
+        forkNotice.set({
+          id: result.session.id,
+          source: action.session.id,
+          title: action.session.title || tr('Untitled conversation'),
+        });
     } else if (handle()?.sessionId === result.session.id) await handle()!.refresh();
     await browsing.refresh();
     return opened;
@@ -729,7 +741,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       if (alive) recovering.set(false);
     }
   };
-  const openRecoveredFork = ({ id, origin }: { id: string; origin: string | null }) =>
+  const openBrowsed = ({ id, origin }: { id: string; origin: string | null }) =>
     selectBrowsed(id, origin);
   const abandonControl = async (id: string) => {
     try {
@@ -1123,7 +1135,14 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                     }}
                   </Each>
                   <If
-                    when={error() || status() || working() || !controlsKnown() || controls().length}
+                    when={
+                      error() ||
+                      status() ||
+                      working() ||
+                      !controlsKnown() ||
+                      controls().length ||
+                      forkNotice()?.id === selected()
+                    }
                   >
                     <Scroll
                       accessibilityLabel={tr('Action feedback')}
@@ -1131,6 +1150,9 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                         minHeight: bodyTextStyle.lineHeight + 16,
                         flexShrink: 1,
                         backgroundColor: C.surface,
+                        // A card of its own on the desktop: square corners
+                        // flush on the composer's rounded top read as notches.
+                        ...(platform.isTerminal ? {} : { borderRadius: 8, marginBottom: 8 }),
                       }}
                       contentStyle={{
                         paddingHorizontal: 16,
@@ -1158,6 +1180,30 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                         >
                           {status()}
                         </Text>
+                      </If>
+                      <If when={forkNotice()?.id === selected()}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <Icon name="fork" color={C.secondary} />
+                          <Text style={{ ...bodyTextStyle, flex: 1, color: C.muted }}>
+                            {tr(
+                              'This is a fork of {title}. The original conversation is unchanged.',
+                              { title: forkNotice()!.title },
+                            )}
+                          </Text>
+                          <Button
+                            onPress={inputAction(openBrowsed, {
+                              id: forkNotice()!.source,
+                              origin: selected(),
+                            })}
+                            style={controlStyle}
+                            hoverStyle={controlHoverStyle()}
+                            focusStyle={controlFocusStyle()}
+                          >
+                            <Text style={{ ...bodyTextStyle, color: C.accent }}>
+                              {tr('Back to original')}
+                            </Text>
+                          </Button>
+                        </View>
                       </If>
                       <If when={!controlsKnown() || controls().length > 0}>
                         <Button
@@ -1243,7 +1289,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
             />
             <If when={recoveredFork()}>
               <Button
-                onPress={inputAction(openRecoveredFork, {
+                onPress={inputAction(openBrowsed, {
                   id: recoveredFork()!.id,
                   origin: selected(),
                 })}

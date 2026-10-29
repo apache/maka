@@ -40,6 +40,9 @@ import { C, bodyTextStyle, captionTextStyle, controlStyle } from './ui';
 import { Icon } from './Icon';
 import { ChoiceIndicator } from './ChoiceIndicator';
 
+/** One single-line item: a line of body text and 8 above and below. */
+const itemHeight = bodyTextStyle.lineHeight + 16;
+
 /**
  * The next layout change springs: the dock and the column above it settle
  * with one small overshoot instead of jumping.
@@ -212,16 +215,19 @@ export function Checklist(props: {
           <List
             each={items()}
             onLoadMore={() => void loadMore()}
-            estimatedItemSize={32}
+            estimatedItemSize={itemHeight}
             keyExtractor={(_, index) => String(index)}
             style={{
-              height: Math.min(items().length * 32, Math.max(32, windowSize().height / 4)),
+              height: Math.min(
+                items().length * itemHeight,
+                Math.max(itemHeight, windowSize().height / 4),
+              ),
             }}
           >
             {(item) => (
               <View
                 style={{
-                  minHeight: 32,
+                  minHeight: itemHeight,
                   paddingHorizontal: props.tuck === undefined ? 12 : 16,
                   paddingVertical: 8,
                   flexDirection: 'row',
@@ -229,12 +235,17 @@ export function Checklist(props: {
                   gap: 8,
                 }}
               >
-                <If
-                  when={item().status === 'in_progress'}
-                  else={<ChoiceIndicator kind="checkbox" checked={item().status === 'completed'} />}
-                >
-                  <Icon name="activity" color={C.accent} />
-                </If>
+                {/* As tall as the first line, so the mark centres on it. */}
+                <View style={{ height: bodyTextStyle.lineHeight, justifyContent: 'center' }}>
+                  <If
+                    when={item().status === 'in_progress'}
+                    else={
+                      <ChoiceIndicator kind="checkbox" checked={item().status === 'completed'} />
+                    }
+                  >
+                    <Icon name="activity" color={C.accent} />
+                  </If>
+                </View>
                 <Text
                   style={[
                     {

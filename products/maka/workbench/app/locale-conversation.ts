@@ -485,6 +485,12 @@ export const conversationMessages = {
     '分支對話已建立，可在對話清單中開啟。',
   ],
   'Fork from this turn': ['Fork from this turn', '从本轮创建分支', '從本輪建立分支'],
+  'This is a fork of {title}. The original conversation is unchanged.': [
+    'This is a fork of {title}. The original conversation is unchanged.',
+    '这是「{title}」的分支，原对话未改动。',
+    '這是「{title}」的分支，原對話未改動。',
+  ],
+  'Back to original': ['Back to original', '返回原对话', '返回原對話'],
   'Edit and resend in a fork': [
     'Edit and resend in a fork',
     '在分支中编辑后重发',
