@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { inputAction, platform, Scroll, Text, View } from 'nsh';
+import { inputAction, platform, Scroll, signal, Text, View } from 'nsh';
 import { tr } from './locale';
-import { Button } from 'nsh/base';
+import { Button, Slider } from 'nsh/base';
 import {
   assistantLanguages,
   type GeneralAction,
@@ -28,7 +28,8 @@ import {
 import { SettingsEditor, SettingsField } from './SettingsField';
 import { UiScaleSettings } from './UiScaleSettings';
 import { uiScale } from './uiScale';
-import { appearance, colorThemes, textSizes, type ColorTheme } from './appearance';
+import { appearance, colorThemes, paletteIds, textSizes, type ColorTheme } from './appearance';
+import { accentSwatches, paletteTokens, presetRecipes, type PaletteId } from './colorPalette';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { Icon } from './Icon';
 import {
@@ -39,6 +40,8 @@ import {
   controlHoverStyle,
   controlFocusStyle,
   controlDisabledStyle,
+  defaultColors,
+  isDark,
 } from './ui';
 
 export function GeneralSettings(props: { owner: GeneralSettingsOwner }) {
@@ -521,6 +524,7 @@ function AppearanceSettings() {
         selected={appearance.theme}
         choose={appearance.chooseTheme}
       />
+      <PaletteSettings />
       <ChoiceRow
         title={tr('Text size')}
         detail={tr('Size of the text in the window.')}
@@ -529,6 +533,178 @@ function AppearanceSettings() {
         label={textSizeLabel}
         selected={appearance.textSize}
         choose={appearance.chooseTextSize}
+      />
+    </View>
+  );
+}
+
+const paletteLabel = (id: PaletteId) =>
+  ({
+    default: tr('Default'),
+    mist: tr('Mist'),
+    sage: tr('Sage'),
+    sand: tr('Sand'),
+    burgundy: tr('Burgundy'),
+    graphite: tr('Graphite'),
+    custom: tr('Custom'),
+  })[id];
+
+/** A palette's background, raised surface and accent, in the appearance in effect. */
+const paletteSwatch = (id: PaletteId) => {
+  const dark = isDark();
+  const recipe =
+    id === 'default' ? null : id === 'custom' ? appearance.custom() : presetRecipes[id];
+  const colors = recipe ? paletteTokens(recipe, dark) : defaultColors(dark);
+  return [colors.background, colors.raised, colors.accent];
+};
+
+/** The desktop window's palette: presets, or one made from a hue and an accent. */
+function PaletteSettings() {
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600', ...textInset }}>
+        {tr('Palette')}
+      </Text>
+      <Text style={{ ...captionTextStyle, color: C.muted, ...textInset }}>
+        {tr('Background and accent colors of the window, in light and dark.')}
+      </Text>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+        <Each of={paletteIds} key={(id) => id}>
+          {(id) => (
+            <Button
+              selected={appearance.palette() === id()}
+              accessibilityLabel={`${tr('Palette')}: ${paletteLabel(id())}`}
+              onPress={inputAction(appearance.choosePalette, id())}
+              style={{
+                ...controlStyle,
+                minHeight: 40,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+              }}
+              selectedStyle={{ backgroundColor: C.raised }}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+            >
+              <View
+                style={{
+                  flexDirection: 'row',
+                  borderRadius: 6,
+                  borderWidth: 1,
+                  borderColor: C.line,
+                  overflow: 'hidden',
+                }}
+              >
+                <Each of={paletteSwatch(id())} key={(_, index) => String(index)}>
+                  {(color) => <View style={{ width: 12, height: 20, backgroundColor: color() }} />}
+                </Each>
+              </View>
+              <Text
+                style={{
+                  ...bodyTextStyle,
+                  color: appearance.palette() === id() ? C.accent : C.text,
+                }}
+              >
+                {paletteLabel(id())}
+              </Text>
+            </Button>
+          )}
+        </Each>
+      </View>
+      <If when={appearance.palette() === 'custom'}>
+        <CustomPalette />
+      </If>
+    </View>
+  );
+}
+
+const sliderLook = () => ({
+  indicatorStyle: { height: 4, borderRadius: 2, backgroundColor: C.line },
+  rangeStyle: { borderRadius: 2, backgroundColor: C.accent },
+  thumbStyle: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: C.background,
+    borderWidth: 2,
+    borderColor: C.accent,
+  },
+});
+
+/** The custom palette: an accent, and the hue and amount of it in the grays. */
+function CustomPalette() {
+  const typed = signal(appearance.custom().accent);
+  const chooseAccent = (accent: string) => {
+    typed.set(accent);
+    appearance.changeCustom({ accent }, true);
+  };
+  return (
+    <View style={{ gap: 12, paddingTop: 4, ...textInset }}>
+      <Text style={{ color: C.secondary, fontSize: 13, fontWeight: '500' }}>{tr('Accent')}</Text>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+        <Each of={accentSwatches} key={(color) => color}>
+          {(color) => (
+            <Button
+              accessibilityLabel={`${tr('Accent')}: ${color()}`}
+              selected={appearance.custom().accent === color()}
+              onPress={inputAction(chooseAccent, color())}
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 14,
+                borderWidth: 2,
+                borderColor: appearance.custom().accent === color() ? C.text : 'transparent',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              focusStyle={{ borderColor: C.accent }}
+            >
+              <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: color() }} />
+            </Button>
+          )}
+        </Each>
+      </View>
+      <SettingsField
+        label={tr('Accent color (#rrggbb)')}
+        value={typed()}
+        placeholder="#4a6890"
+        change={(value) => {
+          typed.set(value);
+          const accent = value.trim().startsWith('#') ? value.trim() : `#${value.trim()}`;
+          appearance.changeCustom({ accent: accent.toLowerCase() }, true);
+        }}
+      />
+      <Text style={{ color: C.secondary, fontSize: 13, fontWeight: '500' }}>
+        {tr('Background hue')}
+      </Text>
+      <Slider
+        value={appearance.custom().hue}
+        min={0}
+        max={359}
+        step={1}
+        accessibilityLabel={tr('Background hue')}
+        onChange={({ value }) => appearance.changeCustom({ hue: value as number }, false)}
+        onChangeEnd={({ value }) => appearance.changeCustom({ hue: value as number }, true)}
+        indicatorStyle={sliderLook().indicatorStyle}
+        rangeStyle={sliderLook().rangeStyle}
+        thumbStyle={sliderLook().thumbStyle}
+      />
+      <Text style={{ color: C.secondary, fontSize: 13, fontWeight: '500' }}>
+        {tr('Background tint')}
+      </Text>
+      <Slider
+        value={Math.round(appearance.custom().tint * 100)}
+        min={0}
+        max={100}
+        step={5}
+        accessibilityLabel={tr('Background tint')}
+        onChange={({ value }) => appearance.changeCustom({ tint: (value as number) / 100 }, false)}
+        onChangeEnd={({ value }) =>
+          appearance.changeCustom({ tint: (value as number) / 100 }, true)
+        }
+        indicatorStyle={sliderLook().indicatorStyle}
+        rangeStyle={sliderLook().rangeStyle}
+        thumbStyle={sliderLook().thumbStyle}
       />
     </View>
   );
