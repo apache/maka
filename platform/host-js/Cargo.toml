@@ -16,6 +16,7 @@
 # under the License.
 
 [package]
+autotests = false
 name = "maka-host-js"
 version.workspace = true
 edition.workspace = true
@@ -43,3 +44,7 @@ rusqlite.workspace = true
 uuid.workspace = true
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
+
+[[test]]
+name = "application_services"
+path = "tests/application_services/main.rs"

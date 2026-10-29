@@ -135,7 +135,9 @@ impl GrantTarget {
                     generation,
                 },
             ) => {
-                entity_id(browser_id)?;
+                if browser_id.is_empty() {
+                    return Err("Invalid browser profile identity");
+                }
                 entity_id(generation)?;
             }
             (GrantCapability::ComputerUse, GrantScope::ComputerApp { application_id, .. }) => {

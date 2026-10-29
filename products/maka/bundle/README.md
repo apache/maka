@@ -87,4 +87,4 @@ npm --workspace @maka-agent/product run typecheck
 npm --workspace @maka-agent/product test
 ```
 
-The npm tests check complete Host/UI packages and tool presentation declarations using the lightweight compiler. `cargo test --locked -p maka-cli --test product_composition` checks business composition through the actual CLI, without Node at runtime. Native rendering, focus and input changes belong to their shell tests.
+The npm tests check complete Host/UI packages and tool presentation declarations using the lightweight compiler. `cargo test --locked -p maka-cli --test integration product_composition::` checks business composition through the actual CLI, without Node at runtime. Native rendering, focus and input changes belong to their shell tests.

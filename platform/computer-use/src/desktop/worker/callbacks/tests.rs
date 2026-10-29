@@ -617,33 +617,65 @@ async fn physical_checked_reply_before_custody_ack_releases_the_exact_scope_once
 }
 
 #[tokio::test]
-async fn valid_host_admitted_tab_scopes_are_released_without_a_worker_only_limit() {
+async fn releasing_one_tab_scope_keeps_the_other_usable_until_its_own_release() {
     let mut fixture = Fixture::new();
     let authority = Arc::new(Authority::default());
     let host = Arc::new(Host::default());
-    let mut scopes = Vec::new();
-    for tab in 0..300 {
+    let keys = ["first-tab", "second-tab"].map(|tab| {
         let mut key = key();
         let BrowserAccess::Read { document } = &mut key.access else {
             unreachable!()
         };
-        document.tab_id = format!("tab-{tab}");
-        scopes.push(
-            fixture
-                .prepare_access(17, key, authority.clone(), host.clone())
-                .await,
-        );
-    }
-    assert_eq!(authority.reads.lock().unwrap().len(), 300);
-    assert_eq!(fixture.parent.0.state.lock().unwrap().scopes.len(), 300);
-    drop(scopes);
-    for _ in 0..300 {
-        let message = fixture.worker_message().await;
-        assert!(matches!(&message, WorkerMessage::Release { .. }));
-        fixture.parent.handle(message).unwrap();
-        let message = fixture.parent_message().await;
-        fixture.worker.handle(message).unwrap();
-    }
+        document.tab_id = tab.into();
+        key
+    });
+    let first = fixture
+        .prepare_access(17, keys[0].clone(), authority.clone(), host.clone())
+        .await;
+    let second = fixture
+        .prepare_access(17, keys[1].clone(), authority.clone(), host)
+        .await;
+    assert_eq!(
+        *authority.reads.lock().unwrap(),
+        keys.clone().map(|key| key.access)
+    );
+    drop(first);
+    let release = fixture.worker_message().await;
+    assert!(matches!(&release, WorkerMessage::Release { token } if token.key == keys[0]));
+    fixture.parent.handle(release).unwrap();
+    let released = fixture.parent_message().await;
+    assert!(matches!(&released, ParentMessage::Released { token } if token.key == keys[0]));
+    fixture.worker.handle(released).unwrap();
+    assert_eq!(fixture.parent.0.state.lock().unwrap().scopes.len(), 1);
+    assert_eq!(fixture.worker.0.state.lock().unwrap().scopes.len(), 1);
+
+    let attachment = second.attachment.as_ref().unwrap().clone();
+    let checking = tokio::spawn(async move {
+        attachment
+            .check(
+                BrowserAttachmentOrigin::Site("https://second.test".into()),
+                CancellationToken::new(),
+            )
+            .await
+    });
+    let request = fixture.worker_message().await;
+    assert!(matches!(&request, WorkerMessage::Check { token, .. } if token.key == keys[1]));
+    fixture.parent.handle(request).unwrap();
+    let reply = fixture.parent_message().await;
+    fixture.worker.handle(reply).unwrap();
+    checking.await.unwrap().unwrap();
+    assert_eq!(
+        *authority.origins.lock().unwrap(),
+        [BrowserAttachmentOrigin::Site("https://second.test".into())]
+    );
+
+    drop(second);
+    let release = fixture.worker_message().await;
+    assert!(matches!(&release, WorkerMessage::Release { token } if token.key == keys[1]));
+    fixture.parent.handle(release).unwrap();
+    let released = fixture.parent_message().await;
+    assert!(matches!(&released, ParentMessage::Released { token } if token.key == keys[1]));
+    fixture.worker.handle(released).unwrap();
     assert!(fixture.parent.0.state.lock().unwrap().scopes.is_empty());
     assert!(fixture.worker.0.state.lock().unwrap().scopes.is_empty());
 }

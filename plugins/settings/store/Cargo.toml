@@ -21,6 +21,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autotests = false
 
 [dependencies]
 hex.workspace = true
@@ -44,3 +45,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 tempfile.workspace = true
 rusqlite.workspace = true
 tokio.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

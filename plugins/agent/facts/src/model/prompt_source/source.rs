@@ -124,11 +124,6 @@ pub enum SourceBacking {
         key: crate::history::RowPosition,
         bytes: u64,
     },
-    Artifact {
-        rowid: i64,
-        bytes: u64,
-        digest: [u8; 32],
-    },
     ArtifactMetadata {
         rowid: i64,
         bytes: u64,

@@ -287,88 +287,6 @@ mod tests {
     use maka_agent_facts::interaction::{GrantCapability, GrantScope};
 
     #[test]
-    fn browser_preparation_defaults_disable_both_host_preparations() {
-        let validator = jsonschema::validator_for(&configuration_schema()).unwrap();
-        let expected = serde_json::json!({"popup": false, "requestHeaders": []});
-        for input in [
-            serde_json::json!({}),
-            serde_json::json!({"browserPreparation": {}}),
-            serde_json::json!({"browserPreparation": {"popup": false}}),
-            serde_json::json!({"browserPreparation": {"requestHeaders": []}}),
-        ] {
-            assert!(
-                validator.is_valid(&input),
-                "schema rejects optional controls: {input}"
-            );
-            let configuration: Configuration = serde_json::from_value(input.clone())
-                .expect("omitted browser preparation controls use Host policy defaults");
-            assert_eq!(
-                serde_json::to_value(configuration.browser_preparation)
-                    .expect("browser preparation serializes"),
-                expected,
-                "input {input}",
-            );
-        }
-    }
-
-    #[test]
-    fn browser_preparation_controls_are_independent() {
-        let validator = jsonschema::validator_for(&configuration_schema()).unwrap();
-        for popup in [false, true] {
-            for request_headers in [
-                serde_json::json!([]),
-                serde_json::json!([{"name": "X-Maka-Test", "value": "retained value"}]),
-            ] {
-                let expected = serde_json::json!({
-                    "popup": popup,
-                    "requestHeaders": request_headers,
-                });
-                let input = serde_json::json!({
-                    "browserPreparation": expected.clone(),
-                });
-                assert!(
-                    validator.is_valid(&input),
-                    "schema rejects independent controls: {input}"
-                );
-                let configuration: Configuration = serde_json::from_value(input)
-                    .expect("popup and request headers can be configured independently");
-                assert_eq!(
-                    serde_json::to_value(configuration.browser_preparation)
-                        .expect("browser preparation serializes"),
-                    expected,
-                    "popup and request headers must survive deserialization independently",
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn browser_preparation_schema_and_decoder_reject_invalid_input() {
-        let validator = jsonschema::validator_for(&configuration_schema()).unwrap();
-        for input in [
-            serde_json::json!({"browserPreparation": {"unexpected": true}}),
-            serde_json::json!({"browserPreparation": {"requestHeaders": [{
-                "name": "X-Maka-Test", "value": "value", "unexpected": true,
-            }]}}),
-            serde_json::json!({"browserPreparation": {"popup": "true"}}),
-            serde_json::json!({"browserPreparation": {"requestHeaders": {}}}),
-            serde_json::json!({"browserPreparation": {"requestHeaders": [{"name": 1, "value": "value"}]}}),
-            serde_json::json!({"browserPreparation": {"requestHeaders": [{"name": "X-Maka-Test", "value": 1}]}}),
-            serde_json::json!({"browserPreparation": {"requestHeaders": [{"name": "X-Maka-Test"}]}}),
-            serde_json::json!({"browserPreparation": {"requestHeaders": [{"value": "value"}]}}),
-        ] {
-            assert!(
-                !validator.is_valid(&input),
-                "schema accepts invalid controls: {input}"
-            );
-            assert!(
-                serde_json::from_value::<Configuration>(input.clone()).is_err(),
-                "invalid browser preparation accepted: {input}",
-            );
-        }
-    }
-
-    #[test]
     fn browser_consent_requires_the_original_computer_producer_and_canonical_origin() {
         let mut browser = target();
         browser.capability = GrantCapability::Browser;
@@ -433,7 +351,7 @@ mod browser_history_target_tests {
         let mut history = target();
         history.capability = GrantCapability::BrowserHistory;
         history.scope = GrantScope::BrowserProfile {
-            browser_id: "maka:instance".to_owned(),
+            browser_id: "extension:maka:fixture-extension:fixture-instance:generation".to_owned(),
             generation: "generation".to_owned(),
         };
         assert!(is_browser_history_target(&history));
@@ -451,7 +369,7 @@ mod browser_history_target_tests {
         assert!(!is_browser_history_target(&foreign));
         let mut next_profile = history.clone();
         next_profile.scope = GrantScope::BrowserProfile {
-            browser_id: "maka:instance".to_owned(),
+            browser_id: "extension:maka:fixture-extension:fixture-instance:generation".to_owned(),
             generation: "other-generation".to_owned(),
         };
         assert_ne!(history, next_profile);

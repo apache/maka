@@ -498,6 +498,7 @@ mod session_copy_tests;
 #[cfg(test)]
 mod test_store;
 #[cfg(test)]
+#[path = "../tests/support/transcript.rs"]
 mod transcript_cache;
 #[cfg(test)]
 mod transcript_index_tests;

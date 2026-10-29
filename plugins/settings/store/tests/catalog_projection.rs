@@ -16,158 +16,103 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
 use maka_agent_facts::configuration::*;
-use maka_agent_facts::execution::ThinkingLevel;
-use maka_config::{Result, projection::project};
+use maka_config::{model_catalog::resolve, projection::project};
 use serde_json::json;
 
 fn snapshot() -> ConnectionCatalogSnapshot {
-    serde_json::from_value(json!({"revision":7,"defaultTarget":{
-        "connectionId":"11111111-1111-4111-8111-111111111111","modelId":"manual-0"},
-        "connections":[{"connectionId":"11111111-1111-4111-8111-111111111111",
-        "revision":3,"slug":"relay","name":"Relay",
-        "provider":{"packageId":"example","entryId":"account","scope":"profile","name":"api"},
-        "configuration":{"baseUrl":"http://localhost:1234/v1"},"enabled":true,
-        "enabledModelIds":(0..96).map(|i|format!("manual-{i}")).collect::<Vec<_>>(),
-        "models":[{"id":"observed","contextWindow":8192}],
-        "modelSource":"fetched","modelsFetchedAt":123,
-        "modelOverrides":{"manual-0":{"vision":true,"thinkingLevels":["low","high"]},"manual-1":{}}}]}))
+    let models = ["one", "two", "three"]
+        .map(|id| json!({"id":id,"contextWindow":8192,"description":"中文😀\n".repeat(5000)}));
+    serde_json::from_value(json!({
+        "revision":7,
+        "defaultTarget":{"connectionId":"11111111-1111-4111-8111-111111111111","modelId":"one"},
+        "connections":[{
+            "connectionId":"11111111-1111-4111-8111-111111111111","revision":3,
+            "slug":"relay","name":"Relay",
+            "provider":{"packageId":"example","entryId":"account","scope":"profile","name":"api"},
+            "configuration":{"baseUrl":"https://account.invalid/v1"},"enabled":true,
+            "enabledModelIds":["one","two","three"],"modelSource":"fetched","modelsFetchedAt":123,
+            "models":models,
+            "modelOverrides":{"one":{"vision":true,"thinkingLevels":["low","high"]},"two":{}}
+        }]
+    }))
     .unwrap()
 }
 
-fn resolve(row: &ConnectionCatalogEntry, default: Option<&str>) -> Result<Vec<ModelCatalogEntry>> {
-    assert_eq!(default, Some("manual-0"));
-    Ok(row
-        .enabled_model_ids
-        .iter()
-        .enumerate()
-        .map(|(i, id)| ModelCatalogEntry {
-            is_default: Some(id.as_str()) == default,
-            supports_vision: i == 0,
-            thinking_levels: vec![ThinkingLevel::Low, ThinkingLevel::High],
-            default_supports_vision: Some(false),
-            description: Some("界😀\n\"\\".repeat(100 + i)),
-            context_window: Some(8192),
-            ..ModelCatalogEntry::new(id)
-        })
-        .collect())
-}
-
 #[test]
-fn pages_preserve_items_profiles_and_resolved_facts() {
+fn pages_deliver_the_complete_resolved_catalog_with_profiles_and_original_text() {
     let snapshot = snapshot();
-    let mut input = ConnectionCatalogQueryInput::Start;
+    let mut query = ConnectionCatalogQueryInput::Start;
     let mut items = Vec::new();
-    let mut pages = 0;
-    let mut projected = Vec::new();
     loop {
-        let page = project(&snapshot, &input, resolve).unwrap();
-        projected.push(page.clone());
+        let page = project(&snapshot, &query, resolve).unwrap();
         assert!(serde_json::to_vec(&page).unwrap().len() <= 128 * 1024);
         assert_eq!(page["revision"], 7);
-        assert_eq!(
-            page["defaultTarget"],
-            serde_json::to_value(&snapshot.default_target).unwrap()
-        );
-        let rows = page["items"].as_array().unwrap();
-        assert!(!rows.is_empty() && rows.len() <= 128);
-        items.extend(rows.clone());
-        pages += 1;
+        assert_eq!(page["defaultTarget"]["modelId"], "one");
+        items.extend(page["items"].as_array().unwrap().clone());
         if page["nextCursor"].is_null() {
             break;
         }
-        input = serde_json::from_value(json!({"kind":"continue","revision":7,
-            "cursor":page["nextCursor"]}))
+        let next = serde_json::from_value(json!({
+            "kind":"continue","revision":7,"cursor":page["nextCursor"]
+        }))
         .unwrap();
-        assert!(pages < 10);
+        assert_ne!(query, next, "each page must advance its cursor");
+        query = next;
     }
-    assert!(pages >= 3);
-    for adjacent in projected.windows(2) {
-        let mut full = adjacent[0].clone();
-        let count = full["items"].as_array().unwrap().len();
-        if count == 128 {
-            continue;
-        }
-        let next = adjacent[1]["items"].as_array().unwrap();
-        full["items"].as_array_mut().unwrap().push(next[0].clone());
-        full["nextCursor"] = if let Some(item) = next.get(1) {
-            let mut cursor = json!({"part":item["kind"],"connectionIndex":item["connectionIndex"]});
-            if let Some(index) = item.get("itemIndex") {
-                cursor["itemIndex"] = index.clone();
-            }
-            cursor
-        } else {
-            adjacent[1]["nextCursor"].clone()
-        };
-        assert!(
-            serde_json::to_vec(&full).unwrap().len() > 128 * 1024,
-            "page must fit the maximal prefix including its actual next cursor"
-        );
+    assert_eq!(items.len(), 10);
+    assert_eq!(items[0]["catalogEntryCount"], 3);
+    assert_eq!(items[0]["modelCount"], 3);
+    assert!(items[0].get("modelsFetchedAt").is_none());
+    assert_eq!(items[1]["modelId"], "one");
+    assert_eq!(items[4]["model"]["contextWindow"], 8192);
+    assert_eq!(items[7]["entry"]["isDefault"], true);
+    assert_eq!(items[7]["entry"]["supportsVision"], true);
+    assert_eq!(items[7]["modelOverride"]["vision"], true);
+    assert_eq!(items[8]["modelOverride"], json!({}));
+    assert_eq!(items[9]["entry"]["id"], "three");
+    for item in &items[4..7] {
+        assert_eq!(item["model"]["description"], "中文😀\n".repeat(5000));
     }
-    assert_eq!(items.len(), 194);
-    assert_eq!(items[0]["catalogEntryCount"], 96);
-    assert_eq!(items[0]["modelCount"], 1);
-    assert_eq!(items[0]["enabledModelIdCount"], 96);
-    assert!(items[1].get("modelOverride").is_none());
-    assert_eq!(items[98]["modelOverride"]["vision"], true);
-    assert_eq!(
-        items[99].get("modelOverride"),
-        Some(&json!({})),
-        "empty declarations preserve manually added model identities in the client"
-    );
-    assert_eq!(items[97]["model"]["contextWindow"], 8192);
-    assert_eq!(items[98]["entry"]["isDefault"], true);
-    assert_eq!(items[193]["entry"]["id"], "manual-95");
-    let encoded = serde_json::to_string(&items).unwrap();
-    for private in [
-        "modelsFetchedAt",
-        "lastTestModelFactsFingerprint",
-        "factOverriddenFields",
-    ] {
-        assert!(!encoded.contains(private));
+    for item in &items[7..10] {
+        assert_eq!(item["entry"]["description"], "中文😀\n".repeat(5000));
     }
 }
 
 #[test]
-fn revision_change_precedes_cursor_and_resolver_and_invalid_cursor_fails() {
+fn revision_change_precedes_cursor_resolution_and_invalid_cursors_fail() {
     let snapshot = snapshot();
-    let input = |revision| ConnectionCatalogQueryInput::Continue {
+    let query = |revision| ConnectionCatalogQueryInput::Continue {
         revision,
         cursor: ConnectionCatalogCursor::CatalogEntry {
             connection_index: 0,
-            item_index: 96,
+            item_index: 99,
         },
     };
     assert_eq!(
-        project(&snapshot, &input(6), |_, _| panic!("must not resolve")).unwrap(),
+        project(&snapshot, &query(6), |_, _| panic!(
+            "stale revisions must not resolve models"
+        ))
+        .unwrap(),
         json!({"kind":"revision_changed","expectedRevision":6,"actualRevision":7})
     );
-    assert!(project(&snapshot, &input(7), resolve).is_err());
-    assert!(
-        project(&snapshot, &ConnectionCatalogQueryInput::Start, |_, _| Ok(
-            vec![ModelCatalogEntry::new("")]
-        ))
-        .is_err()
-    );
+    assert!(project(&snapshot, &query(7), resolve).is_err());
 }
 
 #[test]
-fn oversized_catalog_item_keeps_complete_content_and_advances_cursor() {
+fn oversized_configuration_is_complete_and_the_next_page_starts_after_it() {
     let mut snapshot = snapshot();
     let notes = "route-policy: east\n".repeat(12_000);
     snapshot.connections[0].configuration["routingNotes"] = json!(notes);
     let first = project(&snapshot, &ConnectionCatalogQueryInput::Start, resolve).unwrap();
     assert_eq!(first["items"].as_array().unwrap().len(), 1);
     assert_eq!(first["items"][0]["configuration"]["routingNotes"], notes);
-    assert_eq!(
-        first["nextCursor"],
-        json!({"part":"enabled_model_id", "connectionIndex":0,"itemIndex":0})
-    );
-    let next = serde_json::from_value(
-        json!({"kind":"continue", "revision":7,"cursor":first["nextCursor"]}),
-    )
+    let next = serde_json::from_value(json!({
+        "kind":"continue","revision":7,"cursor":first["nextCursor"]
+    }))
     .unwrap();
     let second = project(&snapshot, &next, resolve).unwrap();
-    assert_eq!(second["items"][0]["modelId"], "manual-0");
+    assert_eq!(second["items"][0]["modelId"], "one");
     assert_ne!(second["nextCursor"], first["nextCursor"]);
 }

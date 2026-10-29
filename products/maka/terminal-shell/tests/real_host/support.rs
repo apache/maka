@@ -246,13 +246,17 @@ pub struct Fixture {
     pub directory: tempfile::TempDir,
 }
 
-#[derive(Clone, Copy)]
-enum InitialCatalog {
-    Configured { reasoning: bool },
+#[derive(Clone, Copy, Default)]
+pub enum Catalog {
+    #[default]
+    Configured,
+    Reasoning,
     Empty,
 }
 
-enum AdditionalServices {
+#[derive(Default)]
+pub enum Services {
+    #[default]
     None,
     ManagementTools,
     ComputerTools,
@@ -261,169 +265,63 @@ enum AdditionalServices {
     ObservedGateway(gateway::Publications),
 }
 
+#[derive(Default)]
+pub struct Options {
+    pub registered: bool,
+    pub images: bool,
+    pub catalog: Catalog,
+    pub plugins: bool,
+    pub login_handler: Option<Arc<dyn Handler>>,
+    pub file_tool: Option<Value>,
+    pub services: Services,
+}
+
 impl Fixture {
-    pub async fn computer_tools() -> Self {
-        Self::open_with_services(
-            false,
-            false,
-            InitialCatalog::Configured { reasoning: false },
-            false,
-            None,
-            None,
-            AdditionalServices::ComputerTools,
-        )
-        .await
-    }
-    pub async fn management_tools() -> Self {
-        Self::open_with_services(
-            false,
-            false,
-            InitialCatalog::Configured { reasoning: false },
-            false,
-            None,
-            None,
-            AdditionalServices::ManagementTools,
-        )
-        .await
-    }
-    pub async fn oauth(authentication: Arc<dyn Handler>) -> Self {
-        Self::open_with_services(
-            false,
-            false,
-            InitialCatalog::Configured { reasoning: false },
-            false,
-            Some(authentication),
-            None,
-            AdditionalServices::None,
-        )
-        .await
-    }
     pub async fn open() -> Self {
-        Self::open_with_options(
-            false,
-            false,
-            InitialCatalog::Configured { reasoning: false },
-        )
-        .await
+        Self::configured(Options::default()).await
     }
+
     pub async fn workspace_locations() -> (Self, GatewayActivations) {
         let (published, activations) = GatewayActivations::new();
-        let fixture = Self::open_with_services(
-            false,
-            false,
-            InitialCatalog::Configured { reasoning: false },
-            false,
-            None,
-            None,
-            AdditionalServices::ObservedGateway(published),
-        )
+        let fixture = Self::configured(Options {
+            services: Services::ObservedGateway(published),
+            ..Default::default()
+        })
         .await;
         (fixture, activations)
     }
-    pub async fn reasoning_models() -> Self {
-        Self::open_with_options(false, false, InitialCatalog::Configured { reasoning: true }).await
-    }
-    #[cfg(not(unix))]
-    pub async fn empty_settings() -> Self {
-        Self::open_with_options(false, false, InitialCatalog::Empty).await
-    }
-    pub async fn images() -> Self {
-        Self::open_with_options(false, true, InitialCatalog::Configured { reasoning: false }).await
-    }
-    #[cfg(unix)]
-    pub async fn registered() -> Self {
-        Self::open_with_options(true, false, InitialCatalog::Configured { reasoning: false }).await
-    }
-    #[cfg(unix)]
-    pub async fn registered_empty_settings() -> Self {
-        Self::open_with_options(true, false, InitialCatalog::Empty).await
-    }
-    #[cfg(unix)]
-    pub async fn registered_images() -> Self {
-        Self::open_with_options(true, true, InitialCatalog::Configured { reasoning: false }).await
-    }
-    pub async fn plugin_settings() -> Self {
-        Self::open_with_services(
-            false,
-            false,
-            InitialCatalog::Configured { reasoning: false },
-            true,
-            None,
-            None,
-            AdditionalServices::None,
-        )
-        .await
-    }
-    pub async fn workspace_ui() -> Self {
-        Self::open_with_services(
-            false,
-            false,
-            InitialCatalog::Configured { reasoning: false },
-            true,
-            None,
-            None,
-            AdditionalServices::None,
-        )
-        .await
-    }
+
     pub async fn files(method: &str) -> Self {
-        Self::open_with_services(
-            false,
-            false,
-            InitialCatalog::Configured { reasoning: false },
-            true,
-            None,
-            Some(json!({
+        Self::configured(Options {
+            plugins: true,
+            file_tool: Some(json!({
                 "name":"WorkspaceDocument", "description":"Use the actual workspace Files service.",
                 "import":"files", "method":method, "result":"json", "confirmation":"preapproved",
                 "presentation":format!("maka.workspace.Files@1/{method}")
             })),
-            AdditionalServices::None,
-        )
+            ..Default::default()
+        })
         .await
     }
-    #[cfg(unix)]
-    pub async fn terminals() -> Self {
-        Self::open_with_services(
-            false,
-            false,
-            InitialCatalog::Configured { reasoning: false },
-            false,
-            None,
-            None,
-            AdditionalServices::Terminals,
-        )
-        .await
-    }
-    async fn open_with_options(registered: bool, images: bool, catalog: InitialCatalog) -> Self {
-        Self::open_with_services(
+
+    pub async fn configured(options: Options) -> Self {
+        let Options {
             registered,
             images,
             catalog,
-            false,
-            None,
-            None,
-            AdditionalServices::None,
-        )
-        .await
-    }
-    async fn open_with_services(
-        registered: bool,
-        images: bool,
-        catalog: InitialCatalog,
-        plugins: bool,
-        login_handler: Option<Arc<dyn Handler>>,
-        file_tool: Option<Value>,
-        services: AdditionalServices,
-    ) -> Self {
-        let computer_tools = matches!(&services, AdditionalServices::ComputerTools);
+            plugins,
+            login_handler,
+            file_tool,
+            services,
+        } = options;
+        let computer_tools = matches!(&services, Services::ComputerTools);
         let (terminals, gateway_publications, management_tools) = match services {
-            AdditionalServices::None => (false, None, false),
-            AdditionalServices::ManagementTools => (false, None, true),
-            AdditionalServices::ComputerTools => (false, None, false),
+            Services::None => (false, None, false),
+            Services::ManagementTools => (false, None, true),
+            Services::ComputerTools => (false, None, false),
             #[cfg(unix)]
-            AdditionalServices::Terminals => (true, None, false),
-            AdditionalServices::ObservedGateway(published) => (false, Some(published), false),
+            Services::Terminals => (true, None, false),
+            Services::ObservedGateway(published) => (false, Some(published), false),
         };
         let has_files = images || file_tool.is_some();
         let directory = tempfile::tempdir().unwrap();
@@ -443,10 +341,16 @@ impl Fixture {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let selection = match catalog {
-            InitialCatalog::Configured { reasoning } => {
-                configure(owner.clone(), &base, images || computer_tools, reasoning).await
+            Catalog::Configured | Catalog::Reasoning => {
+                configure(
+                    owner.clone(),
+                    &base,
+                    images || computer_tools,
+                    matches!(catalog, Catalog::Reasoning),
+                )
+                .await
             }
-            InitialCatalog::Empty => Value::Null,
+            Catalog::Empty => Value::Null,
         };
         let store = Arc::new(RootStore::open(owner).await.unwrap());
         let package = |id: &str,
@@ -627,12 +531,9 @@ impl Fixture {
                 "receipts":[{"kind":"instance","path":["receipts"],"export":"Receipts"}]
             }))
         }});
-        if matches!(catalog, InitialCatalog::Empty) {
-            let home = directory.path().join("assistant-home");
-            std::fs::create_dir(&home).unwrap();
-            plan["instances"]["agent"]["configuration"]["values"]["assistant"] =
-                json!({"home":home});
-        }
+        let home = directory.path().join("assistant-home");
+        std::fs::create_dir(&home).unwrap();
+        plan["instances"]["agent"]["configuration"]["values"]["assistant"] = json!({"home":home});
         plan["instances"]["management"] = node(&manager, 8, json!({}), json!({}));
         plan["instances"]["gateway"]["bindings"]["management"] =
             json!([{"kind":"instance","path":["management"],"export":"Management"}]);
@@ -1013,7 +914,7 @@ impl Fixture {
             server,
             provider,
         };
-        if let InitialCatalog::Configured { .. } = catalog {
+        if !matches!(catalog, Catalog::Empty) {
             let client = fixture.client().await;
             let roots = client
                 .query("agent", "directories", json!({"kind":"roots"}))
@@ -1445,8 +1346,10 @@ pub async fn wait_enabled_button(
             tick(view);
             assert!(view.last_error().is_none(), "{:?}", view.last_error());
             let mut buttons = view.accessibility_snapshot().into_iter().filter(|node| {
-                node.role == nsh_core::AccessibilityRole::Button
-                    && node.label == label
+                matches!(
+                    node.role,
+                    nsh_core::AccessibilityRole::Button | nsh_core::AccessibilityRole::Menuitem
+                ) && node.label == label
                     && node.frame.origin.y.0 >= 0.0
                     && node.frame.origin.y.0 < view.surface().viewport().height.0
             });
@@ -1468,7 +1371,12 @@ pub async fn wait_enabled_button(
         let buttons: Vec<_> = view
             .accessibility_snapshot()
             .into_iter()
-            .filter(|node| node.role == nsh_core::AccessibilityRole::Button)
+            .filter(|node| {
+                matches!(
+                    node.role,
+                    nsh_core::AccessibilityRole::Button | nsh_core::AccessibilityRole::Menuitem
+                )
+            })
             .map(|node| {
                 (
                     node.id,

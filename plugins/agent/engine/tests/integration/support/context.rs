@@ -21,14 +21,12 @@ use super::http;
 use super::invocation;
 pub use http::read_request;
 use maka_agent_engine::{Engine, RunInput, RunWork};
-use maka_agent_facts::event::Invocation;
 use maka_agent_facts::execution::ModelBinding;
-use maka_agent_facts::execution::ToolMode;
 use maka_code_runtime::CellLimits;
-use maka_model::{ModelExecutor, ProviderConfig, ProviderKind};
+use maka_model::ModelExecutor;
 use maka_tools::CodeExecutor;
 use serde_json::json;
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 pub const SUMMARY: &str = "## Goal\nContinue the durable task.\n## Progress\n### Done\n- Saved the original work.\n## Next Steps\n1. Verify checkpoint replay.\n## Critical Context\n- summary-marker in src/event.rs.";
@@ -40,47 +38,10 @@ pub fn engine() -> Engine {
     .unwrap()
 }
 pub fn input(base: &str, id: &str, compact: bool) -> RunInput {
-    let mut configuration = invocation::configuration(ToolMode::Direct);
-    configuration.model = Some(ModelBinding {
-        connection_id: "connection".into(),
-        connection_slug: "fixture".into(),
-        model: "test".into(),
-    });
-    RunInput {
-        model_source: None,
-        model_revision: None,
-        provider_id: "fixture".into(),
-        main_output_limit: None,
-        context: None,
-        invocation: Invocation {
-            session_id: "session".into(),
-            turn_id: format!("turn-{id}"),
-            run_id: format!("run-{id}"),
-            invocation_id: format!("invocation-{id}"),
-        },
-        request_fingerprint: Some(format!(
-            "{}:{id}",
-            if compact {
-                "context.compact"
-            } else {
-                "turn.start"
-            }
-        )),
-        provider: ProviderConfig {
-            adapter: None,
-            capabilities: Default::default(),
-            kind: ProviderKind::OpenaiChatCompletions,
-            model: "test".into(),
-            base_url: base.into(),
-            auth: maka_model::ProviderAuth::ApiKey("fixture".into()),
-            headers: BTreeMap::new(),
-            network: Default::default(),
-            body_overlay: None,
-        },
-        provider_options: json!({}),
-        supports_vision: false,
-        configuration,
-        work: if compact {
+    let mut input = invocation::input(
+        base,
+        id,
+        if compact {
             RunWork::ContextCompact
         } else {
             RunWork::Message {
@@ -90,8 +51,23 @@ pub fn input(base: &str, id: &str, compact: bool) -> RunInput {
                 tools: Default::default(),
             }
         },
-    }
+    );
+    input.configuration.model = Some(ModelBinding {
+        connection_id: "connection".into(),
+        connection_slug: "fixture".into(),
+        model: "test".into(),
+    });
+    input.request_fingerprint = Some(format!(
+        "{}:{id}",
+        if compact {
+            "context.compact"
+        } else {
+            "turn.start"
+        }
+    ));
+    input
 }
+
 pub async fn respond(socket: &mut TcpStream, text: &str, reason: &str) {
     let first = json!({"id":"reply","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]});
     let last = json!({"id":"reply","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":20,"completion_tokens":50,"total_tokens":70}});

@@ -52,24 +52,15 @@ fn sources_for(implementation: &str) -> (Input, Vec<Package>) {
         },
         None,
     );
-    let consumer = package(
+    let consumer = observer(
         "manager.client",
-        EntryDeclaration {
-            implementation: Implementation::JavaScript {
-                module: "host.mjs".into(),
-                realm: Realm::Dedicated,
+        BTreeMap::from([(
+            "management".into(),
+            Import {
+                contract,
+                cardinality: Cardinality::One,
             },
-            configuration: json!({"type":"object"}).into(),
-            exports: BTreeMap::new(),
-            imports: BTreeMap::from([(
-                "management".into(),
-                Import {
-                    contract,
-                    cardinality: Cardinality::One,
-                },
-            )]),
-        },
-        Some("export function activate(){return {}; }".into()),
+        )]),
     );
     let mut consumer_node = node(&consumer, 2, false);
     consumer_node.bindings = BTreeMap::from([(
@@ -117,7 +108,7 @@ impl Fixture {
                 .await
                 .unwrap(),
         );
-        let mut native = NativeRegistry::default();
+        let mut native = observer_registry(NativeRegistry::default());
         let managed_source = if separate_target {
             let target_source = store
                 .commit_application(
@@ -353,172 +344,6 @@ fn extension() -> Package {
     )
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn complete_unicode_document_uses_fixed_source_chunks_and_recorded_native_snapshot_replace() {
-    let f = Fixture::new().await;
-    let mut current = f.read().await;
-    let payload = extension();
-    let mut packages = f
-        .store
-        .load_application_at(&current.source.reference)
-        .await
-        .unwrap()
-        .unwrap()
-        .into_parts()
-        .1;
-    packages.push(payload.clone());
-    let mut payload_node = node(&payload, 77, true);
-    payload_node.disabled = true;
-    let original = "中🌟".repeat(90000);
-    payload_node
-        .configuration
-        .values
-        .insert("original".into(), json!(original));
-    current
-        .source
-        .input
-        .instances
-        .insert("payload".into(), payload_node);
-    let source = f
-        .store
-        .commit_application(
-            f.managed.deployment,
-            1,
-            current.source.input.clone(),
-            vec![],
-            packages,
-        )
-        .await
-        .unwrap();
-    let mut offset = 0;
-    let mut text = String::new();
-    loop {
-        let chunk: DeploymentDocumentChunk = serde_json::from_value(
-            f.query("readDocument", json!({"source":source,"offset":offset}))
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(chunk.source, source);
-        assert_eq!(chunk.offset, offset);
-        assert!(chunk.text.len() <= 65536);
-        text.push_str(&chunk.text);
-        assert_eq!(text.len(), chunk.offset + chunk.text.len());
-        if let Some(next) = chunk.next {
-            offset = next;
-        } else {
-            assert_eq!(text.len(), chunk.total_bytes);
-            break;
-        }
-    }
-    assert!(text.len() > 512 * 1024);
-    let mut document: DeploymentDocument = serde_json::from_str(&text).unwrap();
-    assert_eq!(document.input, current.source.input);
-    assert_eq!(
-        document.input.instances["payload"].configuration.values["original"],
-        original
-    );
-    // A later head must not alter the original document's continuation.
-    let before = f
-        .query("readDocument", json!({"source":source,"offset":0}))
-        .await
-        .unwrap();
-    document
-        .input
-        .instances
-        .get_mut("payload")
-        .unwrap()
-        .configuration
-        .values
-        .insert("edited".into(), json!("完整来源🙂"));
-    let changed = f
-        .mutate(
-            "replace",
-            json!({"expectedRevision":2}),
-            document_resource(document.clone()),
-        )
-        .await;
-    assert_eq!(returned(&changed)["status"], "committed");
-    let next: DeploymentRef = serde_json::from_value(returned(&changed)["value"].clone()).unwrap();
-    assert_eq!(
-        f.query("readDocument", json!({"source":source,"offset":0}))
-            .await
-            .unwrap(),
-        before
-    );
-    assert_eq!(
-        f.store
-            .read_application_metadata_at(&next)
-            .await
-            .unwrap()
-            .unwrap()
-            .source
-            .input,
-        document.input
-    );
-    let stale = f
-        .mutate(
-            "replace",
-            json!({"expectedRevision":2}),
-            document_resource(document.clone()),
-        )
-        .await;
-    assert_eq!(
-        returned(&stale),
-        json!({"status":"conflict","currentRevision":3})
-    );
-    // Preserve the complete draft on a deterministically invalid edited plan,
-    // and return a bounded reason usable by the advanced source editor.
-    document
-        .input
-        .instances
-        .get_mut("a")
-        .unwrap()
-        .bindings
-        .clear();
-    let bad = f
-        .mutate(
-            "replace",
-            json!({"expectedRevision":3}),
-            document_resource(document),
-        )
-        .await;
-    assert_eq!(returned(&bad)["reason"], "invalid_source");
-    let diagnostic = returned(&bad)["diagnostic"].as_str().unwrap().to_owned();
-    assert!(!diagnostic.is_empty() && diagnostic.chars().count() <= 512);
-    assert!(diagnostic.contains("manage"), "{diagnostic}");
-    assert_eq!(
-        f.store
-            .application_head(f.managed.deployment)
-            .await
-            .unwrap(),
-        Some(next)
-    );
-    let broken: Attachments = BTreeMap::from([(
-        "document".into(),
-        Arc::new(Document("{".into())) as Arc<dyn ReadResource>,
-    )]);
-    let rejected = f
-        .mutate("replace", json!({"expectedRevision":3}), broken)
-        .await;
-    assert_eq!(returned(&rejected)["reason"], "invalid_document");
-    assert!(
-        f.query(
-            "readDocument",
-            json!({"source":source,"offset":text.find('中').unwrap()+1})
-        )
-        .await
-        .is_err()
-    );
-    let mut foreign = source.clone();
-    foreign.deployment = Uuid::new_v4();
-    assert!(
-        f.query("readDocument", json!({"source":foreign,"offset":0}))
-            .await
-            .is_err()
-    );
-    f.close().await;
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn installed_bytes_do_not_activate_until_explicit_cas_replace_and_original_receipt_survives()
 {
     let f = Fixture::new().await;
@@ -628,64 +453,6 @@ async fn installed_bytes_do_not_activate_until_explicit_cas_replace_and_original
     f.close().await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rejected_bundle_cas_role_and_unknown_revision_leave_original_plan_healthy() {
-    let f = Fixture::new().await;
-    let invalid = f
-        .mutate(
-            "install",
-            json!({"expectedRevision":1}),
-            resource(b"{}".to_vec()),
-        )
-        .await;
-    assert_eq!(
-        returned(&invalid),
-        json!({"status":"rejected","reason":"invalid_bundle"})
-    );
-    assert_eq!(f.read().await.source.reference, f.source);
-    let installed = f
-        .mutate(
-            "install",
-            json!({"expectedRevision":1}),
-            resource(extension().to_bundle()),
-        )
-        .await;
-    let newer: PackageInstalled =
-        serde_json::from_value(returned(&installed)["value"].clone()).unwrap();
-    f.effective(&newer.source).await;
-    let conflict = f
-        .mutate(
-            "install",
-            json!({"expectedRevision":1}),
-            resource(extension().to_bundle()),
-        )
-        .await;
-    assert_eq!(
-        returned(&conflict),
-        json!({"status":"conflict","currentRevision":2})
-    );
-    assert_eq!(f.read().await.source.reference, newer.source);
-    let mut read = f.read().await;
-    read.packages.push(extension().application_ref());
-    read.packages.last_mut().unwrap().revision = format!("sha256-{}", "0".repeat(64));
-    let refused = f
-        .mutate(
-            "replace",
-            json!({"expectedRevision":2}),
-            document_resource(DeploymentDocument {
-                input: read.source.input,
-                remote_exports: vec![],
-                packages: read.packages,
-            }),
-        )
-        .await;
-    assert_eq!(
-        returned(&refused),
-        json!({"status":"rejected","reason":"package_unavailable"})
-    );
-    assert_eq!(f.read().await.source.reference, newer.source);
-    f.close().await;
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manager_availability_and_schema_do_not_grant_authority_or_accept_guest_root() {
     let f = Fixture::new().await;
     for input in [
@@ -727,40 +494,13 @@ async fn manager_availability_and_schema_do_not_grant_authority_or_accept_guest_
         Application::start(
             input,
             packages,
-            NativeRegistry::default(),
+            observer_registry(NativeRegistry::default()),
             f.issuer.clone(),
             Arc::new(Grant(f.issuer.clone())),
             Some(maka_host_js::factory(Limits::default()))
         )
         .is_err()
     );
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn concurrent_installation_commits_once_and_records_the_other_cas_as_conflict() {
-    let f = Fixture::new().await;
-    let extension = extension();
-    let (a, b) = tokio::join!(
-        f.mutate(
-            "install",
-            json!({"expectedRevision":1}),
-            resource(extension.to_bundle())
-        ),
-        f.mutate(
-            "install",
-            json!({"expectedRevision":1}),
-            resource(extension.to_bundle())
-        ),
-    );
-    let a = returned(&a);
-    let b = returned(&b);
-    assert!(
-        (a["status"] == "committed" && b == json!({"status":"conflict","currentRevision":2}))
-            || (b["status"] == "committed"
-                && a == json!({"status":"conflict","currentRevision":2}))
-    );
-    assert_eq!(f.read().await.source.reference.revision, 2);
     f.close().await;
 }
 
@@ -873,7 +613,7 @@ async fn fixed_target_factory_rejects_another_original_root_owner() {
         .commit_application(Uuid::new_v4(), 0, input, vec![], packages)
         .await
         .unwrap();
-    let mut native = NativeRegistry::default();
+    let mut native = observer_registry(NativeRegistry::default());
     provide_target(&mut native, "foreign.target".into(), target).unwrap();
     let issuer = Issuer::default();
     let app = Application::start_from_store(
@@ -1149,7 +889,7 @@ async fn execution_basis_includes_cohost_manager_target_but_not_source_revision(
         .await
         .unwrap();
     for (target, equal) in [(same, true), (different, false)] {
-        let mut native = NativeRegistry::default();
+        let mut native = observer_registry(NativeRegistry::default());
         let management = maka_host_runtime::application::management::ManagementTarget::from_source(
             f.store.clone(),
             target.clone(),

@@ -83,7 +83,7 @@ test-termina:
 # Check tooling and the exported product; native CLI composition is a Rust integration test.
 [group('Checks')]
 test-js: setup
-    node --test scripts/*.test.mjs scripts/rust/*.test.mjs packages/cli/tests/*.test.mjs
+    node --test scripts/*.test.mjs scripts/rust/*.test.mjs products/maka/workbench/tests/*.test.mjs packages/cli/tests/*.test.mjs
     npm --workspace @maka-agent/product test
 
 # Verify source headers and the reviewed dependency and notice snapshots.

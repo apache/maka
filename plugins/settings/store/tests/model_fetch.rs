@@ -93,63 +93,7 @@ impl Fixture {
     }
 
     async fn key(&self, secret: &str) {
-        use maka_agent_facts::oauth::LoginStart;
-        use maka_agent_facts::oauth::Target;
-        use maka_agent_facts::provider::AuthenticationInput;
-        use maka_agent_facts::provider::Credential;
-        use maka_config::oauth::enrollment::{LoginCompletion, LoginPreparation};
-        let row = self.row().await;
-        let LoginPreparation::Ready(ticket) = self
-            .store
-            .prepare_oauth_login(LoginStart {
-                expected_credential: match self
-                    .store
-                    .credential_status(CredentialLocator::Connection {
-                        connection_id: row.connection_id.clone(),
-                        kind: ConnectionCredentialKind::Provider,
-                    })
-                    .await
-                    .unwrap()
-                {
-                    maka_agent_facts::configuration::CredentialVaultQueryResult::Status {
-                        status,
-                    } => status.basis(),
-                    _ => panic!("connection status"),
-                },
-                attempt_id: uuid::Uuid::new_v4().to_string(),
-                target: Target::Existing {
-                    expected: ConnectionCredentialTarget {
-                        connection_id: row.connection_id,
-                        revision: row.revision,
-                        slug: row.slug,
-                        provider: row.provider,
-                        configuration: row.configuration.clone(),
-                    },
-                    configuration: row.configuration,
-                },
-                authentication: AuthenticationInput {
-                    method: "key".into(),
-                    input: json!({}),
-                },
-            })
-            .await
-            .unwrap()
-        else {
-            panic!("prepared credential receipt")
-        };
-        assert!(matches!(
-            ticket
-                .complete(
-                    Credential {
-                        secret: secret.into(),
-                        refresh_at: None
-                    },
-                    42
-                )
-                .await
-                .unwrap(),
-            LoginCompletion::Committed(_)
-        ));
+        crate::support::login(&self.store, &self.id, secret).await;
     }
 
     async fn prepare(&self) -> Box<PreparedModelFetch> {

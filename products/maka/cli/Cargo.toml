@@ -24,6 +24,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autotests = false
 
 [features]
 default = ["native-desktop"]
@@ -40,8 +41,8 @@ path = "src/service_main.rs"
 test = false
 
 [[test]]
-name = "terminal_real_host"
-path = "../terminal-shell/tests/real_host/main.rs"
+name = "integration"
+path = "tests/integration/main.rs"
 
 [dependencies]
 maka-ui-build.workspace = true

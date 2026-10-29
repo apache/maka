@@ -19,32 +19,6 @@
 
 use super::*;
 
-async fn activate(view: &mut AppView, label: &str) {
-    tab_to_label(view, label).await;
-    support::wait_enabled_button(view, label).await;
-    view.handle_event(Event::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
-}
-
-async fn fill(view: &mut AppView, label: &str, value: &str) {
-    tab_to_label(view, label).await;
-    wait_focused_input(view, label).await;
-    shortcut(view, 'a');
-    view.handle_event(Event::Paste(value.into()));
-    let (done, committed) = tokio::sync::oneshot::channel();
-    view.control()
-        .unwrap()
-        .advance_clock(Duration::ZERO, move || {
-            let _ = done.send(());
-        });
-    tokio::time::timeout(Duration::from_secs(20), committed)
-        .await
-        .unwrap()
-        .unwrap();
-}
-
 async fn detail(client: &maka_app_client::Client) -> Value {
     let catalog = client
         .query("settings", "connections", json!({"kind":"start"}))

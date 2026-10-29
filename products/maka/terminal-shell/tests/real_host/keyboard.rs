@@ -272,7 +272,11 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn production_ctrl_c_requires_two_presses_and_intervening_input_resets_the_gesture() {
-    let fixture = Fixture::registered().await;
+    let fixture = Fixture::configured(support::Options {
+        registered: true,
+        ..Default::default()
+    })
+    .await;
     let mut terminal = support::pty::Pty::spawn(
         env!("CARGO_BIN_EXE_maka"),
         &fixture.directory.path().join("host"),
@@ -304,7 +308,11 @@ async fn production_ctrl_c_requires_two_presses_and_intervening_input_resets_the
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn connection_filter_preserves_model_search_focus_and_keyboard_selection() {
     tokio::time::timeout(Duration::from_secs(60), async {
-        let fixture = Fixture::reasoning_models().await;
+        let fixture = Fixture::configured(support::Options {
+            catalog: support::Catalog::Reasoning,
+            ..Default::default()
+        })
+        .await;
         let client = fixture.client().await;
         let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
         support::click_button(&mut view, "Choose model and effort").await;

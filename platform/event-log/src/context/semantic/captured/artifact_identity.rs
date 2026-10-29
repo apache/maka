@@ -83,22 +83,6 @@ fn with_range<T>(
                 None => result,
             }
         }
-        Backing::Artifact {
-            rowid,
-            bytes,
-            digest,
-        } => {
-            check_artifact(raw, rowid, bytes, &digest)?;
-            with_blob(
-                raw,
-                "artifacts",
-                "payload",
-                rowid,
-                range.start,
-                length,
-                consume,
-            )
-        }
         Backing::ArtifactMetadata {
             rowid,
             payload_bytes,
