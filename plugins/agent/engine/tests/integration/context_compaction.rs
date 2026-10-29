@@ -192,7 +192,7 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
     assert!(
         !prefix.events.iter().any(|event| matches!(&event.event.fact,
         Fact::ModelObserved { step_id, event } if step_id == summary_step
-            && !matches!(event, ModelObservation::Finished { .. }))),
+            && !matches!(event, ModelObservation::ResponseMetadata { .. } | ModelObservation::Finished { .. }))),
         "successful summary prose has only its completed durable representation"
     );
     let completed = prefix
@@ -203,6 +203,32 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
             _ => None,
         })
         .unwrap();
+    let metadata: Vec<_> = prefix
+        .events
+        .iter()
+        .filter_map(|event| match &event.event.fact {
+            Fact::ModelObserved {
+                step_id,
+                event:
+                    ModelObservation::ResponseMetadata {
+                        id,
+                        model,
+                        timestamp,
+                    },
+            } if step_id == summary_step => {
+                Some((id.as_deref(), model.as_deref(), timestamp.as_deref()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        metadata,
+        vec![(
+            Some("reply"),
+            Some("test"),
+            Some("1970-01-01T00:00:01.000Z")
+        )]
+    );
     let text: String = completed
         .parts
         .iter()

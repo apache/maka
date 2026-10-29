@@ -17,6 +17,7 @@
  * under the License.
  */
 
+mod retirement;
 mod stream;
 
 use super::*;
@@ -131,7 +132,7 @@ struct Fixture {
     _directory: tempfile::TempDir,
     _root: maka_event_log::root_store::RootStore,
     inner: Arc<RunContext>,
-    writer: AttemptWriter,
+    writer: Option<AttemptWriter>,
     finalizer: Arc<crate::preview::Finalizer>,
     sink: Arc<Sink>,
     gates: Arc<Gates>,
@@ -235,7 +236,7 @@ impl Fixture {
             _directory: directory,
             _root: root,
             inner,
-            writer,
+            writer: Some(writer),
             finalizer,
             sink,
             gates,
@@ -250,15 +251,17 @@ impl Fixture {
             .unwrap();
         super::receive(
             &self.inner,
-            &mut self.writer,
+            self.writer.take().expect("fixture attempt runs once"),
             &self.finalizer,
             stream::ready(events).await,
             Some(request.into_step("step")),
             &mut false,
             &CancellationToken::new(),
             &mut None,
+            None,
         )
         .await
+        .map(|_| ())
     }
 }
 fn scope() -> LogScope {
@@ -323,111 +326,135 @@ fn dispatches(sink: &Sink) -> usize {
 
 #[tokio::test]
 async fn receive_unknown_confirms_only_original_prefix_without_republishing_t1() {
-    for (fault, confirm_unknown) in [
-        (Fault::CommittedUnknown, false),
-        (Fault::UncommittedUnknown, false),
-        (Fault::CommittedUnknown, true),
-    ] {
+    for fault in [Fault::CommittedUnknown, Fault::UncommittedUnknown] {
         let mut fixture = Fixture::new(fault, false, false).await;
-        let result = fixture.receive(events(false)).await;
-        let error = result.expect_err("uncertain T1 must stop receive");
+        let error = fixture
+            .receive(events(false))
+            .await
+            .expect_err("uncertain T1 must stop receive");
+        assert!(matches!(error, RunError::Tool(_)));
         assert_eq!(fixture.gates.effects.load(Ordering::SeqCst), 0);
         assert_eq!(
             dispatches(&fixture.sink),
             1,
-            "later ready call must not publish another T1"
+            "confirmation must not publish another T1"
         );
-        let (_, exact) = fixture
-            .finalizer
-            .prefix()
-            .expect("receive freezes uncertain prefix");
+        assert!(fixture.finalizer.terminal_confirmed());
+        assert!(
+            fixture.finalizer.publication().is_none(),
+            "receipt retires the body-bearing terminal"
+        );
         let submitted = fixture.sink.batches.lock().unwrap()[0].clone();
-        assert_eq!(
-            exact.iter().map(|write| write.event()).collect::<Vec<_>>(),
-            submitted[..submitted.len() - 1]
-                .iter()
-                .map(|write| write.event())
-                .collect::<Vec<_>>()
-        );
-        let before = prefix(&fixture.inner.log).await;
-        let expected = if matches!(fault, Fault::CommittedUnknown) {
-            exact.len()
-        } else {
-            0
-        };
-        assert_eq!(observed(&before).len(), expected);
-        let inner = &fixture.inner;
-        let sealed = seal_finalizer_with(inner, &fixture.finalizer, error, |writes| async move {
-            assert!(
-                writes
-                    .iter()
-                    .all(|write| matches!(write.event().fact, Fact::ModelObserved { .. }))
-            );
-            if confirm_unknown {
-                Err(CommitError::OutcomeUnknown("confirmation unknown".into()))
-            } else {
-                inner.log.append_batch(&writes).await
-            }
-        })
-        .await;
         let after = prefix(&fixture.inner.log).await;
-        let canonical_t1 = after
-            .events
-            .iter()
-            .filter(|event| matches!(event.event.fact, Fact::ToolDispatched { .. }))
-            .count();
+        let observed = observed(&after);
+        assert_eq!(observed.len(), submitted.len() - 1);
+        for (stored, original) in observed.iter().zip(&submitted) {
+            assert_eq!(
+                &stored.event,
+                original.event(),
+                "confirmation keeps exact original prefix identities"
+            );
+        }
         assert_eq!(
-            canonical_t1,
+            after
+                .events
+                .iter()
+                .filter(|event| matches!(event.event.fact, Fact::ToolDispatched { .. }))
+                .count(),
             usize::from(matches!(fault, Fault::CommittedUnknown))
         );
-        if confirm_unknown {
-            assert!(sealed.is_cleanup_unconfirmed());
-            let (_, retained) = fixture.finalizer.prefix().unwrap();
-            assert!(Arc::ptr_eq(&exact, &retained));
-            assert!(
-                !after
-                    .events
-                    .iter()
-                    .any(|event| matches!(event.event.fact, Fact::ModelInterrupted { .. }))
-            );
-        } else {
-            assert!(fixture.finalizer.terminal_confirmed());
-            let terminal = fixture.finalizer.publication().unwrap();
-            let stored_terminal = after
-                .events
+        let partial = after
+            .events
+            .iter()
+            .find_map(|event| match &event.event.fact {
+                Fact::ModelInterrupted { partial, .. } => partial.as_ref(),
+                _ => None,
+            })
+            .expect("unknown dispatch seals the valid model prefix");
+        assert!(
+            partial
+                .parts
                 .iter()
-                .find(|event| event.event.id == terminal.event().id)
-                .unwrap();
-            assert_eq!(&stored_terminal.event, terminal.event());
-            let cut = fixture.finalizer.snapshot();
-            let observed = observed(&after);
-            assert_eq!(observed.len(), exact.len());
-            for (stored, original) in observed.iter().zip(exact.iter()) {
-                assert_eq!(&stored.event, original.event());
-            }
-            assert_eq!(
-                cut.depends_on,
-                observed.iter().map(|event| event.sequence).max().unwrap()
-            );
-            let partial = after
-                .events
-                .iter()
-                .find_map(|event| match &event.event.fact {
-                    Fact::ModelInterrupted { partial, .. } => partial.as_ref(),
-                    _ => None,
-                })
-                .unwrap();
-            assert!(
-                partial
-                    .parts
-                    .iter()
-                    .all(|part| matches!(part, CompletionPart::Ref(_)))
-            );
-            assert_eq!(partial.parts.len(), 2);
-        }
-        assert_eq!(fixture.gates.effects.load(Ordering::SeqCst), 0);
-        assert_eq!(dispatches(&fixture.sink), 1);
+                .all(|part| matches!(part, CompletionPart::Ref(_)))
+        );
+        assert_eq!(partial.parts.len(), 2);
+        let expected_refs = observed
+            .iter()
+            .filter_map(|stored| match &stored.event.fact {
+                Fact::ModelObserved {
+                    event: ModelObservation::Part(part),
+                    ..
+                } => Some(CompletionPart::Ref(RecordedPartRef {
+                    event_id: stored.event.id.clone(),
+                    ordinal: part.ordinal,
+                })),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            partial.parts, expected_refs,
+            "terminal keeps exact original prefix references"
+        );
+
+        assert!(fixture.inner.attempts.unfinished().is_empty());
     }
+}
+
+#[tokio::test]
+async fn prefix_confirmation_unknown_keeps_original_identity_and_cut() {
+    let mut fixture = Fixture::new(Fault::CommittedUnknown, false, false).await;
+    let request = fixture
+        .tools
+        .capture(".", CancellationToken::new())
+        .await
+        .unwrap();
+    let mut original_prefix = None;
+    let result = receive_with_confirmation(
+        &fixture.inner,
+        fixture.writer.take().unwrap(),
+        &fixture.finalizer,
+        stream::ready(events(false)).await,
+        Some(request.into_step("step")),
+        &mut false,
+        &CancellationToken::new(),
+        &mut None,
+        None,
+        |writes| {
+            original_prefix = Some(writes);
+            async { Err(CommitError::OutcomeUnknown("confirmation unknown".into())) }
+        },
+    )
+    .await;
+    assert!(
+        result
+            .err()
+            .expect("repeated unknown must stop the attempt")
+            .is_cleanup_unconfirmed()
+    );
+    let (_, retained) = fixture
+        .finalizer
+        .prefix()
+        .expect("unknown confirmation retains original prefix");
+    assert!(Arc::ptr_eq(&original_prefix.unwrap(), &retained));
+    let submitted = fixture.sink.batches.lock().unwrap()[0].clone();
+    assert!(
+        retained
+            .iter()
+            .map(|write| write.event())
+            .eq(submitted[..submitted.len() - 1]
+                .iter()
+                .map(|write| write.event()))
+    );
+    assert!(!fixture.finalizer.terminal_confirmed());
+    assert!(
+        prefix(&fixture.inner.log)
+            .await
+            .events
+            .iter()
+            .all(|event| !matches!(event.event.fact, Fact::ModelInterrupted { .. }))
+    );
+    assert_eq!(dispatches(&fixture.sink), 1);
+    assert_eq!(fixture.gates.effects.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -467,12 +494,17 @@ async fn slow_first_prepare_does_not_block_ready_sibling_or_lose_failed_tail_rec
     assert!(matches!(result, Err(RunError::Model(_))));
     assert_eq!(fixture.gates.effects.load(Ordering::SeqCst), 2);
     assert_eq!(dispatches(&fixture.sink), 2);
+    let after = prefix(&fixture.inner.log).await;
+    let partial = after
+        .events
+        .iter()
+        .find_map(|event| match &event.event.fact {
+            Fact::ModelInterrupted { partial, .. } => partial.as_ref(),
+            _ => None,
+        })
+        .expect("failed tail seals accepted prefix");
     assert!(
-        fixture
-            .writer
-            .snapshot()
-            .partial()
-            .unwrap()
+        partial
             .parts
             .iter()
             .all(|part| matches!(part, CompletionPart::Ref(_)))

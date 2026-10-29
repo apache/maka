@@ -37,6 +37,8 @@ use tokio_util::sync::CancellationToken;
 struct Batch {
     events: Vec<ModelEvent>,
     emitted: oneshot::Sender<()>,
+    cleanup_error: bool,
+    close_gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 struct ReadySession(Mutex<Option<Batch>>);
@@ -57,7 +59,14 @@ impl Session for ReadySession {
                 .emitted
                 .send(())
                 .expect("fixture awaits emitted batch");
-            Ok(())
+            if let Some(gate) = batch.close_gate {
+                gate.acquire().await.expect("fixture close gate").forget();
+            }
+            if batch.cleanup_error {
+                Err(Error::CleanupUnconfirmed)
+            } else {
+                Ok(())
+            }
         })
     }
 }
@@ -80,12 +89,33 @@ impl ProviderAdapter for ReadyAdapter {
 }
 
 pub(super) async fn ready(events: Vec<ModelEvent>) -> ModelStream {
+    ready_with_cleanup(events, false, None).await
+}
+
+pub(super) async fn ready_with_cleanup_error(events: Vec<ModelEvent>) -> ModelStream {
+    ready_with_cleanup(events, true, None).await
+}
+
+pub(super) async fn ready_with_close_gate(
+    events: Vec<ModelEvent>,
+    gate: Arc<tokio::sync::Semaphore>,
+) -> ModelStream {
+    ready_with_cleanup(events, false, Some(gate)).await
+}
+
+async fn ready_with_cleanup(
+    events: Vec<ModelEvent>,
+    cleanup_error: bool,
+    close_gate: Option<Arc<tokio::sync::Semaphore>>,
+) -> ModelStream {
     // The real executor buffers four emissions before applying backpressure.
     assert!(events.len() <= 4, "fixture batch must fit the model stream");
     let (emitted, ready) = oneshot::channel();
     let adapter = ReadyAdapter(Arc::new(ReadySession(Mutex::new(Some(Batch {
         events,
         emitted,
+        cleanup_error,
+        close_gate,
     })))));
     let binding = Binding::new(
         Arc::new(adapter),

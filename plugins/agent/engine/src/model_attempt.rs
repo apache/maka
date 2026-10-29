@@ -457,38 +457,41 @@ pub(super) async fn execute_once(
     )?;
     writer.fenced(sequence);
     let finalizer = inner.attempts.register(writer.snapshot(), item_acceptance);
-    let result: Result<_, RunError> = async {
-        let stream = inner
-            .shared
-            .model
-            .stream_with_adapter(prepared.request, cancellation.clone(), lane, binding)
-            .await?;
-        receive(
-            inner,
-            &mut writer,
-            &finalizer,
-            stream,
-            tools
-                .filter(|_| item_acceptance)
-                .map(|tools| tools.clone().into_step(&step_id)),
-            progressed,
-            cancellation,
-            retry,
-        )
+    let result = match inner
+        .shared
+        .model
+        .stream_with_adapter(prepared.request, cancellation.clone(), lane, binding)
         .await
-    }
-    .await;
-    let completion_tools = tools.filter(|_| !item_acceptance);
-    let result = finish(
-        inner,
-        writer,
-        &finalizer,
-        result,
-        cancellation,
-        completion_tools,
-        retry,
-    )
-    .await;
+    {
+        Ok(stream) => {
+            receive(
+                inner,
+                writer,
+                &finalizer,
+                stream,
+                tools
+                    .filter(|_| item_acceptance)
+                    .map(|tools| tools.clone().into_step(&step_id)),
+                progressed,
+                cancellation,
+                retry,
+                tools.filter(|_| !item_acceptance),
+            )
+            .await
+        }
+        Err(error) => {
+            finish(
+                inner,
+                writer,
+                &finalizer,
+                Err(error.into()),
+                cancellation,
+                None,
+                retry,
+            )
+            .await
+        }
+    };
     let result = match result {
         Err(error) if !finalizer.has_publication() => {
             Err(seal_finalizer(inner, &finalizer, error).await)
@@ -499,26 +502,6 @@ pub(super) async fn execute_once(
         inner.attempts.remove(&step_id);
     }
     result
-}
-
-async fn preserve_completion(
-    inner: &Arc<RunContext>,
-    completion: &maka_agent_facts::event::EventWrite,
-    finalizer: &crate::preview::Finalizer,
-    error: RunError,
-) -> RunError {
-    match inner.log.append(completion).await {
-        Ok(sequence) => finalizer.receipt_terminal(completion, sequence),
-        Err(flush) => {
-            let message = format!("{error}; model completion could not be persisted: {flush}");
-            return if error.is_cleanup_unconfirmed() {
-                maka_agent_facts::tools::ToolError::CleanupUnconfirmed(message).into()
-            } else {
-                maka_agent_facts::tools::ToolError::Persistence(message).into()
-            };
-        }
-    }
-    error
 }
 
 pub(super) struct PreparedRequest {
@@ -612,14 +595,47 @@ pub(super) fn prepare_request<W>(
 #[allow(clippy::too_many_arguments)]
 async fn receive(
     inner: &Arc<RunContext>,
-    writer: &mut AttemptWriter,
+    writer: AttemptWriter,
+    finalizer: &crate::preview::Finalizer,
+    stream: maka_model::ModelStream,
+    tools: Option<maka_tools::StepTools<'_>>,
+    progressed: &mut bool,
+    cancellation: &CancellationToken,
+    retry: &mut Option<PreparedPrompt>,
+    completion_tools: Option<&maka_tools::RequestTools<'_>>,
+) -> Result<AttemptOutput, RunError> {
+    receive_with_confirmation(
+        inner,
+        writer,
+        finalizer,
+        stream,
+        tools,
+        progressed,
+        cancellation,
+        retry,
+        completion_tools,
+        |writes| async move { inner.log.append_batch(&writes).await },
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn receive_with_confirmation<F, Fut>(
+    inner: &Arc<RunContext>,
+    mut writer: AttemptWriter,
     finalizer: &crate::preview::Finalizer,
     mut stream: maka_model::ModelStream,
     mut tools: Option<maka_tools::StepTools<'_>>,
     progressed: &mut bool,
     cancellation: &CancellationToken,
     retry: &mut Option<PreparedPrompt>,
-) -> Result<(), RunError> {
+    completion_tools: Option<&maka_tools::RequestTools<'_>>,
+    confirm: F,
+) -> Result<AttemptOutput, RunError>
+where
+    F: FnOnce(Arc<[maka_agent_facts::event::EventWrite]>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u64>, maka_agent_facts::event::CommitError>>,
+{
     use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
     let tool_cancellation = cancellation.child_token();
     let mut running = FuturesUnordered::new();
@@ -638,7 +654,7 @@ async fn receive(
                 }
                 event = stream.next() => {
                     let Some(event) = event else { break; };
-                    let observations = ready_observations(writer, event, || {
+                    let observations = ready_observations(&mut writer, event, || {
                         stream.next().now_or_never().flatten()
                     });
                     use maka_agent_facts::event::{EventWrite, RuntimeEvent};
@@ -672,7 +688,7 @@ async fn receive(
                     if let Some(prepared) = prepared {
                         let prepared = prepared?;
                         let published = catch_tool(prepared.publish(&writes)).await?;
-                        record_prefix(writer, &writes, &published.prefix_sequences);
+                        record_prefix(&mut writer, &writes, &published.prefix_sequences);
                         if !writes.is_empty() {
                             finalizer.receipt_prefix(&writes, writer.snapshot());
                         }
@@ -681,7 +697,7 @@ async fn receive(
                         running.push(catch_tool(published.completion).boxed());
                     } else if !writes.is_empty() {
                         let sequences = inner.log.append_batch(&writes).await?;
-                        record_prefix(writer, &writes, &sequences);
+                        record_prefix(&mut writer, &writes, &sequences);
                         finalizer.receipt_prefix(&writes, writer.snapshot());
                         inner.attempts.publish(finalizer, writer.snapshot());
                     }
@@ -706,13 +722,68 @@ async fn receive(
     {
         tool_cancellation.cancel();
     }
-    let mut cleanup = Ok(());
     if finalizer.prefix().is_some()
-        || matches!(&result, Err(error) if !matches!(error, RunError::Model(_)))
+        || matches!(&result, Err(error) if !matches!(error, RunError::Model(_)) || error.is_cleanup_unconfirmed())
     {
         // An uncertain publication must never be repeated as another T1.
         preparing.clear();
     }
+    let result = if stream_cleanup.is_err() {
+        tool_cancellation.cancel();
+        preparing.clear();
+        // The original transport may still read its backing; do not close it.
+        if retired_prompt.is_some() {
+            assert!(
+                retry.is_none(),
+                "accepted progress already retired the retry prompt"
+            );
+            *retry = retired_prompt.take();
+        }
+        additional_failure(result, crate::cleanup::unconfirmed())
+    } else {
+        result
+    };
+    let confirmation = match confirm_prefix(finalizer, confirm).await {
+        Ok(Some(cut)) => {
+            inner.attempts.publish(finalizer, cut);
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(error) => Err(
+            maka_agent_facts::tools::ToolError::CleanupUnconfirmed(format!(
+                "model prefix could not be confirmed: {error}"
+            ))
+            .into(),
+        ),
+    };
+    let mut result = match confirmation {
+        Ok(()) => {
+            finish(
+                inner,
+                writer,
+                finalizer,
+                result,
+                cancellation,
+                completion_tools,
+                retry,
+            )
+            .await
+        }
+        Err(error) => {
+            drop(writer);
+            match result {
+                Ok(()) => Err(error),
+                Err(original) => additional_failure(Err(original), error),
+            }
+        }
+    };
+    if finalizer.terminal_confirmed() {
+        inner.attempts.remove(&binding.step_id);
+        if let Err(error) = close_retry(&mut retired_prompt).await {
+            result = additional_failure(result, error);
+        }
+    }
+    let mut cleanup = Ok(());
     while !preparing.is_empty() || !running.is_empty() {
         tokio::select! {
             prepared = preparing.next(), if !preparing.is_empty() => {
@@ -737,10 +808,6 @@ async fn receive(
                 }
             }
         }
-    }
-    let mut result = result;
-    if stream_cleanup.is_err() {
-        result = additional_failure(result, crate::cleanup::unconfirmed());
     }
     if let Err(error) = close_retry(&mut retired_prompt).await {
         result = additional_failure(result, error);
@@ -886,9 +953,7 @@ async fn finish(
     let output = match result {
         Ok(output) => output,
         Err(error) => {
-            let cut = writer.snapshot();
             drop(writer);
-            inner.attempts.publish(finalizer, cut.clone());
             return Err(seal_finalizer(inner, finalizer, error).await);
         }
     };
@@ -910,7 +975,10 @@ async fn finish(
                     return Err(crate::cleanup::unconfirmed());
                 };
                 match inner.log.append(&publication).await {
-                    Ok(sequence) => finalizer.receipt_terminal(&publication, sequence),
+                    Ok(sequence) => {
+                        finalizer.receipt_terminal(&publication, sequence);
+                        inner.attempts.remove(&output.binding.step_id);
+                    }
                     Err(seal) => return Err(seal_failure(error, seal)),
                 }
                 if cancellation.is_cancelled() {
@@ -926,7 +994,7 @@ async fn finish(
         None
     };
     use maka_agent_facts::event::{EventWrite, RuntimeEvent};
-    let step_id = &output.binding.step_id;
+    let step_id = output.binding.step_id.clone();
     let incomplete = output.binding.purpose == ModelPurpose::Main
         && output.finish_reason == maka_agent_facts::model::ModelFinishReason::Length;
     let cancelled = cancellation.is_cancelled();
@@ -974,21 +1042,17 @@ async fn finish(
     if !defer_completion {
         let sequences = inner.log.append_batch(&writes).await?;
         finalizer.receipt_terminal(&completion, sequences[0]);
+        inner.attempts.remove(&step_id);
     }
     if incomplete {
         return Err(RunError::ModelIncomplete);
     }
-    if cancellation.is_cancelled() {
-        if defer_completion {
-            let sequences = inner.log.append_batch(&writes).await?;
-            finalizer.receipt_terminal(&completion, sequences[0]);
-        }
+    if cancellation.is_cancelled() && !defer_completion {
         return Err(RunError::Cancelled);
     }
-    drop(writes);
     if let Some(summary) = summary {
         return Ok(AttemptOutput::Summary {
-            step_id: step_id.clone(),
+            step_id,
             summary: Ok(summary),
         });
     }
@@ -997,43 +1061,85 @@ async fn finish(
         response_id: output.response_id.clone(),
     };
     if let Some(tools) = completion_tools {
-        if let Err(error) = close_retry(retry).await {
-            return Err(preserve_completion(inner, &completion, finalizer, error).await);
-        }
-        use futures_util::{StreamExt, stream::FuturesUnordered};
-        let mut step = tools.clone().into_step(step_id);
+        use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
+        let mut step = tools.clone().into_step(&step_id);
         let tool_cancellation = cancellation.child_token();
+        let mut preparing = FuturesUnordered::new();
         let mut running = FuturesUnordered::new();
+        // Admit every call in arrival order before polling any preparation.
         for record in output.parts() {
             if let ModelPart::ToolCall { call } = record.part.as_ref()
                 && !call.provider_executed
             {
-                let future = step.prepare(call.clone(), tool_cancellation.clone());
-                let completion = completion.clone();
-                running.push(async move {
-                    let prepared = catch_tool(future).await?;
-                    let published =
-                        catch_tool(prepared.publish(std::slice::from_ref(&completion))).await?;
-                    finalizer.receipt_terminal(&completion, published.prefix_sequences[0]);
-                    catch_tool(published.completion).await
-                });
+                preparing.push(
+                    catch_tool(step.prepare(call.clone(), tool_cancellation.clone())).boxed(),
+                );
             }
         }
         drop(output);
         let mut cleanup = Ok(());
-        while let Some(result) = running.next().await {
-            if let Err(error) = tool_result(result) {
-                tool_cancellation.cancel();
-                if cleanup.is_ok() {
-                    cleanup = Err(error);
+        if defer_completion {
+            // Only this writer owns the terminal prefix; pending siblings retain no body.
+            let prepared = preparing.next().now_or_never().flatten();
+            let sequence = match prepared {
+                Some(Ok(prepared)) => {
+                    let published = catch_tool(prepared.publish(&writes)).await?;
+                    let sequence = published.prefix_sequences[0];
+                    running.push(catch_tool(published.completion).boxed());
+                    sequence
+                }
+                Some(Err(error)) => {
+                    tool_cancellation.cancel();
+                    preparing.clear();
+                    let sequences = match inner.log.append_batch(&writes).await {
+                        Ok(sequences) => sequences,
+                        Err(flush) => return Err(seal_failure(error.into(), flush)),
+                    };
+                    cleanup = Err(error.into());
+                    sequences[0]
+                }
+                None => inner.log.append_batch(&writes).await?[0],
+            };
+            finalizer.receipt_terminal(&completion, sequence);
+            inner.attempts.remove(&step_id);
+        }
+        drop(writes);
+        drop(completion);
+        if let Err(error) = close_retry(retry).await {
+            tool_cancellation.cancel();
+            preparing.clear();
+            cleanup = additional_failure(cleanup, error);
+        }
+        while !preparing.is_empty() || !running.is_empty() {
+            tokio::select! {
+                prepared = preparing.next(), if !preparing.is_empty() => {
+                    let published = match prepared.expect("nonempty preparation set") {
+                        Ok(prepared) => catch_tool(prepared.publish(&[])).await,
+                        Err(error) => Err(error),
+                    };
+                    match published {
+                        Ok(published) => running.push(catch_tool(published.completion).boxed()),
+                        Err(error) => {
+                            tool_cancellation.cancel();
+                            preparing.clear();
+                            if cleanup.is_ok() { cleanup = Err(error.into()); }
+                        }
+                    }
+                }
+                result = running.next(), if !running.is_empty() => {
+                    if let Err(error) = tool_result(result.expect("nonempty completion set")) {
+                        tool_cancellation.cancel();
+                        preparing.clear();
+                        if cleanup.is_ok() { cleanup = Err(error); }
+                    }
                 }
             }
         }
-        if let Err(error) = cleanup {
-            return Err(preserve_completion(inner, &completion, finalizer, error).await);
-        }
+        cleanup?;
     } else {
         drop(output);
+        drop(writes);
+        drop(completion);
     }
     Ok(AttemptOutput::Main(response))
 }
@@ -1127,6 +1233,9 @@ where
     F: FnOnce(Arc<[maka_agent_facts::event::EventWrite]>) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<u64>, maka_agent_facts::event::CommitError>>,
 {
+    if finalizer.terminal_confirmed() {
+        return error;
+    }
     match confirm_prefix(finalizer, append).await {
         Ok(Some(cut)) => inner.attempts.publish(finalizer, cut),
         Ok(None) => {}
@@ -1137,7 +1246,9 @@ where
             .into();
         }
     }
-    let cut = finalizer.snapshot();
+    let Some(cut) = finalizer.unconfirmed_snapshot() else {
+        return error;
+    };
     let publication = match finalizer.publication() {
         Some(publication) => Ok(publication),
         None => interruption(&cut, &error, finalizer.item_acceptance),
@@ -1147,6 +1258,7 @@ where
             let publication = match finalizer.prepare(publication) {
                 crate::preview::PublicationSelection::New(publication)
                 | crate::preview::PublicationSelection::Existing(publication) => publication,
+                crate::preview::PublicationSelection::Confirmed => return error,
                 crate::preview::PublicationSelection::PrefixPending => {
                     return crate::cleanup::unconfirmed();
                 }
@@ -1175,10 +1287,10 @@ pub(super) async fn seal_unfinished_attempts<T>(
         .err()
         .unwrap_or_else(|| RunError::Internal("model attempt returned without sealing".into()));
     for finalizer in unfinished {
-        let cut = finalizer.snapshot();
+        let binding = finalizer.binding();
         error = seal_finalizer(inner, &finalizer, error).await;
         if finalizer.terminal_confirmed() {
-            inner.attempts.remove(&cut.binding.step_id);
+            inner.attempts.remove(&binding.step_id);
         }
     }
     Err(error)
