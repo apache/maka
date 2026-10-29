@@ -527,3 +527,108 @@ async fn only_the_bot_session_carries_bot_instructions() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn send_user_is_visible_from_the_first_request_with_tool_discovery() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            None,
+            |settings| {
+                settings.bot = true;
+                settings.todo = true;
+                settings.tool_discovery = true;
+            },
+        )
+        .await;
+        let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        f.send(&bot).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        response(&mut socket).await;
+        idle(&f, &bot).await;
+        let send_user = sent["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["function"]["name"] == "SendUser")
+            .unwrap_or_else(|| panic!("SendUser is deferred: {:?}", tool_names(&sent)));
+        assert!(
+            send_user["function"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("only way")
+        );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+async fn bot_count(f: &Fixture) -> usize {
+    let listed = f
+        .query("list", json!({"filter":"all","position":{"kind":"start"}}))
+        .await
+        .unwrap();
+    listed.to_string().matches("\"title\":\"Bot\"").count()
+}
+
+#[tokio::test]
+async fn an_interrupted_claim_is_taken_over() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        // A claim whose creator is gone (interrupted, or from an earlier run).
+        f.owner
+            .bot
+            .claim_for_test("ma_interrupted_creator", false)
+            .await;
+        let opened = open(&f).await;
+        assert_eq!(opened["kind"], "opened", "{opened}");
+        assert_eq!(opened["created"], true);
+        assert_ne!(opened["sessionId"], "ma_interrupted_creator");
+        assert_eq!(bot_count(&f).await, 1);
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_live_slow_creator_keeps_its_claim() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        // A creator still working on its Session, well past the old five-second wait.
+        f.owner.bot.claim_for_test("ma_slow_creator", true).await;
+        let workspace = f.create_input("Bot").await["workspace"].clone();
+        let waiting = f.mutation(2, "openBot", json!({"workspace":workspace}), Uuid::new_v4());
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(7), &mut waiting)
+                .await
+                .is_err(),
+            "the second open waits instead of taking over"
+        );
+        assert!(
+            f.owner.bot.is("ma_slow_creator"),
+            "the live claim is untouched"
+        );
+        assert_eq!(bot_count(&f).await, 0);
+        // The slow creator gives up and releases its claim; the waiter then opens.
+        f.owner.bot.release_for_test("ma_slow_creator").await;
+        let opened = waiting.await.unwrap();
+        assert_eq!(opened["kind"], "opened", "{opened}");
+        assert_eq!(opened["created"], true);
+        assert_eq!(bot_count(&f).await, 1);
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

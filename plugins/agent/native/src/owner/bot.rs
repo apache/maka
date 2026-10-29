@@ -51,8 +51,9 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
 ];
 const PAGE: usize = 100;
 const RECORD_KEY: &str = "bot";
-/// How long an open waits for a concurrent first open to finish creating its Session.
-const CLAIM_WAITS: u32 = 50;
+/// How long an open waits for a live creator in this process before asking the
+/// caller to retry. A wait never authorizes taking over a live creator's claim.
+const CLAIM_WAITS: u32 = 300;
 const CLAIM_WAIT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -101,7 +102,24 @@ pub(super) struct Bot {
     storage: Arc<maka_host_runtime::storage::Storage>,
     owner: OnceLock<Weak<Owner>>,
     current: RwLock<Option<String>>,
+    /// Claims whose Session creation is in progress in this process. The Root lock
+    /// admits one Host per Root, so a claim absent here has no live creator.
+    creating: std::sync::Mutex<std::collections::HashSet<String>>,
     changed: tokio::sync::watch::Sender<()>,
+}
+/// Registers a live creation for as long as it is held.
+pub(super) struct Creating<'a> {
+    bot: &'a Bot,
+    session: String,
+}
+impl Drop for Creating<'_> {
+    fn drop(&mut self) {
+        self.bot
+            .creating
+            .lock()
+            .expect("bot creations")
+            .remove(&self.session);
+    }
 }
 impl Bot {
     pub fn new(store: Arc<RootStore>, prefix: String) -> Self {
@@ -114,6 +132,7 @@ impl Bot {
             )),
             owner: OnceLock::new(),
             current: RwLock::new(None),
+            creating: Default::default(),
             changed: tokio::sync::watch::channel(()).0,
         }
     }
@@ -134,6 +153,58 @@ impl Bot {
     /// The single decision of whether a Session is the Bot.
     pub(super) fn is(&self, session: &str) -> bool {
         self.current.read().expect("bot identity").as_deref() == Some(session)
+    }
+    fn creating(&self, session: &str) -> Creating<'_> {
+        self.creating
+            .lock()
+            .expect("bot creations")
+            .insert(session.into());
+        Creating {
+            bot: self,
+            session: session.into(),
+        }
+    }
+    fn is_creating(&self, session: &str) -> bool {
+        self.creating
+            .lock()
+            .expect("bot creations")
+            .contains(session)
+    }
+    /// Test support: leave a claim as an interrupted or a live creator would.
+    #[cfg(test)]
+    pub(super) async fn claim_for_test(&self, session: &str, live: bool) {
+        let (revision, _) = self.read::<Record>(RECORD_KEY).await.unwrap();
+        self.storage
+            .batch(vec![
+                Self::mutation(
+                    RECORD_KEY.into(),
+                    revision,
+                    &Record {
+                        session_id: session.into(),
+                    },
+                )
+                .unwrap(),
+            ])
+            .await
+            .unwrap();
+        self.set_current(Some(session.into()));
+        if live {
+            self.creating.lock().unwrap().insert(session.into());
+        }
+    }
+    #[cfg(test)]
+    pub(super) async fn release_for_test(&self, session: &str) {
+        self.creating.lock().unwrap().remove(session);
+        let (revision, _) = self.read::<Record>(RECORD_KEY).await.unwrap();
+        self.storage
+            .batch(vec![Mutation {
+                key: RECORD_KEY.into(),
+                expected_revision: revision,
+                data: Data::Deleted,
+            }])
+            .await
+            .unwrap();
+        self.set_current(None);
     }
     fn set_current(&self, session: Option<String>) {
         *self.current.write().expect("bot identity") = session;
@@ -477,6 +548,7 @@ impl Owner {
         }
         let mine = self.operation_id(operation);
         let mut waits = 0;
+        let creating;
         loop {
             let (revision, record) = self
                 .bot
@@ -486,6 +558,7 @@ impl Owner {
             if let Some(record) = &record {
                 if record.session_id == mine {
                     // Our claim: a retry of this operation resumes its creation.
+                    creating = self.bot.creating(&mine);
                     self.bot.set_current(Some(mine.clone()));
                     break;
                 }
@@ -499,18 +572,28 @@ impl Owner {
                     }
                     Ok(_) => {}
                     Err(error) if error == "agent_session_unavailable" => {
-                        // Another open has claimed but not yet created its Session.
-                        if waits < CLAIM_WAITS {
-                            waits += 1;
-                            tokio::time::sleep(CLAIM_WAIT).await;
-                            continue;
+                        // A live creator keeps its claim however long it takes; only a
+                        // claim with no creator left (interrupted or from an earlier run)
+                        // may be taken over.
+                        if self.bot.is_creating(&record.session_id) {
+                            if waits < CLAIM_WAITS {
+                                waits += 1;
+                                tokio::time::sleep(CLAIM_WAIT).await;
+                                continue;
+                            }
+                            return Err("bot_open_in_progress".into());
                         }
                     }
                     Err(error) => return Err(error),
                 }
             }
+            // Register before the claim is visible, so no reader sees it creator-less.
+            let guard = self.bot.creating(&mine);
             match self.storage_claim(revision, &mine).await {
-                Ok(()) => break,
+                Ok(()) => {
+                    creating = guard;
+                    break;
+                }
                 Err(StoreError::Conflict { .. }) => continue,
                 Err(error) => return Err(error.to_string()),
             }
@@ -533,8 +616,24 @@ impl Owner {
                 Box::pin(async move { owner.create_inner(create, &operation, &scope).await })
             })
             .await?;
+        let _creating = creating;
         match created {
             Created::Created { session } => {
+                // The claim is ours while we create, but confirm before reporting.
+                if let Some(registered) = self
+                    .bot
+                    .read::<Record>(RECORD_KEY)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .1
+                    .filter(|record| record.session_id != session.id)
+                {
+                    self.bot.set_current(Some(registered.session_id.clone()));
+                    return Ok(BotOpened::Opened {
+                        session_id: registered.session_id,
+                        created: false,
+                    });
+                }
                 self.bot.changed.send_replace(());
                 Ok(BotOpened::Opened {
                     session_id: session.id,

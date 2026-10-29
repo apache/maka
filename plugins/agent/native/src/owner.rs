@@ -485,6 +485,14 @@ impl Owner {
                     .with_always_visible(&["GoalStatus"])
                     .map_err(|error| error.to_string())?;
             }
+            // The Bot's only voice and its rules must not hide behind tool discovery.
+            // Other Sessions never select SendUser, so this does not reach them.
+            if settings.bot {
+                catalog.tools = catalog
+                    .tools
+                    .with_always_visible(&[bot::SEND_USER])
+                    .map_err(|error| error.to_string())?;
+            }
             if settings.recall {
                 catalog
                     .planning
