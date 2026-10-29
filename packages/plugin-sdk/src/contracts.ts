@@ -2440,6 +2440,12 @@ export const contracts = {
                     type: 'string',
                     const: 'browser_history',
                   },
+                  {
+                    description:
+                      'File upload consent for a browser origin, independent of reads and downloads.',
+                    type: 'string',
+                    const: 'browser_upload',
+                  },
                 ],
               },
               GrantScope: {
@@ -10094,6 +10100,12 @@ export const contracts = {
                     type: 'string',
                     const: 'browser_history',
                   },
+                  {
+                    description:
+                      'File upload consent for a browser origin, independent of reads and downloads.',
+                    type: 'string',
+                    const: 'browser_upload',
+                  },
                 ],
               },
               GrantScope: {
@@ -16560,6 +16572,12 @@ export const contracts = {
                     type: 'string',
                     const: 'browser_history',
                   },
+                  {
+                    description:
+                      'File upload consent for a browser origin, independent of reads and downloads.',
+                    type: 'string',
+                    const: 'browser_upload',
+                  },
                 ],
               },
               GrantScope: {
@@ -22358,6 +22376,12 @@ export const contracts = {
                       "Read the browser profile's browsing history, independent of page access.",
                     type: 'string',
                     const: 'browser_history',
+                  },
+                  {
+                    description:
+                      'File upload consent for a browser origin, independent of reads and downloads.',
+                    type: 'string',
+                    const: 'browser_upload',
                   },
                 ],
               },
