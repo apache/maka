@@ -399,6 +399,10 @@ pub struct HistorySource {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Chunk {
+    /// The original user input has quotes, directory references or inline references.
+    /// Present only on the first fragment; display text cannot reconstruct these references.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_references: bool,
     /// This body belongs to the final output of a successfully completed native
     /// Turn at the page's fence. Includes every text part and source citation;
     /// absence does not establish liveness or identify an imported final answer.

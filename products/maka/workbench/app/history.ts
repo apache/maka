@@ -42,6 +42,7 @@ export type Row = {
   totalBytes?: number;
   tool?: any;
   attachments?: AgentHistoryAttachment[];
+  hasReferences?: boolean;
   turnId?: string;
   timestamp?: number;
   timing?: HistoryTurnTiming;
@@ -70,6 +71,13 @@ export function openingUserMessage(
       return precedingTurnLoaded ? row : null;
   }
   return null;
+}
+
+/** Whether replaying the displayed text retains all material in the original user input. */
+export function canRegenerateFromText(row: Row): boolean {
+  return (
+    row.attachments !== undefined && row.attachments.length === 0 && row.hasReferences === false
+  );
 }
 
 export function replayStartCursor(
@@ -113,6 +121,7 @@ export function historyMetadata(chunk: any, through: number, previous?: Row) {
     totalBytes: chunk.totalBytes,
     attachments:
       chunk.offset === 0 ? (chunk.attachments ?? []) : (previous?.attachments ?? chunk.attachments),
+    hasReferences: chunk.offset === 0 ? (chunk.hasReferences ?? false) : previous?.hasReferences,
     timing: chunk.timing,
     model: chunk.model,
     finalOutput: chunk.finalOutput,

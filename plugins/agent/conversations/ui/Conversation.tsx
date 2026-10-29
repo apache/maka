@@ -182,10 +182,17 @@ type ConversationProps = {
   client: ScopedHost;
   control: Control;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
-  /** Edit and resend a user message (desktop): fork before its turn with its text. */
-  edit?(action: Extract<SessionAction, { kind: 'fork' }>, text: string): Promise<boolean>;
-  /** Text for an empty draft once it loads, taken once (a fork made to edit a message). */
-  takePrefill?(): string | null;
+  /**
+   * Edit and resend a user message, or regenerate a reply (desktop): fork before
+   * the turn with its text, which the fork sends when `send` is set.
+   */
+  edit?(
+    action: Extract<SessionAction, { kind: 'fork' }>,
+    text: string,
+    send: boolean,
+  ): Promise<boolean>;
+  /** Text for an empty draft once it loads, taken once (a fork made to edit or regenerate). */
+  takePrefill?(): { text: string; send: boolean } | null;
   commands(): void;
   visible(): boolean;
   foreground(): boolean;
@@ -246,8 +253,10 @@ export function Conversation(props: ConversationProps) {
   const client = props.client;
   const sessionId = client.sessionId;
   const rows = signal<Row[]>([]);
+  const loadedOpening = (turnId: string | undefined) =>
+    openingUserMessage(rows(), turnId, historyWindow()?.before);
   const opensTurn = (row: Row) => {
-    const first = openingUserMessage(rows(), row.turnId, historyWindow()?.before);
+    const first = loadedOpening(row.turnId);
     return (
       first !== null &&
       first.position?.sourceSequence === row.position?.sourceSequence &&
@@ -2105,6 +2114,17 @@ export function Conversation(props: ConversationProps) {
   });
   props.attach(ownHandle);
 
+  // A fork made to regenerate a reply sends its prefilled text once sending is possible,
+  // unless the draft was changed first.
+  const autoSend = signal<string | null>(null);
+  effect(() => {
+    const text = autoSend();
+    if (text === null || sendBlockedReason()) return;
+    untracked(() => {
+      autoSend.set(null);
+      if (draft() === text) void send(text);
+    });
+  });
   cleanup(() => {
     alive = false;
     historyIdentity = {};
@@ -2137,8 +2157,9 @@ export function Conversation(props: ConversationProps) {
         draftReady.set(true);
         const prefill = props.takePrefill?.() ?? null;
         if (prefill && stored.text === '' && stored.attachments.length === 0) {
-          changeDraft(prefill);
+          changeDraft(prefill.text);
           props.focusComposer();
+          if (prefill.send) autoSend.set(prefill.text);
         }
         void attachments.start();
         const operations = await pendingSends(client);
@@ -2460,6 +2481,18 @@ export function Conversation(props: ConversationProps) {
                             sessionId={sessionId}
                             through={() => latestKnown}
                             fork={props.fork}
+                            extra={
+                              !platform.isTerminal && props.edit ? (
+                                <MessageEdit
+                                  regenerate
+                                  row={() => loadedOpening(row().turnId)}
+                                  sessionId={sessionId}
+                                  through={() => latestKnown}
+                                  opensTurn={() => true}
+                                  edit={props.edit!}
+                                />
+                              ) : undefined
+                            }
                           />
                         )}
                         editMessage={

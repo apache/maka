@@ -414,18 +414,23 @@ async fn read_page(
             } else {
                 Some(ending)
             };
-            let attachments: Vec<maka_agent_facts::attachment::AttachmentRef> = if start == 0
-                && row.role == "user"
-            {
-                let encoded: Option<String> = sqlx::query_scalar(
-                "SELECT json_extract(payload, '$.attachments') FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
-            ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
-                encoded
-                    .map(|value| serde_json::from_str(&value))
-                    .transpose()?
-                    .unwrap_or_default()
+            let (attachments, has_references) = if start == 0 && row.role == "user" {
+                let (encoded, has_references): (Option<String>, bool) = sqlx::query_as(
+                    "SELECT json_extract(payload, '$.attachments'),
+                        COALESCE(json_array_length(payload, '$.quotes'), 0) > 0
+                        OR COALESCE(json_array_length(payload, '$.directoryReferences'), 0) > 0
+                        OR COALESCE(json_array_length(payload, '$.inlineReferences'), 0) > 0
+                     FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
+                ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
+                (
+                    encoded
+                        .map(|value| serde_json::from_str::<Vec<maka_agent_facts::attachment::AttachmentRef>>(&value))
+                        .transpose()?
+                        .unwrap_or_default(),
+                    has_references,
+                )
             } else {
-                Vec::new()
+                (Vec::new(), false)
             };
             let emit = (!row.hidden || exact_target)
                 && (exact_target
@@ -486,6 +491,7 @@ async fn read_page(
                     (None, false)
                 };
                 let chunk = Chunk {
+                    has_references,
                     field,
                     timing,
                     compaction,

@@ -486,12 +486,13 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
         'The conversation was deleted, but its latest draft is not saved. Return to the draft to check its status.',
       );
   };
-  // Text a fork made to edit a message puts in its draft, taken once by its Conversation.
-  const prefills = new Map<string, string>();
+  // Text a fork made to edit a message or regenerate a reply puts in its draft (and sends),
+  // taken once by its Conversation.
+  const prefills = new Map<string, { text: string; send: boolean }>();
   const changeBrowsedSession = async (
     action: SessionAction,
     origin: string | null,
-    prefill?: string,
+    prefill?: { text: string; send: boolean },
   ): Promise<boolean> => {
     if (!alive || selected() !== origin || switching() || busy())
       throw new UiError('This conversation action is no longer current.');
@@ -1039,11 +1040,11 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                   foreground={foreground}
                   control={control}
                   fork={(action) => changeBrowsedSession(action, id())}
-                  edit={(action, text) => changeBrowsedSession(action, id(), text)}
+                  edit={(action, text, send) => changeBrowsedSession(action, id(), { text, send })}
                   takePrefill={() => {
-                    const text = prefills.get(id()) ?? null;
+                    const prefill = prefills.get(id()) ?? null;
                     prefills.delete(id());
-                    return text;
+                    return prefill;
                   }}
                   commands={inputAction(invokeCommand, {
                     id: 'commands',
