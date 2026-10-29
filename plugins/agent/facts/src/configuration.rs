@@ -33,8 +33,8 @@ pub use model_info::{ModelCapabilities, ModelInfo};
 mod model_validation;
 pub mod policy;
 pub use model_override::{
-    ApiProtocol, ModelModalities, ModelModality, ModelOverride, ModelOverrideCapabilities,
-    RelayServiceTier,
+    ApiProtocol, CatalogModelReference, ModelModalities, ModelModality, ModelOverride,
+    ModelOverrideCapabilities, RelayServiceTier,
 };
 pub mod validation;
 mod vault;

@@ -20,6 +20,7 @@
 mod attachment_draft;
 mod attachment_intake;
 mod attachments;
+mod catalog_association;
 mod compaction;
 mod composer_completion;
 #[cfg(feature = "native-desktop")]

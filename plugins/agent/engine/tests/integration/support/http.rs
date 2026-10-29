@@ -65,6 +65,15 @@ pub async fn read_request_bounded(socket: &mut TcpStream, max_body_bytes: usize)
             .unwrap();
             offset = line_end + 2;
             if size == 0 {
+                while bytes.len() < offset + 2 {
+                    read_more(socket, &mut bytes).await;
+                }
+                assert_eq!(&bytes[offset..offset + 2], b"\r\n");
+                assert_eq!(
+                    bytes.len(),
+                    offset + 2,
+                    "unexpected bytes after request EOF"
+                );
                 break;
             }
             while bytes.len() < offset + size + 2 {

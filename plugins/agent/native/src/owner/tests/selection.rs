@@ -935,3 +935,97 @@ async fn accepted_tool_policy_survives_settings_changes_and_requires_explicit_fi
     fixture.app.shutdown().await.unwrap();
     fixture.config.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn accepted_manual_catalog_association_survives_reassociation_and_restore() {
+    use maka_agent_facts::configuration::CatalogModelReference;
+    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+    let snapshot = maka_providers::catalog::Snapshot::bundled().unwrap();
+    let (provider, model) = snapshot
+        .models(None)
+        .find(|(provider, model)| {
+            *provider == "anthropic"
+                && model.context_window.is_some()
+                && model.max_output_tokens.is_some()
+        })
+        .unwrap();
+    let context = model.context_window;
+    let reference = CatalogModelReference {
+        provider: provider.into(),
+        model_id: model.id.clone(),
+    };
+    *fixture.owner.catalog.snapshot.write().await = Ok(Arc::new(snapshot));
+    edit(&fixture, |changes| {
+        changes.model_overrides = Patch::Set(BTreeMap::from([(
+            "fixture-model".into(),
+            ModelOverride {
+                catalog_model: Some(reference),
+                ..Default::default()
+            },
+        )]));
+    })
+    .await;
+    let (source, prepared) = crate::model::Source::select(
+        fixture.config.clone(),
+        fixture.owner.catalog.clone(),
+        fixture.owner.credentials.clone(),
+        fixture.selection().await,
+        None,
+        "association".into(),
+        fixture.owner.revision.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(prepared.context.unwrap().model_context_window, context);
+    let stored = serde_json::to_string(&source.accepted).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&stored).unwrap()["public_model"]["id"],
+        "fixture-model"
+    );
+    edit(&fixture, |changes| {
+        changes.model_overrides = Patch::Clear;
+    })
+    .await;
+    assert_eq!(
+        source
+            .capture()
+            .await
+            .unwrap()
+            .context
+            .unwrap()
+            .model_context_window,
+        context
+    );
+    let restored = crate::model::Source::restore(
+        fixture.config.clone(),
+        fixture.owner.credentials.clone(),
+        serde_json::from_str(&stored).unwrap(),
+        "association".into(),
+        fixture.owner.revision.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        restored
+            .capture()
+            .await
+            .unwrap()
+            .context
+            .unwrap()
+            .model_context_window,
+        context
+    );
+    let (_, next) = crate::model::Source::select(
+        fixture.config.clone(),
+        fixture.owner.catalog.clone(),
+        fixture.owner.credentials.clone(),
+        fixture.selection().await,
+        None,
+        "next".into(),
+        fixture.owner.revision.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(next.context.unwrap().model_context_window, None);
+    fixture.app.shutdown().await.unwrap();
+    fixture.config.shutdown().await.unwrap();
+}
