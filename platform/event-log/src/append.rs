@@ -36,6 +36,11 @@ pub(crate) enum ComputerLane {
     Other,
 }
 
+pub(crate) struct ComputerAppDispatch<'a> {
+    pub(crate) target: &'a maka_agent_facts::interaction::GrantTarget,
+    pub(crate) display: &'a maka_agent_facts::interaction::ComputerAppDisplay,
+}
+
 struct CapabilityAdmission {
     lane: ComputerLane,
     targets: Vec<maka_agent_facts::interaction::GrantTarget>,
@@ -96,8 +101,7 @@ impl EventLog {
         prefix: &[EventWrite],
         event: &EventWrite,
         targets: &[maka_agent_facts::interaction::GrantTarget],
-        app: &maka_agent_facts::interaction::GrantTarget,
-        display: &maka_agent_facts::interaction::ComputerAppDisplay,
+        app: ComputerAppDispatch<'_>,
         basis: &maka_agent_facts::workspace::PermissionBasis,
         lane: ComputerLane,
     ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
@@ -106,7 +110,7 @@ impl EventLog {
             event,
             targets,
             basis,
-            Some((app.clone(), display.clone())),
+            Some((app.target.clone(), app.display.clone())),
             lane,
         )
         .await
