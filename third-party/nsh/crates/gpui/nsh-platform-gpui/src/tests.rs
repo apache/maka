@@ -382,6 +382,8 @@ fn wait_for(view: &Entity<AppView>, cx: &mut VisualTestContext, text: &str) {
 fn windows(cx: &mut TestAppContext) {
     // The engine (and the settings portal) run on threads of their own.
     cx.executor().allow_parking();
+    #[cfg(windows)]
+    windows_title_drag_press_reaches_the_system(cx);
     text_typed_ahead_of_enter_or_a_binding_lands_in_the_next_field(cx);
     keys_reach_the_fields_of_a_surface_showing_a_native_component(cx);
     #[cfg(feature = "dev")]
@@ -405,6 +407,46 @@ fn windows(cx: &mut TestAppContext) {
     an_auto_hidden_menu_bar_shows_on_alt_alone_and_while_a_menu_is_open(cx);
     asset_uris_resolve_in_the_first_directory_that_has_the_file(cx);
     releasing_shift_before_alt_keeps_the_auto_hidden_menu_bar_hidden(cx);
+}
+
+#[cfg(windows)]
+fn windows_title_drag_press_reaches_the_system(cx: &mut TestAppContext) {
+    for hidden in [false, true] {
+        let source = format!(
+            r#"
+import {{ mount, View }} from "nsh";
+import {{ Input }} from "nsh/base";
+import {{ Window }} from "nsh/desktop";
+{titlebar}
+mount(() => <View desktop={{{{windowDrag: true}}}} style={{{{height: 48}}}}><Input autoFocus value="ready" style={{{{width: 100, height: 30}}}} /></View>);
+"#,
+            titlebar = if hidden {
+                "Window.setTitleBar({ style: \"hidden\", height: 48 });"
+            } else {
+                ""
+            }
+        );
+        let code = nsh_bundler::compile_module("App.tsx", &source, &[]).unwrap();
+        let (view, cx) = owned_view(cx, AppOptions::default(), code, |_| {});
+        wait_for(&view, cx, "ready");
+        let position = gpui::point(gpui::px(300.0), gpui::px(if hidden { 24.0 } else { 16.0 }));
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::default());
+        let result = cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                    button: gpui::MouseButton::Left,
+                    position,
+                    click_count: 1,
+                    ..Default::default()
+                }),
+                cx,
+            )
+        });
+        assert!(
+            result.propagate,
+            "the native title drag press must reach Windows (hidden={hidden})"
+        );
+    }
 }
 
 fn multiline_fields_keep_file_bytes_and_enter_line_endings(cx: &mut TestAppContext) {
