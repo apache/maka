@@ -230,4 +230,6 @@ export interface ComposerViewInput<Element = unknown> {
   chooseWorkspace(): void;
   settings(): void;
   dropFiles?(drop: (event: { uris: string[] }) => void): void;
+  /** Files dragged from another application are over the conversation. */
+  fileDragging?(): boolean;
 }

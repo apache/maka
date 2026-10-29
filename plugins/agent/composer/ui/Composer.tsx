@@ -38,6 +38,7 @@ import {
   controlStyle,
 } from '../../../../products/maka/workbench/app/ui';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
+import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
 import logo from '../../../../products/maka/workbench/app/assets/maka.png';
 
@@ -78,6 +79,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   const cardRoot = signal<ViewRef | null>(null);
   // The todo dock sits on the composer and takes its top corners.
   const joined = signal(false);
+  // A file drag over the editor leaves the conversation's own drop target.
+  const draggingOverEditor = signal(false);
+  const fileDragging = () =>
+    !platform.isTerminal &&
+    props.session() !== null &&
+    (draggingOverEditor() || (props.fileDragging?.() ?? false));
   effect(() => {
     const owner = props.session();
     const node = cardRoot();
@@ -290,7 +297,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             borderRadius: compact() ? 16 : 24,
             ...(joined() ? { borderTopLeftRadius: 0, borderTopRightRadius: 0 } : {}),
             borderWidth: 1,
-            borderColor: C.line,
+            borderColor: fileDragging() ? C.accent : C.line,
             paddingHorizontal: 16,
             paddingTop: 12,
             paddingBottom: 8,
@@ -351,7 +358,16 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                       readonly={!owner?.editable()}
                       onChange={owner ? ({ value }) => completion.change(owner, value) : undefined}
                       onPaste={owner ? (event) => completion.paste(owner, event) : undefined}
-                      onFileDrop={owner ? (event) => completion.drop(owner, event) : undefined}
+                      onFileDrop={
+                        owner
+                          ? (event) => {
+                              draggingOverEditor.set(false);
+                              completion.drop(owner, event);
+                            }
+                          : undefined
+                      }
+                      onFileDragEnter={owner ? () => draggingOverEditor.set(true) : undefined}
+                      onFileDragLeave={owner ? () => draggingOverEditor.set(false) : undefined}
                       onFocus={owner ? () => completion.pasteFocus(owner) : undefined}
                       onBlur={owner ? () => completion.pasteBlur(owner) : undefined}
                       onSelectionChange={
@@ -458,6 +474,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               />
             </Button>
           </View>
+          <If when={fileDragging()}>
+            <FileDropHint radius={compact() ? 16 : 24} />
+          </If>
           <ComposerCompletion state={completion} />
         </View>
         {/* The terminal reserves the warning row so the composer never jumps; the
