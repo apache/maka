@@ -256,7 +256,6 @@ pub(crate) async fn validate(
             return Err(invalid("duplicate partial tool-input display identity"));
         }
         provider_identity(&input.id)?;
-        validate_display_identity(connection, event, &input.message_id).await?;
         if input.message_id
             != maka_agent_facts::tool_call::tool_use_id(
                 &event.invocation.invocation_id,
@@ -267,6 +266,13 @@ pub(crate) async fn validate(
                 "tool-input identity differs from its original call",
             ));
         }
+        validate_derived_tool_identity(
+            connection,
+            event,
+            &input.message_id,
+            &format!("{step}:{}", input.id),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -295,33 +301,52 @@ async fn validate_display_identity(
     }
 }
 
+async fn validate_derived_tool_identity(
+    connection: &mut SqliteConnection,
+    event: &RuntimeEvent,
+    message: &str,
+    operation: &str,
+) -> Result<(), StoreError> {
+    if message == event.id {
+        return Err(invalid("part identity collides with its canonical event"));
+    }
+    crate::message_identity::validate_derived_tool_id(
+        connection,
+        &event.invocation.session_id,
+        message,
+        &event.invocation.invocation_id,
+        operation,
+    )
+    .await
+}
+
 async fn check_record(
     connection: &mut SqliteConnection,
     event: &RuntimeEvent,
     step: &str,
     record: &ModelPartRecord,
 ) -> Result<(), StoreError> {
-    let ordinal = i64::try_from(record.ordinal).map_err(invalid)?;
-    validate_display_identity(connection, event, &record.message_id).await?;
-    let duplicate: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM model_part_records WHERE invocation_id=? AND step_id=? AND ordinal=?)",
-    ).bind(&event.invocation.invocation_id).bind(step).bind(ordinal).fetch_one(&mut *connection).await?;
-    if duplicate {
-        return Err(invalid("observed part requires a reference at terminal"));
-    }
     if let ModelPart::ToolCall { call } = record.part.as_ref() {
         provider_identity(&call.id)?;
         if call.name.is_empty() {
             return Err(invalid("empty model tool name"));
         }
+        let operation = format!("{step}:{}", call.id);
         if record.message_id
-            != maka_agent_facts::tool_call::tool_use_id(
-                &event.invocation.invocation_id,
-                &format!("{step}:{}", call.id),
-            )
+            != maka_agent_facts::tool_call::tool_use_id(&event.invocation.invocation_id, &operation)
         {
             return Err(invalid("tool part identity differs from its original call"));
         }
+        validate_derived_tool_identity(connection, event, &record.message_id, &operation).await?;
+    } else {
+        validate_display_identity(connection, event, &record.message_id).await?;
+    }
+    let ordinal = i64::try_from(record.ordinal).map_err(invalid)?;
+    let duplicate: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM model_part_records WHERE invocation_id=? AND step_id=? AND ordinal=?)",
+    ).bind(&event.invocation.invocation_id).bind(step).bind(ordinal).fetch_one(&mut *connection).await?;
+    if duplicate {
+        return Err(invalid("observed part requires a reference at terminal"));
     }
     Ok(())
 }
