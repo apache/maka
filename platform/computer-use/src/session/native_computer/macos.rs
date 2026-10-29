@@ -268,7 +268,7 @@ impl Session {
         let application = record.application.clone();
         let window = record.window.retained().map(str::to_owned);
         record.state = MacApplicationState::Retiring { error: None };
-        let result = async {
+        let result: Result<(), ToolError> = async {
             application.release().await?;
             if let Some(handle) = window
                 && self.targets.contains_key(&handle)
