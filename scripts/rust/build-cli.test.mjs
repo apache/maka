@@ -24,6 +24,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { dirname, join } from 'node:path';
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { buildCli, rustTarget, stageDesktopBundle, workspaceVersion } from './build-cli.mjs';
 
@@ -67,10 +68,23 @@ test('CLI builds use the requested target and artifact path', async (t) => {
   process.env.CARGO_TARGET_DIR = 'target/isolated release';
   let invocation;
   let exitCode = 0;
+  let executable;
   t.mock.method(childProcess, 'spawn', (command, args, options) => {
     invocation = { command, args, options };
     const child = new EventEmitter();
-    queueMicrotask(() => child.emit('exit', exitCode, null));
+    child.stdout = new PassThrough();
+    queueMicrotask(() => {
+      if (exitCode === 0)
+        child.stdout.write(
+          JSON.stringify({
+            reason: 'compiler-artifact',
+            target: { name: 'maka', kind: ['bin'] },
+            executable,
+          }) + '\n',
+        );
+      child.stdout.end();
+      child.emit('exit', exitCode, null);
+    });
     return child;
   });
   syncBuiltinESMExports();
@@ -88,13 +102,14 @@ test('CLI builds use the requested target and artifact path', async (t) => {
     'x86_64-pc-windows-msvc',
   ]) {
     const triple = target ?? rustTarget();
-    const linux = triple.includes('-linux-');
+    const linux = target !== undefined && triple.includes('-linux-');
     const directory = join(root, process.env.CARGO_TARGET_DIR);
     const binaryDirectory = join(directory, ...(linux || target ? [triple] : []), 'release');
     const macos = triple.includes('-apple-darwin');
     await mkdir(binaryDirectory, { recursive: true });
     await writeFile(join(binaryDirectory, 'maka-desktop-shell'), 'shell bytes');
-    const output = await buildCli({ release: true, target, repositoryRoot: root });
+    executable = join(binaryDirectory, triple.includes('-windows-') ? 'maka.exe' : 'maka');
+    const output = await buildCli({ release: true, target, timings: true, repositoryRoot: root });
     // The workbench is compiled into the shell: nothing is staged beside it.
     await assert.rejects(lstat(join(dirname(output), 'app')), { code: 'ENOENT' });
     if (macos) {
@@ -137,10 +152,10 @@ test('CLI builds use the requested target and artifact path', async (t) => {
       'maka-desktop-shell',
       '-p',
       'maka-python-runtime',
-      '--target-dir',
-      directory,
       '--release',
+      '--timings',
       ...(linux ? ['--target', triple + '.2.28'] : target ? ['--target', target] : []),
+      '--message-format=json',
     ]);
     assert.equal(
       output,
@@ -152,11 +167,17 @@ test('CLI builds use the requested target and artifact path', async (t) => {
       ),
     );
   }
-  await mkdir(join(root, 'target/debug'), { recursive: true });
-  await writeFile(join(root, 'target/debug/maka-desktop-shell'), 'shell bytes');
+  const development = join(root, process.env.CARGO_TARGET_DIR, 'debug');
+  await mkdir(development, { recursive: true });
+  await writeFile(join(development, 'maka-desktop-shell'), 'shell bytes');
+  executable = join(development, process.platform === 'win32' ? 'maka.exe' : 'maka');
   assert.equal(
-    await buildCli({ repositoryRoot: root }),
-    join(root, 'target/debug', process.platform === 'win32' ? 'maka.exe' : 'maka'),
+    await buildCli({
+      repositoryRoot: root,
+      timings: true,
+      env: { ...process.env, MAKA_CUA_BUILD_MODE: 'native' },
+    }),
+    executable,
   );
   assert.deepEqual(invocation.args, [
     'build',
@@ -167,8 +188,8 @@ test('CLI builds use the requested target and artifact path', async (t) => {
     'maka-desktop-shell',
     '-p',
     'maka-python-runtime',
-    '--target-dir',
-    join(root, 'target'),
+    '--timings',
+    '--message-format=json',
   ]);
   const sourceEnv = { MAKA_JS_DEPS: sourceRoot };
   await mkdir(join(sourceRoot, 'target/aarch64-apple-darwin/release'), { recursive: true });
@@ -176,6 +197,7 @@ test('CLI builds use the requested target and artifact path', async (t) => {
     join(sourceRoot, 'target/aarch64-apple-darwin/release/maka-desktop-shell'),
     'shell bytes',
   );
+  executable = join(sourceRoot, 'target/aarch64-apple-darwin/release/maka');
   assert.equal(
     await buildCli({
       release: true,

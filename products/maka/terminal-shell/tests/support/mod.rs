@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::UnsyncBoxBody};
 use hyper::{
     Method, Request, Response,
@@ -138,6 +138,9 @@ async fn add_product_ui(plan: &mut Value, packages: &mut Vec<Package>, deploymen
     if let Some(processes) = plan["instances"].get("processes") {
         configuration["processes"] = processes["configuration"]["values"].clone();
     }
+    if let Some(computer) = plan["instances"].get("computer") {
+        configuration["computer"] = computer["configuration"]["values"].clone();
+    }
     let source = tokio::task::spawn_blocking(|| {
         std::fs::read_to_string(
             PathBuf::from(env!("OUT_DIR")).join("product/authoring/composition.mjs"),
@@ -252,12 +255,25 @@ enum InitialCatalog {
 enum AdditionalServices {
     None,
     ManagementTools,
+    ComputerTools,
     #[cfg(unix)]
     Terminals,
     ObservedGateway(gateway::Publications),
 }
 
 impl Fixture {
+    pub async fn computer_tools() -> Self {
+        Self::open_with_services(
+            false,
+            false,
+            InitialCatalog::Configured { reasoning: false },
+            false,
+            None,
+            None,
+            AdditionalServices::ComputerTools,
+        )
+        .await
+    }
     pub async fn management_tools() -> Self {
         Self::open_with_services(
             false,
@@ -400,9 +416,11 @@ impl Fixture {
         file_tool: Option<Value>,
         services: AdditionalServices,
     ) -> Self {
+        let computer_tools = matches!(&services, AdditionalServices::ComputerTools);
         let (terminals, gateway_publications, management_tools) = match services {
             AdditionalServices::None => (false, None, false),
             AdditionalServices::ManagementTools => (false, None, true),
+            AdditionalServices::ComputerTools => (false, None, false),
             #[cfg(unix)]
             AdditionalServices::Terminals => (true, None, false),
             AdditionalServices::ObservedGateway(published) => (false, Some(published), false),
@@ -426,7 +444,7 @@ impl Fixture {
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let selection = match catalog {
             InitialCatalog::Configured { reasoning } => {
-                configure(owner.clone(), &base, images, reasoning).await
+                configure(owner.clone(), &base, images || computer_tools, reasoning).await
             }
             InitialCatalog::Empty => Value::Null,
         };
@@ -469,6 +487,12 @@ impl Fixture {
         if management_tools {
             agent_imports["ui"] =
                 json!({"contract":management_contract,"cardinality":{"kind":"one"}});
+        }
+        if computer_tools {
+            agent_imports["computer"] = json!({
+                "contract":maka_workspace_api::computer::contract(),
+                "cardinality":{"kind":"one"}
+            });
         }
         let agent = package(
             "test.nsh.agent",
@@ -565,13 +589,13 @@ impl Fixture {
             })
         };
         let deployment = Uuid::new_v4();
-        let tools = if management_tools {
+        let tools = if management_tools || computer_tools {
             Value::Array(
                 product_installation(&workspace).await["agent"]["tools"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .filter(|tool| tool["import"] == "ui")
+                    .filter(|tool| tool["import"] == if computer_tools { "computer" } else { "ui" })
                     .cloned()
                     .collect(),
             )
@@ -582,7 +606,7 @@ impl Fixture {
         } else {
             json!([])
         };
-        let permissions = if file_tool.is_some() {
+        let permissions = if file_tool.is_some() || computer_tools {
             // File-tool workflows use the product's real fresh-installation
             // policy, so an allowed write exercises its default authority.
             product_installation(&workspace).await["agent"]["permissions"].clone()
@@ -646,6 +670,23 @@ impl Fixture {
             gateway,
             manager,
         ];
+        if computer_tools {
+            let computer = package(
+                "test.nsh.computer",
+                maka_workspace_api::computer::IMPLEMENTATION,
+                maka_workspace_api::computer::configuration_schema(),
+                json!({}),
+                json!({"computer":{
+                    "contract":maka_workspace_api::computer::contract(),
+                    "availability":"required"
+                }}),
+            );
+            plan["instances"]["computer"] =
+                node(&computer, 20, json!({"desktop":"local"}), json!({}));
+            plan["instances"]["agent"]["bindings"]["computer"] =
+                json!([{"kind":"instance","path":["computer"],"export":"computer"}]);
+            packages.push(computer);
+        }
         let outcomes = product_package("skill-outcomes").await;
         let logs = product_package("host-logs").await;
         plan["instances"]["skill-outcomes"] = node(&outcomes, 15, json!({}), json!({}));
@@ -756,6 +797,8 @@ impl Fixture {
                                 "computerApps",
                                 "stopComputerApp",
                                 "execution",
+                                "resume",
+                                "diagnostics",
                                 "queue",
                                 "queueMessage",
                                 "editQueue",
@@ -884,7 +927,18 @@ impl Fixture {
                     )
                 }))
                 .collect(),
-                native: if management_tools {
+                native: if computer_tools {
+                    vec![NativeGrant {
+                        origin: InstanceId(vec![Uuid::from_u128(1)]),
+                        consumer: InstanceId(vec![Uuid::from_u128(1)]),
+                        provider: InstanceId(vec![Uuid::from_u128(20)]),
+                        export: maka_workspace_api::computer::EXPORT.into(),
+                        methods: ["evaluate".into(), "reset".into(), "state".into()]
+                            .into_iter()
+                            .collect(),
+                        recovery: true,
+                    }]
+                } else if management_tools {
                     vec![NativeGrant {
                         origin: InstanceId(vec![Uuid::from_u128(1)]),
                         consumer: InstanceId(vec![Uuid::from_u128(1)]),
@@ -1193,10 +1247,23 @@ pub async fn mutate(client: &Client, method: &str, input: Value) -> Value {
 pub struct ModelRequest {
     pub body: Value,
     pub tool_schema_error: Option<String>,
-    response: mpsc::Sender<Bytes>,
+    response: mpsc::Sender<ModelReply>,
     completed: Arc<Notify>,
 }
 type ModelBody = UnsyncBoxBody<Bytes, Infallible>;
+
+enum ModelReply {
+    Event(Bytes),
+    Rejected(Value),
+}
+
+fn model_http_error(body: Value) -> Response<ModelBody> {
+    Response::builder()
+        .status(hyper::StatusCode::BAD_REQUEST)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(body.to_string())).boxed_unsync())
+        .unwrap()
+}
 
 impl ModelRequest {
     async fn serve(
@@ -1257,13 +1324,7 @@ impl ModelRequest {
                             .join("\n")
                     })
                     .filter(|error| !error.is_empty());
-                let (response, receiver) = mpsc::channel(1);
-                let events = stream::unfold(receiver, |mut receiver| async move {
-                    receiver
-                        .recv()
-                        .await
-                        .map(|bytes| (Ok::<_, Infallible>(Frame::data(bytes)), receiver))
-                });
+                let (response, mut receiver) = mpsc::channel(1);
                 count.fetch_add(1, Ordering::SeqCst);
                 requests
                     .send(Self {
@@ -1275,15 +1336,27 @@ impl ModelRequest {
                     .await
                     .unwrap();
                 if let Some(message) = tool_schema_error {
-                    return Ok(Response::builder()
-                        .status(hyper::StatusCode::BAD_REQUEST)
-                        .header(hyper::header::CONTENT_TYPE, "application/json")
-                        .body(Full::new(Bytes::from(
-                            json!({"error":{"type":"invalid_request_error","code":"invalid_function_parameters","message":message}})
-                                .to_string(),
-                        )).boxed_unsync())
-                        .unwrap());
+                    return Ok(model_http_error(json!({"error":{
+                        "type":"invalid_request_error",
+                        "code":"invalid_function_parameters",
+                        "message":message
+                    }})));
                 }
+                let first = match receiver.recv().await {
+                    Some(ModelReply::Event(bytes)) => Some(bytes),
+                    Some(ModelReply::Rejected(body)) => return Ok(model_http_error(body)),
+                    None => None,
+                };
+                let events = stream::iter(first)
+                    .chain(stream::unfold(receiver, |mut receiver| async move {
+                        receiver.recv().await.map(|reply| {
+                            let ModelReply::Event(bytes) = reply else {
+                                panic!("HTTP status cannot change after streaming starts");
+                            };
+                            (bytes, receiver)
+                        })
+                    }))
+                    .map(|bytes| Ok::<_, Infallible>(Frame::data(bytes)));
                 Ok(Response::builder()
                     .header(hyper::header::CONTENT_TYPE, "text/event-stream")
                     .body(StreamBody::new(events).boxed_unsync())
@@ -1304,7 +1377,10 @@ impl ModelRequest {
     async fn packet(&mut self, value: Value) {
         let data = format!("data: {value}\n\n");
         // The Agent may cancel an in-flight response and close its HTTP body.
-        let _ = self.response.send(Bytes::from(data)).await;
+        let _ = self
+            .response
+            .send(ModelReply::Event(Bytes::from(data)))
+            .await;
     }
     pub async fn delta(&mut self, text: &str) {
         self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]})).await;
@@ -1337,11 +1413,20 @@ impl ModelRequest {
         self.completed.notified().await;
     }
 
+    pub async fn http_error(self, body: Value) {
+        self.response
+            .send(ModelReply::Rejected(body))
+            .await
+            .unwrap();
+        drop(self.response);
+        self.completed.notified().await;
+    }
+
     async fn finish_with_reason(mut self, reason: &str) {
         self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}})).await;
         let _ = self
             .response
-            .send(Bytes::from_static(b"data: [DONE]\n\n"))
+            .send(ModelReply::Event(Bytes::from_static(b"data: [DONE]\n\n")))
             .await;
         drop(self.response);
         self.completed.notified().await;

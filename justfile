@@ -17,86 +17,117 @@
 
 set positional-arguments
 
+# Show recipes grouped by workflow.
 default:
-    @just --list
+    @just --list --unsorted
 
-# Install product authoring and plugin tooling.
+# Install locked JavaScript dependencies when their inputs or installation changed.
+[group('Development')]
 setup:
-    npm ci --no-audit --no-fund
+    node scripts/setup.mjs
 
-# Export the product using the checkout's current UI compiler.
-product *args:
-    npm --workspace @maka-agent/product run build -- "$@"
-
-# Run the native CLI or TUI.
-run *args:
+# Build and run Maka with the local native or bridge capabilities.
+[group('Development')]
+run *args: setup
     node scripts/rust/run-cli.mjs "$@"
 
-# Build the native CLI and desktop shell (--release / --target).
-build *args:
+# Build Maka, the desktop shell and Python worker (--release / --target / --timings).
+[group('Development')]
+build *args: setup
     node scripts/rust/build-cli.mjs "$@"
 
-# Check all maintained code and behavior.
-check: fmt-check lint typecheck test-js test test-termina licenses
+# Export the selected plugins using the lightweight NSH compiler.
+[group('Development')]
+product *args: setup
+    npm --workspace @maka-agent/product run build -- "$@"
 
-fmt:
+# Check all maintained source and behavior; setup runs once for the dependency graph.
+[group('Checks')]
+check: setup fmt-check lint typecheck test-js test test-termina licenses
+
+# Format Rust, JavaScript, TypeScript and project metadata.
+[group('Checks')]
+fmt: setup
     cargo fmt --all
     node node_modules/@biomejs/biome/bin/biome format --write .
 
-fmt-check:
+# Verify formatting without rewriting files.
+[group('Checks')]
+fmt-check: setup
     cargo fmt --all -- --check
     node node_modules/@biomejs/biome/bin/biome format .
 
-lint:
+# Run strict Rust and JavaScript lint checks.
+[group('Checks')]
+lint: setup
     cargo clippy --config 'build.warnings="deny"' --locked --workspace --all-targets
     node node_modules/@biomejs/biome/bin/biome lint .
 
-typecheck:
+# Verify generated contracts and TypeScript consumers.
+[group('Checks')]
+typecheck: setup
     npm --workspace @maka-agent/plugin-sdk run schema:check
     npm --workspace @maka-agent/plugin-sdk run typecheck
     npm --workspace @maka-agent/product run typecheck
 
-test *args:
+# Run Rust behavior tests; pass nextest filters after the recipe name.
+[group('Checks')]
+test *args: setup
     cargo nextest run --locked --workspace "$@"
 
+# Check the vendored terminal input library with the shared Cargo artifacts.
+[group('Checks')]
 test-termina:
     cargo test --locked --manifest-path third-party/termina/Cargo.toml --lib --target-dir "${CARGO_TARGET_DIR:-target}"
 
-test-js:
+# Check tooling and the exported product; native CLI composition is a Rust integration test.
+[group('Checks')]
+test-js: setup
     node --test scripts/*.test.mjs scripts/rust/*.test.mjs packages/cli/tests/*.test.mjs
     npm --workspace @maka-agent/product test
 
-licenses:
+# Verify source headers and the reviewed dependency and notice snapshots.
+[group('Checks')]
+licenses: setup
     node scripts/asf-license-headers.mjs check
     node scripts/rust/dependencies.mjs check
     node scripts/rust/notices.mjs check
 
 # Build a source-bound native npm package without publishing.
-package source target build_id output="native-preview":
+[group('Release')]
+package source target build_id output="native-preview": setup
     node scripts/rust/release-cli.mjs --source "$1" --target "$2" --build-id "$3" --output "$4"
 
 # Assemble and verify the launcher after all native packages have been built.
-release-prepare directory="native-preview":
+[group('Release')]
+release-prepare directory="native-preview": setup
     node scripts/rust/pack-launcher.mjs "$1"
     node scripts/rust/publish-cli.mjs "$1"
 
 # Install and exercise the prepared release on this platform, offline.
-release-check directory="native-preview":
+[group('Release')]
+release-check directory="native-preview": setup
     node scripts/rust/verify-release.mjs "$1"
 
 # Publish the verified platform set and launcher.
-publish directory="native-preview" *args:
+[group('Release')]
+publish directory="native-preview" *args: setup
     node scripts/rust/publish-cli.mjs "$@" --publish
 
-source version revision="HEAD":
+# Create a reviewed ASF source archive.
+[group('Release')]
+source version revision="HEAD": setup
     node scripts/asf-source-release.mjs create --version "$1" --revision "$2"
 
-# The website has its own manifest, lockfile and dependencies.
+# The website has its own manifest and lockfile.
+[group('Website')]
 website-setup:
     npm --prefix website ci --no-audit --no-fund
 
+[group('Website')]
 website-dev *args:
     npm --prefix website run dev -- "$@"
 
+[group('Website')]
 website-check:
     npm --prefix website run test:dist

@@ -79,6 +79,7 @@ members = [
     "plugins/workspace/workspace-web/native",
     "plugins/workspace/workspace-computer/native",
     "plugins/workhub/core",
+    "tools/ui-build",
 ]
 resolver = "3"
 
@@ -103,6 +104,7 @@ nsh-platform-gpui = { path = "third-party/nsh/crates/gpui/nsh-platform-gpui", de
 nsh-gpui-terminal = { path = "third-party/nsh/crates/gpui/nsh-gpui-terminal" }
 nsh-bundler = { path = "third-party/nsh/crates/nsh-bundler", default-features = false }
 nsh-base = { path = "third-party/nsh/crates/nsh-base" }
+maka-ui-build = { path = "tools/ui-build" }
 maka-agent-facts = { path = "plugins/agent/facts" }
 maka-packages = { path = "platform/packages" }
 maka-agent-ports = { path = "plugins/agent/ports" }
@@ -209,6 +211,10 @@ uuid = { version = "1.29.0", features = ["v4", "v7", "serde"] }
 debug = "line-tables-only"
 # Keep application code quick to rebuild and straightforward to debug.
 opt-level = 0
+
+# Share dependencies between the UI compiler, build scripts and development binaries.
+[profile.dev.build-override]
+debug = "line-tables-only"
 
 # Dependency workspaces' profiles are ignored here. Keep the VM and layout
 # engines optimized, as NSH does in its own development builds.

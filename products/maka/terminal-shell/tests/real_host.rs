@@ -27,6 +27,9 @@ mod attachments;
 mod compaction;
 #[path = "real_host/composer_completion.rs"]
 mod composer_completion;
+#[cfg(feature = "native-desktop")]
+#[path = "real_host/computer.rs"]
+mod computer;
 #[path = "real_host/final_actions.rs"]
 mod final_actions;
 #[path = "real_host/interactions.rs"]
@@ -3687,6 +3690,11 @@ async fn production_sixel_negotiates_from_real_queries_and_resize_keeps_unicode_
         terminal.send(b"\x1b");
         terminal.wait_for_absent("×").await;
         terminal.wait_for_absent("Loading session history").await;
+        // Session history and the client draft load independently. Focus the
+        // ready editor before exercising reply/paste demultiplexing.
+        terminal.wait_for("Message or run a task…").await;
+        terminal.wait_for_absent("Loading the saved draft").await;
+        terminal.click_text("Message or run a task…");
         // Drafts belong to the client journal, not the Host. Observe the actual
         // binary's journal rather than the fixture client's separate client.db.
         let terminal_client = Client::new(

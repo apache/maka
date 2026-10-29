@@ -58,6 +58,21 @@ async fn a_late_original_upload_read_cannot_restore_a_removed_draft_attachment()
         // The payload is an actual recorded Host operation. Only delivery of its
         // already-started read is held, so this exercises the observer race
         // without inventing an upload result or a second persistence authority.
+        let build = fixture.directory.path().join("attachment-draft-ui");
+        let compiled = tokio::task::spawn_blocking(move || {
+            maka_ui_build::compile(
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../terminal-shell/tests/fixtures/attachment-draft.tsx"),
+                &build,
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            compiled.assets.is_empty(),
+            "the draft fixture has no assets"
+        );
         let package = Package::new(BTreeMap::from([
             (
                 "maka.extension.json".into(),
@@ -78,10 +93,7 @@ async fn a_late_original_upload_read_cannot_restore_a_removed_draft_attachment()
                 }))
                 .unwrap(),
             ),
-            (
-                "ui.js".into(),
-                include_bytes!(concat!(env!("OUT_DIR"), "/attachment-draft-fixture.js")).to_vec(),
-            ),
+            ("ui.js".into(), std::fs::read(compiled.module).unwrap()),
         ]))
         .unwrap();
         fixture

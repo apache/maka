@@ -8338,6 +8338,11 @@ export interface AgentQueueMutation {
 }
 export interface AgentHistoryChunk {
   /**
+   * The original user input has quotes, directory references or inline references.
+   * Present only on the first fragment; display text cannot reconstruct these references.
+   */
+  hasReferences?: boolean;
+  /**
    * Part of the successfully completed native Turn's final output at `through`.
    * Includes all body parts and source citations; never a Thinking field.
    */

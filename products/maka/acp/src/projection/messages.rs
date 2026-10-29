@@ -93,6 +93,7 @@ mod tests {
         let canonical = format!("{text}尾");
         let chunk = HistoryChunk {
             final_output: false,
+            has_references: false,
             model: None,
             origin: None,
             compaction: None,
@@ -129,6 +130,7 @@ mod tests {
         );
         let mut chunk = HistoryChunk {
             final_output: false,
+            has_references: false,
             model: None,
             origin: None,
             compaction: None,
@@ -183,6 +185,7 @@ mod tests {
         let mut projection = Projection::default();
         let chunk = HistoryChunk {
             final_output: false,
+            has_references: false,
             model: None,
             origin: None,
             compaction: None,
@@ -209,6 +212,7 @@ mod tests {
         let mut projection = Projection::default();
         let chunk = HistoryChunk {
             final_output: false,
+            has_references: false,
             model: None,
             origin: Some(maka_agent_facts::message::MessageOrigin::WorkhubTask {
                 task_id: "task-original".into(),
@@ -261,6 +265,7 @@ mod tests {
         let mut projection = Projection::default();
         let mut chunk = HistoryChunk {
             final_output: false,
+            has_references: false,
             model: None,
             origin: None,
             compaction: None,

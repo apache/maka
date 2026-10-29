@@ -171,6 +171,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   const recoveredFork = signal<{ id: string; title: string } | null>(null);
   const handle = signal<ConversationHandle | null>(null);
   let dropFiles: ((event: { uris: string[] }) => void) | null = null;
+  const fileDragging = signal(false);
   let editor: { focus(): void } | undefined;
   const composerSession = computed(() => {
     const owner = handle();
@@ -485,7 +486,14 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
         'The conversation was deleted, but its latest draft is not saved. Return to the draft to check its status.',
       );
   };
-  const changeBrowsedSession = async (action: SessionAction, origin: string | null) => {
+  // Text a fork made to edit a message or regenerate a reply puts in its draft (and sends),
+  // taken once by its Conversation.
+  const prefills = new Map<string, { text: string; send: boolean }>();
+  const changeBrowsedSession = async (
+    action: SessionAction,
+    origin: string | null,
+    prefill?: { text: string; send: boolean },
+  ): Promise<boolean> => {
     if (!alive || selected() !== origin || switching() || busy())
       throw new UiError('This conversation action is no longer current.');
     const owner = handle();
@@ -501,11 +509,16 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       throw new UiError('This conversation action is no longer current.');
     const source = { sessionId: origin, instance: overlay()?.instance ?? null };
     const result = await performSessionAction(control, action);
-    if (!alive) return;
+    if (!alive) return false;
+    let opened = false;
     if (result.kind === 'removed') await removeSelected(result.sessionId);
-    else if (result.kind === 'forked') await switchSession(result.session.id, source);
-    else if (handle()?.sessionId === result.session.id) await handle()!.refresh();
+    else if (result.kind === 'forked') {
+      if (prefill !== undefined) prefills.set(result.session.id, prefill);
+      opened = await switchSession(result.session.id, source);
+      if (!opened) prefills.delete(result.session.id);
+    } else if (handle()?.sessionId === result.session.id) await handle()!.refresh();
     await browsing.refresh();
+    return opened;
   };
   const stop = ({
     sessionId,
@@ -852,6 +865,21 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     previousWidth = width;
   });
   void refreshControls().catch(report);
+  // Whether the Host has no model connection, read each time the composer is
+  // shown again (back from Settings, too): the start pane then asks for one.
+  const noConnections = signal(false);
+  let connectionRead = 0;
+  effect(() => {
+    if (overlay() !== null || !(shell()?.visible() ?? false)) return;
+    const read = ++connectionRead;
+    void host
+      .query('settings', 'connections', { kind: 'start' })
+      .then((result) => {
+        if (!alive || read !== connectionRead || result.kind === 'changed') return;
+        noConnections.set(result.connections.length === 0 && result.next === null);
+      })
+      .catch(() => undefined);
+  });
   const composerTarget = context.configuration.composer as UiTarget;
   const ComposerView = (input: ComposerViewInput<JSX.Element>) =>
     runtime.renderView(composerTarget, composerViewContract, input);
@@ -981,7 +1009,15 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       input.attach(sessionHandle);
       return (
         <viewRuntimeContext.Provider value={runtime}>
-          <View onFileDrop={(event) => dropFiles?.(event)} style={{ flex: 1, minHeight: 0 }}>
+          <View
+            onFileDrop={(event) => {
+              fileDragging.set(false);
+              dropFiles?.(event);
+            }}
+            onFileDragEnter={() => fileDragging.set(true)}
+            onFileDragLeave={() => fileDragging.set(false)}
+            style={{ flex: 1, minHeight: 0 }}
+          >
             <If when={selected() === null}>
               <View>
                 <Header
@@ -1004,6 +1040,12 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                   foreground={foreground}
                   control={control}
                   fork={(action) => changeBrowsedSession(action, id())}
+                  edit={(action, text, send) => changeBrowsedSession(action, id(), { text, send })}
+                  takePrefill={() => {
+                    const prefill = prefills.get(id()) ?? null;
+                    prefills.delete(id());
+                    return prefill;
+                  }}
                   commands={inputAction(invokeCommand, {
                     id: 'commands',
                     sessionId: id(),
@@ -1041,10 +1083,12 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               dropFiles={(drop) => {
                 dropFiles = drop;
               }}
+              fileDragging={fileDragging}
               blocked={reloading}
               active={() => overlay() === null && !reloading() && (shell()?.visible() ?? false)}
               session={composerSession}
               stopAction={stopAction}
+              needsConnection={noConnections}
               request={
                 <View style={{ minHeight: 0, flexShrink: 1 }}>
                   <Each<ConversationHandle>

@@ -224,17 +224,16 @@ async function licenseDownload(t, options = {}) {
       'build',
       '--locked',
       '-p',
-      'maka-cli',
+      'maka-ui-build',
       '--bin',
-      'maka',
-      '--no-default-features',
+      'maka-ui-build',
       '--message-format=json',
     ]);
     const child = Object.assign(new EventEmitter(), {
       stdout: Readable.from([
         JSON.stringify({
           reason: 'compiler-artifact',
-          target: { name: 'maka', kind: ['bin'] },
+          target: { name: 'maka-ui-build', kind: ['bin'] },
           executable: join(root, 'fixture-ui-compiler'),
         }) + '\n',
       ]),

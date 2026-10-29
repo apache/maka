@@ -18,9 +18,9 @@
  */
 
 use super::*;
-use crate::tools::ToolRequest;
 use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::tools::*;
+use maka_tool_catalog::input::ToolRequest;
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "mode",

@@ -17,9 +17,6 @@
  * under the License.
  */
 
-#[path = "../../build/ui.rs"]
-mod bundle;
-
 use std::path::PathBuf;
 
 use clap::Args;
@@ -38,7 +35,7 @@ pub(crate) struct BuildUi {
 impl BuildUi {
     pub(super) async fn run(self) -> Result<(), HostError> {
         let manifest =
-            tokio::task::spawn_blocking(move || bundle::compile(&self.entry, &self.output))
+            tokio::task::spawn_blocking(move || maka_ui_build::compile(&self.entry, &self.output))
                 .await??;
         println!("{}", serde_json::to_string_pretty(&manifest)?);
         Ok(())

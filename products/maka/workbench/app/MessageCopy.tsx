@@ -25,7 +25,7 @@ import { useHost } from './host';
 import { messageBytes, type Position, type Row } from './history';
 import { C, IconButton } from './ui';
 
-type OriginalMessage = {
+export type OriginalMessage = {
   sessionId: string;
   key: string;
   role: 'user' | 'assistant';
@@ -42,6 +42,51 @@ const sameMessage = (left: OriginalMessage | null, right: OriginalMessage | null
     left.key === right.key &&
     left.role === right.role &&
     samePosition(left.position, right.position));
+
+/** The whole original text of a message, read page by page; null once it is no longer current. */
+export async function readOriginal(
+  host: ReturnType<typeof useHost>,
+  original: OriginalMessage,
+  current: () => boolean,
+): Promise<string | null> {
+  let content = '';
+  let offset = 0;
+  let total: number | null = null;
+  for (;;) {
+    const page = await host.query('agent', 'source', {
+      sessionId: original.sessionId,
+      through: original.through,
+      source: { kind: 'row', position: original.position },
+      field: 'body',
+      position: offset === 0 ? { kind: 'start' } : { kind: 'after', offset },
+    });
+    if (!current()) return null;
+    const source = page.source;
+    const end = offset + messageBytes(source.text);
+    if (
+      page.kind !== 'ready' ||
+      page.through !== original.through ||
+      !samePosition(source.position, original.position) ||
+      source.field !== 'body' ||
+      source.role !== original.role ||
+      source.format !== 'text' ||
+      source.path != null ||
+      source.offset !== offset ||
+      !Number.isSafeInteger(source.totalBytes) ||
+      source.totalBytes < 0 ||
+      (total !== null && source.totalBytes !== total) ||
+      end > source.totalBytes ||
+      (end === offset && end !== source.totalBytes)
+    ) {
+      throw new UiError('The original message source could not be verified.');
+    }
+    total = source.totalBytes;
+    content += source.text;
+    offset = end;
+    if (offset === total) break;
+  }
+  return content;
+}
 
 /** Copy one canonical body, including text outside the loaded history window. */
 export function MessageCopy(props: {
@@ -82,43 +127,8 @@ export function MessageCopy(props: {
     notice.set('');
     failed.set(false);
     try {
-      let content = '';
-      let offset = 0;
-      let total: number | null = null;
-      for (;;) {
-        const page = await host.query('agent', 'source', {
-          sessionId: original.sessionId,
-          through: original.through,
-          source: { kind: 'row', position: original.position },
-          field: 'body',
-          position: offset === 0 ? { kind: 'start' } : { kind: 'after', offset },
-        });
-        if (!owns(original)) return;
-        const source = page.source;
-        const end = offset + messageBytes(source.text);
-        if (
-          page.kind !== 'ready' ||
-          page.through !== original.through ||
-          !samePosition(source.position, original.position) ||
-          source.field !== 'body' ||
-          source.role !== original.role ||
-          source.format !== 'text' ||
-          source.path != null ||
-          source.offset !== offset ||
-          !Number.isSafeInteger(source.totalBytes) ||
-          source.totalBytes < 0 ||
-          (total !== null && source.totalBytes !== total) ||
-          end > source.totalBytes ||
-          (end === offset && end !== source.totalBytes)
-        ) {
-          throw new UiError('The original message source could not be verified.');
-        }
-        total = source.totalBytes;
-        content += source.text;
-        offset = end;
-        if (offset === total) break;
-      }
-      if (!owns(original)) return;
+      const content = await readOriginal(host, original, () => owns(original));
+      if (content === null) return;
       await Clipboard.writeText(content);
       if (owns(original))
         notice.set(

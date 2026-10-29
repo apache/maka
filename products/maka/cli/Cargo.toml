@@ -43,9 +43,7 @@ name = "terminal_real_host"
 path = "../terminal-shell/tests/real_host.rs"
 
 [dependencies]
-nsh-bundler = { workspace = true, features = ["bundle"] }
-nsh-core.workspace = true
-nsh-base.workspace = true
+maka-ui-build.workspace = true
 maka-code-runtime.workspace = true
 hex.workspace = true
 maka-agent-facts.workspace = true
@@ -88,13 +86,16 @@ tempfile.workspace = true
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "tracing-log"] }
 
 [build-dependencies]
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-nsh-bundler = { workspace = true, features = ["bundle"] }
-nsh-core.workspace = true
-nsh-base.workspace = true
+maka-ui-build.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
+nsh-bundler.workspace = true
+nsh-core.workspace = true
+nsh-base.workspace = true
 maka-capabilities.workspace = true
 maka-ui-support.workspace = true
 crossterm.workspace = true
