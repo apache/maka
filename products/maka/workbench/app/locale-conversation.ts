@@ -588,6 +588,7 @@ export const conversationMessages = {
     '傳送訊息，或開始一項任務…',
   ],
   'Message queue': ['Message queue', '消息队列', '訊息佇列'],
+  'Drop files here': ['Drop files here', '拖到这里添加文件', '拖到這裡加入檔案'],
   'Messages waiting for a turn': [
     'Messages waiting for a turn',
     '等待处理的消息',

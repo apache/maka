@@ -25,6 +25,8 @@ import { colorScheme, keymap, platform, windowSize } from 'nsh';
 import { Icon } from './Icon';
 import { sessionStatusCaption } from './sessionStatus';
 import { controlsLeft, controlsRight, ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
+import { appearance } from './appearance';
+import { paletteTokens, type PaletteRecipe, type PaletteTokens } from './colorPalette';
 
 export function textTooltip(text: () => string | undefined): JSX.Element {
   return (
@@ -69,16 +71,34 @@ const LIGHT: typeof DARK = {
   removed: '#fbe8e9',
   scrim: '#00000040',
 };
+/** The default palette's colors in one appearance. */
+export const defaultColors = (dark: boolean) => (dark ? DARK : LIGHT);
 /** Whether the interface is dark: the window's appearance in effect (`setColorScheme`);
  * terminals keep the dark colors. */
 export const isDark = () => platform.isTerminal || colorScheme() !== 'light';
-/** The interface's colors, in the appearance in effect: read them where they are drawn. */
+// The desktop palette's tokens, made once per recipe and appearance.
+let made: { recipe: PaletteRecipe; dark: boolean; tokens: PaletteTokens } | null = null;
+const paletteColor = (key: string, dark: boolean): string | undefined => {
+  if (platform.isTerminal) return undefined;
+  const recipe = appearance.recipe();
+  if (!recipe) return undefined;
+  if (made?.recipe !== recipe || made.dark !== dark)
+    made = { recipe, dark, tokens: paletteTokens(recipe, dark) };
+  return made.tokens[key as keyof PaletteTokens];
+};
+/** The interface's colors, in the appearance and palette in effect: read them where they are drawn. */
 export const C = Object.defineProperties(
   {} as typeof DARK,
   Object.fromEntries(
     Object.keys(DARK).map((key) => [
       key,
-      { enumerable: true, get: () => (isDark() ? DARK : LIGHT)[key as keyof typeof DARK] },
+      {
+        enumerable: true,
+        get: () => {
+          const dark = isDark();
+          return paletteColor(key, dark) ?? (dark ? DARK : LIGHT)[key as keyof typeof DARK];
+        },
+      },
     ]),
   ),
 );
