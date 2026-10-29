@@ -1758,6 +1758,7 @@ mod tests {
                     tools: None,
                     title: "fixture".into(),
                     title_is_manual: false,
+                    pinned: false,
                     labels: vec![],
                     workspace: binding,
                     permissions: WorkspacePermissions {
@@ -2102,6 +2103,7 @@ mod tests {
                         compaction_prompt: None,
                         title: "browser authority fixture".into(),
                         title_is_manual: false,
+                        pinned: false,
                         labels: vec![],
                         workspace: binding,
                         permissions: WorkspacePermissions {

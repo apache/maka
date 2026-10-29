@@ -24,7 +24,7 @@ import type { Control } from '../../../../plugins/agent/conversations/ui/Convers
 
 export type SessionActionTarget = Pick<
   AgentSession,
-  'id' | 'revision' | 'title' | 'labels' | 'archived'
+  'id' | 'revision' | 'title' | 'labels' | 'archived' | 'pinned'
 > & {
   workspace: Pick<AgentSession['workspace'], 'path'>;
 };
@@ -36,6 +36,7 @@ export function sessionActionTarget(session: AgentSession): SessionActionTarget 
     title: session.title,
     labels: [...session.labels],
     archived: session.archived,
+    pinned: session.pinned,
     workspace: { path: session.workspace.path },
   };
 }
@@ -44,7 +45,7 @@ export type SessionAction =
   | { kind: 'rename'; session: SessionActionTarget; title: string }
   | { kind: 'fork'; session: SessionActionTarget; title: string; position: AgentForkPosition }
   | { kind: 'compaction_prompt'; session: SessionActionTarget; prompt: string | null }
-  | { kind: 'archive' | 'restore' | 'remove'; session: SessionActionTarget };
+  | { kind: 'archive' | 'restore' | 'remove' | 'pin' | 'unpin'; session: SessionActionTarget };
 export type SessionActionResult =
   | { kind: 'updated' | 'forked'; session: AgentSession }
   | { kind: 'removed'; sessionId: string };
@@ -73,8 +74,13 @@ export async function performSessionAction(
   const session = action.session;
   const identity = { sessionId: session.id, expectedRevision: session.revision };
   const result =
-    action.kind === 'rename'
-      ? await control('metadata', { ...identity, title: action.title, labels: [...session.labels] })
+    action.kind === 'rename' || action.kind === 'pin' || action.kind === 'unpin'
+      ? await control('metadata', {
+          ...identity,
+          title: action.kind === 'rename' ? action.title : session.title,
+          labels: [...session.labels],
+          ...(action.kind === 'rename' ? {} : { pinned: action.kind === 'pin' }),
+        })
       : action.kind === 'fork'
         ? await control('fork', {
             ...identity,

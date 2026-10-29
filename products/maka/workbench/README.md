@@ -42,3 +42,5 @@ MAKA_NSH_EVIDENCE=/tmp/maka-nsh-evidence cargo nextest run --locked --workspace 
 ```
 
 This runs a real Host test; it is not a standalone type generator or a TypeScript check of the application.
+
+Use **Pin conversation** in a conversation’s action menu to keep it in the **Pinned** group at the top of the browser. **Unpin conversation** returns it to the ordinary list. The Host stores the choice and orders pages consistently across interfaces and restarts.

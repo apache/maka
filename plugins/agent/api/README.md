@@ -67,3 +67,5 @@ Start the watch, wait for `ready`, then read the first list page and compare its
 On macOS, active watches also compare direct-child metadata. Each scan is followed by a pause of at least one second, extended to nine times the scan duration for expensive directories; this targets a 10% scanning duty cycle per subscription, rather than a fixed delivery deadline or total CPU limit. This detects persistent changes even when native notifications arrive late; unchanged scans emit nothing. Scans do not read file contents, follow symlinks or descend into child directories. `ready` waits for the initial scan; large directories or slow storage can delay readiness and later notifications. Closing a subscription waits for its active filesystem work to settle.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
+
+`metadata.pinned` sets or clears conversation pinning; omission preserves it. Session results include `pinned`. Catalog pages place pinned conversations first, then keep the existing ID order, with revision-bound forward and backward cursors. New conversations and forks start unpinned.
