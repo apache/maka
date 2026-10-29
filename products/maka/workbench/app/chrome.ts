@@ -56,6 +56,7 @@ export interface MenuActions {
   chooseWorkspace(): void;
   sessions(): void;
   search(): void;
+  find(): void;
   commands(): void;
   models(): void;
   latest(): void;
@@ -117,7 +118,8 @@ export function applicationMenu(actions: MenuActions) {
           { role: 'paste' },
           { role: 'selectAll' },
           { type: 'separator' },
-          { label: `${tr('Search conversations')}…`, shortcut: 'mod+f', onSelect: actions.search },
+          { label: `${tr('Find in conversation')}…`, shortcut: 'mod+f', onSelect: actions.find },
+          { label: `${tr('Search conversations')}…`, shortcut: 'mod+o', onSelect: actions.search },
         ],
       },
       {

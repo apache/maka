@@ -20,7 +20,7 @@
 import { textTooltip } from './ui';
 import { batch, cleanup, computed, inputAction, List, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
-import type { ListRef } from 'nsh';
+import type { InputRef, ListRef } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
@@ -53,6 +53,8 @@ export type RecallTarget = {
 type Request = {
   id: number;
   terms: RecallQuery['terms'];
+  /** The one conversation searched, or null for all of them. */
+  sessionId: string | null;
   signature: string;
   stream: { next(): Promise<AgentRecallPage | null>; close(): Promise<void> } | null;
   closing: Promise<void> | null;
@@ -87,12 +89,15 @@ function excerptRuns(passage: AgentRecallPassage) {
 
 export function RecallSearch(props: {
   origin: string | null;
+  /** Start in the origin conversation only; the dialog can widen the search. */
+  within?: boolean;
   open(origin: string | null, target: RecallTarget): Promise<boolean | void>;
   close(): void;
 }) {
   const host = useHost();
   const origin = props.origin;
   const query = signal('');
+  const within = signal(props.within === true && origin !== null);
   const state = signal<SearchState>({ kind: 'empty' });
   const selected = signal(0);
   const opening = signal(false);
@@ -102,6 +107,7 @@ export function RecallSearch(props: {
   let wanted: Request | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let list: ListRef | undefined;
+  let input: InputRef | undefined;
   let removeKeys = () => {};
   const release = (request: Request) => {
     if (!request.stream) return Promise.resolve();
@@ -133,7 +139,10 @@ export function RecallSearch(props: {
     const current = answer();
     return current
       ? [
-          ...current.page.titles.map((session): Result => ({ kind: 'title', session })),
+          // Within one conversation a title match only names the open one.
+          ...(current.request.sessionId === null ? current.page.titles : []).map(
+            (session): Result => ({ kind: 'title', session }),
+          ),
           ...current.page.passages.map(
             (passage): Result => ({
               kind: 'passage',
@@ -174,7 +183,7 @@ export function RecallSearch(props: {
     try {
       request.stream = await host.subscribe('agent', 'recall', {
         terms: request.terms,
-        session_id: null,
+        session_id: request.sessionId,
       });
       if (!alive || wanted !== request) return;
       const page = await request.stream.next();
@@ -194,12 +203,15 @@ export function RecallSearch(props: {
     if (!alive || opening()) return;
     const [first, ...rest] = text.trim().split(/\s+/);
     const terms: RecallQuery['terms'] | null = first ? [first, ...rest] : null;
-    const signature = JSON.stringify(terms);
+    const sessionId = within() ? origin : null;
+    const signature = JSON.stringify([terms, sessionId]);
     query.set(text);
     if (!retry && signature === wanted?.signature) return;
     const previous = answer();
     cancel();
-    wanted = terms ? { id: ++sequence, terms, signature, stream: null, closing: null } : null;
+    wanted = terms
+      ? { id: ++sequence, terms, sessionId, signature, stream: null, closing: null }
+      : null;
     batch(() => {
       state.set(wanted ? { kind: 'loading', request: wanted, previous } : { kind: 'empty' });
       selected.set(0);
@@ -277,6 +289,13 @@ export function RecallSearch(props: {
   const close = () => {
     if (alive) props.close();
   };
+  const widen = (value: boolean) => {
+    if (!alive || opening() || within() === value) return;
+    within.set(value);
+    search(query());
+    // Typing, the arrows and Escape stay with the search field.
+    input?.focus();
+  };
   return (
     <Dialog
       animation="none"
@@ -319,7 +338,7 @@ export function RecallSearch(props: {
               fontWeight: '600',
             }}
           >
-            {tr('Search conversations')}
+            {within() ? tr('Find in conversation') : tr('Search conversations')}
           </Text>
           <Button
             accessibilityLabel={tr('Close conversation search')}
@@ -337,11 +356,45 @@ export function RecallSearch(props: {
             <Icon name="close" color={C.muted} />
           </Button>
         </View>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {tr('Search every conversation you can read, including archived conversations.')}
-        </Text>
+        <If
+          when={origin !== null}
+          else={
+            <Text style={{ ...captionTextStyle, color: C.muted }}>
+              {tr('Search every conversation you can read, including archived conversations.')}
+            </Text>
+          }
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <Each of={[true, false]} key={(value) => String(value)}>
+              {(value) => (
+                <Button
+                  accessibilityLabel={value() ? tr('This conversation') : tr('All conversations')}
+                  selected={within() === value()}
+                  disabled={opening()}
+                  onPress={inputAction(widen, value())}
+                  style={{ ...controlStyle, paddingHorizontal: 10 }}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                >
+                  <Text
+                    style={{
+                      ...captionTextStyle,
+                      color: within() === value() ? C.text : C.muted,
+                    }}
+                  >
+                    {value() ? tr('This conversation') : tr('All conversations')}
+                  </Text>
+                </Button>
+              )}
+            </Each>
+            <Text style={[{ ...captionTextStyle, flex: 1, color: C.muted }, { numberOfLines: 1 }]}>
+              {within() ? '' : tr('Including archived conversations.')}
+            </Text>
+          </View>
+        </If>
         <Input
           ref={(node) => {
+            input = node;
             removeKeys();
             const keys = [
               keymap.bind('up', () => move(-1), {
@@ -368,7 +421,7 @@ export function RecallSearch(props: {
           onSubmit={submit}
           submitBehavior="submit"
           readonly={opening()}
-          placeholder={tr('Search titles and messages…')}
+          placeholder={within() ? tr('Search messages…') : tr('Search titles and messages…')}
           style={{
             color: C.text,
             placeholderColor: C.muted,
@@ -422,7 +475,9 @@ export function RecallSearch(props: {
           empty={
             <If when={state().kind === 'ready'}>
               <Text style={{ ...bodyTextStyle, color: C.muted }}>
-                {tr('No matching conversations or messages.')}
+                {within()
+                  ? tr('No matching messages.')
+                  : tr('No matching conversations or messages.')}
               </Text>
             </If>
           }

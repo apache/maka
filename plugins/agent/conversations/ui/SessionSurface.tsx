@@ -125,7 +125,9 @@ import { watchNotifications } from '../../../../products/maka/workbench/app/noti
 type OverlayTarget = {
   sessionId: string | null;
 } & (
-  | { kind: 'commands' | 'workspaces' | 'sessions' | 'search' }
+  | { kind: 'commands' | 'workspaces' | 'sessions' }
+  // `within`: the search starts in the open conversation only.
+  | { kind: 'search'; within?: boolean }
   | { kind: 'models'; focusOnClose?: 'composer' }
   | { kind: 'settings'; model?: ModelSelection }
   | { kind: 'compact'; owner: ConversationHandle; prompt?: string }
@@ -574,6 +576,11 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   const commandSessions = (context: ActionContext) => {
     if (closeCommand(context)) open({ kind: 'search', sessionId: context.sessionId });
   };
+  const commandFind = (context: ActionContext) => {
+    // With no conversation open, Find searches them all.
+    if (closeCommand(context))
+      open({ kind: 'search', sessionId: context.sessionId, within: handle() !== null });
+  };
   const commandNew = (context: ActionContext) => {
     if (closeCommand(context)) newConversation(context.sessionId);
   };
@@ -663,7 +670,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   };
   keymap.bind('mod+p', () => invokeOwn('commands'), { when: 'always' });
   keymap.bind('mod+o', () => invokeOwn('sessions'), { when: 'always' });
-  if (ownTitleBar) keymap.bind('mod+f', () => invokeOwn('sessions'), { when: 'always' });
+  if (ownTitleBar) keymap.bind('mod+f', () => invokeOwn('find'), { when: 'always' });
   keymap.bind('mod+g', () => invokeOwn('models'), { when: 'always' });
   keymap.bind('mod+n', () => invokeOwn('new'), { when: 'always' });
   keymap.bind('mod+l', () => invokeOwn('latest'), { when: 'always' });
@@ -803,6 +810,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     chooseWorkspace: () => invokeOwn('workspace'),
     sessions: () => invokeOwn('browse'),
     search: () => invokeOwn('sessions'),
+    find: () => invokeOwn('find'),
     commands: () => invokeOwn('commands'),
     models: () => invokeOwn('models'),
     latest: () => invokeOwn('latest'),
@@ -1336,6 +1344,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                   return (
                     <RecallSearch
                       origin={current.sessionId}
+                      within={current.within}
                       open={(origin, target) => openRecalled(current.instance, origin, target)}
                       close={() => closeOverlay(current.instance)}
                     />
@@ -1434,6 +1443,8 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
           return open({ kind: 'sessions', sessionId: selected() });
         case 'sessions':
           return commandSessions(source);
+        case 'find':
+          return commandFind(source);
         case 'new':
           return commandNew(source);
         case 'workspace':
