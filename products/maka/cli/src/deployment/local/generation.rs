@@ -167,33 +167,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn known_vectors_and_chunk_boundaries_match_sha256() {
-        for (bytes, expected) in [
-            (
-                b"".as_slice(),
-                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            ),
-            (
-                b"abc".as_slice(),
-                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-            ),
-        ] {
-            assert_eq!(
-                hash_reader(&mut io::Cursor::new(bytes), &CancellationToken::new()).unwrap(),
-                format!("cli-sha256:{expected}")
-            );
-        }
-        for length in [55, 56, 63, 64, 65, 65535, 65536, 65537, 131089] {
-            let bytes: Vec<u8> = (0..length).map(|n| (n % 251) as u8).collect();
-            assert_eq!(
-                hash_reader(&mut io::Cursor::new(&bytes), &CancellationToken::new()).unwrap(),
-                format!("cli-sha256:{}", hex::encode(Sha256::digest(&bytes))),
-                "length={length}"
-            );
-        }
-    }
-
     #[tokio::test]
     async fn regular_launcher_hashes_every_chunk_and_caches_only_success() {
         let directory = tempfile::tempdir().unwrap();

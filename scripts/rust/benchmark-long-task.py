@@ -77,12 +77,12 @@ def main():
     environment[prefix + "_REPETITIONS"] = "1"
     if args.kind == "engine":
         environment[prefix + "_CHECKPOINT"] = str(int(args.checkpoint))
-    test = {"prune": "performance::long_history_prune",
+    test = {"prune": "archive::performance::long_history_prune",
             "engine": "long_task_perf::engine_long_history",
-            "context": "context_performance::archive_heavy_context",
+            "context": "archive::context_performance::archive_heavy_context",
             "responsive": "long_task_responsiveness::long_history_responsiveness",
-            "transcript": "performance::one_invocation_transcript",
-            "executor": "performance_executor::executor_invocation_transcript"}[args.kind]
+            "transcript": "transcript_index_tests::performance::one_invocation_transcript",
+            "executor": "transcript_index_tests::performance_executor::executor_invocation_transcript"}[args.kind]
     evidence = {"kind": args.kind, "sizes": None if args.kind == "responsive" else args.sizes, "checkpoint": args.checkpoint,
                 "runs": args.runs, "cpu_count": os.cpu_count(),
                 "load_average": list(os.getloadavg()),

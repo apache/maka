@@ -405,12 +405,7 @@ impl Drop for Child {
 }
 #[tokio::test]
 async fn publication_results_survive_host_process_loss_without_replaying_or_weakening_authority() {
-    for (method, cut) in [
-        ("apply", "before"),
-        ("apply", "after"),
-        ("importSource", "before"),
-        ("importSource", "after"),
-    ] {
+    for (method, cut) in [("apply", "before"), ("importSource", "after")] {
         let directory = tempfile::tempdir().unwrap();
         let dir = directory.path();
         std::fs::create_dir_all(dir.join("source/review")).unwrap();

@@ -16,6 +16,7 @@
 # under the License.
 
 [package]
+autotests = false
 name = "maka-presentation"
 version.workspace = true
 edition.workspace = true
@@ -30,3 +31,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

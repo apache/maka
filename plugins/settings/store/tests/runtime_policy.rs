@@ -17,28 +17,15 @@
  * under the License.
  */
 
+use crate::support::root;
 use maka_agent_facts::configuration::policy::*;
 use maka_agent_facts::configuration::validation::MAX_SAFE_INTEGER;
 use maka_config::{ConfigError, ConfigurationStore};
-use maka_event_log::root::{RootNamespaces, RootOwner};
+use maka_event_log::root::RootOwner;
 use std::{
     future::Future,
-    sync::Arc,
     task::{Context, Poll, Waker},
 };
-
-fn root(temp: &std::path::Path) -> Arc<RootOwner> {
-    Arc::new(
-        RootOwner::create(
-            &temp.join("root"),
-            &RootNamespaces {
-                ownership: temp.join("owners"),
-                control: temp.join("control"),
-            },
-        )
-        .unwrap(),
-    )
-}
 
 fn database(owner: &RootOwner) -> rusqlite::Connection {
     rusqlite::Connection::open(owner.canonical_path().join("configuration-rust.sqlite")).unwrap()

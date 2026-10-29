@@ -42,7 +42,7 @@ use termina::{
 
 #[class]
 struct RailHost {
-    scale: Arc<AtomicU32>,
+    active_scale: Arc<AtomicU32>,
 }
 
 #[class]
@@ -53,7 +53,7 @@ impl RailHost {
     }
     #[getter]
     pub fn ui_scale_factor(&self) -> f32 {
-        f32::from_bits(self.scale.load(Ordering::Relaxed))
+        f32::from_bits(self.active_scale.load(Ordering::Relaxed))
     }
 }
 
@@ -129,8 +129,8 @@ fn check_marks(source: &str) {
     let errors = Rc::new(RefCell::new(None));
     let failed = errors.clone();
     let source = source.to_owned();
-    let scale = Arc::new(AtomicU32::new(1.0f32.to_bits()));
-    let host_scale = scale.clone();
+    let active_scale = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+    let host_scale = active_scale.clone();
     let application = Application::with_platform(platform.clone()).run_embedded(move |cx| {
         cx.open_window(
             WindowOptions {
@@ -155,7 +155,7 @@ fn check_marks(source: &str) {
                     let mut host = Registry::ui_set("maka/host");
                     host.value("host", move || {
                         Instance::new(RailHost {
-                            scale: host_scale.clone(),
+                            active_scale: host_scale.clone(),
                         })
                     });
                     view.load_with_config(EngineConfig {
@@ -169,9 +169,9 @@ fn check_marks(source: &str) {
         )
         .unwrap();
     });
-    for (stage, factor) in [1.0f32, 0.8, 0.5, 2.0].into_iter().enumerate() {
-        scale.store(factor.to_bits(), Ordering::Relaxed);
-        caps.ui_scale = factor;
+    for (stage, font_scale) in [1.0f32, 0.8, 0.5, 2.0].into_iter().enumerate() {
+        active_scale.store(font_scale.to_bits(), Ordering::Relaxed);
+        caps.ui_scale = font_scale;
         platform
             .set_viewport(caps.pixel_size().unwrap(), caps.scale_factor())
             .unwrap();
@@ -235,7 +235,7 @@ fn check_marks(source: &str) {
             }
             assert!(
                 Instant::now() < deadline,
-                "six rendered marks missing at scale {factor}"
+                "six rendered marks missing at scale {font_scale}"
             );
         };
         let mut mapping = Mapping::default();
@@ -270,13 +270,13 @@ fn check_marks(source: &str) {
                     assert_eq!(
                         text,
                         format!("turn-{index}"),
-                        "scale {factor}, tick {index}, cell ({column}, {row})"
+                        "scale {font_scale}, tick {index}, cell ({column}, {row})"
                     );
                     break;
                 }
                 assert!(
                     Instant::now() < deadline,
-                    "tick {index} not clickable at scale {factor}"
+                    "tick {index} not clickable at scale {font_scale}"
                 );
             }
         }
@@ -306,7 +306,7 @@ fn check_marks(source: &str) {
                 }
                 assert!(
                     Instant::now() < deadline,
-                    "preview visible={visible} at scale {factor}"
+                    "preview visible={visible} at scale {font_scale}"
                 );
             }
         };

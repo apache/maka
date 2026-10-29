@@ -219,6 +219,9 @@ enum Command {
     ObserveApplication {
         slot: u64,
     },
+    ObserveProjectedApplication {
+        slot: u64,
+    },
     ApplicationAction {
         slot: u64,
         action: Action,
@@ -353,6 +356,7 @@ enum Response {
     Geometry(WindowBounds),
     Observed(String),
     ApplicationObserved(ApplicationObservation),
+    ProjectedApplicationObserved(Option<ApplicationObservation>),
     Point([f64; 2]),
     Pasted { restored: bool },
     Position([i64; 2]),
@@ -1189,6 +1193,19 @@ impl Application {
             .and_then(unit)
     }
 
+    pub(crate) async fn observe_projected(
+        &self,
+    ) -> Result<Option<ApplicationObservation>, ToolError> {
+        match self
+            .controller
+            .request(Command::ObserveProjectedApplication { slot: self.slot })
+            .await?
+        {
+            Response::ProjectedApplicationObserved(observation) => Ok(observation),
+            _ => Err(unexpected()),
+        }
+    }
+
     pub(crate) async fn observe(&self) -> Result<ApplicationObservation, ToolError> {
         match self
             .controller
@@ -1681,6 +1698,30 @@ impl WorkerState {
     }
 
     fn observe_application(&mut self, slot: u64) -> Result<ApplicationObservation, ToolError> {
+        self.observe_application_root(slot, None)
+    }
+
+    fn observe_projected_application(
+        &mut self,
+        slot: u64,
+    ) -> Result<Option<ApplicationObservation>, ToolError> {
+        let epoch = self
+            .slots
+            .get(&slot)
+            .ok_or_else(|| failed("native AX application handle has retired"))?
+            .application()?
+            .epoch;
+        let Some(root) = self.windows.projected_menu_root(epoch, slot)? else {
+            return Ok(None);
+        };
+        self.observe_application_root(slot, Some(&root)).map(Some)
+    }
+
+    fn observe_application_root(
+        &mut self,
+        slot: u64,
+        root: Option<&RetainedElement>,
+    ) -> Result<ApplicationObservation, ToolError> {
         // Take before any fallible refresh: a failed observation cannot leave
         // old indices available as the application's newly observed context.
         let previous = self.application_slot_mut(slot)?.observed.take();
@@ -1692,7 +1733,7 @@ impl WorkerState {
             Some(target) if target.window_id == id => target,
             _ => Target::bind(self.pid as u32, u64::from(id))?,
         };
-        let text = target.observe()?;
+        let text = target.observe_root(root)?;
         self.application_slot_mut(slot)?.observed = Some(target);
         Ok(ApplicationObservation { id, text })
     }
@@ -1734,6 +1775,9 @@ impl WorkerState {
             Command::ObserveApplication { slot } => Ok(Response::ApplicationObserved(
                 self.observe_application(slot)?,
             )),
+            Command::ObserveProjectedApplication { slot } => Ok(
+                Response::ProjectedApplicationObserved(self.observe_projected_application(slot)?),
+            ),
             Command::ApplicationAction {
                 slot,
                 action,
@@ -1797,8 +1841,9 @@ impl WorkerState {
                 self.advance_element_click(token, observation)
             }
             Command::FinishElementClick { token } => {
-                let (_, _, preparation) = self.take_element_click(token)?;
-                preparation.finish()?;
+                let (epoch, slot, preparation) = self.take_element_click(token)?;
+                preparation
+                    .finish(|item, menu| self.windows.select_menu(epoch, slot, item, menu))?;
                 Ok(Response::Unit)
             }
             Command::CancelElementClick { token } => {
@@ -1883,6 +1928,7 @@ impl WorkerState {
                 Ok(Response::Unit)
             }
             Command::ClearApplication { slot } => {
+                self.windows.clear_menu_for_slot(slot);
                 self.cancel_element_clicks(|_, current, _| current == slot);
                 if let Some(application) = self.slots.get_mut(&slot) {
                     application.application_mut()?.observed = None;
@@ -1890,6 +1936,7 @@ impl WorkerState {
                 Ok(Response::Unit)
             }
             Command::ReleaseApplication { slot } => {
+                self.windows.clear_menu_for_slot(slot);
                 if let Some(application) = self.slots.get_mut(&slot) {
                     application.application_mut()?;
                 }
@@ -1961,6 +2008,7 @@ impl WorkerState {
                 Ok(Response::Pasted { restored })
             }
             Command::ReleaseEpoch { epoch } => {
+                self.windows.clear_menu_for_epoch(epoch);
                 self.cancel_keyboards(|pending| pending.epoch == epoch);
                 self.cancel_element_clicks(|current, _, _| current == epoch);
                 self.slots.retain(|_, slot| slot.epoch() != epoch);

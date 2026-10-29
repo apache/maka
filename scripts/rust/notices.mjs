@@ -26,6 +26,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { nativeCliTargets } from './pack-cli.mjs';
 import { rustTarget } from './build-cli.mjs';
 import { licenseFiles, licenseName } from './license-files.mjs';
+import { licenseDownloader } from './license-source.mjs';
 import { uiCompiler } from './product.mjs';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
@@ -56,6 +57,7 @@ async function inputs(root) {
     'scripts/rust/build-v8.mjs',
     'scripts/rust/compile-v8.mjs',
     'scripts/rust/license-files.mjs',
+    'scripts/rust/license-source.mjs',
     'scripts/rust/v8-prebuilt.mjs',
     'scripts/rust/v8-prebuilts.json',
     'scripts/rust/v8-cache.mjs',
@@ -113,99 +115,12 @@ export async function verifyNotices(root = repository) {
 }
 
 function run(command, args, cwd, env = process.env) {
-  return execFileSync(command, args, { cwd, env, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
-}
-
-function pinnedGitHubLicense(url, root, trees) {
-  const source =
-    /^https:\/\/raw\.githubusercontent\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/([a-f0-9]{40})\/([^?#]+)$/.exec(
-      url,
-    );
-  if (!source) return;
-  const [, owner, repo, revision, path] = source;
-  const parts = path.split('/').map(decodeURIComponent);
-  if (
-    [owner, repo, ...parts].some((part) => !part || part === '.' || part === '..') ||
-    parts.some((part) => /[\/\\\x00-\x1f\x7f]/.test(part))
-  )
-    throw new Error('Invalid pinned GitHub license path: ' + url);
-  const entry = JSON.parse(
-    run(
-      'gh',
-      [
-        'api',
-        '--hostname',
-        'github.com',
-        `repos/${owner}/${repo}/contents/${parts.map(encodeURIComponent).join('/')}?ref=${revision}`,
-      ],
-      root,
-    ),
-  );
-  if (
-    entry?.type !== 'file' ||
-    entry.path !== parts.join('/') ||
-    entry.encoding !== 'base64' ||
-    typeof entry.content !== 'string' ||
-    !Number.isSafeInteger(entry.size) ||
-    entry.size < 0 ||
-    typeof entry.sha !== 'string' ||
-    !/^[a-f0-9]{40}$/.test(entry.sha)
-  )
-    throw new Error('Invalid pinned GitHub license response: ' + url);
-  const base64 = entry.content.replace(/\r?\n/g, '');
-  const content = Buffer.from(base64, 'base64');
-  if (
-    content.toString('base64') !== base64 ||
-    content.length !== entry.size ||
-    createHash('sha1').update(`blob ${content.length}\0`).update(content).digest('hex') !==
-      entry.sha
-  )
-    throw new Error('Pinned GitHub license content does not match its blob: ' + url);
-  // Contents can dereference symlinks; bind the bytes to an ordinary blob at this pinned path.
-  let tree = revision;
-  for (let index = 0; index < parts.length; index++) {
-    const key = `${owner}/${repo}/${tree}`;
-    if (!trees.has(key)) {
-      const data = JSON.parse(
-        run(
-          'gh',
-          ['api', '--hostname', 'github.com', `repos/${owner}/${repo}/git/trees/${tree}`],
-          root,
-        ),
-      );
-      if (
-        !Array.isArray(data?.tree) ||
-        data.truncated !== false ||
-        typeof data.sha !== 'string' ||
-        !/^[a-f0-9]{40}$/.test(data.sha) ||
-        (index > 0 && data.sha !== tree)
-      )
-        throw new Error('Invalid pinned GitHub license tree: ' + url);
-      trees.set(key, data.tree);
-    }
-    const matches = trees.get(key).filter((item) => item.path === parts[index]);
-    const item = matches[0];
-    const last = index === parts.length - 1;
-    if (
-      matches.length !== 1 ||
-      typeof item?.sha !== 'string' ||
-      !/^[a-f0-9]{40}$/.test(item.sha) ||
-      (last
-        ? item.type !== 'blob' ||
-          !['100644', '100755'].includes(item.mode) ||
-          item.sha !== entry.sha
-        : item.type !== 'tree' || item.mode !== '040000')
-    )
-      throw new Error('Pinned GitHub license path is not the expected blob: ' + url);
-    tree = item.sha;
-  }
-  return new TextDecoder().decode(content);
+  return execFileSync(command, args, { cwd, env, encoding: 'utf8', maxBuffer: Infinity });
 }
 
 export async function generateNotices(root = repository) {
   const groups = new Map();
-  const downloaded = new Map();
-  const githubTrees = new Map();
+  const download = licenseDownloader(root);
   const supplements = JSON.parse(
     await readFile(join(root, 'scripts/rust/notices-sources.json'), 'utf8'),
   );
@@ -218,39 +133,6 @@ export async function generateNotices(root = repository) {
     group.components.add(component);
     group.sources.add(source);
     groups.set(key, group);
-  }
-  async function download(url) {
-    if (!downloaded.has(url))
-      downloaded.set(
-        url,
-        (async () => {
-          let fallbackCause;
-          const rawCauses = [];
-          for (let attempt = 0; ; attempt++) {
-            try {
-              const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-              if (!response.ok) throw new Error('HTTP ' + response.status);
-              return await response.text();
-            } catch (cause) {
-              rawCauses.push(cause);
-              if (attempt === 0) {
-                try {
-                  const content = pinnedGitHubLicense(url, root, githubTrees);
-                  if (content !== undefined) return content;
-                } catch (error) {
-                  fallbackCause = error;
-                }
-              }
-              if (attempt === 2)
-                throw new Error('License source failed: ' + url, {
-                  cause: fallbackCause ? new AggregateError([...rawCauses, fallbackCause]) : cause,
-                });
-              await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
-            }
-          }
-        })(),
-      );
-    return downloaded.get(url);
   }
   // The native browser host embeds only Playwright's published injected script,
   // outside Cargo and the JavaScript bundle dependency graphs.

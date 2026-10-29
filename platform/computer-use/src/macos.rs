@@ -42,7 +42,7 @@ use platform_macos::ax::{
     bindings::*,
     exact_target::{element_window_id, gather_background_facts},
     snapshot::RetainedElement,
-    tree::walk_tree_budgeted,
+    tree::{walk_retained_root, walk_tree_budgeted},
 };
 use std::collections::HashMap;
 
@@ -227,19 +227,27 @@ impl Target {
         self.elements.clear();
     }
     pub(crate) fn observe(&mut self) -> Result<String, ToolError> {
+        self.observe_root(None)
+    }
+
+    fn observe_root(&mut self, root: Option<&RetainedElement>) -> Result<String, ToolError> {
         self.elements.clear();
         self.verify()?;
-        let tree = walk_tree_budgeted(
-            self.pid,
-            Some(self.window_id),
-            None,
-            30,
-            WalkBudget::new(1500, 2000),
-        );
-        if !tree
-            .window_scope
-            .as_ref()
-            .is_some_and(|scope| scope.is_matched())
+        let tree = match root {
+            Some(root) => walk_retained_root(root, None, 30, WalkBudget::new(1500, 2000)),
+            None => walk_tree_budgeted(
+                self.pid,
+                Some(self.window_id),
+                None,
+                30,
+                WalkBudget::new(1500, 2000),
+            ),
+        };
+        if root.is_none()
+            && !tree
+                .window_scope
+                .as_ref()
+                .is_some_and(|scope| scope.is_matched())
         {
             return Err(failed("AX window did not resolve"));
         }

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use crate::support::root;
 use maka_agent_facts::pricing::Entry;
 use maka_agent_facts::pricing::Mutation;
 use maka_agent_facts::pricing::Page;
@@ -26,8 +27,6 @@ use maka_agent_facts::pricing::ResetEffect;
 use maka_agent_facts::pricing::Update;
 use maka_agent_facts::pricing::Updated;
 use maka_config::ConfigurationStore;
-use maka_event_log::root::{RootNamespaces, RootOwner};
-use std::sync::Arc;
 
 async fn entries(store: &ConfigurationStore) -> (u64, Vec<Entry>) {
     let mut query = Query::Start;
@@ -76,16 +75,7 @@ async fn quote(store: &ConfigurationStore, key: &str) -> (u64, Option<Pricing>) 
 #[tokio::test]
 async fn pricing_cas_pages_and_quotes_survive_reopen_and_bundled_rate_replacement() {
     let temp = tempfile::tempdir().unwrap();
-    let owner = Arc::new(
-        RootOwner::create(
-            &temp.path().join("root"),
-            &RootNamespaces {
-                ownership: temp.path().join("owners"),
-                control: temp.path().join("control"),
-            },
-        )
-        .unwrap(),
-    );
+    let owner = root(temp.path());
     let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
     let (revision, initial) = entries(&store).await;
     assert_eq!(revision, 0);
@@ -265,16 +255,7 @@ async fn pricing_cas_pages_and_quotes_survive_reopen_and_bundled_rate_replacemen
 #[tokio::test]
 async fn pricing_pages_preserve_one_large_record_and_continue_after_reopen() {
     let temp = tempfile::tempdir().unwrap();
-    let owner = Arc::new(
-        RootOwner::create(
-            &temp.path().join("root"),
-            &RootNamespaces {
-                ownership: temp.path().join("owners"),
-                control: temp.path().join("control"),
-            },
-        )
-        .unwrap(),
-    );
+    let owner = root(temp.path());
     let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
     let pricing = Pricing {
         model_key: format!("example:{}", "route-model-".repeat(12_000)),

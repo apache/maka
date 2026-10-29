@@ -52,7 +52,14 @@
     "lineWidth": 100,
     // The extracted Playwright payload is checked against its recorded upstream
     // hash. Format the authored adapter files without rewriting that payload.
-    "includes": ["**", "!third-party/playwright/injected.js"]
+    "includes": [
+      "**",
+      "!third-party/playwright/injected.js",
+      // Rust embeds these as expressions; module formatting adds a trailing semicolon.
+      "!platform/computer-use/src/browser/capability/*.js",
+      "!platform/computer-use/src/browser/playwright/readonly-evaluate.js",
+      "!platform/computer-use/src/browser/playwright/download_media.js"
+    ]
   },
   "javascript": {
     "formatter": {

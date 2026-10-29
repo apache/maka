@@ -203,7 +203,7 @@ async fn resume_input(fixture: &Fixture, source: &Value) -> Value {
 #[tokio::test]
 async fn computer_product_tools_preserve_approval_repl_media_and_revocation() {
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut f = Fixture::computer_tools().await;
+        let mut f = Fixture::configured(support::Options { services: support::Services::ComputerTools, ..Default::default() }).await;
         let client = f.client().await;
         let session = f.session.clone();
         let other = create(&client, "Other Computer").await;
@@ -346,7 +346,7 @@ async fn computer_resume_replays_original_input_without_duplicate_effects(stop: 
     const DETAIL: &str = "tool choice is unsupported for this model";
 
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::computer_tools().await;
+        let mut fixture = Fixture::configured(support::Options { services: support::Services::ComputerTools, ..Default::default() }).await;
         let client = fixture.client().await;
         let session = fixture.session.clone();
 

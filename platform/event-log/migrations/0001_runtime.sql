@@ -48,7 +48,11 @@ CREATE TABLE session_control (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     archived INTEGER NOT NULL CHECK(archived IN (0, 1)),
-    configuration TEXT NOT NULL
+    configuration TEXT NOT NULL,
+    catalog_unpinned INTEGER
+    GENERATED ALWAYS AS (
+        CASE WHEN json_extract(configuration, '$.pinned') = 1 THEN 0 ELSE 1 END
+    ) VIRTUAL
 );
 
 CREATE TABLE session_catalog_revision (
@@ -143,9 +147,9 @@ CREATE TABLE message_interrupt_receipts (
     PRIMARY KEY(host_epoch, session_id, interrupt_id)
 );
 
-CREATE TABLE "tool_result_payloads" (
+CREATE TABLE tool_result_payloads (
     event_id TEXT PRIMARY KEY NOT NULL REFERENCES event_log(event_id),
-    payload BLOB NOT NULL CHECK(length(payload) <= 67108864)
+    payload BLOB NOT NULL
 );
 
 CREATE TABLE session_history_copies (
@@ -218,7 +222,7 @@ CREATE TABLE plugin_data (
 
 CREATE TABLE request_compositions (
     digest TEXT PRIMARY KEY NOT NULL,
-    surface BLOB NOT NULL CHECK(length(surface) <= 4194304)
+    surface BLOB NOT NULL
 );
 
 CREATE TABLE model_request_compositions (
@@ -1284,6 +1288,15 @@ INSERT INTO plugin_composition VALUES(1,'{"generation":0,"packageLayers":[],"ove
 
 PRAGMA user_version = 1;
 
+CREATE INDEX session_history_artifacts_locator
+    ON session_history_artifacts(session_id, source_artifact_id, artifact_id);
+
+CREATE UNIQUE INDEX native_turn_interruption_lookup ON event_log(
+    json_extract(event_json,'$.opening.session_id'),
+    json_extract(event_json,'$.opening.turn_id')
+) WHERE kind='native_turn_interrupted';
 CREATE INDEX artifacts_lookup_digest ON artifacts(lookup_digest);
 CREATE INDEX history_artifacts_lookup_digest ON session_history_artifacts(lookup_digest);
 CREATE INDEX history_artifacts_target_digest ON session_history_artifacts(target_digest);
+
+CREATE INDEX session_catalog_pin_order ON session_control(catalog_unpinned, id);

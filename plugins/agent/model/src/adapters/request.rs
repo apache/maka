@@ -62,11 +62,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             }
             wire.clone()
         } else if request.prompt.memory_messages().is_some() {
-            super::anthropic::direct_wire(
-                request.prompt.clone(),
-                request.language,
-                stream_options.clone(),
-            )
+            super::anthropic::direct_wire(request.prompt.clone(), request.language, stream_options)
         } else {
             return Err(ModelError::Adapter(
                 "captured prompt is missing its prepared Anthropic wire projection".into(),
@@ -74,7 +70,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
         };
         let document_count = wire.source.document_count();
         let documents = super::anthropic_documents::Documents::new(wire.source.clone())?;
-        let metadata = super::anthropic::metadata(&wire, stream_options).await?;
+        let metadata = super::anthropic::metadata(&wire).await?;
         let context = metadata.context.clone();
         let tools = request
             .tools

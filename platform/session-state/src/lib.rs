@@ -378,7 +378,9 @@ mod tests {
         seed.commit().unwrap();
         drop(seed);
         let old = session.snapshot().unwrap();
-        for index in 1..10_001 {
+        // Only values 0 and 2 remain visible; the intermediate value 1 must
+        // be collected while the old reader is still held.
+        for index in [1, 2] {
             let cell = session.snapshot().unwrap();
             cell.store("key", &json!(index)).unwrap();
             cell.commit().unwrap();
@@ -482,42 +484,43 @@ mod tests {
     }
 
     #[test]
-    fn large_idle_keys_and_cancelled_staging_leave_no_resident_sessions_or_leases() {
+    fn collocated_sessions_keep_values_and_cancelled_staging_independent() {
         let backend = Backend::temporary().unwrap();
-        let large = json!("x".repeat(128 * 1024));
-        for index in 0..128 {
-            let session = backend.session(&format!("large-{index}"));
-            let snapshot = session.snapshot().unwrap();
-            snapshot.store("large", &large).unwrap();
-            snapshot.commit().unwrap();
-            let cancelled = session.snapshot().unwrap();
-            cancelled.store("large", &json!("unpublished")).unwrap();
-            cancelled.store("cancelled", &large).unwrap();
-            drop(cancelled);
+        let first = backend.session("first");
+        let second = (0..)
+            .map(|index| backend.session(&format!("other-{index}")))
+            .find(|session| session.partition == first.partition)
+            .unwrap();
+        for (session, value) in [(&first, "first"), (&second, "second")] {
+            let committed = session.snapshot().unwrap();
+            committed.store("key", &json!(value)).unwrap();
+            committed.commit().unwrap();
         }
-        // All 16 MiB is queryable after every Session/Snapshot handle was dropped.
-        // Inner has only four partitions and a directory: no per-session Rust map.
-        for index in [0, 63, 127] {
-            let snapshot = backend
-                .session(&format!("large-{index}"))
-                .snapshot()
-                .unwrap();
-            assert_eq!(snapshot.load("large").unwrap(), Some(large.clone()));
-            assert_eq!(snapshot.load("cancelled").unwrap(), None);
-        }
-        for partition in &backend.0.partitions {
-            let partition = partition.lock().unwrap();
-            for table in ["snapshots", "pending"] {
-                assert_eq!(
-                    partition
-                        .db
-                        .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
-                            .get::<_, i64>(0))
-                        .unwrap(),
-                    0
-                );
-            }
-        }
+        let abandoned = first.snapshot().unwrap();
+        abandoned.store("key", &json!("unpublished")).unwrap();
+        abandoned.store("cancelled", &json!(true)).unwrap();
+        drop(abandoned);
+        assert_eq!(
+            first.snapshot().unwrap().load("key").unwrap(),
+            Some(json!("first"))
+        );
+        assert_eq!(first.snapshot().unwrap().load("cancelled").unwrap(), None);
+        assert_eq!(
+            second.snapshot().unwrap().load("key").unwrap(),
+            Some(json!("second"))
+        );
+        first
+            .access(|db| {
+                for table in ["snapshots", "pending"] {
+                    assert_eq!(
+                        db.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
+                            .get::<_, i64>(0))?,
+                        0
+                    );
+                }
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]

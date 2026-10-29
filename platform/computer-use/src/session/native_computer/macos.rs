@@ -747,6 +747,19 @@ impl Session {
         let controller = record.controller.clone();
         let application = record.application.clone();
         let result = async {
+            if let Some(observed) = application.observe_projected().await? {
+                let handle = self.raw_mac_window(key, approved, MacWindowSelection::Primary(observed.id),
+                    invocation, cancellation, language).await?;
+                self.verify(&handle, invocation.session(), cancellation, language).await?;
+                let previous = &mut self.raw_computer.mac_targets.get_mut(key)
+                    .ok_or_else(|| failed("native app target retired"))?.previous;
+                let diff = !input.get("disableDiff").map(input::truthy).unwrap_or(false);
+                let text = commit_app_text(previous, observed.text, diff, language);
+                let target = self.targets.get_mut(&handle).unwrap();
+                target.snapshot = None;
+                target.capture = None;
+                return Ok(json!({"app":input["app"],"screenshot":Value::Null,"text":text}));
+            }
             let id = controller.primary_window_id().await?
                 .ok_or_else(|| failed("application has no primary AX window"))?;
             let handle = self.raw_mac_window(key, approved, MacWindowSelection::Primary(id),

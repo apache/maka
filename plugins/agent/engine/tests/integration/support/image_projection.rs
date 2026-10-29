@@ -25,11 +25,11 @@ use maka_agent_facts::artifact::ArtifactSource;
 use maka_agent_facts::artifact::content_digest;
 use maka_agent_facts::event::Invocation;
 use maka_code_runtime::CellLimits;
-use maka_model::{ModelExecutor, ProviderConfig, ProviderKind};
+use maka_model::ModelExecutor;
 use maka_tools::CodeExecutor;
 use maka_tools::ToolCatalog;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 use super::invocation;
@@ -52,36 +52,19 @@ pub fn engine() -> Engine {
 }
 
 pub fn input(base: &str, attachments: Value) -> RunInput {
-    RunInput {
-        model_source: None,
-        model_revision: None,
-        provider_id: "fixture".into(),
-        main_output_limit: None,
-        context: None,
-        invocation: identity("current"),
-        request_fingerprint: None,
-        provider: ProviderConfig {
-            adapter: None,
-            capabilities: Default::default(),
-            kind: ProviderKind::OpenaiChatCompletions,
-            model: "test".into(),
-            base_url: base.into(),
-            auth: maka_model::ProviderAuth::ApiKey("fixture".into()),
-            headers: BTreeMap::new(),
-            network: Default::default(),
-            body_overlay: None,
-        },
-        provider_options: json!({}),
-        supports_vision: true,
-        configuration: invocation::configuration(maka_tools::ToolMode::Direct),
-        work: maka_agent_engine::RunWork::Message {
+    let mut input = invocation::input(
+        base,
+        "current",
+        maka_agent_engine::RunWork::Message {
             allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: serde_json::from_value(json!({"text":"current", "attachments":attachments}))
                 .unwrap(),
             tools: ToolCatalog::new([]).unwrap(),
         },
-    }
+    );
+    input.supports_vision = true;
+    input
 }
 
 pub fn attachment(id: &str) -> Value {

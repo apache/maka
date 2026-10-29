@@ -26,7 +26,8 @@ use maka_config::{
     ConfigurationStore,
     oauth::enrollment::{LoginCompletion, LoginPreparation},
 };
-use std::sync::Arc;
+use maka_event_log::root::{RootNamespaces, RootOwner};
+use std::{path::Path, sync::Arc};
 
 pub async fn login(store: &Arc<ConfigurationStore>, id: &str, secret: &str) {
     let row = store
@@ -89,4 +90,15 @@ pub async fn login(store: &Arc<ConfigurationStore>, id: &str, secret: &str) {
             .unwrap(),
         LoginCompletion::Committed(_)
     ));
+}
+
+pub(super) fn root(path: &Path) -> Arc<RootOwner> {
+    Arc::new(RootOwner::create(&path.join("root"), &namespaces(path)).unwrap())
+}
+
+pub(super) fn namespaces(path: &Path) -> RootNamespaces {
+    RootNamespaces {
+        ownership: path.join("owners"),
+        control: path.join("control"),
+    }
 }

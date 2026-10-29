@@ -334,6 +334,24 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn native_coordinates_accept_equivalent_json_numbers_without_rounding() {
+        for literal in ["5", "5.0", "5e0"] {
+            let input = serde_json::from_str(&format!(r#"{{"x":{literal},"y":41}}"#)).unwrap();
+            let click = Click::parse(input).unwrap();
+            assert!(
+                matches!(click.target, ClickTarget::Coordinates(point) if point.coordinates() == [5, 41])
+            );
+        }
+        for literal in ["5.5", "32768"] {
+            let input = serde_json::from_str(&format!(r#"{{"x":{literal},"y":41}}"#)).unwrap();
+            assert!(
+                matches!(Click::parse(input), Err(Error::Parse(_))),
+                "{literal}"
+            );
+        }
+    }
+
+    #[test]
     fn native_click_counts_keep_the_u32_domain_and_null_defaults() {
         for count in [0, 1, 4, u32::MAX] {
             let click = Click::parse(json!({"x":37.0,"y":41.0,"click_count":count}))
@@ -356,79 +374,6 @@ mod tests {
             ));
             assert!(matches!(click.button, crate::protocol::MouseButton::Left));
         }
-    }
-
-    #[test]
-    fn native_click_parses_count_before_points_regardless_of_json_field_order() {
-        for (count, expected) in [
-            (json!(-1.0), "-1"),
-            (json!(1.5), "1.5"),
-            (json!(4_294_967_296_u64), "4294967296"),
-        ] {
-            for fields in [
-                [
-                    ("y", json!(41)),
-                    ("x", json!(37.9)),
-                    ("click_count", count.clone()),
-                ],
-                [
-                    ("click_count", count.clone()),
-                    ("x", json!(37.9)),
-                    ("y", json!(41)),
-                ],
-            ] {
-                let input = Value::Object(
-                    fields
-                        .into_iter()
-                        .map(|(key, value)| (key.into(), value))
-                        .collect(),
-                );
-                let error = Click::parse(input).expect_err("native count is not a u32");
-                assert_parse_error(error, expected);
-            }
-        }
-    }
-
-    #[test]
-    fn native_click_parses_both_coordinates_before_completeness_or_zero_count() {
-        for input in [
-            json!({"x":null,"y":37.9}),
-            json!({"x":37.9,"y":null}),
-            json!({"x":32768,"y":41,"click_count":0}),
-        ] {
-            let expected = if input["x"] == 32768 { "32768" } else { "37.9" };
-            assert_parse_error(
-                Click::parse(input).expect_err("invalid native point"),
-                expected,
-            );
-        }
-        for input in [
-            json!({"x":null,"y":41}),
-            json!({"x":37}),
-            json!({"x":null,"y":41,"click_count":0}),
-        ] {
-            assert_eq!(
-                Click::parse(input)
-                    .expect_err("incomplete native point")
-                    .to_string(),
-                "coordinate click requires both x and y",
-            );
-        }
-        let bounds = WindowBounds {
-            x: 0.0,
-            y: 0.0,
-            width: 100.0,
-            height: 100.0,
-        };
-        let click = Click::parse(json!({"x":-1,"y":41,"click_count":0}))
-            .expect("zero count still parses a point");
-        let ClickTarget::Coordinates(point) = click.target else {
-            panic!("coordinates became an element click");
-        };
-        assert!(matches!(
-            point.check_window(&bounds),
-            Err(Error::OutsideWindow)
-        ));
     }
 
     #[test]
@@ -574,61 +519,6 @@ mod tests {
         .expect("absent optional element selector keeps the coordinate route");
         assert!(coordinate.element_id.is_none());
         assert_eq!((coordinate.x, coordinate.y), (Some(37), Some(41)));
-    }
-
-    #[test]
-    fn native_drag_strict_point_records_preserve_null_and_float_error_order() {
-        let drag = Drag::parse(json!({"path":[{"x":37.0,"y":41.0},{"x":57.0,"y":61.0}]}))
-            .expect("the facade projects two native point records");
-        assert_eq!(
-            drag.path
-                .into_iter()
-                .map(Point::coordinates)
-                .collect::<Vec<_>>(),
-            vec![[37, 41], [57, 61]]
-        );
-        for (path, expected) in [
-            (json!([{"y":37.9,"x":null},{"x":57,"y":61}]), "null"),
-            (json!([{"y":null,"x":37.9},{"x":57,"y":61}]), "37.9"),
-            (json!([{"x":37,"y":41},{"y":61.5,"x":null}]), "null"),
-            (json!([{"x":37,"y":41},{"y":null,"x":57.5}]), "57.5"),
-        ] {
-            assert_parse_error(Drag::parse(json!({"path":path})).unwrap_err(), expected);
-        }
-    }
-
-    #[test]
-    fn native_integer_parsing_keeps_javascript_number_spelling() {
-        for (input, expected) in [
-            ([37.0, 41.0], [37, 41]),
-            ([-0.0, 41.0], [0, 41]),
-            (
-                [f64::from(i16::MIN), f64::from(i16::MAX)],
-                [i16::MIN, i16::MAX],
-            ),
-        ] {
-            assert_eq!(
-                Point::try_from(input)
-                    .expect("valid native integer point")
-                    .0,
-                expected,
-                "input {input:?}"
-            );
-        }
-        for (input, expected) in [
-            ([37.9, 41.9], "37.9"),
-            ([-1.0, 37.9], "37.9"),
-            ([-0.5, 37.5], "-0.5"),
-            ([32768.0, 65535.0], "32768"),
-            ([1_000_000_000_000_000_100.0, 41.0], "1000000000000000100"),
-        ] {
-            let error = Point::try_from(input).expect_err("invalid native integer point");
-            assert!(
-                std::error::Error::source(&error).is_some(),
-                "parse cause must be retained for input {input:?}"
-            );
-            assert_parse_error(error, expected);
-        }
     }
 
     #[test]

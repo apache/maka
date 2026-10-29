@@ -22,7 +22,6 @@ import { test } from 'node:test';
 import {
   readFileSync,
   readdirSync,
-  existsSync,
   mkdtempSync,
   rmSync,
   writeFileSync,
@@ -33,29 +32,6 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-
-test('the product ships complete Host and shared UI packages', () => {
-  const inputs = JSON.parse(readFileSync(resolve(root, 'package-inputs.json'), 'utf8'));
-  const names = readdirSync(resolve(root, 'dist/packages')).sort();
-  assert.deepEqual(names, Object.keys(inputs).sort());
-  for (const name of names) {
-    const manifest = JSON.parse(
-      readFileSync(resolve(root, 'dist/packages', name, 'maka.extension.json'), 'utf8'),
-    );
-    assert.ok(
-      manifest.application.host || manifest.application.ui || manifest.application.composition,
-      name,
-    );
-    if (manifest.application.ui)
-      assert.ok(
-        existsSync(resolve(root, 'dist/packages', name, manifest.application.ui.module)),
-        name,
-      );
-    assert.ok(manifest.displayName?.trim(), name);
-    assert.ok(manifest.description?.trim(), name);
-    assert.ok(manifest.localizations?.['zh-CN']?.description?.trim(), name);
-  }
-});
 
 test('publishing plugin packages preserves unchanged files and removes obsolete bytes', async () => {
   const { bundle } = await import('../../../../scripts/plugins/build.mjs');

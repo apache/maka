@@ -61,7 +61,11 @@ fn stop_evidence(view: &AppView, phase: &str, resource: &Value) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn original_pty_workbench_keeps_its_output_and_chat_draft_across_reopening() {
     tokio::time::timeout(Duration::from_secs(90), async {
-        let fixture = Fixture::terminals().await;
+        let fixture = Fixture::configured(support::Options {
+            services: support::Services::Terminals,
+            ..Default::default()
+        })
+        .await;
         let client = fixture.client().await;
         let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
         view.resize(120, 40);

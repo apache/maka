@@ -39,6 +39,8 @@ const app = await cua.getApp("Calculator");
 
 `desktop` 默认为 `auto`：WSL 中选择 Windows 主机，其他环境选择本地桌面。`local` 在 WSL 中选择 Linux，`windows` 要求 Windows helper。原生分发通过经过验证的缓存准备匹配版本的 helper。此模式需要 WSL 互操作及交互式 Windows 桌面。
 
+macOS 的 `MAKA_COMPUTER_USE_ALWAYS_SIMULATE_CLICK` 接受 `true` 或 `false`（默认）：raw 元素点击在适用时优先使用 `AXPick`/`AXPress`，否则发送鼠标事件；`true` 强制普通元素使用鼠标事件。菜单栏快捷路径不受此设置影响。
+
 浏览器提供方包括使用已有 profile 的显式 CDP 连接，以及已连接的 Extension 浏览器提供方。先用 `cua.listBrowsers()` 获取完整 ID，再用 `cua.getBrowser({id})` 选择。精确 provider ID 优先；没有精确匹配时，才用 `maka` 和 `chatgpt` 短名选择唯一的当前 Extension 端点；存在多个端点时须使用完整 ID。direct CDP profile 保留配置的 ID。缺少提供方不会重启浏览器或开启远程调试；仍可通过 `getApp` 操作原生浏览器窗口。
 
 配置 Maka 或 ChatGPT Extension 提供方时，须在 Google Chrome 所在操作系统、以同一用户运行启用 `native-desktop` 的 Maka。安装命令注册 Chrome 的当前用户扩展宿主，不经 WSL Windows 桥转发。Linux 和 macOS 下，Chrome 的默认用户配置目录须已存在。注册还会在选定 Maka 可执行文件旁写入安装元数据，这些位置需要可写。

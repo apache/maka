@@ -121,13 +121,13 @@ jobs:
           node scripts/rust/check-cua-build.mjs
           cargo build --locked -p maka-cli --no-default-features
           target/debug/maka --version
-          cargo test --locked -p maka-computer-use --no-default-features --lib --test native --test repl_contract
+          cargo test --locked -p maka-computer-use --no-default-features --lib --test integration
       - name: Verify model search keyboard selection before full checks
         shell: bash
         env:
           NEXTEST_PROFILE: ci
         run: |
-          filter='package(=maka-cli) & binary(=terminal_real_host) & test(=keyboard::connection_filter_preserves_model_search_focus_and_keyboard_selection)'
+          filter='package(=maka-cli) & binary(=integration) & test(=terminal::keyboard::connection_filter_preserves_model_search_focus_and_keyboard_selection)'
           cargo nextest list --locked --workspace -E "$filter" --message-format json > "$RUNNER_TEMP/model-search-tests.json"
           node --input-type=module - "$RUNNER_TEMP/model-search-tests.json" <<'NODE'
           import assert from 'node:assert/strict';
@@ -136,8 +136,8 @@ jobs:
           const matches = Object.values(listing['rust-suites']).flatMap(suite =>
             Object.entries(suite.testcases).filter(([, test]) => test['filter-match'].status === 'matches')
               .map(([name, test]) => [suite['package-name'], suite['binary-name'], name, test.ignored]));
-          assert.deepEqual(matches, [['maka-cli', 'terminal_real_host',
-            'keyboard::connection_filter_preserves_model_search_focus_and_keyboard_selection', false]]);
+          assert.deepEqual(matches, [['maka-cli', 'integration',
+            'terminal::keyboard::connection_filter_preserves_model_search_focus_and_keyboard_selection', false]]);
           NODE
           cargo nextest run --locked --workspace -E "$filter"
       - name: Check Termina Windows input

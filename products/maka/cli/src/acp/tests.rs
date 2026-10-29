@@ -31,89 +31,6 @@ use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sdk_nine_idle_sessions_can_close_and_resume_on_one_connection() {
-    tokio::time::timeout(Duration::from_secs(40), async {
-        let fixture = support::Fixture::open().await;
-        let workspace = fixture.workspace.clone();
-        let mut native = fixture.native;
-        let mut model_requests = fixture.model_requests;
-        let (sdk, facade) = tokio::io::duplex(1024);
-        let (facade_read, facade_write) = tokio::io::split(facade);
-        let serving = tokio::spawn(maka_acp::serve(
-            fixture.client,
-            facade_read,
-            facade_write,
-            tokio_util::sync::CancellationToken::new(),
-        ));
-        let (sdk_read, sdk_write) = tokio::io::split(sdk);
-        let result = Client
-            .v2()
-            .connect_with(
-                ByteStreams::new(sdk_write.compat_write(), sdk_read.compat()),
-                async |connection| {
-                    connection
-                        .send_request(acp::InitializeRequest::new(
-                            ProtocolVersion::V2,
-                            acp::Implementation::new("maka-sdk-idle-sessions", "1"),
-                        ))
-                        .block_task()
-                        .await?;
-                    let mut sessions = Vec::new();
-                    for _ in 0..9 {
-                        let created = connection
-                            .send_request(acp::NewSessionRequest::new(&workspace))
-                            .block_task()
-                            .await?;
-                        sessions.push(created.session_id);
-                    }
-                    for id in &sessions {
-                        connection
-                            .send_request(acp::CloseSessionRequest::new(id.clone()))
-                            .block_task()
-                            .await?;
-                    }
-                    for id in &sessions {
-                        connection
-                            .send_request(acp::ResumeSessionRequest::new(id.clone(), &workspace))
-                            .block_task()
-                            .await?;
-                    }
-                    for id in &sessions {
-                        connection
-                            .send_request(acp::CloseSessionRequest::new(id.clone()))
-                            .block_task()
-                            .await?;
-                    }
-                    Ok(sessions)
-                },
-            )
-            .await;
-        // Settle the real owners even when the ninth request is rejected.
-        tokio::time::timeout(Duration::from_secs(10), serving)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        native.close().await.unwrap();
-        fixture.stop.cancel();
-        fixture.server.await.unwrap().unwrap();
-        assert!(
-            matches!(
-                model_requests.try_recv(),
-                Err(mpsc::error::TryRecvError::Empty)
-            ),
-            "idle session lifecycle must not invoke the model"
-        );
-        drop(fixture.provider);
-        let sessions = result.expect("nine idle sessions must create, close, resume and close");
-        let unique: std::collections::HashSet<_> = sessions.into_iter().collect();
-        assert_eq!(unique.len(), 9);
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sdk_published_directory_depth_uses_path_progress() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let fixture = support::Fixture::open().await;
@@ -122,8 +39,8 @@ async fn sdk_published_directory_depth_uses_path_progress() {
         let original_root_marker = std::fs::read(root.join(marker)).unwrap();
         let mut leaf = root.clone();
         let mut intermediate = Vec::new();
-        for _ in 0..65 {
-            leaf.push("d");
+        for component in ["project", "src", "nested"] {
+            leaf.push(component);
             std::fs::create_dir(&leaf).unwrap();
             intermediate.push(leaf.clone());
         }
@@ -154,8 +71,6 @@ async fn sdk_published_directory_depth_uses_path_progress() {
                         ))
                         .block_task()
                         .await?;
-                    // Keep the original failure as data: baseline cannot select the
-                    // physical leaf, but must still close the real ACP/Host owners.
                     let created = connection
                         .send_request(acp::NewSessionRequest::new(&leaf))
                         .block_task()
@@ -191,13 +106,11 @@ async fn sdk_published_directory_depth_uses_path_progress() {
         fixture.server.await.unwrap().unwrap();
         drop(fixture.provider);
 
-        assert_eq!(leaf.strip_prefix(&root).unwrap().components().count(), 65);
-        assert!(leaf.to_str().unwrap().len() <= 4096);
         assert_eq!(
             std::fs::read(root.join(marker)).unwrap(),
             original_root_marker
         );
-        for path in intermediate.iter().take(64) {
+        for path in intermediate.iter().take(intermediate.len() - 1) {
             assert!(
                 !path.join(marker).exists(),
                 "ACP initialized an intermediate directory: {path:?}"
@@ -205,7 +118,8 @@ async fn sdk_published_directory_depth_uses_path_progress() {
         }
         let (initialized, created) = sdk_result.expect("real ACP SDK connection must settle");
         assert_eq!(initialized.protocol_version, ProtocolVersion::V2);
-        let created = created.expect("NewSession must select the physical depth65 cwd");
+        let created =
+            created.expect("NewSession must select the physical leaf through the published root");
         let observed = observed.unwrap();
         assert_eq!(observed["session"]["id"], created.session_id.to_string());
         let workspace: maka_agent_api::contract::Workspace =

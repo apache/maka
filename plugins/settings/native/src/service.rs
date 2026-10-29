@@ -759,3 +759,6 @@ impl NativeOwner for Settings {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

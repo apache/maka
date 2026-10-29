@@ -204,9 +204,9 @@ export const exclusionRules = [
     justification:
       'Generated PEM certificates and a public test-only key for loopback TLS acceptance. Their format is consumed directly by TLS parsers; provenance and regeneration guidance live in the adjacent README.md.',
     matches: isOneOf(
-      'platform/network/tests/fixtures/ca.pem',
-      'platform/network/tests/fixtures/localhost.pem',
-      'platform/network/tests/fixtures/localhost.key',
+      'platform/network/tests/integration/fixtures/ca.pem',
+      'platform/network/tests/integration/fixtures/localhost.pem',
+      'platform/network/tests/integration/fixtures/localhost.key',
     ),
   },
   {

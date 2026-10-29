@@ -83,6 +83,10 @@ enum Need {
 }
 
 enum Intent {
+    Menu {
+        menu: RetainedElement,
+        point: Option<[f64; 2]>,
+    },
     Semantic {
         action: &'static str,
         point: Option<[f64; 2]>,
@@ -226,7 +230,7 @@ impl PendingClick {
             }
             Ok(())
         };
-        selection.resolve_after_preparation(
+        let prepared_point = selection.resolve_after_preparation(
             self.chess.as_ref(),
             &self.cancellation,
             |element| {
@@ -243,11 +247,13 @@ impl PendingClick {
         if matches!(self.input.button, MouseButton::Left)
             && self.input.count == 1
             && role.as_deref() == Some("AXMenuBarItem")
-            && has_menu_child(&self.element)?
+            && let Some(menu) = first_menu_child(&self.element)?
         {
-            return Err(failed(
-                "native menu projection is unavailable for this retained element",
-            ));
+            self.phase = Phase::Ready(Intent::Menu {
+                menu,
+                point: prepared_point,
+            });
+            return self.ready();
         }
         let actions = target::action_names(&self.element).unwrap_or_default();
         self.check()?;
@@ -407,10 +413,12 @@ impl PendingClick {
 
     fn ready(&self) -> Result<Progress, ToolError> {
         match &self.phase {
-            Phase::Ready(Intent::Semantic { point, .. }) => Ok(Progress::Ready {
-                point: *point,
-                target: None,
-            }),
+            Phase::Ready(Intent::Menu { point, .. } | Intent::Semantic { point, .. }) => {
+                Ok(Progress::Ready {
+                    point: *point,
+                    target: None,
+                })
+            }
             Phase::Ready(Intent::Physical { target, point }) => Ok(Progress::Ready {
                 point: Some(*point),
                 target: Some(TargetData {
@@ -424,10 +432,20 @@ impl PendingClick {
         }
     }
 
-    pub(in crate::macos) fn finish(mut self: Box<Self>) -> Result<(), ToolError> {
+    pub(in crate::macos) fn finish(
+        mut self: Box<Self>,
+        publish_menu: impl FnOnce(RetainedElement, RetainedElement) -> Result<(), ToolError>,
+    ) -> Result<(), ToolError> {
         let result = (|| {
             self.check()?;
             match std::mem::replace(&mut self.phase, Phase::Terminal) {
+                Phase::Ready(Intent::Menu { menu, .. }) => {
+                    self.focus.enforce_with_window(|| {
+                        activation_window(self.window.element(), self.window_id)
+                    })?;
+                    self.check()?;
+                    publish_menu(self.element.clone(), menu)
+                }
                 Phase::Ready(Intent::Semantic { action, .. }) => {
                     self.focus.enforce_with_window(|| {
                         activation_window(self.window.element(), self.window_id)
@@ -521,9 +539,9 @@ fn inside_web_view(
     Ok(false)
 }
 
-fn has_menu_child(element: &RetainedElement) -> Result<bool, ToolError> {
-    Ok(target::children(element)?.into_iter().any(|child| {
-        target::string_attribute(&child, "AXRole")
+fn first_menu_child(element: &RetainedElement) -> Result<Option<RetainedElement>, ToolError> {
+    Ok(target::children(element)?.into_iter().find(|child| {
+        target::string_attribute(child, "AXRole")
             .ok()
             .flatten()
             .as_deref()

@@ -69,181 +69,15 @@ async fn library(root: Arc<RootOwner>, source: &std::path::Path, namespace: &str
             }],
         },
         root.canonical_path().to_owned(),
-        super::super::tests::preferences(source.parent().unwrap()).await,
+        preferences::Store::new(
+            Arc::new(maka_event_log::RootStore::open(root.clone()).await.unwrap()),
+            "test_".into(),
+        ),
     )
     .unwrap();
     library.managed = Some(Managed::open(root, namespace.into()).await.unwrap());
     library
 }
-#[tokio::test]
-async fn managed_changes_preserve_resources_refuse_stale_reviews_and_replay_original_receipts() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = dir.path().join("sources");
-    std::fs::create_dir_all(source.join("review/scripts")).unwrap();
-    std::fs::write(source.join("review/SKILL.md"), document("original")).unwrap();
-    std::fs::write(source.join("review/scripts/check"), "source resource").unwrap();
-    let root = Arc::new(
-        RootOwner::create(
-            &dir.path().join("host"),
-            &RootNamespaces {
-                ownership: dir.path().join("owners"),
-                control: dir.path().join("control"),
-            },
-        )
-        .unwrap(),
-    );
-    let target = root
-        .canonical_path()
-        .join("skill-libraries/one/skills/review");
-    let call = scope();
-    let mut first = library(root.clone(), &source, "one").await;
-    let install = review(&first, ChangeKind::Install, "source:local:review", &call).await;
-    std::fs::write(source.join("review/scripts/check"), "changed after preview").unwrap();
-    assert!(matches!(
-        first
-            .apply_operation(install.clone(), &operation(&install), &call)
-            .await
-            .unwrap(),
-        ChangeResult::Changed
-    ));
-    assert!(!target.exists());
-    std::fs::write(source.join("review/scripts/check"), "source resource").unwrap();
-    let install = review(&first, ChangeKind::Install, "source:local:review", &call).await;
-    let install_operation = maka_plugin_core::operation::RecoveryRef {
-        source: maka_plugin_core::deployment::DeploymentRef {
-            state_domain: "a".repeat(64),
-            deployment: uuid::Uuid::new_v4(),
-            revision: 1,
-        },
-        namespace: maka_plugin_core::composition::InstanceId(vec![uuid::Uuid::new_v4()]),
-        export: "skills".into(),
-        method: "apply".into(),
-        operation: uuid::Uuid::new_v4(),
-        fingerprint: operation(&install)
-            .fingerprint
-            .replacen("sha256:", "sha256-", 1),
-        contract: maka_plugin_core::operation::RecoveryContract::for_method(&contract(), "apply")
-            .unwrap(),
-        recovery: maka_plugin_core::operation::RecoveryProtocol::JournalV1,
-    };
-    install_operation.validate().unwrap();
-    assert!(matches!(
-        first
-            .apply(install.clone(), &install_operation, &call)
-            .await
-            .unwrap(),
-        ChangeResult::Applied { .. }
-    ));
-    assert_eq!(
-        std::fs::read(target.join("scripts/check")).unwrap(),
-        b"source resource"
-    );
-    let snapshot = first.snapshot(&call).await.unwrap();
-    assert!(
-        snapshot
-            .entries
-            .iter()
-            .any(|(entry, _, body)| entry.installed && body == "original")
-    );
-    assert!(snapshot.entries.iter().any(|(entry, _, _)| !entry.installed
-        && entry.shadowed_by.as_deref() == Some("installed:review")));
-    let other = library(root.clone(), &source, "two").await;
-    assert!(
-        !other
-            .snapshot(&call)
-            .await
-            .unwrap()
-            .entries
-            .iter()
-            .any(|(entry, _, _)| entry.installed)
-    );
-
-    // Updating instructions retains local resources. Every preview binds the
-    // complete reviewed target and source trees, not only SKILL.md.
-    std::fs::write(target.join("scripts/check"), "local resource").unwrap();
-    std::fs::write(target.join("SKILL.md"), document("local instructions")).unwrap();
-    std::fs::write(source.join("review/SKILL.md"), document("updated")).unwrap();
-    let update = review(&first, ChangeKind::Update, "source:local:review", &call).await;
-    std::fs::write(target.join("scripts/check"), "edited after preview").unwrap();
-    assert!(matches!(
-        first
-            .apply_operation(update.clone(), &operation(&update), &call)
-            .await
-            .unwrap(),
-        ChangeResult::Changed
-    ));
-    assert_eq!(
-        std::fs::read(target.join("SKILL.md")).unwrap(),
-        document("local instructions")
-    );
-    let update = review(&first, ChangeKind::Update, "source:local:review", &call).await;
-    assert!(matches!(
-        first
-            .apply_operation(update.clone(), &operation(&update), &call)
-            .await
-            .unwrap(),
-        ChangeResult::Applied { .. }
-    ));
-    assert_eq!(
-        std::fs::read(target.join("scripts/check")).unwrap(),
-        b"edited after preview"
-    );
-    assert_eq!(
-        std::fs::read(target.join("SKILL.md")).unwrap(),
-        document("updated")
-    );
-    assert_eq!(
-        std::fs::read(target.join(".maka/baseline/SKILL.md")).unwrap(),
-        document("updated")
-    );
-
-    let delete = review(&first, ChangeKind::Delete, "installed:review", &call).await;
-    let deletion = operation(&delete);
-    assert!(matches!(
-        first
-            .apply_operation(delete.clone(), &deletion, &call)
-            .await
-            .unwrap(),
-        ChangeResult::Applied { .. }
-    ));
-    assert!(!target.exists());
-    assert_eq!(
-        std::fs::read(source.join("review/scripts/check")).unwrap(),
-        b"source resource"
-    );
-    drop(first);
-    first = library(root.clone(), &source, "one").await;
-    assert!(matches!(
-        first
-            .apply(install, &install_operation, &call)
-            .await
-            .unwrap(),
-        ChangeResult::Applied { .. }
-    ));
-    assert!(
-        !target.exists(),
-        "the original install receipt must not reinstall a deleted result"
-    );
-    assert!(matches!(
-        first
-            .apply_operation(delete.clone(), &deletion, &call)
-            .await
-            .unwrap(),
-        ChangeResult::Applied { .. }
-    ));
-    let mismatch = Operation {
-        fingerprint: maka_agent_facts::artifact::content_digest(b"different input"),
-        ..deletion
-    };
-    assert!(
-        first
-            .apply_operation(delete, &mismatch, &call)
-            .await
-            .is_err()
-    );
-    call.finish().await.unwrap();
-}
-
 #[tokio::test]
 async fn management_rejects_external_deletion_disabled_access_and_links_into_private_records() {
     let dir = tempfile::tempdir().unwrap();
@@ -521,6 +355,22 @@ async fn project_installation_keeps_its_reviewed_workspace_and_relative_resource
         .reference
         .clone();
     let install = review(&scoped, ChangeKind::Install, &reference, &call).await;
+    let resource = project.join(".agents/skills/review/references/guide");
+    std::fs::write(&resource, "changed after review").unwrap();
+    assert!(matches!(
+        scoped
+            .apply_operation(install.clone(), &operation(&install), &call)
+            .await
+            .unwrap(),
+        ChangeResult::Changed
+    ));
+    assert!(
+        !root
+            .canonical_path()
+            .join("skill-libraries/project/skills/review")
+            .exists()
+    );
+    std::fs::write(&resource, "project resource").unwrap();
     assert_eq!(install.change.workspace, Some(workspace));
     let original = library
         .for_workspace(install.change.workspace.clone(), &call)

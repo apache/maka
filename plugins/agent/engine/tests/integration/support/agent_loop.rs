@@ -24,18 +24,13 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
-use maka_model::{ProviderConfig, ProviderKind};
 use maka_tools::{
-    ToolCatalog, ToolDefinition, ToolHandler, ToolMode, ToolNesting, ToolRegistration,
-    ToolSemantics,
+    ToolCatalog, ToolDefinition, ToolHandler, ToolNesting, ToolRegistration, ToolSemantics,
 };
 use serde_json::{Value, json};
-use std::{
-    collections::BTreeMap,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -84,53 +79,32 @@ impl ToolExecutor for Effect {
 }
 
 pub(crate) fn input(base: &str, suffix: &str, effect: Arc<dyn ToolExecutor>) -> RunInput {
-    RunInput {
-        model_source: None,
-        model_revision: None,
-        provider_id: "fixture".into(),
-        main_output_limit: None,
-        context: None,
-        invocation: Invocation {
-            session_id: "session".into(),
-            turn_id: format!("turn-{suffix}"),
-            run_id: format!("run-{suffix}"),
-            invocation_id: format!("invocation-{suffix}"),
+    let tools = ToolCatalog::new([ToolRegistration {
+        definition: ToolDefinition {
+            freeform: None,
+            output_schema: None,
+            provider: None,
+            name: "echo".into(),
+            description: "echo".into(),
+            input_schema: json!({"type":"object"}),
         },
-        request_fingerprint: None,
-        provider: ProviderConfig {
-            adapter: None,
-            capabilities: Default::default(),
-            kind: ProviderKind::OpenaiChatCompletions,
-            model: "test".into(),
-            base_url: base.into(),
-            auth: maka_model::ProviderAuth::ApiKey("do-not-persist-this-secret".into()),
-            headers: BTreeMap::new(),
-            network: Default::default(),
-            body_overlay: None,
-        },
-        provider_options: json!({}),
-        supports_vision: false,
-        configuration: invocation::configuration(ToolMode::Direct),
-        work: maka_agent_engine::RunWork::Message {
+        nesting: ToolNesting::Nestable,
+        semantics: ToolSemantics::Parallel,
+        handler: ToolHandler::Immediate(effect),
+    }])
+    .unwrap();
+    let mut input = invocation::input(
+        base,
+        suffix,
+        maka_agent_engine::RunWork::Message {
             allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: format!("question {suffix}").into(),
-            tools: ToolCatalog::new([ToolRegistration {
-                definition: ToolDefinition {
-                    freeform: None,
-                    output_schema: None,
-                    provider: None,
-                    name: "echo".into(),
-                    description: "echo".into(),
-                    input_schema: json!({"type":"object"}),
-                },
-                nesting: ToolNesting::Nestable,
-                semantics: ToolSemantics::Parallel,
-                handler: ToolHandler::Immediate(effect),
-            }])
-            .unwrap(),
+            tools,
         },
-    }
+    );
+    input.provider.auth = maka_model::ProviderAuth::ApiKey("do-not-persist-this-secret".into());
+    input
 }
 
 fn source(

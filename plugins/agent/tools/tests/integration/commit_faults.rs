@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use super::support::preflight as fixture;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -193,11 +194,7 @@ async fn seed(log: &EventLog, invocation: &Invocation, call: &ModelToolCall) -> 
         invocation.clone(),
         Fact::ModelCompleted {
             step_id: "step".into(),
-            output: super::support::preflight::completion(
-                invocation,
-                "step",
-                std::slice::from_ref(call),
-            ),
+            output: fixture::completion(invocation, "step", std::slice::from_ref(call)),
         },
     ))
     .unwrap()

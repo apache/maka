@@ -39,6 +39,8 @@ Subsequent calls use indices from that observation. `cua.getState()` lists avail
 
 The `desktop` setting defaults to `auto`: the Windows host in WSL, otherwise the local desktop. `local` selects Linux inside WSL; `windows` requires the Windows helper. Native releases prepare their matching Windows helper through the verified distribution cache. WSL interoperability and an interactive Windows desktop are required.
 
+On macOS, `MAKA_COMPUTER_USE_ALWAYS_SIMULATE_CLICK` accepts `true` or `false` (the default): raw element clicks prefer `AXPick`/`AXPress` when eligible, otherwise mouse events; `true` forces mouse events for ordinary elements. The menu-bar fast path is independent of this setting.
+
 Browser providers include explicitly configured CDP endpoints for existing profiles and connected Extension browser providers. Use `cua.listBrowsers()` to discover their full IDs, then `cua.getBrowser({id})` to select one. Exact provider IDs take precedence. Only without an exact match do the `maka` and `chatgpt` shortcuts select one current Extension endpoint; multiple endpoints require its full ID. Direct CDP profiles retain their configured IDs. Missing providers do not restart a browser or enable remote debugging; native browser-window control remains available through `getApp`.
 
 Set up the Maka or ChatGPT Extension provider with a `native-desktop` Maka build on Google Chrome's OS and under the same user. Setup registers Chrome's current-user extension host; it is not forwarded by the WSL Windows bridge. On Linux and macOS, Chrome's default user configuration directory must already exist. Registration also writes installation metadata next to the selected Maka executable, so those paths must be writable.

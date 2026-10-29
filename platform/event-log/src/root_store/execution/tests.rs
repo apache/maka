@@ -280,7 +280,6 @@ async fn artifact_capture_copies_deletable_bytes_and_metadata_from_one_snapshot(
         captured_artifact(
             source
                 .with_artifact_capture(lookup, move |captured, metadata, body| {
-                    assert!(captured.protected_source.is_none());
                     assert!(captured.protected_metadata.is_none());
                     let metadata: Artifact = serde_json::from_reader(metadata)?;
                     started.send(()).unwrap();
@@ -374,15 +373,21 @@ async fn captured_artifact_sources_cannot_cross_session_or_snapshot_authority() 
     let artifact = captured_artifact(
         first
             .with_artifact_capture(lookup, |capture, _, _| {
-                Ok(capture.protected_source.unwrap())
+                Ok(capture.protected_metadata.unwrap())
             })
             .await
             .unwrap(),
     );
     assert!(second.byte_source(&artifact).is_err());
-    assert!(first.byte_range(&artifact, 0, 4).is_err());
+    assert!(first.byte_range(&artifact, 0, u64::MAX).is_err());
     let original = first.byte_source(&artifact).unwrap();
-    assert_eq!(original.len(), Some(3));
+    let metadata: Artifact = first
+        .with_sequential_source(&artifact, |reader| Ok(serde_json::from_reader(reader)?))
+        .await
+        .unwrap();
+    assert_eq!(metadata.id, "protected");
+    assert_eq!(metadata.session_id, "session");
+    assert_eq!(metadata.size_bytes, 3);
     drop(original);
     drop(artifact);
     drop(first);
@@ -895,8 +900,7 @@ async fn artifact_lookup_streams_long_local_alias_and_target_ids_and_rejects_col
     let local = lookup(&source, &owner, &target).await;
     let body = captured_artifact(
         source
-            .with_artifact_capture(local, |capture, _, body| {
-                assert!(capture.protected_source.is_none());
+            .with_artifact_capture(local, |_, _, body| {
                 let mut bytes = Vec::new();
                 body.read_to_end(&mut bytes)?;
                 Ok(bytes)
@@ -914,19 +918,6 @@ async fn artifact_lookup_streams_long_local_alias_and_target_ids_and_rejects_col
         sqlx::query("INSERT INTO session_history_artifacts(session_id,source_session_id,source_artifact_id,artifact_id,lookup_digest,target_digest) VALUES(?,?,'wrong','wrong',?,?)").bind(&o).bind(&r).bind(alias_hash.as_slice()).bind(target_hash.as_slice()).execute(&mut *db).await?;
         Ok(())
     })).await.unwrap();
-    let local = lookup(&source, &owner, &target).await;
-    captured_artifact(
-        source
-            .with_artifact_capture(local, |capture, _, _| {
-                assert!(
-                    capture.protected_source.is_none(),
-                    "wrong alias target fingerprint cannot protect this artifact"
-                );
-                Ok(())
-            })
-            .await
-            .unwrap(),
-    );
     let (o, r, i, t) = (
         owner.clone(),
         remote.clone(),
@@ -939,8 +930,7 @@ async fn artifact_lookup_streams_long_local_alias_and_target_ids_and_rejects_col
     let alias = lookup(&source, &remote, &original).await;
     let body = captured_artifact(
         source
-            .with_artifact_capture(alias, |capture, _, body| {
-                assert!(capture.protected_source.is_some());
+            .with_artifact_capture(alias, |_, _, body| {
                 let mut bytes = Vec::new();
                 body.read_to_end(&mut bytes)?;
                 Ok(bytes)
