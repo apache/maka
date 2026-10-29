@@ -37,6 +37,7 @@ import {
 import { Workbench, canDockBrowser, canDockPreview } from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
+import { initializeAppearance } from './appearance';
 import { currentLocale, tr } from './locale';
 import { errorText, renderText } from './text';
 import { bodyTextStyle, C, controlStyle } from './ui';
@@ -75,6 +76,8 @@ function App(
     alive = false;
     navigationGeneration++;
   });
+  // Apply the stored colors and text size from the start, not only once Settings opens.
+  initializeAppearance();
   effect(() => currentLocale.set(runtime.locale()));
   const report = (reason: unknown) => {
     if (alive) notice.set(reason);
