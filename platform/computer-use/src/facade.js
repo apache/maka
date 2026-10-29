@@ -1314,7 +1314,6 @@ Object.defineProperty(globalThis, 'agent', {
 // Compose after existing nodeRepl setup and before cua registration. Factory
 // and result-projector implementations are enclosed in this same lexical IIFE.
 const rawNativeComputer = (() => {
-  // Private composition fragment. No provider, permission, or native implementation.
   // installedMethods and audioSurface must come from the actual trusted Host.
 
   const nonAudioMethods = Object.freeze({
