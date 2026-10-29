@@ -755,7 +755,7 @@ async fn upload_index_migration_preserves_v1_browser_decisions_and_checksum() {
         .0;
     db.execute_batch(&format!("DROP INDEX interaction_browser_origin_decision; CREATE INDEX interaction_browser_origin_decision ON{index};")).unwrap();
     assert_eq!(
-        db.execute("DELETE FROM _sqlx_migrations WHERE version=2", [])
+        db.execute("DELETE FROM _sqlx_migrations WHERE version=7", [])
             .unwrap(),
         1
     );
@@ -791,7 +791,7 @@ async fn upload_index_migration_preserves_v1_browser_decisions_and_checksum() {
     );
     assert_eq!(
         db.query_row(
-            "SELECT count(*) FROM _sqlx_migrations WHERE version=2 AND success=1",
+            "SELECT count(*) FROM _sqlx_migrations WHERE version=7 AND success=1",
             [],
             |row| row.get::<_, i64>(0)
         )

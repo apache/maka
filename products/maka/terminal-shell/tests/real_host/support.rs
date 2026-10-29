@@ -834,6 +834,7 @@ impl Fixture {
                                 "usage",
                                 "models",
                                 "resolveModel",
+                                "catalogModels",
                                 "updateModelSettings",
                                 "connections",
                                 "connection",

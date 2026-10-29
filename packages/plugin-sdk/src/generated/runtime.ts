@@ -5821,6 +5821,7 @@ export interface AgentSession {
   revision: number;
   updatedAt: number;
   archived: boolean;
+  pinned: boolean;
   hasUnread: boolean;
   /**
    * Exact durable visible tail accepted by markRead; independent of preview clocks.
@@ -6604,6 +6605,7 @@ export interface SettingsModelLimits {
   compactionThreshold: number | null;
 }
 export interface SettingsModelDefaults {
+  catalogMatched: boolean;
   label: string;
   contextWindow: number | null;
   inputLimit: number | null;
@@ -6695,6 +6697,10 @@ export interface SettingsConnectionEditingFacts {
 }
 export interface ModelOverride {
   /**
+   * Catalog defaults for this connection's model; the request model ID is unchanged.
+   */
+  catalogModel?: CatalogModelReference;
+  /**
    * Public adapter contribution name; omitted selects the wire's default.
    */
   adapter?: string;
@@ -6737,6 +6743,10 @@ export interface ModelOverride {
   capabilities?: ModelOverrideCapabilities;
   modalities?: ModelModalities;
   serviceTier?: RelayServiceTier;
+}
+export interface CatalogModelReference {
+  provider: string;
+  modelId: string;
 }
 /**
  * Vision has one declaration owner: ModelOverride::vision.
@@ -7718,6 +7728,10 @@ export interface AgentDirectory {
   selection: AgentDirectorySelection;
 }
 export interface AgentMetadata {
+  /**
+   * Omission preserves the conversation's position in the catalog.
+   */
+  pinned?: boolean | null;
   /**
    * Changing collaboration is only allowed while the Session is idle.
    */

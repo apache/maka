@@ -22,6 +22,7 @@
 //! read-only attachment. The only cross-writer wait is partition -> control;
 //! control callbacks never wait for a partition, a gate, or a human response.
 use super::{RootStore, SessionStore, gates};
+use crate::append::ComputerAppDispatch;
 use crate::connection::BoxFuture;
 use crate::interactions::InteractionCommit;
 use crate::interactions::records::{
@@ -478,8 +479,10 @@ impl SessionStore {
             prefix,
             event,
             targets,
-            app,
-            display,
+            ComputerAppDispatch {
+                target: app,
+                display,
+            },
             basis,
             crate::append::ComputerLane::Other,
         )
@@ -499,8 +502,10 @@ impl SessionStore {
             prefix,
             event,
             targets,
-            app,
-            display,
+            ComputerAppDispatch {
+                target: app,
+                display,
+            },
             basis,
             crate::append::ComputerLane::Native,
         )
@@ -512,8 +517,7 @@ impl SessionStore {
         prefix: &[EventWrite],
         event: &EventWrite,
         targets: &[GrantTarget],
-        app: &GrantTarget,
-        display: &maka_agent_facts::interaction::ComputerAppDisplay,
+        app: ComputerAppDispatch<'_>,
         basis: &PermissionBasis,
         lane: crate::append::ComputerLane,
     ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
@@ -522,14 +526,14 @@ impl SessionStore {
                 "app admission requires a native tool dispatch".into(),
             ));
         };
-        let key = app_key(app).map_err(super::session_store::commit_error)?;
+        let key = app_key(app.target).map_err(super::session_store::commit_error)?;
         let pin = self
             .gates
             .read([gates::Key::ComputerApp(key)])
             .await
             .map_err(super::session_store::commit_error)?;
         if !self
-            .computer_app_granted(&event.event().invocation, operation_id, app, basis)
+            .computer_app_granted(&event.event().invocation, operation_id, app.target, basis)
             .await
             .map_err(super::session_store::commit_error)?
         {
@@ -540,7 +544,7 @@ impl SessionStore {
             .await
             .map_err(super::session_store::commit_error)?;
         log.scoped(Arc::new(pin))
-            .append_computer_app_dispatch(prefix, event, targets, app, display, basis, lane)
+            .append_computer_app_dispatch(prefix, event, targets, app, basis, lane)
             .await
     }
 

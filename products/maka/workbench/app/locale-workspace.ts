@@ -37,6 +37,9 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const workspaceMessages = {
+  'Pin conversation': ['Pin conversation', '置顶会话', '置頂對話'],
+  'Unpin conversation': ['Unpin conversation', '取消置顶', '取消置頂'],
+  Pinned: ['Pinned', '已置顶', '已置頂'],
   'Actions for {title}': ['Actions for {title}', '{title} 的操作', '{title} 的操作'],
   Active: ['Active', '活动', '使用中'],
   'All workspaces': ['All workspaces', '全部工作区', '所有工作區'],

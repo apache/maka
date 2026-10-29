@@ -22,7 +22,8 @@ use super::{PARTITION_COUNT, RootStore};
 use crate::{
     EventLog, StoreError,
     sessions::{
-        CatalogFilter, CatalogScope, MAX_SESSION_PAGE, SessionPage, SessionPosition, SessionRecord,
+        CatalogFilter, CatalogKey, CatalogPosition, CatalogScope, MAX_SESSION_PAGE, SessionPage,
+        SessionPosition, SessionRecord,
     },
 };
 use futures_util::future::try_join_all;
@@ -196,6 +197,19 @@ impl RootStore {
                 actual: revision,
             });
         }
+        let position = match position {
+            SessionPosition::Start => CatalogPosition::Start,
+            SessionPosition::At(id) | SessionPosition::After(id) | SessionPosition::Before(id) => {
+                let key = match self.published_partition(id).await? {
+                    Some(index) => self.partitions[index].catalog_key(id).await?,
+                    None => CatalogKey {
+                        unpinned: true,
+                        id: id.to_owned(),
+                    },
+                };
+                CatalogPosition::new(position, key)
+            }
+        };
         let page = self
             .session_page_at::<T>(&scope, filter, position, limit, vector, revision.clone())
             .await;
@@ -213,17 +227,17 @@ impl RootStore {
         &self,
         scope: &CatalogScope,
         filter: CatalogFilter,
-        position: SessionPosition<'_>,
+        position: CatalogPosition,
         limit: usize,
         vector: CatalogVector,
         count_pending: bool,
-    ) -> Result<(Vec<(String, usize)>, u64), StoreError> {
+    ) -> Result<(Vec<(CatalogKey, usize)>, u64), StoreError> {
         let selection = crate::sessions::CatalogQuery::new(scope, filter)?;
         let pages = try_join_all(self.partitions.iter().enumerate().map(|(index, log)| {
             log.root_catalog_ids(
                 index,
                 selection.clone(),
-                position,
+                position.clone(),
                 limit,
                 vector.partition(index),
                 count_pending,
@@ -246,23 +260,23 @@ impl RootStore {
         &self,
         scope: &CatalogScope,
         filter: CatalogFilter,
-        position: SessionPosition<'_>,
+        position: CatalogPosition,
         limit: usize,
         vector: CatalogVector,
         revision: String,
     ) -> Result<SessionPage<T>, StoreError> {
         let (mut candidates, pending_session_count) = self
-            .catalog_candidates(scope, filter, position, limit, vector, true)
+            .catalog_candidates(scope, filter, position.clone(), limit, vector, true)
             .await?;
-        let mut reverse = matches!(position, SessionPosition::Before(_));
+        let mut reverse = position.reverse();
         if candidates.is_empty()
-            && let SessionPosition::At(id) = position
+            && let CatalogPosition::At(id) = &position
         {
             candidates = self
                 .catalog_candidates(
                     scope,
                     filter,
-                    SessionPosition::Before(id),
+                    CatalogPosition::Before(id.clone()),
                     limit,
                     vector,
                     false,
@@ -282,14 +296,14 @@ impl RootStore {
                 .catalog_candidates(
                     scope,
                     filter,
-                    SessionPosition::Before(first),
+                    CatalogPosition::Before(first.clone()),
                     1,
                     vector,
                     false,
                 )
                 .await?
                 .0;
-            (!previous.is_empty()).then(|| first.clone())
+            (!previous.is_empty()).then(|| first.id.clone())
         } else {
             None
         };
@@ -298,20 +312,21 @@ impl RootStore {
                 .catalog_candidates(
                     scope,
                     filter,
-                    SessionPosition::After(last),
+                    CatalogPosition::After(last.clone()),
                     1,
                     vector,
                     false,
                 )
                 .await?
                 .0;
-            (!next.is_empty()).then(|| last.clone())
+            (!next.is_empty()).then(|| last.id.clone())
         } else {
             None
         };
         let mut selected: [Vec<String>; PARTITION_COUNT] = std::array::from_fn(|_| Vec::new());
-        for (id, index) in candidates {
-            selected[index].push(id);
+        let ordered_ids: Vec<_> = candidates.iter().map(|(key, _)| key.id.clone()).collect();
+        for (key, index) in candidates {
+            selected[index].push(key.id);
         }
         let pages = try_join_all(
             self.partitions
@@ -327,8 +342,15 @@ impl RootStore {
                 }),
         )
         .await?;
-        let mut sessions: Vec<_> = pages.into_iter().flatten().collect();
-        sessions.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+        let mut records: std::collections::BTreeMap<_, _> = pages
+            .into_iter()
+            .flatten()
+            .map(|session| (session.id.clone(), session))
+            .collect();
+        let sessions = ordered_ids
+            .into_iter()
+            .map(|id| records.remove(&id).ok_or(StoreError::SessionNotFound))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(SessionPage {
             revision,
             sessions,
@@ -635,7 +657,7 @@ impl RootStore {
         let vector = self.catalog_vector().await?;
         // Two IDs per partition suffice: the excluded Session occupies at most one.
         let candidates = self
-            .catalog_candidates(&scope, filter, SessionPosition::Start, 2, vector, false)
+            .catalog_candidates(&scope, filter, CatalogPosition::Start, 2, vector, false)
             .await;
         let current = self.catalog_vector().await?;
         if current != vector {
@@ -644,7 +666,7 @@ impl RootStore {
                 actual: current.revision(&scope, filter)?,
             });
         }
-        Ok(candidates?.0.iter().any(|(id, _)| id != session))
+        Ok(candidates?.0.iter().any(|(key, _)| key.id != session))
     }
 }
 

@@ -40,6 +40,7 @@ const glyphs = {
   command: '⌘',
   copy: '⧉',
   archive: '▤',
+  pin: '📌',
   trash: '⌫',
   wrap: '↵',
   nowrap: '→',
@@ -420,6 +421,18 @@ export function Icon(props: { name: keyof typeof glyphs; color: string; size?: n
             cx.moveTo(8, 4);
             cx.lineTo(8, 8);
             cx.lineTo(11, 9.5);
+            break;
+          case 'pin':
+            cx.moveTo(5, 2);
+            cx.lineTo(11, 2);
+            cx.moveTo(6, 2);
+            cx.lineTo(6, 6);
+            cx.lineTo(3, 9);
+            cx.lineTo(13, 9);
+            cx.lineTo(10, 6);
+            cx.lineTo(10, 2);
+            cx.moveTo(8, 9);
+            cx.lineTo(8, 14);
             break;
           case 'unread':
             cx.arc(8, 8, 2.5, 0, Math.PI * 2);

@@ -19,7 +19,100 @@
 
 use super::*;
 
+pub(crate) struct ModelMetadataUpdate {
+    key: (String, String, MessageKind),
+    meta: acp::Meta,
+    pub update: acp::SessionUpdate,
+}
+
 impl Projection {
+    pub fn pending_model_positions(
+        &self,
+        steps: Option<&HashSet<String>>,
+    ) -> Vec<(
+        maka_agent_ports::session::history::RowPosition,
+        HistoryField,
+    )> {
+        let rows: Vec<_> = if let Some(steps) = steps {
+            steps
+                .iter()
+                .filter_map(|step| self.pending_models.get(step))
+                .collect()
+        } else {
+            self.pending_models.values().collect()
+        };
+        rows.into_iter()
+            .flat_map(|rows| rows.iter())
+            .map(|(position, kind)| {
+                (
+                    *position,
+                    if *kind == MessageKind::Thinking {
+                        HistoryField::Thinking
+                    } else {
+                        HistoryField::Body
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub fn acknowledge_models(&mut self, steps: Option<&HashSet<String>>) {
+        if let Some(steps) = steps {
+            for step in steps {
+                self.pending_models.remove(step);
+            }
+        } else {
+            self.pending_models.clear();
+        }
+    }
+
+    pub fn prepare_model_metadata(
+        &self,
+        chunk: &HistoryChunk,
+    ) -> Result<Option<ModelMetadataUpdate>, crate::Error> {
+        let kind = if chunk.field == HistoryField::Thinking {
+            MessageKind::Thinking
+        } else {
+            MessageKind::Text
+        };
+        let key = (chunk.turn_id.clone(), chunk.message_id.clone(), kind);
+        let message = self
+            .streams
+            .get(&key)
+            .ok_or("Model metadata has no canonical message")?;
+        let model = chunk.model.as_ref().map(serde_json::to_value).transpose()?;
+        if message.meta["maka"].get("model") == model.as_ref() {
+            return Ok(None);
+        }
+        let mut meta = message.meta.clone();
+        let metadata = meta
+            .get_mut("maka")
+            .and_then(Value::as_object_mut)
+            .expect("message metadata");
+        if let Some(model) = model {
+            metadata.insert("model".into(), model);
+        } else {
+            metadata.remove("model");
+        }
+        let update = if kind == MessageKind::Thinking {
+            acp::SessionUpdate::AgentThought(
+                acp::AgentThought::new(format!("thinking:{}", chunk.message_id)).meta(meta.clone()),
+            )
+        } else {
+            acp::SessionUpdate::AgentMessage(
+                acp::AgentMessage::new(chunk.message_id.clone()).meta(meta.clone()),
+            )
+        };
+        Ok(Some(ModelMetadataUpdate { key, meta, update }))
+    }
+
+    pub fn commit_model_metadata(&mut self, update: ModelMetadataUpdate) {
+        self.streams
+            .get_mut(&update.key)
+            .expect("retained canonical message")
+            .meta = update.meta;
+    }
+
     pub(super) fn replace_text(
         &mut self,
         turn: &str,

@@ -154,22 +154,24 @@ async fn device_login_preserves_region_and_http_failures_without_echoing_respons
             }}),
         });
         transport.release.notify_one();
-        let error = Codex
-            .authenticate(
-                maka_agent_ports::provider::authentication::Authenticate {
-                    connection: connection(),
-                    method: "chatgpt".into(),
-                    input: json!({}),
-                },
-                Context {
-                    transport: transport.clone(),
-                    cancellation: CancellationToken::new(),
-                    interaction: Some(Arc::new(UnexpectedPresentation)),
-                },
-            )
-            .await
-            .err()
-            .expect("the login service rejected the request");
+        let error = Codex::new(Arc::new(
+            maka_providers::catalog::Snapshot::bundled().unwrap(),
+        ))
+        .authenticate(
+            maka_agent_ports::provider::authentication::Authenticate {
+                connection: connection(),
+                method: "chatgpt".into(),
+                input: json!({}),
+            },
+            Context {
+                transport: transport.clone(),
+                cancellation: CancellationToken::new(),
+                interaction: Some(Arc::new(UnexpectedPresentation)),
+            },
+        )
+        .await
+        .err()
+        .expect("the login service rejected the request");
         assert!(matches!(&error, Error::Rejected(message) if message.contains("ChatGPT")));
         if code == "unsupported_country_region_territory" {
             assert!(error.to_string().contains(code));
@@ -188,7 +190,11 @@ async fn device_login_preserves_region_and_http_failures_without_echoing_respons
 async fn sent_refresh_settles_after_cancellation_and_unknown_reply_is_never_retried() {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         for fail in [false, true] {
-            let binding = Codex.definition().unwrap();
+            let binding = Codex::new(Arc::new(
+                maka_providers::catalog::Snapshot::bundled().unwrap(),
+            ))
+            .definition()
+            .unwrap();
             let transport = Arc::new(Exchange {
                 started: Notify::new(),
                 release: Notify::new(),

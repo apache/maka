@@ -239,7 +239,10 @@ fn wait_until_frontmost(
     }
 }
 
-fn check_admission(focus: &Resource, cancellation: &CancellationToken) -> Result<(), ToolError> {
+pub(super) fn check_admission(
+    focus: &Resource,
+    cancellation: &CancellationToken,
+) -> Result<(), ToolError> {
     if focus.is_sealed() || cancellation.is_cancelled() {
         Err(failed("Computer Use stopped before native mouse dispatch"))
     } else {
@@ -247,7 +250,7 @@ fn check_admission(focus: &Resource, cancellation: &CancellationToken) -> Result
     }
 }
 
-fn settle_permit(permit: Box<dyn NativeMonitorPermit>, result: &Result<(), ToolError>) {
+pub(super) fn settle_permit(permit: Box<dyn NativeMonitorPermit>, result: &Result<(), ToolError>) {
     let terminal = match result {
         Err(error @ ToolError::CleanupUnconfirmed(_)) => Err(error.clone()),
         _ => Ok(()),
@@ -259,7 +262,7 @@ fn failed(error: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(error.to_string())
 }
 
-fn unknown(error: impl std::fmt::Display) -> ToolError {
+pub(super) fn unknown(error: impl std::fmt::Display) -> ToolError {
     ToolError::OutcomeUnknown(format!(
         "Native mouse input was already posted: {error}. Inspect the UI before another action."
     ))

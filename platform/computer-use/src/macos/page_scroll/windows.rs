@@ -74,6 +74,10 @@ pub(crate) enum WindowVariant {
 }
 
 impl WindowVariant {
+    pub(crate) fn retained_window(element: RetainedElement) -> Self {
+        Self::Window(LocalElement::new(element))
+    }
+
     pub(crate) fn element(&self) -> &RetainedElement {
         match self {
             Self::Window(owner) | Self::Sheet(owner) | Self::Menu(owner) => &owner.element,

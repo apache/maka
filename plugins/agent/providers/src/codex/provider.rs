@@ -82,7 +82,7 @@ impl Codex {
                 anonymous: false,
                 discovery: true,
             },
-            Arc::new(Self),
+            Arc::new(self.clone()),
         )
         .map_err(|e| maka_capabilities::Error::Invalid(e.to_string()))
     }
@@ -91,9 +91,17 @@ impl Provider for Codex {
     fn resolve(&self, request: Resolve) -> BoxFuture<'_, Result<Model, Error>> {
         Box::pin(async move {
             let base_url = configuration(&request.connection)?;
+            let reported = self.snapshot.resolve(
+                "chatgpt",
+                request.model,
+                request
+                    .overrides
+                    .as_ref()
+                    .and_then(|value| value.catalog_model.as_ref()),
+            );
             let mut info = match &request.overrides {
-                Some(overrides) => overrides.apply(&request.model),
-                None => request.model,
+                Some(overrides) => overrides.apply(&reported),
+                None => reported,
             };
             // Existing saved connections may predate discovery of this fact.
             if info.max_output_tokens.is_none() {

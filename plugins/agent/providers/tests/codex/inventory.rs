@@ -21,7 +21,9 @@ use super::*;
 
 #[tokio::test]
 async fn subscription_capacity_survives_discovery_and_older_saved_models() {
-    let provider = Codex;
+    let provider = Codex::new(Arc::new(
+        maka_providers::catalog::Snapshot::bundled().unwrap(),
+    ));
     let discovered = maka_providers::codex::decode_model_inventory(
         br#"{"models":[{"slug":"gpt-6-luna","context_window":272000}]}"#,
     )
@@ -74,7 +76,9 @@ async fn discovery_and_preparation_share_account_facts_and_explicit_policy() {
         }]}),
     });
     transport.release.notify_one();
-    let provider = Codex;
+    let provider = Codex::new(Arc::new(
+        maka_providers::catalog::Snapshot::bundled().unwrap(),
+    ));
     use base64::Engine;
     let access = format!(
         "header.{}.signature",

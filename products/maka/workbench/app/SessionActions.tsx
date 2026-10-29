@@ -98,7 +98,12 @@ export function SessionActions(props: {
     if (!active() || pending() || !sameSession(action.session)) return;
     if (action.kind === 'rename' || action.kind === 'fork' || action.kind === 'remove') {
       if (page() !== action.kind) return;
-    } else if (page() !== 'actions' || action.kind !== (session().archived ? 'restore' : 'archive'))
+    } else if (
+      page() !== 'actions' ||
+      (action.kind !== 'pin' &&
+        action.kind !== 'unpin' &&
+        action.kind !== (session().archived ? 'restore' : 'archive'))
+    )
       return;
     if (
       (action.kind === 'rename' || action.kind === 'fork') &&
@@ -173,6 +178,26 @@ export function SessionActions(props: {
               >
                 {tr('Conversation actions')}
               </Text>
+              <Button
+                disabled={pending() || session().archived}
+                accessibilityLabel={
+                  session().pinned ? tr('Unpin conversation') : tr('Pin conversation')
+                }
+                role="menuitem"
+                style={menuRowStyle()}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+                disabledStyle={controlDisabledStyle}
+                onPress={inputAction(submit, {
+                  kind: session().pinned ? 'unpin' : 'pin',
+                  session: session(),
+                })}
+              >
+                <Icon name="pin" color={C.secondary} />
+                <Text accessibilityElementsHidden style={{ ...secondaryTextStyle, color: C.text }}>
+                  {session().pinned ? tr('Unpin conversation') : tr('Pin conversation')}
+                </Text>
+              </Button>
               <Button
                 disabled={pending() || session().archived}
                 accessibilityLabel={tr('Rename conversation')}

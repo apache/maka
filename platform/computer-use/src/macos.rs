@@ -37,7 +37,7 @@ use cua_driver_core::{
     },
     walk_budget::WalkBudget,
 };
-use maka_agent_facts::tools::ToolError;
+use maka_agent_facts::tools::{NativeToolError, ToolError};
 use platform_macos::ax::{
     bindings::*,
     exact_target::{element_window_id, gather_background_facts},
@@ -503,43 +503,7 @@ impl Target {
         Ok(())
     }
     fn focus_window(&self) -> Option<platform_macos::input::native_move::FocusActivationWindow> {
-        let pointer = self.window.as_ptr() as AXUIElementRef;
-        let attribute = CFString::new("AXActivationPoint");
-        let mut value = std::ptr::null();
-        // SAFETY: the window is retained on this controller owner. Copy follows
-        // the AX create rule and every nonnull value is released below.
-        let status = unsafe {
-            AXUIElementCopyAttributeValue(pointer, attribute.as_concrete_TypeRef(), &mut value)
-        };
-        let activation_point = if status != kAXErrorSuccess {
-            None
-        } else if value.is_null() {
-            Some(None)
-        } else {
-            #[repr(C)]
-            struct NativePoint {
-                x: f64,
-                y: f64,
-            }
-            let mut point = NativePoint { x: 0.0, y: 0.0 };
-            let valid = unsafe {
-                CFGetTypeID(value) == AXValueGetTypeID()
-                    && AXValueGetValue(
-                        value as _,
-                        kAXValueCGPointType,
-                        (&mut point as *mut NativePoint).cast(),
-                    )
-            };
-            valid.then_some(Some([point.x, point.y]))
-        };
-        if !value.is_null() {
-            unsafe { CFRelease(value) };
-        }
-        Some(platform_macos::input::native_move::FocusActivationWindow {
-            window_id: self.window_id,
-            bounds: unsafe { element_screen_rect(pointer) },
-            activation_point,
-        })
+        activation_window(&self.window, self.window_id)
     }
 
     fn prepare_native_menu(&self, element: AXUIElementRef) -> Result<(), ToolError> {
@@ -593,6 +557,49 @@ impl Target {
         }
         Ok(())
     }
+}
+
+fn activation_window(
+    window: &RetainedElement,
+    window_id: u32,
+) -> Option<platform_macos::input::native_move::FocusActivationWindow> {
+    let pointer = window.as_ptr() as AXUIElementRef;
+    let attribute = CFString::new("AXActivationPoint");
+    let mut value = std::ptr::null();
+    // SAFETY: the window is retained on this controller owner. Copy follows
+    // the AX create rule and every nonnull value is released below.
+    let status = unsafe {
+        AXUIElementCopyAttributeValue(pointer, attribute.as_concrete_TypeRef(), &mut value)
+    };
+    let activation_point = if status != kAXErrorSuccess {
+        None
+    } else if value.is_null() {
+        Some(None)
+    } else {
+        #[repr(C)]
+        struct NativePoint {
+            x: f64,
+            y: f64,
+        }
+        let mut point = NativePoint { x: 0.0, y: 0.0 };
+        let valid = unsafe {
+            CFGetTypeID(value) == AXValueGetTypeID()
+                && AXValueGetValue(
+                    value as _,
+                    kAXValueCGPointType,
+                    (&mut point as *mut NativePoint).cast(),
+                )
+        };
+        valid.then_some(Some([point.x, point.y]))
+    };
+    if !value.is_null() {
+        unsafe { CFRelease(value) };
+    }
+    Some(platform_macos::input::native_move::FocusActivationWindow {
+        window_id,
+        bounds: unsafe { element_screen_rect(pointer) },
+        activation_point,
+    })
 }
 
 // A menu has application scope, never window scope. Compare its current
@@ -731,6 +738,15 @@ fn check_cancelled(cancellation: &tokio_util::sync::CancellationToken) -> Result
         Ok(())
     }
 }
+fn server_error(description: impl std::fmt::Display) -> ToolError {
+    ToolError::Native(Box::new(NativeToolError {
+        name: "SkyComputerUseError".into(),
+        code: -10005,
+        error_name: "unknownError".into(),
+        message: format!("Computer Use server error -10005: {description}"),
+    }))
+}
+
 fn failed(error: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(error.to_string())
 }

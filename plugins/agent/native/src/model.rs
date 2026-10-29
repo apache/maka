@@ -131,7 +131,10 @@ impl Source {
                 .ok_or_else(unavailable)?;
             drop(public_guard);
             let row = &material.connection;
-            let public_model = snapshot.get(&row.provider.name, &selection.model_id).cloned();
+            let reference = row.model_overrides.as_ref().and_then(|models| models.get(&selection.model_id))
+                .and_then(|value| value.catalog_model.as_ref());
+            let public_model = snapshot.model_base(&row.provider.name, &selection.model_id, reference)
+                .map(std::borrow::Cow::into_owned);
             let snapshot = Arc::new(maka_providers::catalog::Snapshot::for_model(
                 &row.provider.name, &selection.model_id, public_model.clone(),
             ).map_err(|_| unavailable())?);

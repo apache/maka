@@ -390,6 +390,9 @@ pub struct Workspace {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentMetadata")]
 pub struct Metadata {
+    /// Omission preserves the conversation's position in the catalog.
+    #[serde(default)]
+    pub pinned: Option<bool>,
     /// Changing collaboration is only allowed while the Session is idle.
     #[serde(default)]
     pub collaboration_mode: Option<CollaborationMode>,
@@ -722,6 +725,7 @@ pub struct Session {
     pub revision: u64,
     pub updated_at: u64,
     pub archived: bool,
+    pub pinned: bool,
     pub has_unread: bool,
     /// Exact durable visible tail accepted by markRead; independent of preview clocks.
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]

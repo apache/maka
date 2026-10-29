@@ -158,6 +158,55 @@ impl Session {
             self.targets.get_mut(&handle).unwrap().capture = None;
             return result.map(|()| Value::Null);
         }
+        if matches!(operation, NativeComputerMethod::Click) {
+            let index = input
+                .get("element_index")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| failed("elementIndex must be an integer"))?;
+            let count: i64 =
+                serde_json::from_value(input["click_count"].clone()).map_err(failed)?;
+            let button = input::mac_mouse_button(&input["mouse_button"])?;
+            let always_simulate =
+                crate::macos::page_scroll::element_click::configured_simulation()?;
+            let key = self
+                .raw_mac_application(&approved, cancellation, language)
+                .await?;
+            let record = self
+                .raw_computer
+                .mac_targets
+                .get(&key)
+                .ok_or_else(|| failed("native app target unavailable"))?;
+            let application = record.application.clone();
+            let controller = record.controller.clone();
+            let handle = record.window.current()?.map(str::to_owned);
+            let authority = invocation
+                .native_monitor_authority()
+                .ok_or_else(|| failed("native input requires its current Host monitor lease"))?;
+            if authority.subject() != &approved {
+                return Err(failed("native monitor lease belongs to a different app"));
+            }
+            let focus = controller.attach_focus(self.epoch, authority).await?;
+            let result = application
+                .element_click(
+                    crate::macos::page_scroll::element_click::ElementInput {
+                        index,
+                        count,
+                        button,
+                        always_simulate,
+                    },
+                    cancellation.clone(),
+                    focus,
+                    self.owner.cursor(),
+                    self.native.clone(),
+                )
+                .await;
+            if let Some(handle) = handle
+                && let Some(target) = self.targets.get_mut(&handle)
+            {
+                target.capture = None;
+            }
+            return result.map(|()| Value::Null);
+        }
         let action = match operation {
             NativeComputerMethod::Click => Action::Click {
                 target: position()?,

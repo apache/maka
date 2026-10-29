@@ -118,6 +118,22 @@ impl ClickablePoint {
         self.chess_candidate
     }
 
+    pub(crate) fn resolve_after_preparation(
+        self,
+        chess_application: Option<&RetainedElement>,
+        cancellation: &CancellationToken,
+        prepare: impl FnOnce(&RetainedElement) -> Result<(), ToolError>,
+    ) -> Result<Option<[f64; 2]>, ToolError> {
+        check_cancelled(cancellation)?;
+        if self.chess_candidate
+            && let Some(point) = chess_point(&self.element, chess_application, cancellation)?
+        {
+            return Ok(Some(point));
+        }
+        prepare(&self.element)?;
+        normal_point(&self.element, cancellation)
+    }
+
     /// Return the original global logical point, which may be absent. Absence
     /// preserves the controller's previous position; it does not select a center.
     pub(crate) fn resolve(
@@ -133,6 +149,13 @@ impl ClickablePoint {
         }
         normal_point(&self.element, cancellation)
     }
+}
+
+pub(crate) fn center_is_visible(
+    element: &RetainedElement,
+    cancellation: &CancellationToken,
+) -> Result<bool, ToolError> {
+    normal_point(element, cancellation).map(|point| point.is_some())
 }
 
 fn normal_point(
