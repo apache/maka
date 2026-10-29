@@ -176,7 +176,8 @@ export const workspaceMessages = {
   ],
   'Folder · {name}': ['Folder · {name}', '文件夹 · {name}', '資料夾 · {name}'],
   'Fork conversation': ['Fork conversation', '分叉对话', '分支對話'],
-  'Fork of {title}': ['Fork of {title}', '{title} 的分叉', '{title} 的分支'],
+  'Fork · {title}': ['Fork · {title}', '分支 · {title}', '分支 · {title}'],
+  Fork: ['Fork', '分支', '分支'],
   'Full screen image viewer': ['Full screen image viewer', '全屏图片查看器', '全螢幕圖片檢視器'],
   'Host returned an unexpected conversation action result.': [
     'Host returned an unexpected conversation action result.',
