@@ -81,6 +81,11 @@ import type {
 } from '../../../../products/maka/workbench/app/modelSelection';
 import { CompactionDivider } from '../../../../products/maka/workbench/app/CompactionDivider';
 import {
+  createBotTranscript,
+  sendUserMessageId,
+} from '../../../../products/maka/workbench/app/botTranscript';
+import { BotReply } from '../../../../products/maka/workbench/app/BotReply';
+import {
   MessageRow,
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
@@ -322,6 +327,9 @@ export function Conversation(props: ConversationProps) {
   const recovering = signal(false);
   const notice = createText();
   const reading = signal<'chat' | 'trajectory'>('chat');
+  // In the Bot Session, Chat shows what the Bot told the user (SendUser); its own
+  // replies and steps stay in Trajectory.
+  const bot = createBotTranscript(host, sessionId);
   const readingSize = signal({ width: 640, height: 192 });
   const innerReader = signal<string | null>(null);
   const metrics = signal<any>(null);
@@ -437,10 +445,19 @@ export function Conversation(props: ConversationProps) {
   type DisplayEntry =
     | { kind: 'summary'; key: string; turnId: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
-    | { kind: 'row'; key: string; rowId: string; repeats?: number };
+    | { kind: 'row'; key: string; rowId: string; repeats?: number }
+    | { kind: 'bot'; key: string; messageId: string };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
+    const botChat = bot.isBot() && reading() === 'chat';
+    const spoken = new Set<string>();
+    const speak = (row: { role: string; text: string; tool?: any } | undefined) => {
+      const messageId = row ? sendUserMessageId(row) : null;
+      if (!messageId || spoken.has(messageId) || !bot.messages(messageId)?.length) return;
+      spoken.add(messageId);
+      result.push({ kind: 'bot', key: `bot/${messageId}`, messageId });
+    };
     for (const entry of projection().entries) {
       const row = entry.kind === 'message' ? projection().rowsById.get(entry.rowId) : undefined;
       const turnId = entry.kind === 'process' ? entry.turnId : row?.turnId;
@@ -462,9 +479,14 @@ export function Conversation(props: ConversationProps) {
         });
       }
       if (entry.kind === 'process') {
+        if (botChat) for (const rowId of entry.rowIds) speak(projection().rowsById.get(rowId));
         if (!turn || !turnExpanded(turn)) continue;
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
+        if (botChat && (row.role === 'assistant' || sendUserMessageId(row) !== null)) {
+          speak(row);
+          continue;
+        }
         if (entry.processTurnId && turn && !turnExpanded(turn)) continue;
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
@@ -472,7 +494,7 @@ export function Conversation(props: ConversationProps) {
         if (
           reading() === 'trajectory' &&
           (row.role === 'user' ||
-            row.finalOutput ||
+            (row.finalOutput && !bot.isBot()) ||
             row.role === 'compaction' ||
             (!row.turnId && row.role !== 'failure'))
         )
@@ -2127,6 +2149,7 @@ export function Conversation(props: ConversationProps) {
   });
   cleanup(() => {
     alive = false;
+    bot.close();
     historyIdentity = {};
     navigation.set(null);
     wakeReconnect?.();
@@ -2445,6 +2468,14 @@ export function Conversation(props: ConversationProps) {
                         />
                       );
                     }
+                    if (initial.kind === 'bot')
+                      return (
+                        <BotReply
+                          messages={() => bot.messages(initial.messageId) ?? []}
+                          openLink={props.openLink}
+                          userScroll={() => cancelNavigation()}
+                        />
+                      );
                     const first = currentRow(initial.rowId);
                     if (!first) return <View />;
                     const row = () => currentRow(initial.rowId) ?? first;

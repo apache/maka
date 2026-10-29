@@ -1218,9 +1218,13 @@ impl Owner {
             } else {
                 selected_catalog.bindings.clone()
             },
-            behavior: self
-                .capture_behavior(&session.configuration.workspace, &snapshot, language)
-                .await?,
+            behavior: self.bot_behavior(
+                &id,
+                self.capture_behavior(&session.configuration.workspace, &snapshot, language)
+                    .await?,
+                &snapshot,
+                language,
+            ),
             model,
             executor,
             workspace: session.configuration.workspace.clone(),

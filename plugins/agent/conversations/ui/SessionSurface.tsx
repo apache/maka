@@ -1470,13 +1470,6 @@ function projectComposerSession(
       watch: (offset) =>
         host.subscribe('agent', 'watchChecklist', { sessionId: owner.sessionId, offset }),
     },
-    bot: {
-      botSession: async () =>
-        (await host.query('agent', 'botOutbox', { limit: 0 })).sessionId ?? null,
-      // The watch is a change signal only: it carries the head, not messages.
-      watch: () => host.subscribe('agent', 'watchBotOutbox', { limit: 0 }),
-      read: (after) => host.query('agent', 'botOutbox', { after }),
-    },
     queue: {
       sessionId: owner.queue.sessionId,
       snapshot: owner.queue.snapshot,

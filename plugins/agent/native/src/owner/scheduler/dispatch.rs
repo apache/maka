@@ -192,9 +192,13 @@ impl Owner {
             background: Some(target.clone()),
             internal_tools: selected_catalog.definitions.clone(),
             internal_bindings: selected_catalog.bindings.clone(),
-            behavior: self
-                .capture_behavior(&session.configuration.workspace, &snapshot, language)
-                .await?,
+            behavior: self.bot_behavior(
+                &target.session_id,
+                self.capture_behavior(&session.configuration.workspace, &snapshot, language)
+                    .await?,
+                &snapshot,
+                language,
+            ),
             model: Some(source.accepted),
             executor: None,
             workspace: session.configuration.workspace,

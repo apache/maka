@@ -481,3 +481,33 @@ async fn outbox_keeps_every_call_and_pages_by_cursor() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn only_the_bot_session_carries_bot_instructions() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        let ordinary = f.create("Ordinary").await;
+        let mut prompts = Vec::new();
+        for session in [&bot, &ordinary] {
+            f.send(session).await.unwrap();
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let sent = request(&mut socket).await;
+            response(&mut socket).await;
+            idle(&f, session).await;
+            prompts.push(sent["messages"].to_string());
+        }
+        let instructed = |text: &str| {
+            text.contains("persistent Bot")
+                || text.contains("常驻 Bot")
+                || text.contains("常駐 Bot")
+        };
+        assert!(instructed(&prompts[0]), "{}", prompts[0]);
+        assert!(!instructed(&prompts[1]), "{}", prompts[1]);
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

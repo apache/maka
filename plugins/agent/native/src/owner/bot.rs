@@ -586,6 +586,35 @@ impl Owner {
         }
         self.bot.load().await.map_err(|error| error.to_string())
     }
+    /// Append the Bot's standing instructions to the behavior frozen for a message
+    /// admitted to the Bot Session. Other Sessions are unchanged.
+    pub(super) fn bot_behavior(
+        &self,
+        session: &str,
+        behavior: Option<maka_agent_facts::execution::SystemPrompt>,
+        snapshot: &RuntimePolicySnapshot,
+        language: Language,
+    ) -> Option<maka_agent_facts::execution::SystemPrompt> {
+        if !self.settings.bot || !self.bot.is(session) {
+            return behavior;
+        }
+        let text = bot_prompt(language);
+        Some(match behavior {
+            Some(mut prompt) => {
+                prompt.text = format!("{}\n\n{text}", prompt.text);
+                prompt
+            }
+            None => {
+                let mut source = self.revision.clone();
+                source.kind = maka_agent_facts::composition::SourceKind::PromptSection;
+                maka_agent_facts::execution::SystemPrompt {
+                    text: text.into(),
+                    policy_revision: snapshot.revision,
+                    sources: vec![source],
+                }
+            }
+        })
+    }
     pub fn bot_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.bot.changed.subscribe()
     }
@@ -609,6 +638,20 @@ impl Owner {
             messages,
             next_after,
         })
+    }
+}
+
+fn bot_prompt(language: Language) -> &'static str {
+    match language {
+        Language::ZhCn => {
+            "你是用户在 Maka 里的常驻 Bot。用户只能看到你用 SendUser 工具发出的消息；你的普通回复和工具步骤都是内部过程，用户看不到。要回应用户，就调用 SendUser，普通文字尽量少写。不值得打扰用户的事，就什么都不发。需要动手做的工作，用 workhub_tasks 委派；需要以后再看的，用 ScheduledTask 安排。"
+        }
+        Language::ZhTw => {
+            "你是使用者在 Maka 裡的常駐 Bot。使用者只能看到你用 SendUser 工具發出的訊息；你的一般回覆和工具步驟都是內部過程，使用者看不到。要回應使用者，就呼叫 SendUser，一般文字盡量少寫。不值得打擾使用者的事，就什麼都不發。需要動手做的工作，用 workhub_tasks 委派；需要之後再看的，用 ScheduledTask 安排。"
+        }
+        _ => {
+            "You are the user's persistent Bot in Maka. The user sees only the messages you send with the SendUser tool; your ordinary replies and tool steps are internal and never shown. To respond to the user, call SendUser, and keep ordinary text minimal. When something does not need the user's attention, send nothing. Delegate hands-on work with workhub_tasks, and use ScheduledTask to come back to something later."
+        }
     }
 }
 

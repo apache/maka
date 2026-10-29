@@ -171,17 +171,6 @@ export interface ComposerChecklistSource {
   watch(offset: number): Promise<UiSubscription<AgentChecklist>>;
 }
 
-/** Messages the Bot deliberately sent to its user through `SendUser`. */
-export type ComposerBotOutbox = ServiceMethods['agent']['watchBotOutbox']['output'];
-export interface ComposerBotSource {
-  /** The installation's Bot Session, if one exists. */
-  botSession(): Promise<string | null>;
-  /** Emits whenever the outbox head changes; read messages with `read`. */
-  watch(): Promise<UiSubscription<ComposerBotOutbox>>;
-  /** One page of messages after a sequence cursor, oldest first. */
-  read(after: number): Promise<ComposerBotOutbox>;
-}
-
 export interface ComposerCompletionSource {
   files(
     query: string,
@@ -203,8 +192,6 @@ export interface ComposerSession<Element = unknown> {
   readonly permissions: ComposerPermissions;
   readonly projectMcp: ComposerProjectMcp;
   readonly checklist: ComposerChecklistSource;
-  /** Present when the Bot mode is available; shown only on the Bot Session. */
-  readonly bot?: ComposerBotSource;
   readonly completion: ComposerCompletionSource;
   draft(): string;
   previewImage(image: ComposerImagePreview): void;

@@ -280,14 +280,6 @@ export const conversationMessages = {
     '无法打开 Bot：{reason}',
     '無法開啟 Bot：{reason}',
   ],
-  'Bot updates ended. Reopen the conversation.': [
-    'Bot updates ended. Reopen the conversation.',
-    'Bot 消息更新已结束，请重新打开对话。',
-    'Bot 訊息更新已結束，請重新開啟對話。',
-  ],
-  'Messages from your Bot': ['Messages from your Bot', 'Bot 发给你的消息', 'Bot 傳給你的訊息'],
-  'Show all {count}': ['Show all {count}', '显示全部 {count} 条', '顯示全部 {count} 則'],
-  'Show latest': ['Show latest', '只看最新', '只看最新'],
   'Checking earlier actions. Try again in a moment.': [
     'Checking earlier actions. Try again in a moment.',
     '正在检查之前的操作，请稍后重试。',
