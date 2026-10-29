@@ -618,12 +618,19 @@ async fn summary_advertised_tools_never_execute() {
         let summary = read_request(&mut socket).await;
         assert_eq!(summary["tools"], main["tools"]);
         let call = serde_json::json!({"id":"summary","object":"chat.completion.chunk","created":1,"model":"test",
-            "choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"forbidden","type":"function",
+            "choices":[{"index":0,"delta":{"content":"private forbidden summary prose","tool_calls":[{"index":0,"id":"forbidden","type":"function",
             "function":{"name":"echo","arguments":"{}"}}]},"finish_reason":null}]});
         let end = serde_json::json!({"id":"summary","object":"chat.completion.chunk","created":1,"model":"test",
-            "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]});
+            "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":13,"completion_tokens":7,"total_tokens":20}});
         let body = format!("data: {call}\n\ndata: {end}\n\ndata: [DONE]\n\n");
         socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let recovered = read_request(&mut socket).await;
+        let messages = recovered["messages"].to_string();
+        assert!(messages.contains("ordinary answer"));
+        assert!(!messages.contains("private forbidden summary prose"));
+        assert!(!messages.contains("forbidden"));
+        respond(&mut socket, "recovered answer", "stop").await;
     });
     let effects = Arc::new(AtomicUsize::new(0));
     let worker = engine();
@@ -652,6 +659,15 @@ async fn summary_advertised_tools_never_execute() {
             .is_err()
     );
     worker.drain().await;
+    worker
+        .run(
+            log.store(),
+            input(&base, "recovered", false),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    worker.drain().await;
     server.await.unwrap();
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     assert!(
@@ -667,6 +683,29 @@ async fn summary_advertised_tools_never_execute() {
             .events
             .iter()
             .any(|event| matches!(event.event.fact, Fact::ToolDispatched { .. }))
+    );
+    let summary_step = events
+        .events
+        .iter()
+        .find_map(|event| match &event.event.fact {
+            Fact::ModelRequested {
+                purpose: maka_agent_facts::context::ModelPurpose::Summary,
+                step_id,
+                ..
+            } => Some(step_id),
+            _ => None,
+        })
+        .unwrap();
+    assert!(!events.events.iter().any(|event| matches!(&event.event.fact,
+        Fact::ModelObserved { step_id, event } if step_id == summary_step && !matches!(event,
+            maka_agent_facts::model::ModelEvent::ResponseMetadata { .. } | maka_agent_facts::model::ModelEvent::Finished { .. }))));
+    assert!(events.events.iter().any(|event| matches!(&event.event.fact,
+        Fact::ModelObserved { step_id, event: maka_agent_facts::model::ModelEvent::Finished { usage, .. } }
+            if step_id == summary_step && usage.input_tokens == Some(13) && usage.output_tokens == Some(7))));
+    assert!(
+        !serde_json::to_string(&events.events)
+            .unwrap()
+            .contains("private forbidden summary prose")
     );
 }
 

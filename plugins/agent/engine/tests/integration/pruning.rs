@@ -21,8 +21,9 @@ use crate::support::context as fixture;
 use crate::support::store::SessionFixture;
 use maka_agent_engine::RunWork;
 use maka_agent_facts::context::ModelRequestContext;
-use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::ToolOutcome;
+use maka_agent_facts::event::{Fact, InvocationOutcome};
+use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
 use maka_tools::{
@@ -291,22 +292,75 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
             usize::from(interrupted)
         );
         if interrupted {
-            assert!(prefix.events.iter().any(|stored| matches!(&stored.event.fact,
-                Fact::ModelObserved { event, .. } if serde_json::to_string(event).unwrap().contains("partial-summary-must-not-replay"))));
-            assert_eq!(
+            let summary_steps: Vec<_> = prefix
+                .events
+                .iter()
+                .filter_map(|stored| match &stored.event.fact {
+                    Fact::ModelRequested {
+                        step_id,
+                        purpose: maka_agent_facts::context::ModelPurpose::Summary,
+                        ..
+                    } if stored.event.invocation.invocation_id == "invocation-first" => {
+                        Some(step_id)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(summary_steps.len(), 1);
+            let summary_step = summary_steps[0];
+            let summary_events: Vec<_> = prefix
+                .events
+                .iter()
+                .filter(|stored| match &stored.event.fact {
+                    Fact::ModelObserved { step_id, .. }
+                    | Fact::ModelCompleted { step_id, .. }
+                    | Fact::ModelInterrupted { step_id, .. } => step_id == summary_step,
+                    _ => false,
+                })
+                .collect();
+            assert!(
+                !serde_json::to_string(&summary_events)
+                    .unwrap()
+                    .contains("partial-summary-must-not-replay")
+            );
+            assert!(
+                summary_events
+                    .iter()
+                    .any(|stored| matches!(&stored.event.fact,
+                Fact::ModelObserved { event: ModelEvent::ResponseMetadata { id: Some(id), .. }, .. }
+                    if id == "summary"))
+            );
+            assert!(
+                summary_events
+                    .iter()
+                    .any(|stored| matches!(&stored.event.fact,
+                Fact::ModelInterrupted { diagnostic: Some(diagnostic), .. }
+                    if diagnostic.contains("summary stream failed")))
+            );
+            assert!(
+                !summary_events.iter().any(|stored| matches!(
+                    &stored.event.fact,
+                    Fact::ModelCompleted { .. }
+                        | Fact::ModelObserved {
+                            event: ModelEvent::Finished { .. },
+                            ..
+                        }
+                )),
+                "the failing provider emitted no completion or usage"
+            );
+            assert!(
                 prefix
                     .events
                     .iter()
-                    .filter(|stored| stored.event.invocation.invocation_id == "invocation-first")
-                    .filter(|stored| matches!(
-                        stored.event.fact,
-                        Fact::ModelRequested {
-                            purpose: maka_agent_facts::context::ModelPurpose::Summary,
-                            ..
-                        }
-                    ))
-                    .count(),
-                1
+                    .any(
+                        |stored| stored.event.invocation.invocation_id == "invocation-first"
+                            && matches!(
+                                stored.event.fact,
+                                Fact::InvocationEnded {
+                                    outcome: InvocationOutcome::Completed
+                                }
+                            )
+                    )
             );
         }
         for stored in prefix.events {

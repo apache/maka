@@ -589,7 +589,9 @@ async fn receive(
                         stream.next().now_or_never().flatten()
                     });
                     use maka_agent_facts::event::{EventWrite, RuntimeEvent};
-                    let writes = observations.events.iter().map(|event| {
+                    let writes = observations.events.iter()
+                        .filter(|event| purpose != ModelPurpose::Summary || event.is_summary_observation())
+                        .map(|event| {
                         EventWrite::plain(RuntimeEvent::new(input.invocation.clone(), Fact::ModelObserved {
                                 step_id: step_id.to_owned(), event: event.clone(),
                         }))

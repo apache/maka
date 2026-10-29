@@ -32,7 +32,11 @@ fn engine() -> Engine {
     .unwrap()
 }
 
-async fn respond_tail_call(socket: &mut tokio::net::TcpStream, id: &str, value: u64) {
+async fn respond_tail_call(
+    socket: &mut tokio::net::TcpStream,
+    id: &str,
+    value: impl serde::Serialize,
+) {
     let delta = json!({"id":"tail","object":"chat.completion.chunk","created":1,"model":"test",
         "choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":id,"type":"function","function":{"name":"echo","arguments":json!({"value":value}).to_string()}}]},"finish_reason":null}]});
     let end = json!({"id":"tail","object":"chat.completion.chunk","created":1,"model":"test",
@@ -215,9 +219,7 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
                 let mut commits = log.subscribe_commits();
                 loop {
                     let prefix = log.prefix(200, 512 * 1024).await.unwrap();
-                    if prefix.events.iter().any(|e| matches!(&e.event.fact, Fact::ModelObserved {
-                        event: maka_agent_facts::model::ModelEvent::ToolCall(_), ..
-                    })) { break; }
+                    if prefix.events.iter().any(|e| matches!(&e.event.fact, Fact::ModelInterrupted { .. })) { break; }
                     commits.changed().await.unwrap();
                 }
             }
@@ -240,15 +242,10 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
             }
             let result = running.wait().await;
             if matches!(ending, "cancel" | "retire") { assert!(result.is_err()); }
-            else if ending == "summary-tool" { assert!(matches!(result, Err(maka_agent_engine::RunError::ReconciliationRequired(_)))); }
             else { result.unwrap(); }
             worker.drain().await;
             server.await.unwrap();
             let prefix = log.prefix(200, 512 * 1024).await.unwrap();
-            if ending == "summary-tool" {
-                assert!(prefix.events.iter().any(|e| matches!(&e.event.fact,
-                    Fact::InvocationEnded { outcome: InvocationOutcome::Failed { class, .. } } if class == "reconciliation_required")));
-            }
             let mut view = maka_presentation::InvocationView::new();
             let mut rows = Vec::new();
             for event in prefix.events.iter().filter(|e| e.event.invocation.invocation_id == "invocation-next") {
@@ -269,4 +266,133 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
             log.close().await.unwrap();
         }).await.expect("summary must drain before the invocation seals");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejected_local_summary_preserves_main_tool_context_and_next_turn() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        use maka_agent_facts::model::ModelEvent;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("events.sqlite");
+        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let old_body = "original-tool-body-".repeat(1024);
+        let observed = log.clone();
+        let server = tokio::spawn(async move {
+            let (mut old, _) = listener.accept().await.unwrap();
+            fixture::read_request(&mut old).await;
+            respond_tail_call(&mut old, "original-call", old_body.as_str()).await;
+            let (mut old, _) = listener.accept().await.unwrap();
+            let request = fixture::read_request(&mut old).await;
+            assert!(request["messages"].to_string().contains(&old_body));
+            fixture::respond(&mut old, "old-answer", "stop").await;
+
+            let mut summary = None;
+            let mut main = None;
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = fixture::read_request(&mut socket).await;
+                assert!(request["messages"].to_string().contains(&old_body));
+                if request["messages"].to_string().contains(
+                    maka_agent_facts::context::default_compaction_prompt(
+                        maka_agent_facts::language::Language::En,
+                    ).lines().next().unwrap(),
+                ) {
+                    summary = Some(socket);
+                } else {
+                    main = Some(socket);
+                }
+            }
+            let mut commits = observed.subscribe_commits();
+            let mut summary = summary.unwrap();
+            let delta = json!({"id":"summary","object":"chat.completion.chunk","created":1,"model":"test",
+                "choices":[{"index":0,"delta":{"content":"private rejected summary prose","tool_calls":[{"index":0,"id":"forbidden-summary-call","type":"function",
+                    "function":{"name":"echo","arguments":"{\"value\":99}"}}]},"finish_reason":null}]});
+            let end = json!({"id":"summary","object":"chat.completion.chunk","created":1,"model":"test",
+                "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":13,"completion_tokens":7,"total_tokens":20}});
+            let response = format!("data: {delta}\n\ndata: {end}\n\ndata: [DONE]\n\n");
+            summary.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
+            loop {
+                let prefix = observed.prefix(200, 512 * 1024).await.unwrap();
+                let summary_step = prefix.events.iter().find_map(|event| match &event.event.fact {
+                    Fact::ModelRequested { purpose: ModelPurpose::Summary, step_id, .. } => Some(step_id),
+                    _ => None,
+                });
+                if prefix.events.iter().any(|event| matches!(&event.event.fact,
+                    Fact::ModelInterrupted { step_id, .. }
+                        if Some(step_id) == summary_step)) {
+                    break;
+                }
+                commits.changed().await.unwrap();
+            }
+            drop(commits);
+            drop(observed);
+            respond_tail_call(main.as_mut().unwrap(), "next-call", 41).await;
+            let (mut last, _) = listener.accept().await.unwrap();
+            let request = fixture::read_request(&mut last).await;
+            let messages = request["messages"].to_string();
+            assert!(messages.contains(&old_body));
+            assert!(messages.contains("old-answer"));
+            assert!(messages.contains("next-call"));
+            assert!(!messages.contains("private rejected summary prose"));
+            assert!(!messages.contains("forbidden-summary-call"));
+            fixture::respond(&mut last, "completed after rejected summary", "stop").await;
+
+            let (mut later, _) = listener.accept().await.unwrap();
+            let request = fixture::read_request(&mut later).await;
+            let messages = request["messages"].to_string();
+            assert!(messages.contains(&old_body));
+            assert!(messages.contains("completed after rejected summary"));
+            assert!(!messages.contains("private rejected summary prose"));
+            assert!(!messages.contains("forbidden-summary-call"));
+            fixture::respond(&mut later, "next turn completed", "stop").await;
+        });
+        let count = Arc::new(AtomicUsize::new(0));
+        let worker = engine();
+        let effect = Arc::new(agent_loop::Effect { log: log.clone(), count: count.clone() });
+        let mut old = agent_loop::input(&base, "old", effect.clone());
+        old.configuration.model = fixture::input(&base, "unused", false).configuration.model;
+        old.provider.auth = maka_model::ProviderAuth::ApiKey("fixture".into());
+        old.context = context(None);
+        worker.run(log.store(), old, CancellationToken::new()).await.unwrap();
+        let mut next = agent_loop::input(&base, "next", effect.clone());
+        next.configuration.model = fixture::input(&base, "unused", false).configuration.model;
+        next.provider.auth = maka_model::ProviderAuth::ApiKey("fixture".into());
+        next.context = context(Some(70));
+        worker.run(log.store(), next, CancellationToken::new()).await.unwrap();
+        worker.drain().await;
+        assert_eq!(count.load(Ordering::SeqCst), 2, "only original and Main calls execute once; Summary has no local authority");
+        assert!(log.read_model_view("session", None).await.unwrap().baseline.is_none());
+        drop(effect);
+        drop(worker);
+        Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
+        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+        assert_eq!(log.root().recover_invocations().await.unwrap(), 0);
+        let worker = engine();
+        let mut later = fixture::input(&base, "later", false);
+        later.context = context(None);
+        worker.run(log.store(), later, CancellationToken::new()).await.unwrap();
+        worker.drain().await;
+        server.await.unwrap();
+        let prefix = log.prefix(200, 512 * 1024).await.unwrap();
+        let summary_request = prefix.events.iter().find(|event| matches!(&event.event.fact,
+            Fact::ModelRequested { purpose: ModelPurpose::Summary, .. })).unwrap();
+        let Fact::ModelRequested { step_id: summary_step, .. } = &summary_request.event.fact else { unreachable!() };
+        assert!(!prefix.events.iter().any(|event| matches!(&event.event.fact,
+            Fact::ModelCompleted { step_id, .. } if step_id == summary_step)));
+        assert!(!prefix.events.iter().any(|event| matches!(&event.event.fact,
+            Fact::ContextCheckpointRecorded { .. })));
+        assert!(!prefix.events.iter().any(|event| matches!(&event.event.fact,
+            Fact::ModelObserved { step_id, event } if step_id == summary_step && !matches!(event, ModelEvent::ResponseMetadata { .. } | ModelEvent::Finished { .. }))));
+        assert!(prefix.events.iter().any(|event| matches!(&event.event.fact,
+            Fact::ModelObserved { step_id, event: ModelEvent::Finished { usage, .. } }
+                if step_id == summary_step && usage.input_tokens == Some(13) && usage.output_tokens == Some(7))),
+            "failed Summary usage stays accountable without publishing private content");
+        assert!(!serde_json::to_string(&prefix.events).unwrap().contains("private rejected summary prose"));
+        assert!(log.read_model_view("session", None).await.unwrap().baseline.is_none());
+        assert!(log.unfinished_invocations(0, 10).await.unwrap().invocations.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 2, "reopening and a new turn never replay prior tool calls");
+    }).await.expect("a rejected local Summary must permit Main progress and a later turn");
 }

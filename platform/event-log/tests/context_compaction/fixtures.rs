@@ -177,10 +177,10 @@ pub(super) async fn prepare_trace(
                 id,
                 Fact::ModelObserved {
                     step_id: format!("{id}-summary"),
-                    event: ModelEvent::PartDelta {
-                        id: "summary-text".into(),
-                        text: "part".into(),
-                        provider_options: None,
+                    event: ModelEvent::ResponseMetadata {
+                        id: Some("summary-response".into()),
+                        model: None,
+                        timestamp: None,
                     },
                 },
             )

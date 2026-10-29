@@ -214,6 +214,20 @@ pub struct ModelStep {
     pub timestamp: Option<String>,
 }
 
+impl ModelEvent {
+    /// Summary prose and unexecuted local requests remain private until validation.
+    /// Only accounting, response metadata and actual provider effects are journaled.
+    pub fn is_summary_observation(&self) -> bool {
+        matches!(self, Self::ToolCall(call) if call.provider_executed)
+            || matches!(
+                self,
+                Self::ProviderToolResult { .. }
+                    | Self::ResponseMetadata { .. }
+                    | Self::Finished { .. }
+            )
+    }
+}
+
 /// Citation evidence, distinct from model prose and replayable tool results.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
