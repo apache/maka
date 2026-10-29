@@ -51,7 +51,8 @@ pub(crate) async fn insert(
                     "SELECT EXISTS(
                          SELECT 1 FROM session_message_sources WHERE owner_session_id=?1 AND message_id=?2
                          UNION ALL SELECT 1 FROM message_admissions WHERE session_id=?1 AND message_id=?2
-                         UNION ALL SELECT 1 FROM model_part_records p JOIN session_history_events e ON e.event_id=p.event_id WHERE e.owner_session_id=?1 AND p.message_id=?2)",
+                         UNION ALL SELECT 1 FROM model_part_records p WHERE p.message_id=?2
+                         AND EXISTS(SELECT 1 FROM session_history_events e WHERE e.event_id=p.event_id AND e.owner_session_id=?1))",
                 ).bind(&event.invocation.session_id).bind(&event.id)
                     .fetch_one(&mut *worker).await?;
                 if claimed {

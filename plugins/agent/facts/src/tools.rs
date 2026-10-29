@@ -61,11 +61,25 @@ pub enum FreeformGrammar {
     Lark { definition: String },
 }
 
+/// A known native-tool failure whose JavaScript error properties are preserved.
+#[derive(Clone, Debug, Serialize, Deserialize, thiserror::Error)]
+#[serde(rename_all = "camelCase")]
+#[error("{message}")]
+pub struct NativeToolError {
+    pub name: String,
+    pub code: i32,
+    pub error_name: String,
+    pub message: String,
+}
+
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ToolError {
     /// An ordinary tool failure with a known outcome.
     #[error("tool failed: {0}")]
     Failed(String),
+    /// An ordinary native failure with a known outcome, not effect uncertainty.
+    #[error(transparent)]
+    Native(Box<NativeToolError>),
     /// A completed filesystem operation that failed before making its effect.
     #[error("tool I/O failed: {message}")]
     Io {

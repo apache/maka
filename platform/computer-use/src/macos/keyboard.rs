@@ -72,7 +72,7 @@ impl PendingText {
         let result = (|| {
             check_admission(&self.focus, &self.cancellation)?;
             let layout = layout.ok_or_else(|| {
-                aliases::default_swift_error("AccessibilitySupport.SynthesizedEvent.Error", 2)
+                aliases::SynthesizedEventError::FailedToTranslateKeyCodes.into_tool_error()
             })?;
             let pairs = prepare_text_from_layout(&self.source, &self.text, &layout)
                 .map_err(native_error)?;
@@ -184,20 +184,19 @@ fn send_pairs(
 }
 
 fn native_error(error: NativeKeyboardError) -> ToolError {
-    let code = match error {
-        NativeKeyboardError::EventSourceUnavailable => Some(1),
-        NativeKeyboardError::EventUnavailable => Some(0),
+    let failure = match error {
+        NativeKeyboardError::EventSourceUnavailable => {
+            aliases::SynthesizedEventError::FailedToCreateSource
+        }
+        NativeKeyboardError::EventUnavailable => aliases::SynthesizedEventError::InvalidParameter,
         NativeKeyboardError::InputSourceUnavailable
         | NativeKeyboardError::LayoutUnavailable
-        | NativeKeyboardError::LayoutBytesUnavailable => Some(2),
-        _ => None,
-    };
-    match code {
-        Some(code) => {
-            aliases::default_swift_error("AccessibilitySupport.SynthesizedEvent.Error", code)
+        | NativeKeyboardError::LayoutBytesUnavailable => {
+            aliases::SynthesizedEventError::FailedToTranslateKeyCodes
         }
-        None => failed(error),
-    }
+        other => return failed(other),
+    };
+    failure.into_tool_error()
 }
 
 struct Sender {

@@ -22,6 +22,7 @@
 use super::{
     controller::{Application, Controller, verify_generation},
     focus::Resource,
+    keyboard::aliases::SynthesizedEventError,
     page_scroll::{
         PageFrame, controller_position,
         dispatch::{resolve_target, settle},
@@ -166,10 +167,9 @@ pub(super) fn send(
             window_uses_flipped_coordinates: target.flipped,
         })
         .map_err(|error| match error {
-            NativeClickError::InvalidCount => super::keyboard::aliases::default_swift_error(
-                "AccessibilitySupport.SynthesizedEvent.Error",
-                0,
-            ),
+            NativeClickError::InvalidCount => {
+                SynthesizedEventError::InvalidParameter.into_tool_error()
+            }
             other => failed(other),
         })?;
         let mut posted = false;

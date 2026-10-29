@@ -62,8 +62,8 @@ impl ToolExecutor for Fixture {
         let action_errors = self.action_errors.clone();
         let dom_snapshot_json = self.dom_snapshot_json.clone();
         Box::pin(async move {
-            if input["method"] == "action"
-                && input["handle"]["kind"] == "app"
+            if (input["method"] == "nativeComputer"
+                || (input["method"] == "action" && input["handle"]["kind"] == "app"))
                 && let Some(error) = app_action_error
             {
                 action_errors.lock().unwrap().push(error.clone());
@@ -685,6 +685,77 @@ nodeRepl.write(caught);
         ));
         repl.close().await.unwrap();
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_error_properties_survive_the_rust_to_js_repl_bridge() {
+    let repl = Repl::new(
+        maka_computer_use::facade_for("mac", false),
+        CellLimits::default(),
+    )
+    .unwrap();
+    let message = "Computer Use server error -10005: fixture native description";
+    let action_errors = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let context =
+        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+    let result = repl
+        .evaluate(
+            r#"
+let caught;
+async function native_error_properties() { await cua.computer.get_app_state(17); }
+try { await native_error_properties(); }
+catch (error) {
+  if (!(error instanceof Error)) throw Error('native failure must remain a realm Error');
+  if (error.constructor === Error || error.constructor.name !== 'SkyComputerUseError')
+    throw Error('native failure lost its native Error subclass');
+  if (!error.stack.includes('native_error_properties'))
+    throw Error('native failure lost its original JavaScript stack');
+  caught = {name:error.name,code:error.code,errorName:error.errorName,
+    message:error.message,string:String(error)};
+}
+if (caught === undefined) throw Error('expected native failure');
+nodeRepl.write(caught);
+"#
+            .into(),
+            Arc::new(Fixture {
+                app_action_error: Some(ToolError::Native(Box::new(
+                    maka_agent_facts::tools::NativeToolError {
+                        name: "SkyComputerUseError".into(),
+                        code: -10005,
+                        error_name: "unknownError".into(),
+                        message: message.into(),
+                    },
+                ))),
+                action_errors: action_errors.clone(),
+                ..Fixture::default()
+            }),
+            CancellationToken::new(),
+            context.clone(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+    let output = context.take_output();
+    let caught = output.iter().find_map(|part| match part {
+        CellOutput::Text { text } => serde_json::from_str::<Value>(text)
+            .ok()
+            .filter(|value| value.get("code").is_some()),
+        _ => None,
+    });
+    assert_eq!(
+        caught,
+        Some(json!({
+            "name":"SkyComputerUseError","code":-10005,"errorName":"unknownError",
+            "message":message,"string":format!("SkyComputerUseError: {message}")
+        })),
+        "{output:?}"
+    );
+    assert!(matches!(
+        action_errors.lock().unwrap().as_slice(),
+        [ToolError::Native(error)] if error.code == -10005 && error.message == message
+    ));
+    repl.close().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

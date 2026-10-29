@@ -36,7 +36,7 @@ use crate::BrowserAuthorization;
 #[cfg(feature = "native-desktop")]
 use crate::Driver;
 use crate::{BrowserAccess, protocol::Command};
-use maka_agent_facts::tools::ToolError;
+use maka_agent_facts::tools::{NativeToolError, ToolError};
 use maka_capabilities::computer::BrowserConnection;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -153,6 +153,7 @@ fn no_preparation_policy(policy: &crate::BrowserPreparationPolicy) -> bool {
 #[serde(tag = "kind", content = "message", rename_all = "snake_case")]
 enum Failure {
     Failed(String),
+    Native(Box<NativeToolError>),
     OutcomeUnknown(String),
     CleanupUnconfirmed(String),
 }
@@ -160,6 +161,7 @@ impl From<ToolError> for Failure {
     fn from(error: ToolError) -> Self {
         match error {
             ToolError::Failed(message) => Self::Failed(message),
+            ToolError::Native(error) => Self::Native(error),
             ToolError::OutcomeUnknown(message) | ToolError::OperationUnknown { message, .. } => {
                 Self::OutcomeUnknown(message)
             }
@@ -174,6 +176,7 @@ impl From<Failure> for ToolError {
     fn from(error: Failure) -> Self {
         match error {
             Failure::Failed(message) => Self::Failed(message),
+            Failure::Native(error) => Self::Native(error),
             Failure::OutcomeUnknown(message) => Self::OutcomeUnknown(message),
             Failure::CleanupUnconfirmed(message) => Self::CleanupUnconfirmed(message),
         }
@@ -537,7 +540,7 @@ impl Process {
 
 fn authorization_cleanup(result: Result<(), ToolError>) -> Option<ToolError> {
     match result {
-        Ok(()) | Err(ToolError::Failed(_) | ToolError::Io { .. }) => None,
+        Ok(()) | Err(ToolError::Failed(_) | ToolError::Native(_) | ToolError::Io { .. }) => None,
         Err(error) => {
             let message = format!("Browser authorization cleanup was not confirmed: {error}");
             Some(match error {
