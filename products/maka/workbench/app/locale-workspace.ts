@@ -302,6 +302,7 @@ export const workspaceMessages = {
     '调整工作区面板大小',
     '調整工作區面板大小',
   ],
+  'Resume following': ['Resume following', '继续跟随', '繼續跟隨'],
   Restore: msg_projectsRestore,
   'Restore conversation': msg_restoreSession,
   'Retry current changes': ['Retry current changes', '重试当前更改', '重試目前變更'],
