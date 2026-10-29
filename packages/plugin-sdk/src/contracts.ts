@@ -37670,6 +37670,104 @@ export const contracts = {
           },
           resources: {},
         },
+        catalogModels: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'SettingsCatalogModelsRead',
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                default: '',
+              },
+              after: {
+                $ref: '#/$defs/CatalogModelReference',
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            $defs: {
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'SettingsCatalogModelsPage',
+            type: 'object',
+            properties: {
+              models: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/SettingsCatalogModel',
+                },
+                maxItems: 16,
+              },
+              after: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            required: ['models', 'after'],
+            $defs: {
+              SettingsCatalogModel: {
+                type: 'object',
+                properties: {
+                  reference: {
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
+                  label: {
+                    type: 'string',
+                  },
+                  contextWindow: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['reference', 'label', 'contextWindow'],
+              },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
+            },
+          },
+          resources: {},
+        },
         connection: {
           mode: 'query',
           input: {
@@ -37836,6 +37934,11 @@ export const contracts = {
               ModelOverride: {
                 type: 'object',
                 properties: {
+                  catalogModel: {
+                    description:
+                      "Catalog defaults for this connection's model; the request model ID is unchanged.",
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
                   adapter: {
                     description:
                       "Public adapter contribution name; omitted selects the wire's default.",
@@ -37918,6 +38021,21 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
+              },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
               },
               CodeLanguage: {
                 description: 'Interpreter used only for model-facing Code Mode cells.',
@@ -38268,6 +38386,11 @@ export const contracts = {
               ModelOverride: {
                 type: 'object',
                 properties: {
+                  catalogModel: {
+                    description:
+                      "Catalog defaults for this connection's model; the request model ID is unchanged.",
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
                   adapter: {
                     description:
                       "Public adapter contribution name; omitted selects the wire's default.",
@@ -38350,6 +38473,21 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
+              },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
               },
               CodeLanguage: {
                 description: 'Interpreter used only for model-facing Code Mode cells.',
@@ -39453,6 +39591,9 @@ export const contracts = {
               SettingsModelDefaults: {
                 type: 'object',
                 properties: {
+                  catalogMatched: {
+                    type: 'boolean',
+                  },
                   label: {
                     type: 'string',
                   },
@@ -39505,6 +39646,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'catalogMatched',
                   'label',
                   'contextWindow',
                   'inputLimit',
@@ -40177,6 +40319,11 @@ export const contracts = {
               ModelOverride: {
                 type: 'object',
                 properties: {
+                  catalogModel: {
+                    description:
+                      "Catalog defaults for this connection's model; the request model ID is unchanged.",
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
                   adapter: {
                     description:
                       "Public adapter contribution name; omitted selects the wire's default.",
@@ -40259,6 +40406,21 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
+              },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
               },
               CodeLanguage: {
                 description: 'Interpreter used only for model-facing Code Mode cells.',
@@ -40564,6 +40726,9 @@ export const contracts = {
               SettingsModelDefaults: {
                 type: 'object',
                 properties: {
+                  catalogMatched: {
+                    type: 'boolean',
+                  },
                   label: {
                     type: 'string',
                   },
@@ -40616,6 +40781,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'catalogMatched',
                   'label',
                   'contextWindow',
                   'inputLimit',
@@ -41128,6 +41294,11 @@ export const contracts = {
               ModelOverride: {
                 type: 'object',
                 properties: {
+                  catalogModel: {
+                    description:
+                      "Catalog defaults for this connection's model; the request model ID is unchanged.",
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
                   adapter: {
                     description:
                       "Public adapter contribution name; omitted selects the wire's default.",
@@ -41210,6 +41381,21 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
+              },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
               },
               CodeLanguage: {
                 description: 'Interpreter used only for model-facing Code Mode cells.',

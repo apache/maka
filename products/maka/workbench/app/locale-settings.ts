@@ -59,6 +59,23 @@ import {
 } from '../../../../plugins/shared/tui-messages.js';
 
 export const settingsMessages = {
+  'Load more': ['Load more', '加载更多', '載入更多'],
+  'Catalog model': ['Catalog model', '目录模型', '目錄模型'],
+  'Automatic matching': ['Automatic matching', '自动匹配', '自動配對'],
+  'No catalog model matched.': [
+    'No catalog model matched.',
+    '未匹配到目录模型。',
+    '未配對到目錄模型。',
+  ],
+  'Associated catalog model is unavailable.': [
+    'Associated catalog model is unavailable.',
+    '关联的目录模型暂不可用。',
+    '關聯的目錄模型暫不可用。',
+  ],
+  'Associate catalog model': ['Associate catalog model', '关联目录模型', '關聯目錄模型'],
+  'Clear catalog association': ['Clear catalog association', '解除目录关联', '解除目錄關聯'],
+  'Search catalog models': ['Search catalog models', '搜索目录模型', '搜尋目錄模型'],
+  'Close catalog models': ['Close catalog models', '关闭目录模型', '關閉目錄模型'],
   'Context & output': ['Context & output', '上下文与输出', '上下文與輸出'],
   'Input and output capacity.': [
     'Input and output capacity.',

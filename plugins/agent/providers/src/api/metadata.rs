@@ -18,10 +18,15 @@
  */
 
 use crate::catalog::Snapshot;
-use maka_agent_facts::configuration::ModelInfo;
+use maka_agent_facts::configuration::{CatalogModelReference, ModelInfo};
 
 /// The same immutable public base fills account omissions for selection and
 /// execution. Explicit account false/empty values remain authoritative.
-pub(super) fn enrich(snapshot: &Snapshot, provider: &str, model: ModelInfo) -> ModelInfo {
-    snapshot.resolve(provider, model)
+pub(super) fn enrich(
+    snapshot: &Snapshot,
+    provider: &str,
+    model: ModelInfo,
+    reference: Option<&CatalogModelReference>,
+) -> ModelInfo {
+    snapshot.resolve(provider, model, reference)
 }

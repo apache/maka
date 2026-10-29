@@ -17,14 +17,42 @@
  * under the License.
  */
 
-use maka_agent_facts::configuration::CatalogMutationResult;
 use maka_agent_facts::configuration::ModelSelection;
 use maka_agent_facts::configuration::SetDefaultConnectionTargetInput;
+use maka_agent_facts::configuration::{CatalogModelReference, CatalogMutationResult};
 use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "SettingsCatalogModelsRead")]
+pub struct CatalogModelsRead {
+    #[serde(default)]
+    pub query: String,
+    #[serde(default)]
+    #[schemars(with = "CatalogModelReference")]
+    pub after: Option<CatalogModelReference>,
+}
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "SettingsCatalogModel")]
+pub struct CatalogModel {
+    pub reference: CatalogModelReference,
+    pub label: String,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
+    pub context_window: Option<u64>,
+}
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "SettingsCatalogModelsPage")]
+pub struct CatalogModelsPage {
+    #[schemars(length(max = 16))]
+    pub models: Vec<CatalogModel>,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<CatalogModelReference>")]
+    pub after: Option<CatalogModelReference>,
+}
 #[derive(Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "SettingsModelsRead")]
@@ -129,6 +157,7 @@ pub struct ResolveModel {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsModelDefaults")]
 pub struct ModelDefaults {
+    pub catalog_matched: bool,
     pub label: String,
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
     pub context_window: Option<u64>,
@@ -572,6 +601,10 @@ pub fn contract() -> Contract {
                 (
                     "updateModelSettings".into(),
                     method::<UpdateModelSettings, CatalogMutationResult>(MethodMode::Mutation),
+                ),
+                (
+                    "catalogModels".into(),
+                    method::<CatalogModelsRead, CatalogModelsPage>(MethodMode::Query),
                 ),
                 (
                     "resolveModel".into(),

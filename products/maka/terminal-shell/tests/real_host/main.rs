@@ -20,6 +20,7 @@
 mod attachment_draft;
 mod attachment_intake;
 mod attachments;
+mod catalog_association;
 mod compaction;
 mod composer_completion;
 #[cfg(feature = "native-desktop")]
@@ -682,7 +683,7 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(discovered_choice["defaultThinkingLevel"], "high");
         let discovered_target = json!({"connectionId":discovered_choice["selection"]["connectionId"],"modelId":"fixture-discovered-model"});
         let inherited = client.query("settings", "resolveModel", discovered_target.clone()).await.unwrap();
-        assert_eq!(inherited["defaults"], json!({"label":"Discovered UI Model","contextWindow":131072,"inputLimit":131072,"maxOutputTokens":4096,"compactionThreshold":111411,"codeMode":false,"codeModeLanguage":"javascript","applyPatch":false,"thinkingLevels":["max","high","low","off"],"defaultThinkingLevel":"high"}));
+        assert_eq!(inherited["defaults"], json!({"catalogMatched":false,"label":"Discovered UI Model","contextWindow":131072,"inputLimit":131072,"maxOutputTokens":4096,"compactionThreshold":111411,"codeMode":false,"codeModeLanguage":"javascript","applyPatch":false,"thinkingLevels":["max","high","low","off"],"defaultThinkingLevel":"high"}));
         assert_eq!(inherited["choice"]["limits"]["maxOutputTokens"], 4096,
             "a known catalog output capacity supplies the default request budget");
         activate(&mut view, "Edit model fixture-discovered-model").await;

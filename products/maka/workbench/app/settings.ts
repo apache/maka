@@ -21,6 +21,7 @@ import { cleanup, computed, signal } from 'nsh';
 import type { Host } from './host';
 import { message, UiError } from './text';
 import type {
+  CatalogModelReference,
   CatalogMutationResult,
   CodeLanguage,
   ConnectionVersionBasis,
@@ -87,6 +88,7 @@ export const modelLimitFields = [
   },
 ] as const;
 export type ModelEditor = {
+  catalogModel: CatalogModelReference | null;
   limits: Record<(typeof modelLimitFields)[number]['key'], string>;
   codeMode: boolean | null;
   codeModeLanguage: CodeLanguage | null;
@@ -758,6 +760,7 @@ export function createModelSettings(
     }
     const raw = id ? form.baseline.editing.modelOverrides?.[id] : undefined;
     model.set({
+      catalogModel: raw?.catalogModel ?? null,
       originalId: id,
       id: id ?? '',
       label: raw?.displayName ?? '',
@@ -790,6 +793,8 @@ export function createModelSettings(
     const value: ModelOverride = {
       ...(editor()?.baseline?.editing?.modelOverrides?.[id] ?? {}),
     };
+    if (current.catalogModel) value.catalogModel = current.catalogModel;
+    else delete value.catalogModel;
     if (current.label) value.displayName = current.label;
     else delete value.displayName;
     if (current.thinkingLevels === null) delete value.thinkingLevels;
@@ -856,6 +861,7 @@ export function createModelSettings(
     if (current && !busy()) {
       const refresh =
         change.id !== undefined ||
+        change.catalogModel !== undefined ||
         change.thinkingLevels !== undefined ||
         change.defaultThinkingLevel !== undefined ||
         change.limits !== undefined;
@@ -1184,6 +1190,12 @@ export function createModelSettings(
     discover,
     editModel,
     changeModel,
+    chooseCatalogModel(request: ModelAction & { reference: CatalogModelReference | null }) {
+      if (currentModel(request)) changeModel({ catalogModel: request.reference });
+    },
+    readCatalogModels(query: string, after: CatalogModelReference | null) {
+      return host.query('settings', 'catalogModels', { query, ...(after ? { after } : {}) });
+    },
     toggleThinking,
     useProviderThinking,
     defaultThinking,

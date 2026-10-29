@@ -6605,6 +6605,7 @@ export interface SettingsModelLimits {
   compactionThreshold: number | null;
 }
 export interface SettingsModelDefaults {
+  catalogMatched: boolean;
   label: string;
   contextWindow: number | null;
   inputLimit: number | null;
@@ -6696,6 +6697,10 @@ export interface SettingsConnectionEditingFacts {
 }
 export interface ModelOverride {
   /**
+   * Catalog defaults for this connection's model; the request model ID is unchanged.
+   */
+  catalogModel?: CatalogModelReference;
+  /**
    * Public adapter contribution name; omitted selects the wire's default.
    */
   adapter?: string;
@@ -6738,6 +6743,10 @@ export interface ModelOverride {
   capabilities?: ModelOverrideCapabilities;
   modalities?: ModelModalities;
   serviceTier?: RelayServiceTier;
+}
+export interface CatalogModelReference {
+  provider: string;
+  modelId: string;
 }
 /**
  * Vision has one declaration owner: ModelOverride::vision.
