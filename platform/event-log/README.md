@@ -77,3 +77,5 @@ Generated tool images and user uploads retain their complete original artifact b
 History, delivery and resource pages retain their byte targets for packing subsequent items, while one complete first item always advances with its original metadata and cursor. History body windows remain bounded UTF-8 transfers. `history_source` takes a body-byte target and returns the complete original metadata for that single chunk; it has no separate JSON-envelope quota. Session scope and frozen source fences remain mandatory.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
+
+Startup recovery reads all unresolved execution authority without a separate item or byte quota; completed history stays excluded. Tool-result payloads and frozen request compositions have no application-level storage size cap. The schema migration preserves existing payloads and composition references.

@@ -38,13 +38,13 @@ async fn recovery_preserves_completed_effects_and_fences_uncertain_late_results(
         source: Identity::Background {
             grant: Id(Uuid::new_v4()),
         },
-        owner: maka_event_log::effects::Owner {
+        owner: maka_event_log::effects::Owner::Resource(maka_event_log::effects::ResourceOwner {
             package_id: "example.external".into(),
             entry_id: "instance".into(),
             scope: Scope::Profile,
             activation: "original".into(),
             generation: 1,
-        },
+        }),
         boundary: maka_capabilities::authorization::Boundary::Profile,
         operation: Operation::File(filesystem::Operation::Write(filesystem::Write {
             path: "file".into(),
@@ -89,4 +89,21 @@ async fn recovery_preserves_completed_effects_and_fences_uncertain_late_results(
         .is_none()
     );
     log.close().await.unwrap();
+}
+
+#[test]
+fn resource_owner_json_is_preserved_and_mixed_native_provenance_is_rejected() {
+    let legacy = json!({"packageId":"example.external", "entryId":"instance", "scope":"profile",
+        "activation":"original", "generation":1});
+    let owner: maka_event_log::effects::Owner = serde_json::from_value(legacy.clone()).unwrap();
+    assert!(matches!(owner, maka_event_log::effects::Owner::Resource(_)));
+    assert_eq!(serde_json::to_value(owner).unwrap(), legacy);
+    let mut mixed = legacy;
+    mixed["source"] =
+        json!({"stateDomain":"a".repeat(64), "deployment":Uuid::new_v4(), "revision":1});
+    mixed["epoch"] = json!(Uuid::new_v4());
+    assert!(
+        serde_json::from_value::<maka_event_log::effects::Owner>(mixed).is_err(),
+        "native provenance cannot silently fall back to fabricated resource generation"
+    );
 }

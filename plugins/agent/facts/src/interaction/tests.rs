@@ -162,7 +162,13 @@ fn computer_app_scope_requires_exact_identity_and_supported_capability() {
         serde_json::to_value(identity).unwrap(),
         json!({"platform": "macos", "applicationId": "org.example.Editor"})
     );
-    for capability in ["browser", "desktop_mcp", "mcp", "computer_audio"] {
+    for capability in [
+        "browser",
+        "browser_download",
+        "desktop_mcp",
+        "mcp",
+        "computer_audio",
+    ] {
         let mut input = computer_app_request();
         input["target"]["capability"] = json!(capability);
         assert!(serde_json::from_value::<InteractionRequest>(input).is_err());
@@ -393,4 +399,91 @@ fn computer_app_activity_retains_exact_source_and_trusted_display() {
     let mut invalid = input;
     invalid["stopped"] = json!(true);
     assert!(serde_json::from_value::<ComputerAppActivity>(invalid).is_err());
+}
+
+#[test]
+fn browser_download_consent_is_origin_scoped_and_distinct_from_page_access() {
+    let mut input = computer_app_request()["target"].clone();
+    input["capability"] = json!("browser_download");
+    input["scope"] = json!({"kind":"browser_origin", "origin":"https://download.example"});
+    let target: GrantTarget = serde_json::from_value(input.clone()).unwrap();
+    assert_eq!(target.validate(), Ok(()));
+    assert_eq!(target.capability, GrantCapability::BrowserDownload);
+    let request: InteractionRequest = serde_json::from_value(json!({
+        "kind":"client_capability", "toolUseId":"original_download", "target":input
+    }))
+    .unwrap();
+    let answer = InteractionAnswer::ClientCapability {
+        decision: Decision::Allow,
+    };
+    assert_eq!(answer.validate_for_request(&request), Ok(()));
+    let mut read = target.clone();
+    read.capability = GrantCapability::Browser;
+    assert_ne!(
+        target, read,
+        "page access cannot stand in for file transfer consent"
+    );
+    for scope in [
+        json!({"kind":"capability"}),
+        json!({"kind":"browser_origin", "origin":"https://download.example/private"}),
+        json!({"kind":"browser_origin", "origin":"file:///private"}),
+    ] {
+        let mut invalid = serde_json::to_value(&target).unwrap();
+        invalid["scope"] = scope;
+        assert!(
+            serde_json::from_value::<GrantTarget>(invalid)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+}
+
+// Append inside plugins/agent/facts/src/interaction/tests.rs. Uses the real
+// canonical request decoder, decisions and serializer on every build host.
+#[test]
+fn windows_app_consent_uses_the_existing_typed_interaction_and_absolute_path_boundary() {
+    for path in [
+        r"C:\Program Files\Fixture\fixture.exe",
+        r"\\server\share\fixture.exe",
+        r"\\?\C:\Fixture\fixture.exe",
+    ] {
+        let mut input = computer_app_request();
+        input["target"]["scope"]["platform"] = json!("windows");
+        input["target"]["scope"]["applicationId"] = json!(path);
+        input["display"]["appPath"] = json!(path);
+        input["allowAlways"] = json!(false);
+        let request: InteractionRequest = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), input);
+        for decision in [ComputerAppDecision::Once, ComputerAppDecision::Session] {
+            assert_eq!(
+                InteractionAnswer::ComputerApp { decision }.validate_for_request(&request),
+                Ok(())
+            );
+        }
+        assert!(
+            InteractionAnswer::ComputerApp {
+                decision: ComputerAppDecision::Always
+            }
+            .validate_for_request(&request)
+            .is_err()
+        );
+        for path in [
+            r"C:fixture.exe",
+            r"\fixture.exe",
+            r"\\?\UNC",
+            r"\\?\UNC\server",
+            r"\\server\",
+            "fixture.exe",
+            "/Applications/Fixture.app",
+            "C:\\bad\0.exe",
+        ] {
+            let mut invalid = input.clone();
+            invalid["display"]["appPath"] = json!(path);
+            assert!(
+                serde_json::from_value::<InteractionRequest>(invalid).is_err(),
+                "{path:?}"
+            );
+        }
+    }
 }

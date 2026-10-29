@@ -20,52 +20,19 @@
 import { spawn } from 'node:child_process';
 import { readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { cargoBuild } from './cargo.mjs';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 
-/** Build the checkout's compiler; its Cargo build bundles UI directly in Rust. */
+/** Build only the NSH compiler, without the product's Host or rendering runtimes. */
 export async function uiCompiler(root = repository, env = process.env) {
-  const child = spawn(
-    'cargo',
-    [
-      'build',
-      '--locked',
-      '-p',
-      'maka-cli',
-      '--bin',
-      'maka',
-      '--no-default-features',
-      '--message-format=json',
-    ],
-    { cwd: root, env, stdio: ['inherit', 'pipe', 'inherit'], windowsHide: true },
+  const { code, signal, executables } = await cargoBuild(
+    ['build', '--locked', '-p', 'maka-ui-build', '--bin', 'maka-ui-build'],
+    { cwd: root, env },
   );
-  let executable;
-  const completed = new Promise((resolveRun, reject) => {
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
-      if (code === 0) resolveRun();
-      else reject(new Error(`UI compiler build failed: ${signal ?? code}`));
-    });
-  });
-  await Promise.all([
-    completed,
-    (async () => {
-      for await (const line of createInterface({ input: child.stdout, crlfDelay: Infinity })) {
-        const message = JSON.parse(line);
-        if (message.reason === 'compiler-message' && message.message.rendered)
-          process.stderr.write(message.message.rendered);
-        if (
-          message.reason === 'compiler-artifact' &&
-          message.target.name === 'maka' &&
-          message.target.kind.includes('bin') &&
-          message.executable
-        )
-          executable = resolve(root, message.executable);
-      }
-    })(),
-  ]);
+  if (code !== 0 || signal) throw new Error(`UI compiler build failed: ${signal ?? code}`);
+  const executable = executables.get('maka-ui-build');
   if (!executable) throw new Error('Cargo did not report the Maka UI compiler executable');
   return executable;
 }

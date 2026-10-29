@@ -148,7 +148,7 @@ async fn large_child_value_is_consumable_and_complete_cell_emission_remains_dura
             effect.value
         );
         assert!(
-            log.invocation_recovery(&invocation, 32, 64 * 1024)
+            log.invocation_recovery(&invocation)
                 .await
                 .unwrap()
                 .uncertain_operations

@@ -1536,6 +1536,15 @@ export const configurations = {
         description: 'Explicit opt-in to recording computer output audio.',
         default: false,
       },
+      browserPreparation: {
+        $ref: '#/$defs/ComputerBrowserPreparation',
+        description:
+          'Optional browser preparation allowed by Maka Host policy.\n\nThis policy is captured for one activation. Updated configuration applies\nto new admissions after the replacement is ready; accepted work drains\nunder its captured policy. Commit/adoption acknowledges desired input only.\nOld header removal and native cleanup require their own completion.',
+        default: {
+          popup: false,
+          requestHeaders: [],
+        },
+      },
     },
     title: 'ComputerConfiguration',
     $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -1560,6 +1569,45 @@ export const configurations = {
         required: ['id', 'endpoint'],
         description:
           'An explicitly configured browser provider. The REPL cannot supply endpoints,\nrestart a browser, switch profiles or enable remote debugging by itself.',
+      },
+      ComputerBrowserPreparation: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          popup: {
+            type: 'boolean',
+            description:
+              'Raw Maka opt-in for popup adoption and relay.\n\nNonempty `request_headers` also enables effective Maka popup adoption and\nrelay, even when this raw flag is `false`.\n\n`false` or omitting an enable call does not confirm that Original page\nhooks are off. No native popup-state query or disable RPC is established.',
+            default: false,
+          },
+          requestHeaders: {
+            type: 'array',
+            items: {
+              $ref: '#/$defs/ComputerBrowserPreparationHeader',
+            },
+            description:
+              'Request headers passed to the native browser preparation boundary.\n\nA nonempty list also enables effective Maka popup adoption and relay so\nheaders can reach the first request.\n\nAn empty list alone does not confirm that existing native hooks are off.\nAn explicitly submitted empty list needs an actual disable acknowledgement;\nleaving the default empty list unsubmitted provides no such confirmation.',
+            default: [],
+          },
+        },
+        description:
+          'Maka Host policy for requesting or adopting optional browser preparations.\nThe raw fields are independently configurable. Effective Maka popup adoption\nand relay use `popup || !request_headers.is_empty()` so headers can reach the\nfirst request.\n\n| `popup` | `request_headers` | Effective Maka popup adoption/relay |\n| --- | --- | --- |\n| `false` | empty | `false` |\n| `true` | empty | `true` |\n| `false` | nonempty | `true` |\n| `true` | nonempty | `true` |\n\nDefaults request neither preparation; they do not report native hook state.\nOriginal full preparation may still run fixed preparers enabled natively.',
+      },
+      ComputerBrowserPreparationHeader: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Header name validated by the native browser provider.',
+          },
+          value: {
+            type: 'string',
+            description: 'Header value validated by the native browser provider.',
+          },
+        },
+        required: ['name', 'value'],
+        description: 'A request header selected by Maka Host browser preparation policy.',
       },
     },
   },

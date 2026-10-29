@@ -349,7 +349,7 @@ fn desktop_help_and_version_do_not_start_a_host_or_shell() {
     for flag in ["--help", "--version"] {
         for with_root in [false, true] {
             let mut command = std::process::Command::new(&executable);
-            command.arg("desktop");
+            command.arg("desktop").env("HOME", directory.path());
             if with_root {
                 command.arg("--root").arg(&root);
             }
@@ -360,18 +360,85 @@ fn desktop_help_and_version_do_not_start_a_host_or_shell() {
                 String::from_utf8_lossy(&result.stderr)
             );
             assert!(!root.exists());
+            assert!(!directory.path().join(".maka").exists());
         }
     }
-    let required = std::process::Command::new(&executable)
-        .arg("desktop")
-        .output()
-        .unwrap();
-    assert!(!required.status.success());
-    assert!(String::from_utf8_lossy(&required.stderr).contains("--root"));
     let help = std::process::Command::new(&executable)
         .arg("--help")
         .output()
         .unwrap();
     assert!(help.status.success());
     assert!(String::from_utf8_lossy(&help.stdout).contains("desktop"));
+}
+
+#[tokio::test]
+async fn desktop_uses_the_default_root_unless_an_explicit_root_is_selected() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        for explicit in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let executable = launcher(directory.path());
+            shell(directory.path());
+            let default_root = directory.path().join(".maka/application/host");
+            let root = if explicit {
+                directory.path().join("selected-host")
+            } else {
+                default_root.clone()
+            };
+            let candidate = CandidateFixture::new(root.clone());
+            let mut command = Command::new(&executable);
+            command
+                .arg("desktop")
+                .env("HOME", directory.path())
+                .current_dir(directory.path());
+            if explicit {
+                command.arg("--root").arg(root.file_name().unwrap());
+            }
+            let mut fixture = RootStartupFixture::initialized(directory, candidate);
+            fixture.begin_admission();
+            let mut child = command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(b"0\n").await.unwrap();
+            let output = child.wait_with_output().await.unwrap();
+            fixture.adopt();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            let shell_root = Path::new(stdout.lines().next().expect("shell Root"));
+            assert!(shell_root.is_absolute(), "{}", shell_root.display());
+            assert_eq!(
+                std::fs::canonicalize(shell_root).unwrap(),
+                std::fs::canonicalize(&root).unwrap()
+            );
+            if explicit {
+                assert!(!default_root.exists());
+            }
+            assert!(saved(&root).await.2.is_none());
+        }
+    })
+    .await
+    .expect("desktop root selection did not settle");
+}
+
+#[test]
+fn desktop_without_home_requires_an_explicit_root() {
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_maka"))
+        .arg("desktop")
+        .env_remove("HOME")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("home directory unavailable; select --root"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }

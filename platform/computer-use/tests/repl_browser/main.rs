@@ -46,6 +46,37 @@ async fn linux_screenshot_only_keeps_exact_observed_elements_until_replacement()
             let _ = self.0.wait();
         }
     }
+    struct RefusalProbe {
+        bridge: Arc<Bridge>,
+        failures: Arc<Mutex<Vec<maka_agent_facts::tools::ToolError>>>,
+    }
+    impl ToolExecutor for RefusalProbe {
+        fn names(&self) -> Vec<String> {
+            self.bridge.names()
+        }
+        fn invoke(
+            &self,
+            name: String,
+            input: Value,
+            cancellation: CancellationToken,
+        ) -> ToolFuture {
+            let original = self.bridge.invoke(name, input, cancellation);
+            let failures = self.failures.clone();
+            Box::pin(async move {
+                let result = original.await;
+                if let Err(error) = &result {
+                    failures.lock().await.push(error.clone());
+                }
+                result
+            })
+        }
+    }
+    fn element_row(state: &str, name: &str) -> usize {
+        state
+            .lines()
+            .position(|line| line.contains(name))
+            .unwrap_or_else(|| panic!("missing {name}: {state}"))
+    }
     fn element(state: &str, name: &str) -> u64 {
         state
             .lines()
@@ -143,10 +174,34 @@ async fn linux_screenshot_only_keeps_exact_observed_elements_until_replacement()
         "{state}"
     );
     let original = element(&state, "sld-value");
+    let original_row = element_row(&state, "sld-value");
     let replace = element(&state, "btn-replace-slider");
     // Up increases this horizontal GTK scale from its zero lower bound.
-    let (ok, output) = evaluate(&repl, bridge.clone(), format!("await app.getScreenshot({{emit:false}}); await app.click({replace}); await app.getScreenshot({{emit:false}}); try {{ await app.scroll({original},'up',{{pixels:150}}); throw Error('replaced element accepted'); }} catch(error) {{ if (!String(error).includes('stale_element_token')) throw error; }} await app.getAXState({{disableDiffing:true}});")).await;
-    let state = texts(&output);
+    let membership_refusal =
+        "element is not in this window's AT-SPI tree; refresh get_window_state()";
+    let failures = Arc::new(Mutex::new(Vec::new()));
+    let context = CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap();
+    let result = repl
+        .evaluate(
+            format!("await app.getScreenshot({{emit:false}}); await app.click({replace}); await app.getScreenshot({{emit:false}}); try {{ await app.scroll({original},'up',{{pixels:150}}); throw Error('replaced element accepted'); }} catch(error) {{ if (!(error instanceof Error) || error.message !== {membership_refusal:?}) throw error; }} await app.getAXState({{disableDiffing:true}});"),
+            Arc::new(RefusalProbe {
+                bridge: bridge.clone(),
+                failures: failures.clone(),
+            }),
+            CancellationToken::new(),
+            context.clone(),
+            Duration::from_secs(20),
+        )
+        .await
+        .unwrap();
+    let ok = matches!(result, CellResult::Success { .. });
+    let state = texts(&context.take_output());
+    assert!(
+        matches!(failures.lock().await.as_slice(),
+            [maka_agent_facts::tools::ToolError::Failed(message)]
+                if message == membership_refusal),
+        "the exact old native identity must be refused before input, not become outcome-unknown"
+    );
     assert!(ok && !state.contains("Observation incomplete"), "{state}");
     assert!(
         state.contains("slider_replaced=True") && state.contains("slider_value=0"),
@@ -154,8 +209,15 @@ async fn linux_screenshot_only_keeps_exact_observed_elements_until_replacement()
     );
     let fresh = element(&state, "sld-value");
     assert_eq!(
+        element_row(&state, "sld-value"),
+        original_row,
+        "replacement must occupy the same rendered row to detect retargeting"
+    );
+    // Public IDs denote observed native identities, not row ordinals. A new
+    // GTK object at the same position must never inherit the old selector.
+    assert_ne!(
         fresh, original,
-        "replacement must occupy the same ordinal to detect retargeting"
+        "replacement needs its own observed public ID"
     );
     let (ok, output) = evaluate(&repl, bridge.clone(), format!("await app.getScreenshot({{emit:false}}); await app.scroll({fresh},'up',{{pixels:150}}); await app.getAXState({{disableDiffing:true}});")).await;
     let state = texts(&output);
@@ -364,9 +426,17 @@ async fn linux_public_scroll_preserves_native_pixels_coordinates_and_target_fres
     assert!(after_ax.iter().all(|event| event.event == fixture.id
         && event.detail == 1
         && (event.event_x, event.event_y) == (37, 41)));
-    for pixels in [0.0, -1.0, 0.1, 49.5, 149.5, 150.1, 65536.0] {
+    for (pixels, expected) in [
+        (0.0, "pixels must be a positive finite number."),
+        (-1.0, "invalid value: integer `-1`, expected u16"),
+        (0.1, "invalid type: floating point `0.1`, expected u16"),
+        (49.5, "invalid type: floating point `49.5`, expected u16"),
+        (149.5, "invalid type: floating point `149.5`, expected u16"),
+        (150.1, "invalid type: floating point `150.1`, expected u16"),
+        (65536.0, "invalid value: integer `65536`, expected u16"),
+    ] {
         let (ok, output) = evaluate(&repl, bridge.clone(), format!(
-            "await app.getScreenshot({{emit:false}}); try {{ await app.scroll([37,41],'down',{{pixels:{pixels}}}); throw Error('invalid pixels accepted'); }} catch(error) {{ if(!String(error).includes('integer between 1 and 65535')) throw error; }}",
+            "await app.getScreenshot({{emit:false}}); try {{ await app.scroll([37,41],'down',{{pixels:{pixels}}}); throw Error('invalid pixels accepted'); }} catch(error) {{ if(!String(error).includes({expected:?})) throw error; }}",
         )).await;
         assert!(ok, "{}", texts(&output));
         assert!(
@@ -1176,6 +1246,8 @@ async fn browser_form_uses_independent_repl_and_rejects_stale_document_and_tab()
 <select aria-label="Color" id="color"><option value="red-id">Red</option><option value="blue-id">Blue</option></select>
 <button onclick="const pointer=document.querySelector('[popover][aria-hidden=true]'); const bounds=pointer.getBoundingClientRect(); const arrived=Math.abs(bounds.x+9.685922-event.clientX)<1 && Math.abs(bounds.y+9.685922-event.clientY)<1; document.getElementById('result').textContent=document.getElementById('name').value+' / '+document.getElementById('message').value+' / '+document.getElementById('color').value+' / cursor arrived: '+arrived">Submit fixture</button>
 <output id="result" aria-live="polite"></output>
+<output id="input-count">Fixture pointerdown count 0</output>
+<script>let fixturePointerdowns=0;addEventListener('pointerdown',event=>{if(event.isTrusted)document.getElementById('input-count').textContent='Fixture pointerdown count '+(++fixturePointerdowns);});</script>
 <iframe id="child" src="http://localhost:FIXTURE_PORT/iframe-child" style="margin:15px;width:380px;height:100px"></iframe>
 <button onclick="document.getElementById('child').src='http://localhost:FIXTURE_PORT/iframe-next'">Navigate child</button>
 <div id="shadow-host" style="width:320px;height:160px;margin:120px 0"><iframe id="shadow-child" src="http://localhost:FIXTURE_PORT/iframe-shadow" style="width:300px;height:140px"></iframe></div>
@@ -1309,27 +1381,41 @@ async fn browser_form_uses_independent_repl_and_rejects_stale_document_and_tab()
     )
     .await;
     assert!(ok, "{}", texts(&output));
-    // A fresh AX observation deliberately has no screenshot mapping. Changing
-    // the evaluation's captured language must change recovery instructions,
-    // while the same tab's native document content remains untouched.
-    for (language, recovery) in [
-        (Language::En, "getScreenshot before coordinate input"),
-        (Language::ZhCn, "按坐标输入前"),
-        (Language::ZhTw, "按座標輸入前"),
+    // Browser points use CSS viewport coordinates without a prior screenshot.
+    // Out-of-viewport input still refuses without dispatch, and the captured
+    // language changes the AX label without changing the document's content.
+    for (language, label) in [
+        (Language::En, "Tab "),
+        (Language::ZhCn, "标签页 "),
+        (Language::ZhTw, "分頁 "),
     ] {
         let localized = Arc::new(Bridge(session.clone(), "browser-fixture", language));
         let (ok, output) = evaluate(&repl, localized,
-            "await tab.getAXState({disableDiffing:true}); try { await tab.click([0,0]); throw Error('input unexpectedly dispatched'); } catch (error) { if (!String(error).includes('capture_required')) throw error; nodeRepl.write(String(error)); }".into()).await;
+            "await tab.getAXState({disableDiffing:true}); try { await tab.click([-1,0]); throw Error('input unexpectedly dispatched'); } catch (error) { if (!String(error).includes('Coordinate is outside the active tab content viewport')) throw error; nodeRepl.write(String(error)); } { const after=await tab.getAXState({disableDiffing:true,emit:false}); if (!after.includes('Fixture pointerdown count 0')) throw Error('rejected coordinates dispatched input: '+after); nodeRepl.write(after); }".into()).await;
         let output = texts(&output);
         assert!(
-            ok && output.contains("capture_required") && output.contains(recovery),
+            ok && output.contains("Coordinate is outside the active tab content viewport")
+                && output.contains(label),
             "{output}"
         );
         assert!(
-            output.contains("Name") && output.contains("Maka Cua fixture"),
-            "{output}"
+            output.contains("Name")
+                && output.contains("Maka Cua fixture")
+                && output.contains("Fixture pointerdown count 0"),
+            "rejected coordinates must not dispatch input: {output}"
         );
     }
+    let (ok, output) = evaluate(
+        &repl,
+        bridge.clone(),
+        "await tab.click([0,0]); await tab.getAXState({disableDiffing:true});".into(),
+    )
+    .await;
+    assert!(
+        ok && texts(&output).contains("Fixture pointerdown count 1"),
+        "a CSS point must dispatch once before the first screenshot: {}",
+        texts(&output)
+    );
     let mut state = browser_cursor_scenario(
         driver.clone(),
         format!("http://127.0.0.1:{}", url.port().unwrap()),
@@ -1560,14 +1646,21 @@ async fn browser_form_uses_independent_repl_and_rejects_stale_document_and_tab()
     let (ok, _) = evaluate(
         &repl,
         bridge.clone(),
-        "await tab.getScreenshot({emit:false});".into(),
+        format!("await tab.setValue({name}, 'screenshot retained index'); await tab.getScreenshot({{emit:false}});"),
     )
     .await;
     assert!(ok);
-    let (ok, _) = evaluate(&repl, bridge.clone(), format!("await tab.click({button});")).await;
+    let (ok, output) = evaluate(
+        &repl,
+        bridge.clone(),
+        format!("await tab.click({button}); await tab.getAXState({{disableDiffing:true}});"),
+    )
+    .await;
     assert!(
-        !ok,
-        "screenshot-only observation must retire element indices"
+        ok && texts(&output).contains("screenshot retained index / 你好")
+            && texts(&output).contains("cursor arrived: true"),
+        "a same-document screenshot must preserve observed element indices: {}",
+        texts(&output)
     );
     let (ok, _) = evaluate(
         &repl,
@@ -1780,10 +1873,10 @@ async fn browser_cursor_scenario(
     )
     .await
     .unwrap();
-    let moved = move_fixture_cursor(&a, &a_cursor, [90, 100]).await;
-    assert!(
-        moved.is_err(),
-        "cursor movement must not bypass screenshot invalidation after navigation"
+    let moved = move_fixture_cursor(&a, &a_cursor, [90, 100]).await.unwrap();
+    assert_eq!(
+        moved["visible"], true,
+        "a current browser CSS point needs no screenshot after navigation: {moved}"
     );
     observe_cursor_target(&a, &a_cursor).await;
     let moved = move_fixture_cursor(&a, &a_cursor, [90, 100]).await.unwrap();

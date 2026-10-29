@@ -22,6 +22,8 @@ mod attachment_intake;
 mod attachments;
 mod compaction;
 mod composer_completion;
+#[cfg(feature = "native-desktop")]
+mod computer;
 mod final_actions;
 mod interactions;
 mod keyboard;
@@ -38,6 +40,7 @@ mod support;
 #[cfg(unix)]
 mod terminal_workbench;
 mod tool_cards;
+mod tool_schemas;
 mod ui_plugins;
 mod workspace_locations;
 
@@ -2492,6 +2495,7 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         let mut screen = history;
         loop {
             support::scroll_snapshot_text(&mut view, &screen, "History ", MouseEventKind::ScrollUp);
+            commit_native_events(&view).await;
             support::tick(&mut view);
             screen = view.snapshot();
             if screen.contains("History 00 paragraph") {
@@ -3364,7 +3368,7 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         wait_view(&mut view, |screen| !screen.contains("Current worktree diff") && screen.contains("UNSENT_PREVIEW_DRAFT")).await;
         assert!(view.accessibility_snapshot().iter().any(|node| node.id == composer));
-        support::click_label(&mut view, "Browse workspace files");
+        support::click_button(&mut view, "Browse workspace files").await;
         wait_view(&mut view, |screen| screen.contains("001-scene.data") && !screen.contains("Loading files…") && !screen.contains("Updating files…")).await;
         support::click_label(&mut view, "File: 001-scene.data");
         let image = wait_view(&mut view, |screen| screen.contains("64 × 48 · Captured image") && screen.contains('▀')).await;
@@ -3404,7 +3408,7 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         for index in 0..140 {
             std::fs::write(workspace.join(format!("page-{index:03}.txt")), "file\n").unwrap();
         }
-        support::click_label(&mut view, "Browse workspace files");
+        support::click_button(&mut view, "Browse workspace files").await;
         wait_view(&mut view, |screen| screen.contains("page-000.txt") && !screen.contains("Loading files…") && !screen.contains("Updating files…")).await;
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
@@ -3663,6 +3667,11 @@ async fn production_sixel_negotiates_from_real_queries_and_resize_keeps_unicode_
         terminal.send(b"\x1b");
         terminal.wait_for_absent("×").await;
         terminal.wait_for_absent("Loading session history").await;
+        // Session history and the client draft load independently. Focus the
+        // ready editor before exercising reply/paste demultiplexing.
+        terminal.wait_for("Message or run a task…").await;
+        terminal.wait_for_absent("Loading the saved draft").await;
+        terminal.click_text("Message or run a task…");
         // Drafts belong to the client journal, not the Host. Observe the actual
         // binary's journal rather than the fixture client's separate client.db.
         let terminal_client = Client::new(
@@ -4175,7 +4184,8 @@ async fn production_history_retry_and_live_reconnect_preserve_the_draft_receipt_
         let binary = std::env::var_os("MAKA_TEST_CLI_BINARY").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_BIN_EXE_maka")));
         let mut terminal = support::pty::Pty::spawn(&binary, &fixture.directory.path().join("host"), Some(&fixture.session));
         terminal.wait_for("Retry loading conversation").await;
-        terminal.wait_for("History unavailable. Retrying automatically; your draft is kept.").await;
+        let failed = terminal.wait_for("History unavailable. Retrying automatically; your draft is kept.").await;
+        assert!(failed.contains("Retry loading conversation"), "{failed}");
         terminal.wait_for("RECOVERY_ORIGINAL_A").await;
         support::wait_draft(&terminal_client, &fixture.session, "RECOVERY_ORIGINAL_A").await;
         terminal.click_text("Retry loading conversation");

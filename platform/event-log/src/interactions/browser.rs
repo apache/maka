@@ -20,7 +20,8 @@
 use super::records::{invalid, read_local};
 use crate::{EventLog, StoreError};
 use maka_agent_facts::interaction::{
-    Decision, GrantScope, GrantTarget, InteractionOutcome, InteractionRequest, entity_id,
+    Decision, GrantCapability, GrantScope, GrantTarget, InteractionOutcome, InteractionRequest,
+    entity_id,
 };
 use maka_agent_facts::workspace::PermissionBasis;
 use sqlx::Connection;
@@ -30,7 +31,8 @@ const BROWSER_ORIGIN_DECISION: &str = "SELECT request.request_id
     JOIN interaction_outcomes AS outcome ON outcome.request_id=request.request_id
     WHERE request.session_id=?
       AND json_extract(request.record_json,'$.request.kind')='client_capability'
-      AND json_extract(request.record_json,'$.request.target.capability')='browser'
+      AND json_extract(request.record_json,'$.request.target.capability') IN ('browser','browser_download')
+      AND json_extract(request.record_json,'$.request.target.capability')=?
       AND json_extract(request.record_json,'$.request.target.scope.kind')='browser_origin'
       AND json_extract(request.record_json,'$.request.target.providerId')=?
       AND json_extract(request.record_json,'$.request.target.contractId')=?
@@ -60,6 +62,13 @@ impl EventLog {
         entity_id(session).map_err(invalid)?;
         target.validate().map_err(invalid)?;
         basis.validate().map_err(invalid)?;
+        let capability = match target.capability {
+            GrantCapability::Browser => "browser",
+            GrantCapability::BrowserDownload => "browser_download",
+            _ => {
+                return Err(invalid("browser decision requires a browser origin target"));
+            }
+        };
         let GrantScope::BrowserOrigin { origin } = &target.scope else {
             return Err(invalid("browser decision requires a browser origin target"));
         };
@@ -78,6 +87,7 @@ impl EventLog {
                     }
                     let request: Option<String> = sqlx::query_scalar(BROWSER_ORIGIN_DECISION)
                         .bind(&session)
+                        .bind(capability)
                         .bind(&target.provider_id)
                         .bind(&target.contract_id)
                         .bind(&target.server_id)

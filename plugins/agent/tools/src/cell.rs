@@ -86,7 +86,7 @@ Helpers:
 - setTimeout(callback, delayMs=0), clearTimeout(id): timers alone do not keep a finished cell alive.
 - ALL_TOOLS: frozen name/description metadata for all authorized nested tools, including deferred tools omitted from this description. Find a tool here and call it in the same cell.
 Use wait only after exec returns a running cell_id. Tool permissions and schemas stay frozen for the cell. Calls to other advertised tools must be made directly. Do not invoke exec in parallel with other model tools.
-Host execution: 64 MiB V8 heap, 30 seconds cumulative synchronous execution (async waits excluded), 4 uncollected cells per Run and 128 pending timers. Tool work remains owned until cleanup; use wait to collect running cells."#.into(),
+Host execution: 64 MiB V8 heap, 30 seconds cumulative synchronous execution (async waits excluded) and 128 pending timers. Tool work remains owned until cleanup; use wait to collect running cells."#.into(),
         input_schema: schemars::schema_for!(CodeInput).into(),
     }
 }
@@ -100,9 +100,8 @@ pub(super) struct CodeInput {
     #[serde(default = "default_yield")]
     #[schemars(range(min = 0, max = 60000))]
     yield_time_ms: u64,
-    /// Approximate text-output budget (64..32768 tokens). Full output is retained as evidence.
+    /// Approximate text-output budget in tokens. Full output is retained as evidence.
     #[serde(default = "default_tokens")]
-    #[schemars(range(min = 64, max = 32768))]
     max_output_tokens: usize,
 }
 
@@ -122,9 +121,8 @@ pub(super) struct WaitInput {
     #[serde(default = "default_wait_yield")]
     #[schemars(range(min = 0, max = 60000))]
     yield_time_ms: u64,
-    /// Approximate text-output budget (64..32768 tokens).
+    /// Approximate text-output budget in tokens.
     #[serde(default = "default_tokens")]
-    #[schemars(range(min = 64, max = 32768))]
     max_tokens: usize,
     /// Request cancellation. Running means accepted effects are still being settled.
     #[serde(default)]
@@ -145,11 +143,9 @@ fn invalid(message: impl Into<String>) -> ToolRejection {
     }
 }
 
-fn observation_limits(yield_time_ms: u64, tokens: usize) -> Result<(), ToolRejection> {
-    if yield_time_ms > 60_000 || !(64..=32_768).contains(&tokens) {
-        return Err(invalid(
-            "yield_time_ms must be 0..60000; output token budget must be 64..32768",
-        ));
+fn observation_limits(yield_time_ms: u64) -> Result<(), ToolRejection> {
+    if yield_time_ms > 60_000 {
+        return Err(invalid("yield_time_ms must be 0..60000"));
     }
     Ok(())
 }
@@ -185,7 +181,7 @@ pub(super) fn source(input: &Value, language: CodeLanguage) -> Result<CodeInput,
     serde_json::from_value::<CodeInput>(value)
         .map_err(|error| invalid(error.to_string()))
         .and_then(|input| {
-            observation_limits(input.yield_time_ms, input.max_output_tokens)?;
+            observation_limits(input.yield_time_ms)?;
             Ok(input)
         })
 }
@@ -193,7 +189,7 @@ pub(super) fn source(input: &Value, language: CodeLanguage) -> Result<CodeInput,
 pub(super) fn wait_input(input: &Value) -> Result<WaitInput, ToolRejection> {
     let input: WaitInput =
         serde_json::from_value(input.clone()).map_err(|error| invalid(error.to_string()))?;
-    observation_limits(input.yield_time_ms, input.max_tokens)?;
+    observation_limits(input.yield_time_ms)?;
     Ok(input)
 }
 

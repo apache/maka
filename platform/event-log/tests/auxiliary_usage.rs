@@ -36,13 +36,13 @@ fn request() -> Request {
         source: Identity::Remote {
             request_id: Uuid::new_v4(),
         },
-        owner: maka_event_log::effects::Owner {
+        owner: maka_event_log::effects::Owner::Resource(maka_event_log::effects::ResourceOwner {
             package_id: "external-model-client".into(),
             entry_id: "entry".into(),
             scope: Scope::Profile,
             activation: "activation".into(),
             generation: 1,
-        },
+        }),
         boundary: Boundary::Profile,
         operation: Operation::Model {
             input: Generate {

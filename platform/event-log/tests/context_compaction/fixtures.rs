@@ -102,7 +102,7 @@ fn step(id: &str, step: &str, text: &str) -> ModelCompletion {
         json!({"parts":[{"kind":"text","text_kind":"text","text":text}],"finish_reason":"stop","usage":{}}),
     )
 }
-fn request(id: &str, source: &ModelContextSource) -> EventWrite {
+pub(super) fn request(id: &str, source: &ModelContextSource) -> EventWrite {
     event(
         id,
         Fact::ModelRequested {

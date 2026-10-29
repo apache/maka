@@ -19,7 +19,7 @@
 
 use clap::{Args, Parser, Subcommand};
 use maka_host_runtime::HostError;
-use std::{net::SocketAddr, path::PathBuf};
+use std::{future::Future, net::SocketAddr, path::PathBuf, pin::Pin, process::ExitCode};
 
 use crate::{candidate, code, serve};
 
@@ -204,52 +204,60 @@ impl Cli {
         self.execute().await
     }
 
-    async fn execute(self) -> Result<std::process::ExitCode, HostError> {
+    // Keep dispatch out of the poll stack shared with the selected command.
+    fn execute(self) -> CommandFuture {
         let Some(command) = self.command else {
-            self.terminal.unwrap_or_default().run().await?;
-            return Ok(std::process::ExitCode::SUCCESS);
+            return command_exit(async move {
+                self.terminal
+                    .unwrap_or_default()
+                    .run()
+                    .await
+                    .map_err(Into::into)
+            });
         };
-        let result = match command {
-            Command::Desktop(args) => return args.run().await,
-            Command::TerminalShell(args) => args.run().await.map_err(Into::into),
-            Command::Application(args) => args.run().await,
-            Command::Sandbox(args) => return args.run(self.timeout_ms).await,
-            Command::Host(HostCommand::Fetch(args)) => args.run().await,
-            Command::Host(HostCommand::Access(args)) => args.run().await,
-            Command::Host(HostCommand::Candidate(args)) => args.run().await,
-            Command::Host(HostCommand::Ensure(args)) => args.run().await,
-            Command::Host(HostCommand::Install(args)) => args.run().await,
-            Command::Host(HostCommand::Setup(args)) => args.run().await,
-            Command::Host(HostCommand::Activate(args)) => args.run().await,
-            Command::Host(HostCommand::Connect(args)) => args.run().await,
-            Command::Host(HostCommand::Update(args)) => args.run().await,
-            Command::Host(HostCommand::Upgrade(args)) => args.run().await,
-            Command::Host(HostCommand::UpdatePolicy(args)) => args.run().await,
-            Command::Host(HostCommand::AutoUpdate(args)) => args.run().await,
-            Command::Host(HostCommand::Reconcile(args)) => args.reconcile().await,
+        match command {
+            Command::Desktop(args) => Box::pin(args.run()),
+            Command::TerminalShell(args) => {
+                command_exit(async move { args.run().await.map_err(Into::into) })
+            }
+            Command::Application(args) => command_exit(args.run()),
+            Command::Sandbox(args) => Box::pin(args.run(self.timeout_ms)),
+            Command::Host(HostCommand::Fetch(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Access(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Candidate(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Ensure(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Install(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Setup(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Activate(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Connect(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Update(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Upgrade(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::UpdatePolicy(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::AutoUpdate(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Reconcile(args)) => command_exit(args.reconcile()),
             Command::Host(HostCommand::Stop(args)) => {
-                args.run(crate::deployment::ControlAction::Stop).await
+                command_exit(args.run(crate::deployment::ControlAction::Stop))
             }
             Command::Host(HostCommand::Restart(args)) => {
-                args.run(crate::deployment::ControlAction::Restart).await
+                command_exit(args.run(crate::deployment::ControlAction::Restart))
             }
             Command::Host(HostCommand::Uninstall(args)) => {
-                args.run(crate::deployment::ControlAction::Uninstall).await
+                command_exit(args.run(crate::deployment::ControlAction::Uninstall))
             }
-            Command::Host(HostCommand::Init(args)) => args.run().await,
-            Command::Host(HostCommand::Serve { root, websocket }) => {
+            Command::Host(HostCommand::Init(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Serve { root, websocket }) => command_exit(async move {
                 #[cfg(windows)]
                 crate::windows::own_process_tree()?;
                 serve::run(&root.root, websocket, None).await
-            }
-            Command::Host(HostCommand::ServiceRun(args)) => args.run().await,
-            Command::Host(HostCommand::Status(args)) => args.run().await,
-            Command::Host(HostCommand::Logs(args)) => args.run().await,
+            }),
+            Command::Host(HostCommand::ServiceRun(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Status(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Logs(args)) => command_exit(args.run()),
             Command::Host(HostCommand::Retire {
                 root,
                 expected_host_epoch,
                 allow_interrupt_active_tasks,
-            }) => {
+            }) => command_exit(async move {
                 let mut client = crate::host_client::HostClient::connect(&root.root, None).await?;
                 let result = client
                     .retire(
@@ -261,10 +269,10 @@ impl Cli {
                 drop(client);
                 println!("{}", serde_json::to_string(&result)?);
                 Ok(())
-            }
-            Command::Code(args) => code::run(args).await,
-            Command::Acp(args) => crate::acp::run(args).await,
-            Command::Inspect(args) => {
+            }),
+            Command::Code(args) => command_exit(code::run(args)),
+            Command::Acp(args) => command_exit(crate::acp::run(args)),
+            Command::Inspect(args) => command_exit(async move {
                 let store = crate::application::open_store(args.root).await?;
                 let session = store.session(&args.session).await?;
                 let prefix = session
@@ -281,11 +289,18 @@ impl Cli {
                 closed?;
                 println!("{}", serde_json::to_string(&prefix)?);
                 Ok(())
-            }
-        };
-        result?;
-        Ok(std::process::ExitCode::SUCCESS)
+            }),
+        }
     }
+}
+
+type CommandFuture = Pin<Box<dyn Future<Output = Result<ExitCode, HostError>>>>;
+
+fn command_exit(work: impl Future<Output = Result<(), HostError>> + 'static) -> CommandFuture {
+    Box::pin(async move {
+        work.await?;
+        Ok(ExitCode::SUCCESS)
+    })
 }
 
 #[cfg(test)]

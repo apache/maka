@@ -27,7 +27,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const LIMIT: u64 = 1024 * 1024;
 const FILENAMES: [&str; 2] = ["mcp.json", ".mcp.json"];
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -118,19 +117,15 @@ pub(super) fn read(dir: &Dir, directory: &Path) -> Result<FileConfiguration, Str
             use cap_std::fs::OpenOptionsExt;
             options.custom_flags(libc::O_NONBLOCK);
         }
-        let file = dir
+        let mut file = dir
             .open_with(name, &options)
             .map_err(|_| format!("MCP configuration {name} is unavailable"))?;
         if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
             return Err(format!("MCP configuration {name} must be a regular file"));
         }
         let mut bytes = Vec::new();
-        file.take(LIMIT + 1)
-            .read_to_end(&mut bytes)
+        file.read_to_end(&mut bytes)
             .map_err(|_| format!("MCP configuration {name} is unavailable"))?;
-        if bytes.len() as u64 > LIMIT {
-            return Err(format!("MCP configuration {name} exceeds 1 MiB"));
-        }
         // Never include serde's input-dependent error text: it may contain secrets.
         let document: Document = serde_json::from_slice(&bytes).map_err(|error| {
             format!(
@@ -139,9 +134,6 @@ pub(super) fn read(dir: &Dir, directory: &Path) -> Result<FileConfiguration, Str
                 error.column()
             )
         })?;
-        if document.mcp_servers.len() > 64 {
-            return Err("At most 64 MCP servers may be configured".into());
-        }
         let mut servers = BTreeMap::new();
         for (server, entry) in document.mcp_servers {
             let config = if entry.disabled {
@@ -259,6 +251,28 @@ mod tests {
     fn document(path: &Path, value: serde_json::Value) {
         std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
     }
+    #[test]
+    fn reads_complete_large_configuration_with_many_servers() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = dir(temp.path());
+        let entries = (0..65)
+            .map(|index| {
+                (
+                    format!("server-{index}"),
+                    json!({"command":"node","args":["x".repeat(17 * 1024)]}),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        document(&temp.path().join("mcp.json"), json!({"mcpServers":entries}));
+        let file = read(&root, temp.path()).unwrap();
+        assert_eq!(file.servers.len(), 65);
+        let Transport::Stdio { args, .. } = &file.servers["server-64"].as_ref().unwrap().transport
+        else {
+            panic!("stdio server")
+        };
+        assert_eq!(args.as_slice(), &["x".repeat(17 * 1024)]);
+    }
+
     #[test]
     fn global_directory_and_filename_precedence_only_falls_back_when_absent() {
         let temp = tempfile::tempdir().unwrap();

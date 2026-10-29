@@ -30,17 +30,12 @@ use std::sync::{
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Default)]
-struct Echo {
-    count: AtomicUsize,
-    active: Arc<AtomicUsize>,
-    peak: AtomicUsize,
-}
+struct Echo;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn model_modules_match_globals_timers_explicit_output_and_import_boundaries() {
     let engine = CodeExecutor::new(CellLimits::default()).unwrap();
-    let tools = Arc::new(Echo::default());
+    let tools = Arc::new(Echo);
     let context = CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap();
     let result = engine
         .execute_module(
@@ -98,15 +93,7 @@ impl ToolExecutor for Echo {
         vec!["echo".into()]
     }
     fn invoke(&self, _: String, value: Value, _: CancellationToken) -> ToolFuture {
-        self.count.fetch_add(1, Ordering::SeqCst);
-        let active = self.active.clone();
-        self.peak
-            .fetch_max(active.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
-        Box::pin(async move {
-            tokio::task::yield_now().await;
-            active.fetch_sub(1, Ordering::SeqCst);
-            Ok(value)
-        })
+        Box::pin(async move { Ok(value) })
     }
 }
 
@@ -122,9 +109,9 @@ async fn output_survives_errors_and_json_store_does_not_retain_heap() {
         }],
     )
     .unwrap();
-    let tools = Arc::new(Echo::default());
+    let tools = Arc::new(Echo);
     let result = engine.execute_with_context(
-        "globalThis.secret = 9; store('data', {n:42}); text(ALL_TOOLS[0].name); await new Promise(r => setTimeout(r, 1)); throw new Error('after output');".into(),
+        "globalThis.secret = 9; store('data', {n:42}); text(ALL_TOOLS[0].name); await Promise.resolve(); throw new Error('after output');".into(),
         tools.clone(), CancellationToken::new(), context.clone()).await.unwrap();
     assert!(matches!(result, CellResult::Failure { .. }));
     assert!(matches!(&context.take_output()[0], CellOutput::Text { text } if text == "echo"));
@@ -148,31 +135,26 @@ async fn output_survives_errors_and_json_store_does_not_retain_heap() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn independent_tool_fanout_has_no_concurrency_gate() {
     struct GatedEcho {
-        echo: Echo,
         gate: Arc<tokio::sync::Barrier>,
+        calls: AtomicUsize,
     }
     impl ToolExecutor for GatedEcho {
         fn names(&self) -> Vec<String> {
-            self.echo.names()
+            vec!["echo".into()]
         }
-        fn invoke(
-            &self,
-            name: String,
-            value: Value,
-            cancellation: CancellationToken,
-        ) -> ToolFuture {
-            let call = self.echo.invoke(name, value, cancellation);
+        fn invoke(&self, _: String, value: Value, _: CancellationToken) -> ToolFuture {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             let gate = self.gate.clone();
             Box::pin(async move {
                 gate.wait().await;
-                call.await
+                Ok(value)
             })
         }
     }
     let engine = CodeExecutor::new(CellLimits::default()).unwrap();
     let tools = Arc::new(GatedEcho {
-        echo: Echo::default(),
         gate: Arc::new(tokio::sync::Barrier::new(16)),
+        calls: AtomicUsize::new(0),
     });
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -189,8 +171,7 @@ async fn independent_tool_fanout_has_no_concurrency_gate() {
         serde_json::to_value(result).unwrap()["value"],
         json!((0..16).collect::<Vec<_>>())
     );
-    assert_eq!(tools.echo.count.load(Ordering::SeqCst), 16);
-    assert_eq!(tools.echo.peak.load(Ordering::SeqCst), 16);
+    assert_eq!(tools.calls.load(Ordering::SeqCst), 16);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -30,6 +30,7 @@ struct Fixture {
     row_reads: Arc<std::sync::atomic::AtomicUsize>,
     app_action_error: Option<ToolError>,
     action_errors: Arc<std::sync::Mutex<Vec<ToolError>>>,
+    dom_snapshot_json: Option<String>,
 }
 struct NativeCommands(Arc<std::sync::Mutex<Vec<Value>>>);
 impl ToolExecutor for NativeCommands {
@@ -59,6 +60,7 @@ impl ToolExecutor for Fixture {
         let row_reads = self.row_reads.clone();
         let app_action_error = self.app_action_error.clone();
         let action_errors = self.action_errors.clone();
+        let dom_snapshot_json = self.dom_snapshot_json.clone();
         Box::pin(async move {
             if input["method"] == "action"
                 && input["handle"]["kind"] == "app"
@@ -80,7 +82,9 @@ impl ToolExecutor for Fixture {
                     };
                     json!({"kind":"app","handle":{"kind":"app","id":id},"state":"Fixture window"})
                 }
-                "getBrowser" => json!({"id":"fixture"}),
+                "getBrowser" => {
+                    json!({"id":"fixture","type":"extension","apiProfile":{"mode":"ax","user":true}})
+                }
                 "createBrowserTab" => {
                     assert_eq!(input["browserId"], "fixture");
                     let id = match input.get("url") {
@@ -90,10 +94,14 @@ impl ToolExecutor for Fixture {
                         Some(Value::String(url)) if url == "ftp://example.com" => "ftp",
                         other => panic!("unexpected convenience URL {other:?}"),
                     };
-                    json!({"kind":"tab","handle":{"kind":"tab","id":id},"id":format!("fixture:{id}")})
+                    json!({"kind":"tab","apiProfile":{"mode":"ax","user":true},"handle":{"kind":"tab","id":id},"id":format!("fixture:{id}")})
                 }
-                "listTabs" => {
-                    assert_eq!(input["options"]["browser"], "fixture");
+                "listTabs" | "browserManagedTabs" => {
+                    if input["method"] == "listTabs" {
+                        assert_eq!(input["options"]["browser"], "fixture");
+                    } else {
+                        assert_eq!(input["browserId"], "fixture");
+                    }
                     json!([{"id":"fixture:existing","title":"Selected fixture","url":"about:blank"}])
                 }
                 "browserTab" => {
@@ -106,7 +114,7 @@ impl ToolExecutor for Fixture {
                         "new" => "new",
                         other => panic!("unexpected browser tab reference {other}"),
                     };
-                    json!({"kind":"tab","handle":{"kind":"tab","id":id},"id":format!("fixture:{id}")})
+                    json!({"kind":"tab","apiProfile":{"mode":"ax","user":true},"handle":{"kind":"tab","id":id},"id":format!("fixture:{id}")})
                 }
                 "tabMetadata" => {
                     assert_eq!(input["handle"]["kind"], "tab");
@@ -115,6 +123,12 @@ impl ToolExecutor for Fixture {
                         "new" => json!({"title":"New fixture","url":"about:blank"}),
                         other => panic!("unexpected tab metadata handle {other}"),
                     }
+                }
+                "browserCua" => {
+                    assert_eq!(input["operation"]["kind"], "domSnapshot");
+                    serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
+                        .expect("DOM snapshot uses the real command schema");
+                    json!({"json":dom_snapshot_json.expect("DOM fixture has escaped JSON text")})
                 }
                 "browserRead" => {
                     assert_eq!(input["handle"]["kind"], "tab");
@@ -172,6 +186,202 @@ impl ToolExecutor for Fixture {
             })
         })
     }
+}
+
+struct AxCommands {
+    native: bool,
+    calls: Arc<std::sync::Mutex<Vec<Value>>>,
+}
+impl ToolExecutor for AxCommands {
+    fn names(&self) -> Vec<String> {
+        vec!["cua".into()]
+    }
+    fn invoke(&self, _: String, input: Value, _: CancellationToken) -> ToolFuture {
+        let native = self.native;
+        let calls = self.calls.clone();
+        Box::pin(async move {
+            serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
+                .map_err(|error| ToolError::Failed(error.to_string()))?;
+            calls.lock().unwrap().push(input.clone());
+            Ok(match input["method"].as_str().unwrap() {
+                "documentation" => json!("AX fixture reference"),
+                "getBrowser" => {
+                    json!({"id":"fixture","type":if native {"extension"}else{"cdp"},"apiProfile":{"mode":"ax","user":native}})
+                }
+                "browserTab" | "browserUserClaimTab" => {
+                    json!({"kind":"tab","id":"17","handle":{"kind":"tab","id":"ax"},"apiProfile":{"mode":"ax","user":native}})
+                }
+                "observe" => {
+                    json!({"state":"AX fixture state","image":{"type":"image","mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=="}})
+                }
+                "action" => Value::Null,
+                other => panic!("unexpected AX fixture command {other}"),
+            })
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn browser_ax_profile_uses_real_protocol_and_keeps_get_separate_from_write() {
+    for native in [true, false] {
+        let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let context =
+            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+        let result = repl.evaluate(
+            format!(r#"
+                const browser=await cua.getBrowser({{id:'fixture'}});
+                if (('user' in browser)!=={native} || Object.keys(browser).includes('user')!=={native}) throw Error('provider profile mismatch');
+                const tab=await browser.tabs.get('17');
+                const names=['click','drag','get','paste','performSecondaryAction','pressKey','scroll','selectText','setValue','typeText','write'];
+                if (JSON.stringify(Object.keys(tab.ax).sort())!==JSON.stringify(names.sort()) || !Object.isFrozen(tab.ax)) throw Error('AX shape mismatch');
+                if (await tab.ax.get()!=='AX fixture state') throw Error('AX get result mismatch');
+                const shot=await tab.ax.get('screenshot');
+                if (!(shot instanceof Uint8Array) || shot[0]!==137) throw Error('AX screenshot bytes mismatch');
+                await tab.ax.click([8.5,9.25],{{mouseButton:'r',clickCount:2,extra:true}});
+                await tab.ax.drag([1,2],[3,4]);
+                await tab.ax.paste(null,'paste',{{format:'text',extra:true}});
+                await tab.ax.performSecondaryAction(7,'expand');
+                await tab.ax.pressKey(null,'Control_L+F12');
+                await tab.ax.scroll([5,6],'down',2.5);
+                await tab.ax.selectText(8,'chosen',{{prefix:'before',suffix:'after',selectionType:'text',extra:true}});
+                await tab.ax.setValue(9,'value');
+                await tab.ax.typeText(null,'typed');
+                if (await tab.ax.write('both',{{emit:false}})!==undefined) throw Error('AX write returned data');
+            "#),
+            Arc::new(AxCommands { native, calls: calls.clone() }), CancellationToken::new(), context.clone(), Duration::from_secs(5),
+        ).await.unwrap();
+        assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+        let output = context.take_output();
+        let text: Vec<_> = output
+            .iter()
+            .filter_map(|part| match part {
+                CellOutput::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            text.iter()
+                .filter(|text| **text == "AX fixture state")
+                .count(),
+            1,
+            "{output:?}"
+        );
+        assert!(
+            matches!(output.last(), Some(CellOutput::Media { .. })),
+            "{output:?}"
+        );
+        {
+            let calls = calls.lock().unwrap();
+            let observations: Vec<_> = calls
+                .iter()
+                .filter(|call| call["method"] == "observe")
+                .collect();
+            assert_eq!(observations.len(), 3);
+            assert!(
+                observations
+                    .iter()
+                    .all(|call| call["options"]["emit"] == false)
+            );
+            let actions: Vec<_> = calls
+                .iter()
+                .filter(|call| call["method"] == "action")
+                .map(|call| call["action"].clone())
+                .collect();
+            assert_eq!(
+                actions,
+                vec![
+                    json!({"kind":"click","target":[8.5,9.25],"options":{"mouseButton":"right","clickCount":2}}),
+                    json!({"kind":"drag","from":[1,2],"to":[3,4]}),
+                    json!({"kind":"paste","index":null,"text":"paste","options":{"format":"text"}}),
+                    json!({"kind":"secondary","index":7,"action":"expand"}),
+                    json!({"kind":"pressKey","index":null,"key":"Control_L+F12"}),
+                    json!({"kind":"scroll","target":[5,6],"direction":"down","distance":2.5}),
+                    json!({"kind":"selectText","index":8,"text":"chosen","options":{"prefix":"before","suffix":"after","selectionType":"text"}}),
+                    json!({"kind":"setValue","index":9,"value":"value"}),
+                    json!({"kind":"typeText","index":null,"text":"typed"}),
+                ]
+            );
+        }
+        repl.close().await.unwrap();
+    }
+}
+
+struct UserBrowserCommands(Arc<std::sync::Mutex<Vec<Value>>>);
+impl ToolExecutor for UserBrowserCommands {
+    fn names(&self) -> Vec<String> {
+        vec!["cua".into()]
+    }
+    fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
+        let recorded = self.0.clone();
+        Box::pin(async move {
+            serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
+                .map_err(|error| ToolError::Failed(error.to_string()))?;
+            recorded.lock().unwrap().push(input.clone());
+            match input["method"].as_str().unwrap() {
+                "browserUserOpenTabs" => {
+                    Ok(json!([{"id":"17","title":"User fixture","url":"https://fixture.test/"}]))
+                }
+                "browserUserClaimTab" => Ok(
+                    json!({"kind":"tab","apiProfile":{"mode":"ax","user":true},"handle":{"kind":"tab","id":"user-handle"},"id":input["tabId"]}),
+                ),
+                "browserTab" => Ok(
+                    json!({"kind":"tab","apiProfile":{"mode":"ax","user":true},"handle":{"kind":"tab","id":"deferred"},"id":input["reference"]["id"]}),
+                ),
+                _ => Fixture::default().invoke(name, input, cancellation).await,
+            }
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn browser_user_claim_preserves_public_ids_and_lazy_get_stays_separate() {
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+    let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let context =
+        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+    let result = repl.evaluate(
+        "const browser = await cua.getBrowser({id:'fixture'});
+         const tabs = await browser.user.openTabs();
+         const objectClaim = await browser.user.claimTab(tabs[0]);
+         if (objectClaim.id !== '17' || typeof objectClaim.playwright.getByRole !== 'function') throw Error('claim did not return the ordinary Tab');
+         await browser.user.claimTab(' 0x11 ');
+         await browser.user.claimTab({id:''});
+         for (const value of ['', null, {}, 17, {id:17}]) {
+           let rejected = false;
+           try { await browser.user.claimTab(value); } catch { rejected = true; }
+           if (!rejected) throw Error('invalid claim argument reached the host');
+         }
+         const deferred = await browser.tabs.get('17');
+         if (deferred.id !== '17') throw Error('lazy get changed the public id');".into(),
+        Arc::new(UserBrowserCommands(recorded.clone())), CancellationToken::new(), context, Duration::from_secs(5),
+    ).await.unwrap();
+    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+    {
+        let calls = recorded.lock().unwrap();
+        let claims: Vec<_> = calls
+            .iter()
+            .filter(|call| call["method"] == "browserUserClaimTab")
+            .map(|call| call["tabId"].clone())
+            .collect();
+        assert_eq!(claims, vec![json!("17"), json!(" 0x11 "), json!("")]);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["method"] == "browserUserOpenTabs")
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["method"] == "browserTab")
+                .count(),
+            1
+        );
+        assert!(!calls.iter().any(|call| call["method"] == "observe"));
+    }
+    repl.close().await.unwrap();
 }
 
 async fn evaluate(repl: &Repl, code: &str) -> Vec<CellOutput> {
@@ -477,6 +687,50 @@ nodeRepl.write(caught);
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn linux_app_scroll_keeps_pixel_validation_with_the_host() {
+    for body in [
+        "pixels must be an integer between 1 and 65535",
+        "pixels must be a positive finite number.",
+    ] {
+        let repl = Repl::new(
+            maka_computer_use::facade_for("linux", false),
+            CellLimits::default(),
+        )
+        .unwrap();
+        let action_errors = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let context =
+            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+        let result = repl
+            .evaluate(
+                format!(
+                    "const app = await cua.getApp('fixture');
+                     let caught;
+                     try {{ await app.scroll([37,41],'down',{{pixels:0}}); }}
+                     catch (error) {{ caught = error.message; }}
+                     if (caught !== {expected}) throw Error('native scroll refusal changed: ' + caught);",
+                    expected = serde_json::to_string(body).unwrap(),
+                ),
+                Arc::new(Fixture {
+                    app_action_error: Some(ToolError::Failed(body.into())),
+                    action_errors: action_errors.clone(),
+                    ..Fixture::default()
+                }),
+                CancellationToken::new(),
+                context,
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+        assert!(matches!(
+            action_errors.lock().unwrap().as_slice(),
+            [ToolError::Failed(message)] if message == body
+        ));
+        repl.close().await.unwrap();
+    }
+}
+
 #[test]
 fn scroll_distance_distinguishes_missing_from_null_and_round_trips_missing() {
     use maka_computer_use::protocol::{Action, Command, Distance};
@@ -620,6 +874,9 @@ async fn playwright_collection_reads_share_exact_selector_caches_and_keep_tab_id
 #[cfg(feature = "native-desktop")]
 #[tokio::test]
 async fn browser_discovery_distinguishes_no_configuration_from_an_unavailable_selection() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
     let driver = Arc::new(tokio::sync::Mutex::new(maka_computer_use::Driver::default()));
     let mut session = maka_computer_use::Session::new(driver.clone());
     session
@@ -650,12 +907,88 @@ async fn browser_discovery_distinguishes_no_configuration_from_an_unavailable_se
             maka_agent_facts::language::Language::En,
         )
         .await;
+    let missing = match missing {
+        Err(ToolError::Failed(message)) => message,
+        other => panic!("expected missing provider refusal, got {other:?}"),
+    };
+    assert_eq!(missing, "browser_unavailable: no current matching provider");
+    let unselected = session
+        .invoke(
+            serde_json::from_value(json!({"method":"getBrowser","options":{}})).unwrap(),
+            &maka_computer_use::InvocationContext::new("fixture", "fixture-turn"),
+            &CancellationToken::new(),
+            maka_agent_facts::language::Language::En,
+        )
+        .await;
     assert!(
-        missing
-            .unwrap_err()
-            .to_string()
-            .contains("no matching configured CDP provider")
+        matches!(&unselected, Err(ToolError::Failed(message)) if message == "browser selection is ambiguous or missing; select an ID from listBrowsers"),
+        "{unselected:?}"
     );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    session
+        .configure(
+            maka_capabilities::computer::Desktop::Local,
+            vec![maka_capabilities::computer::BrowserConnection {
+                id: "unavailable-fixture".into(),
+                endpoint: endpoint.clone(),
+            }],
+            maka_agent_facts::language::Language::En,
+        )
+        .unwrap();
+    let invocation = maka_computer_use::InvocationContext::new("fixture", "fixture-turn");
+    let cancellation = CancellationToken::new();
+    let (unavailable, request) = tokio::join!(
+        session.invoke(
+            serde_json::from_value(json!({
+                "method":"getBrowser","options":{"id":"unavailable-fixture"}
+            }))
+            .unwrap(),
+            &invocation,
+            &cancellation,
+            maka_agent_facts::language::Language::En,
+        ),
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut request = String::new();
+            stream.read_line(&mut request).await.unwrap();
+            loop {
+                let mut header = String::new();
+                stream.read_line(&mut header).await.unwrap();
+                if header == "\r\n" {
+                    break;
+                }
+                assert!(!header.is_empty(), "incomplete owned CDP fixture request");
+            }
+            stream
+                .get_mut()
+                .write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            request
+        })
+    );
+    let request = request.expect("configured provider must reach the owned CDP fixture");
+    let mut request = request.split_whitespace();
+    assert_eq!(request.next(), Some("GET"));
+    assert_eq!(request.next(), Some("/json/version"));
+    let unavailable = match unavailable {
+        Err(ToolError::Failed(message)) => message,
+        other => panic!("expected unavailable configured provider refusal, got {other:?}"),
+    };
+    assert!(
+        unavailable.contains("503 Service Unavailable"),
+        "{unavailable}"
+    );
+    assert!(
+        unavailable.contains(&format!("{endpoint}/json/version")),
+        "{unavailable}"
+    );
+    assert_ne!(unavailable, missing);
     session.close().await.unwrap();
     driver.lock().await.close().await.unwrap();
 }
@@ -748,4 +1081,221 @@ async fn persistent_repl_uses_each_evaluations_language_without_rewriting_user_o
     repl.close().await.unwrap();
     native.lock().await.close().await.unwrap();
     driver.lock().await.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dom_snapshot_preserves_utf16_through_rust_and_the_real_repl_facade() {
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+    let context =
+        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+    let result = repl.evaluate(
+        r#"
+            const tab = await cua.createBrowserTab('fixture');
+            const saved = JSON.parse;
+            JSON.parse = () => { throw Error('model-replaced parser must not run'); };
+            try {
+                const value = await tab.dom_cua.get_visible_dom();
+                const expected = '<button node_id=17>' + '\ud83d' + '</button>\n<input node_id=18 title="' + '\udc00' + '\\ud800" />';
+                if (value !== expected || typeof value !== 'string') throw Error('DOM UTF-16 text changed');
+                if (value.charCodeAt(value.indexOf('>') + 1) !== 0xd83d) throw Error('high surrogate lost');
+                if (!value.includes('\udc00') || !value.includes('\\ud800')) throw Error('low surrogate or literal escape lost');
+                nodeRepl.write('DOM UTF-16 preserved');
+            } finally { JSON.parse = saved; }
+        "#.into(),
+        Arc::new(Fixture {
+            dom_snapshot_json: Some(r#""<button node_id=17>\ud83d</button>\n<input node_id=18 title=\"\udc00\\ud800\" />""#.into()),
+            ..Fixture::default()
+        }),
+        CancellationToken::new(), context.clone(), Duration::from_secs(5),
+    ).await.unwrap();
+    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+    assert!(
+        context
+            .take_output()
+            .iter()
+            .any(|part| matches!(part, CellOutput::Text {text} if text == "DOM UTF-16 preserved"))
+    );
+    repl.close().await.unwrap();
+}
+
+#[cfg(feature = "native-desktop")]
+struct EncodedTitleFixture {
+    title: cua_driver_core::browser::JsonStringLiteral,
+    group: cua_driver_core::browser::JsonStringLiteral,
+}
+#[cfg(feature = "native-desktop")]
+impl ToolExecutor for EncodedTitleFixture {
+    fn names(&self) -> Vec<String> {
+        vec!["cua".into()]
+    }
+
+    fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
+        let title = self.title.clone();
+        let group = self.group.clone();
+        Box::pin(async move {
+            serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
+                .expect("title fixture uses the actual command schema");
+            let row = json!({"id":"fixture:existing","titleJson":title,"tabGroupJson":group,"url":"about:blank"});
+            Ok(match input["method"].as_str().unwrap() {
+                "listTabs" | "browserUserOpenTabs" => json!([row]),
+                "browserManagedTabs" => {
+                    let mut row = row;
+                    row.as_object_mut().unwrap().remove("tabGroupJson");
+                    json!([row])
+                }
+                "getState" => {
+                    json!({"apps":[{"title":"Native title untouched"}],"browsers":[{"id":"fixture","tabs":[row]}],"errors":[]})
+                }
+                "tabMetadata" => row,
+                _ => return Fixture::default().invoke(name, input, cancellation).await,
+            })
+        })
+    }
+}
+
+#[cfg(feature = "native-desktop")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn encoded_titles_reach_every_repl_surface_before_observation_output() {
+    use cua_driver_core::browser::JsonStringLiteral;
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+    let context =
+        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+    let result = repl.evaluate(r#"
+        const browser = await cua.getBrowser({id:'fixture'});
+        const tab = await browser.tabs.get('fixture:existing');
+        const expected = '\ud800 title \udc00 \\ud800 😀';
+        const group = '\udc00 group';
+        const originalParser = JSON.parse;
+        JSON.parse = () => { throw Error('model parser must not be called'); };
+        try {
+            const check = (row, withGroup) => {
+                if (row.title !== expected || typeof row.title !== 'string') throw Error('title changed');
+                if (withGroup && row.tabGroup !== group) throw Error('group changed');
+                if (!withGroup && Object.hasOwn(row,'tabGroup')) throw Error('managed inventory leaked user group');
+                if (Object.hasOwn(row,'titleJson') || Object.hasOwn(row,'tabGroupJson')) throw Error('encoded fields escaped');
+            };
+            if (await tab.title() !== expected) throw Error('tab.title changed');
+            check((await browser.tabs.list())[0], false);
+            check((await browser.user.openTabs())[0], true);
+            check((await cua.listTabs())[0], true);
+            const state = await cua.getState();
+            check(state.browsers[0].tabs[0], true);
+            if (state.apps[0].title !== 'Native title untouched') throw Error('native app data changed');
+            nodeRepl.write('Lossless titles preserved');
+        } finally { JSON.parse = originalParser; }
+    "#.into(), Arc::new(EncodedTitleFixture {
+        title: JsonStringLiteral::parse(r#""\ud800 title \udc00 \\ud800 😀""#.into()).unwrap(),
+        group: JsonStringLiteral::parse(r#""\udc00 group""#.into()).unwrap(),
+    }), CancellationToken::new(), context.clone(), Duration::from_secs(5)).await.unwrap();
+    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+    let output = context.take_output();
+    assert!(
+        output.iter().any(
+            |part| matches!(part, CellOutput::Text{text} if text == "Lossless titles preserved")
+        )
+    );
+    let observations: Vec<_> = output
+        .iter()
+        .filter_map(|part| match part {
+            CellOutput::Text { text } if text.starts_with('[') || text.starts_with("{\"apps\"") => {
+                Some(text)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(observations.len(), 2);
+    for text in observations {
+        assert!(
+            text.contains(r#""title":"\ud800 title \udc00 \\ud800 😀""#),
+            "{text}"
+        );
+        assert!(text.contains(r#""tabGroup":"\udc00 group""#), "{text}");
+        assert!(
+            !text.contains("titleJson") && !text.contains("tabGroupJson"),
+            "{text}"
+        );
+    }
+    repl.close().await.unwrap();
+}
+
+// The matching native unit keeper renders this exact six-row AX grammar with
+// the real Projection. This fixture checks its existing String/REPL boundary.
+struct DialogAxTitleFixture;
+impl DialogAxTitleFixture {
+    fn state() -> String {
+        concat!(
+            "Tab 17: https://fixture.example/\n",
+            r#"0 RootWebArea "\ud800 title \udc00 \\ud800 A 😀""#,
+            "\n  1 alertdialog \"fixture.example says\"\n    2 StaticText \"Fixture message\"\n    3 textbox \"Response\" value=\"Default response\" [focused]\n    4 button \"Cancel\"\n    5 button \"OK\""
+        )
+        .into()
+    }
+}
+impl ToolExecutor for DialogAxTitleFixture {
+    fn names(&self) -> Vec<String> {
+        vec!["cua".into()]
+    }
+
+    fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
+        Box::pin(async move {
+            serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
+                .expect("dialog AX fixture uses the actual command schema");
+            if input["method"] == "observe" {
+                return Ok(json!({
+                    "state":Self::state(),
+                    "screenshotUnavailable":"Screenshot unavailable while a JavaScript prompt dialog is open. Use getAXState() and its dialog controls."
+                }));
+            }
+            Fixture::default().invoke(name, input, cancellation).await
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dialog_ax_quoted_utf16_name_crosses_the_actual_repl_as_one_string() {
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+    let context =
+        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+    let result = repl.evaluate(r#"
+        const tab = await (await cua.getBrowser({id:'fixture'})).tabs.get('fixture:existing');
+        const expected = '\ud800 title \udc00 \\ud800 A 😀';
+        const parse = JSON.parse;
+        const stringify = JSON.stringify;
+        const check = (state) => {
+            if (typeof state !== 'string' || state.split('\n').length !== 7) throw Error('AX String/rows changed');
+            const root = state.split('\n')[1];
+            const prefix = '0 RootWebArea ';
+            if (!root.startsWith(prefix)) throw Error('AX root grammar changed');
+            const quotedName = root.slice(prefix.length);
+            const actual = parse(quotedName);
+            if (actual !== expected || actual.charCodeAt(0) !== 0xd800) throw Error('UTF16 code units changed');
+            if (quotedName !== stringify(expected)) throw Error('AX name spelling is not canonical');
+            if (!actual.includes('\\ud800') || actual.includes('\ufffd')) throw Error('literal escape or lone unit was replaced');
+            if (!state.includes('    3 textbox "Response" value="Default response" [focused]') ||
+                !state.endsWith('    4 button "Cancel"\n    5 button "OK"')) throw Error('dialog controls changed');
+        };
+        JSON.parse = () => { throw Error('facade must not reparse AX text'); };
+        try {
+            check(await tab.getAXState({emit:false}));
+            check(await tab.getAXState());
+            const both = await tab.getAXStateAndScreenshot({emit:false});
+            check(both.state);
+            if (Object.hasOwn(both,'screenshot')) throw Error('dialog screenshot invented');
+            nodeRepl.write('Dialog AX literal preserved');
+        } finally { JSON.parse = parse; }
+    "#.into(), Arc::new(DialogAxTitleFixture), CancellationToken::new(), context.clone(), Duration::from_secs(5)).await.unwrap();
+    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+    let output = context.take_output();
+    assert!(output.iter().any(|part| matches!(part,
+        CellOutput::Text { text } if text == "Dialog AX literal preserved")));
+    let observations: Vec<_> = output
+        .iter()
+        .filter_map(|part| match part {
+            CellOutput::Text { text } if text.starts_with("Tab 17: ") => Some(text),
+            _ => None,
+        })
+        .collect();
+    let expected = DialogAxTitleFixture::state();
+    assert_eq!(observations, vec![&expected]);
+    repl.close().await.unwrap();
 }

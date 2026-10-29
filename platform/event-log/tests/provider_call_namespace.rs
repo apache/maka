@@ -165,10 +165,7 @@ async fn provider_ids_can_repeat_across_steps_including_recovery_refusals() {
     accepted(&log, "step-c").await;
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
-    let recovery = log
-        .invocation_recovery(&invocation(), 10, 16_384)
-        .await
-        .unwrap();
+    let recovery = log.invocation_recovery(&invocation()).await.unwrap();
     assert!(recovery.uncertain_operations.is_empty());
     assert_eq!(recovery.undispatched_calls.len(), 1);
     let pending = &recovery.undispatched_calls[0];
@@ -240,10 +237,7 @@ async fn provider_ids_can_repeat_across_steps_including_recovery_refusals() {
     let prefix = log.prefix(100, 100_000).await.unwrap();
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
-    let recovered = log
-        .invocation_recovery(&invocation(), 10, 16_384)
-        .await
-        .unwrap();
+    let recovered = log.invocation_recovery(&invocation()).await.unwrap();
     assert!(recovered.undispatched_calls.is_empty());
     assert!(recovered.uncertain_operations.is_empty());
     let commits = log.subscribe_commits();

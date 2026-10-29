@@ -206,7 +206,7 @@ ctr@0.10.1		X										X
 ctutils@0.4.5		X										X						
 cua-cursor-motion@0.38.0												X						
 cua-driver-contract@0.38.0												X						
-cua-driver-core@0.38.0												X						
+cua-driver-core@0.38.0		X										X						
 cua-driver-sdk@0.38.0												X						
 cursor-icon@1.2.0		X										X						X
 cursor-overlay@0.38.0												X						
@@ -628,6 +628,7 @@ maka-terminal-shell@0.2.0		X
 maka-tool-catalog@0.2.0		X																
 maka-tools@0.2.0		X																
 maka-transport@0.2.0		X																
+maka-ui-build@0.2.0		X																
 maka-ui-support@0.2.0		X																
 maka-web-api@0.2.0		X																
 maka-web@0.2.0		X																

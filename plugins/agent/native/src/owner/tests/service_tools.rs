@@ -368,9 +368,10 @@ impl Setup {
         self.granted = false;
         self
     }
-    pub(super) fn computer() -> Self {
+    pub(super) fn computer(handler: Arc<dyn Handler>) -> Self {
         Self {
             computer: true,
+            capture: Some(handler),
             ..Self::javascript()
         }
     }
@@ -818,8 +819,6 @@ impl Setup {
                     }),
                 )
                 .unwrap();
-        } else if self.computer {
-            maka_computer_native::provide(registry).unwrap();
         }
         if self.jev {
             maka_jev_native::provide(registry).unwrap();
@@ -1569,16 +1568,36 @@ async fn unknown_service_outcome_has_typed_original_evidence_and_never_enters_mo
         let observed = facts(&fixture, &session).await;
         server.await.unwrap();
         let facts = observed;
-        let outcome = facts
+        let (operation_id, outcome) = facts
             .iter()
-            .find_map(|fact| {
-                if let Fact::ToolSettled { outcome, .. } = fact {
-                    Some(outcome)
-                } else {
-                    None
-                }
+            .find_map(|fact| match fact {
+                Fact::ToolSettled {
+                    operation_id,
+                    outcome,
+                } => Some((operation_id, outcome)),
+                _ => None,
             })
             .unwrap();
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|fact| matches!(fact,
+                    Fact::ToolDispatched { operation_id: recorded, .. } if recorded == operation_id
+                ))
+                .count(),
+            1,
+            "the original mutation has exactly one canonical T1"
+        );
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|fact| matches!(fact,
+                    Fact::ToolSettled { operation_id: recorded, .. } if recorded == operation_id
+                ))
+                .count(),
+            1,
+            "the original mutation has exactly one canonical Unknown outcome"
+        );
         let ToolOutcome::Unknown {
             operation: Some(operation),
             message,
@@ -1610,17 +1629,47 @@ async fn unknown_service_outcome_has_typed_original_evidence_and_never_enters_mo
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(
-            recovered.outcome,
-            OperationOutcome::Unknown { .. }
-        ));
-        let operation_id = facts
-            .iter()
-            .find_map(|fact| match fact {
-                Fact::ToolSettled { operation_id, .. } => Some(operation_id),
-                _ => None,
-            })
-            .unwrap();
+        assert_eq!(recovered.reference, operation.reference);
+        let Receipt::Recorded {
+            outcome: original_outcome,
+            cleanup: original_cleanup,
+        } = &operation.receipt
+        else {
+            panic!("original mutation must retain its recorded receipt");
+        };
+        assert_eq!(&recovered.outcome, original_outcome);
+        assert_eq!(&recovered.cleanup, original_cleanup);
+        let client = fixture.app.client();
+        let reader = client
+            .bind(client.activation(&id(2)).unwrap(), "receipts".into())
+            .await
+            .unwrap()
+            .remove(0);
+        let read = client
+            .start(
+                reader,
+                "read".into(),
+                serde_json::to_value(&operation.reference).unwrap(),
+                scope(&fixture.issuer, true),
+                Attachments::new().into(),
+            )
+            .await
+            .unwrap()
+            .completion()
+            .await;
+        read.cleanup.unwrap();
+        let observed: maka_plugin_core::operation::OperationReply =
+            serde_json::from_value(read.result.unwrap()).unwrap();
+        assert_eq!(
+            &observed,
+            operation.as_ref(),
+            "the real receipt reader must preserve the producer's complete original evidence"
+        );
+        assert_eq!(
+            counter.effects.load(Ordering::SeqCst),
+            1,
+            "receipt recovery cannot replay the original mutation"
+        );
         let tool_use_id = maka_agent_facts::tool_call::tool_use_id(
             accepted["invocationId"].as_str().unwrap(),
             operation_id,

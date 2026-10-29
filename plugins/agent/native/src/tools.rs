@@ -49,6 +49,7 @@ use maka_plugin_core::{
     contract::{Interface, MethodMode},
     operation::{OperationCleanup, OperationOutcome, OperationReply, Receipt},
 };
+use maka_tool_catalog::input::Projection;
 use maka_tools::ToolCatalog;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -56,13 +57,6 @@ use sha2::{Digest, Sha256};
 use std::{panic::AssertUnwindSafe, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-
-/// Keep model tool schemas object-rooted while preserving each typed request.
-#[derive(Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ToolRequest<T> {
-    pub(crate) request: T,
-}
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -247,6 +241,11 @@ pub(crate) fn catalog(
                         .ok_or("agent_skill_tool_method_invalid")?
                 }
             };
+            let (input_projection, input_schema) = if selection.input == ToolInput::Json {
+                Projection::project(input_schema)
+            } else {
+                (Projection::Direct, input_schema)
+            };
             basis.push(SelectedTool {
                 selection: selection.clone(),
                 binding: binding.execution_basis().into(),
@@ -270,6 +269,7 @@ pub(crate) fn catalog(
                 ),
                 tool_names: tool_names.clone(),
                 selection: selection.clone(),
+                input_projection,
                 title_kind,
                 mode: method.mode,
                 web_basis: None,
@@ -387,6 +387,7 @@ struct Service {
     binding: String,
     target: String,
     selection: ServiceTool,
+    input_projection: Projection,
     title_kind: Option<title::Kind>,
     mode: MethodMode,
 }
@@ -408,6 +409,7 @@ impl ToolPreparer for Service {
         let binding = self.binding.clone();
         let target = self.target.clone();
         let selection = self.selection.clone();
+        let input_projection = self.input_projection;
         let default_title = self.title_kind;
         let mode = self.mode;
         Box::pin(async move {
@@ -430,6 +432,11 @@ impl ToolPreparer for Service {
             if cancellation.is_cancelled() {
                 return Err(ToolRejection::Cancelled);
             }
+            // Confirmation fences compare the original model arguments with durable dispatch.
+            let confirmation_input = (selection.confirmation == ToolConfirmation::Required
+                && matches!(input_projection, Projection::RequestEnvelope))
+            .then(|| input.clone());
+            let input = input_projection.decode(input)?;
             // No request or effect is admitted until the existing ToolJournal T1.
             let title = selection
                 .title
@@ -458,7 +465,7 @@ impl ToolPreparer for Service {
                                 binding: &binding,
                                 service: &target,
                             },
-                            &input,
+                            confirmation_input.as_ref().unwrap_or(&input),
                             &cancellation,
                         )
                         .await?;

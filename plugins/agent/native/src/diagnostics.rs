@@ -77,6 +77,7 @@ pub(crate) fn run_cause(error: &RunError) -> &'static str {
         RunError::Store(error) => store_cause(error),
         RunError::Commit(CommitError::Retired) => "commit_retired",
         RunError::Commit(CommitError::PermissionRevoked) => "commit_permission_revoked",
+        RunError::Commit(CommitError::NativeTurnInterrupted) => "commit_native_turn_interrupted",
         RunError::Commit(CommitError::Rejected(_)) => "commit_rejected",
         RunError::Commit(CommitError::OutcomeUnknown(_)) => "commit_outcome_unknown",
         RunError::Busy => "session_busy",

@@ -397,6 +397,11 @@ impl Session {
                 Command::Observe { handle, .. }
                 | Command::Action { handle, .. }
                 | Command::BrowserRead { handle, .. }
+                | Command::BrowserEvaluate { handle, .. }
+                | Command::TabPageAssetsList { handle }
+                | Command::TabPageAssetsBundle { handle, .. }
+                | Command::BrowserCua { handle, .. }
+                | Command::BrowserWait { handle, .. }
                 | Command::BrowserMutation { handle, .. }
                 | Command::ClipboardRead { handle }
                 | Command::ClipboardReadText { handle }
@@ -542,6 +547,117 @@ impl Session {
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<Value, ToolError> {
+        self.prepare_invoke(command, invocation, cancellation, language)
+            .await?
+            .wait()
+            .await
+    }
+
+    /// Run the retained native page request under an independently admitted
+    /// Host service. This route cannot be called through the model protocol.
+    pub async fn adopt_browser_lease_child(
+        &mut self,
+        request: crate::BrowserLeaseChildRequest,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Value, ToolError> {
+        self.prepare(cancellation, language).await?;
+        match self.backend.as_mut().expect("prepared desktop backend") {
+            #[cfg(feature = "native-desktop")]
+            Backend::Local(local) => {
+                local
+                    .adopt_browser_lease_child(request, invocation, cancellation, language)
+                    .await
+            }
+            Backend::Windows { browsers, .. } => {
+                let operation_id = invocation
+                    .operation_id()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| {
+                        failed("Browser lease-child service lacks its fresh Host operation")
+                    })?;
+                let message = worker::Request::LeaseChild {
+                    preparation_policy: invocation.browser_preparation_policy().clone(),
+                    owner: self.owner.remote_id.to_string(),
+                    epoch: self.native_epoch.to_string(),
+                    session: invocation.session().to_owned(),
+                    turn: invocation.turn().to_owned(),
+                    operation_id: operation_id.to_owned(),
+                    browsers: browsers.clone(),
+                    request,
+                    language,
+                };
+                let connection = prepare_windows(&self.driver, cancellation).await?;
+                self.owner
+                    .bind_remote(self.native_epoch, invocation.session())?;
+                connection
+                    .invoke_browser(message, invocation, cancellation.clone())
+                    .await
+                    .map(|reply| reply.value)
+            }
+        }
+    }
+
+    /// Queue the original operation and return its observation without a Session borrow.
+    pub async fn prepare_invoke(
+        &mut self,
+        command: Command,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<crate::InvocationCompletion, ToolError> {
+        if !matches!(
+            &command,
+            Command::BrowserDownloadWait { .. } | Command::BrowserWait { .. }
+        ) {
+            return self
+                .invoke_immediate(command, invocation, cancellation, language)
+                .await
+                .map(crate::InvocationCompletion::ready);
+        }
+        self.prepare(cancellation, language).await?;
+        match self.backend.as_mut().expect("prepared desktop backend") {
+            #[cfg(feature = "native-desktop")]
+            Backend::Local(local) => {
+                local
+                    .prepare_invoke(command, invocation, cancellation, language)
+                    .await
+            }
+            Backend::Windows { browsers, .. } => {
+                let request = worker::Request::Invoke {
+                    preparation_policy: invocation.browser_preparation_policy().clone(),
+                    owner: self.owner.remote_id.to_string(),
+                    epoch: self.native_epoch.to_string(),
+                    session: invocation.session().into(),
+                    turn: invocation.turn().into(),
+                    native_observer_available: false,
+                    operation_id: invocation.operation_id().map(str::to_owned),
+                    browsers: browsers.clone(),
+                    command: Box::new(command),
+                    language,
+                };
+                let connection = prepare_windows(&self.driver, cancellation).await?;
+                self.owner
+                    .bind_remote(self.native_epoch, invocation.session())?;
+                // Enqueue while holding the Session lock. The existing FIFO places
+                // the arm before a later click without serializing a Rust future.
+                let completion =
+                    connection.begin_browser(request, invocation, cancellation.clone())?;
+                Ok(crate::InvocationCompletion::pending(async move {
+                    completion.await.map(|reply| reply.value)
+                }))
+            }
+        }
+    }
+
+    async fn invoke_immediate(
+        &mut self,
+        command: Command,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Value, ToolError> {
         let session = invocation.session();
         let turn = invocation.turn();
         if cancellation.is_cancelled() {
@@ -574,22 +690,21 @@ impl Session {
                 let start_audio = matches!(&command, Command::StartAudioRecording { .. });
                 let stop_audio = matches!(&command, Command::StopAudioRecording);
                 let request = worker::Request::Invoke {
+                    preparation_policy: invocation.browser_preparation_policy().clone(),
                     owner: self.owner.remote_id.to_string(),
                     epoch: self.native_epoch.to_string(),
                     session: session.into(),
                     turn: turn.into(),
+                    native_observer_available: false,
+                    operation_id: invocation.operation_id().map(str::to_owned),
                     browsers: browsers.clone(),
-                    command,
+                    command: Box::new(command),
                     language,
                 };
                 let connection = prepare_windows(&self.driver, cancellation).await?;
                 self.owner.bind_remote(self.native_epoch, session)?;
                 let reply = connection
-                    .invoke(
-                        request,
-                        invocation.browser_authorization(),
-                        cancellation.clone(),
-                    )
+                    .invoke_browser(request, invocation, cancellation.clone())
                     .await?;
                 if start_audio {
                     *audio = Some(reply.audio.ok_or_else(|| {

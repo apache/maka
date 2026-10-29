@@ -90,11 +90,10 @@ async fn grouped_capture(web: bool) {
     let model = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let handler = Capture::new(web);
     let setup = if web {
-        service_tools::Setup::web()
+        service_tools::Setup::web().captured(handler.clone())
     } else {
-        service_tools::Setup::computer()
-    }
-    .captured(handler.clone());
+        service_tools::Setup::computer(handler.clone())
+    };
     let selections = setup.selections();
     let f = Fixture::with_services(
         &format!("http://{}/v1", model.local_addr().unwrap()),

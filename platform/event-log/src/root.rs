@@ -206,16 +206,23 @@ pub fn initialize(path: &Path, namespaces: &RootNamespaces) -> io::Result<String
     Ok(resolve(path)?.root_id)
 }
 
+/// Prepare a Root path without changing an existing directory's permissions.
+pub fn prepare_directory(path: &Path) -> io::Result<PathBuf> {
+    #[cfg(not(windows))]
+    fs::create_dir_all(path)?;
+    #[cfg(windows)]
+    match windows::create_private_directory(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
+        Err(error) => return Err(error),
+    }
+    path.canonicalize()
+}
+
 impl RootOwner {
     /// Initialize a nonexistent or empty disposable directory. Never adopt existing state.
     pub fn create(path: &Path, namespaces: &RootNamespaces) -> io::Result<Self> {
-        #[cfg(not(windows))]
-        fs::create_dir_all(path)?;
-        #[cfg(windows)]
-        if !path.exists() {
-            lock::private_directory(path)?;
-        }
-        let path = path.canonicalize()?;
+        let path = prepare_directory(path)?;
         if fs::read_dir(&path)?.next().is_some() {
             return Err(io::Error::other(
                 "refusing to initialize a nonempty State Root",

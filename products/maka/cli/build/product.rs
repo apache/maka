@@ -16,9 +16,15 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-use std::{env, fs, path::Path, process::Command};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::{collections::BTreeSet, env, fs, path::Path, path::PathBuf, process::Command};
 
-use super::ui;
+#[derive(Deserialize)]
+struct UiEntries {
+    entries: Vec<PathBuf>,
+    inputs: Vec<PathBuf>,
+}
 
 fn files(directory: &Path, output: &mut Vec<std::path::PathBuf>) {
     let mut entries = fs::read_dir(directory)
@@ -52,35 +58,20 @@ pub fn bundle() {
         .unwrap();
     println!("cargo:rerun-if-changed=build/main.rs");
     println!("cargo:rerun-if-changed=build/product.rs");
-    println!("cargo:rerun-if-changed=build/ui.rs");
     let output = std::path::PathBuf::from(env::var_os("OUT_DIR").unwrap());
     println!("cargo:rerun-if-env-changed=MAKA_JS_DEPS");
     let dependencies = env::var_os("MAKA_JS_DEPS")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| repo.to_owned());
-    for path in [
+    let mut inputs = BTreeSet::from([
         repo.join("package.json"),
         repo.join("package-lock.json"),
         dependencies.join("node_modules/.package-lock.json"),
         repo.join("products/maka/bundle/package.json"),
         repo.join("products/maka/bundle/scripts/build.mjs"),
         repo.join("products/maka/bundle/package-inputs.json"),
-    ] {
-        println!("cargo:rerun-if-changed={}", path.display());
-    }
-    for path in [
-        "products/maka/bundle/src",
-        "packages/plugin-sdk/src",
-        "plugins",
-        "scripts/plugins",
-    ] {
-        // Watching directories includes additions and removals as well as edits.
-        println!("cargo:rerun-if-changed={}", repo.join(path).display());
-    }
+    ]);
     let ui_bundles = output.join("ui-bundles");
-    if ui_bundles.exists() {
-        fs::remove_dir_all(&ui_bundles).expect("replace generated UI bundles");
-    }
     fs::create_dir_all(&ui_bundles).expect("create generated UI bundle directory");
     let ui_entries = output.join("ui-entries.json");
     let status = Command::new("node")
@@ -92,24 +83,36 @@ pub fn bundle() {
         .status()
         .expect("Node is required to read product UI declarations");
     assert!(status.success(), "product UI declaration discovery failed");
-    let entries: Vec<std::path::PathBuf> =
+    let discovered: UiEntries =
         serde_json::from_slice(&fs::read(&ui_entries).expect("read product UI entries"))
             .expect("product UI source paths");
+    inputs.extend(discovered.inputs);
+    let compiler = maka_ui_build::compiler_identity().expect("UI build script identity");
     let mut index = serde_json::Map::new();
-    for (position, entry) in entries.iter().enumerate() {
-        let manifest = ui::compile(entry, &ui_bundles.join(position.to_string()))
+    let mut retained = BTreeSet::new();
+    for entry in &discovered.entries {
+        let key = hex::encode(Sha256::digest(entry.as_os_str().as_encoded_bytes()));
+        let directory = ui_bundles.join(&key);
+        retained.insert(key);
+        let manifest = maka_ui_build::compile_cached(entry, &directory, &compiler)
             .expect("compile product NSH UI entry");
-        for input in &manifest.inputs {
-            println!("cargo:rerun-if-changed={}", input.display());
-        }
+        inputs.extend(manifest.inputs.iter().cloned());
         index.insert(
             entry.to_string_lossy().into_owned(),
             serde_json::to_value(manifest).expect("compiled UI manifest"),
         );
     }
-    fs::write(
-        ui_bundles.join("index.json"),
-        serde_json::to_vec_pretty(&index).expect("encode compiled UI bundle index"),
+    for entry in fs::read_dir(&ui_bundles).expect("compiled UI output directory") {
+        let entry = entry.expect("compiled UI output entry");
+        if entry.file_type().expect("compiled UI output type").is_dir()
+            && !retained.contains(&entry.file_name().to_string_lossy().into_owned())
+        {
+            fs::remove_dir_all(entry.path()).expect("remove retired UI entry output");
+        }
+    }
+    maka_ui_build::write_if_changed(
+        &ui_bundles.join("index.json"),
+        &serde_json::to_vec_pretty(&index).expect("encode compiled UI bundle index"),
     )
     .expect("write compiled UI bundle index");
     let product = output.join("product");
@@ -126,6 +129,14 @@ pub fn bundle() {
         status.success(),
         "product bundle failed; install locked npm dependencies first"
     );
+    let package_inputs: Vec<PathBuf> = serde_json::from_slice(
+        &fs::read(product.join("bundle-inputs.json")).expect("read product bundle inputs"),
+    )
+    .expect("product bundle input paths");
+    inputs.extend(package_inputs);
+    for input in inputs {
+        println!("cargo:rerun-if-changed={}", input.display());
+    }
     let mut source = format!(
         "const PRODUCT_VERSION: &str = include_str!({:?});\nconst AUTHORING: &str = include_str!({:?});\nconst BUNDLED: &[Bundled] = &[\n",
         product.join("product-version.txt").to_str().unwrap(),
@@ -158,5 +169,5 @@ pub fn bundle() {
         source.push_str("] },\n");
     }
     source.push_str("];\n");
-    fs::write(output.join("product-assets.rs"), source).unwrap();
+    maka_ui_build::write_if_changed(&output.join("product-assets.rs"), source.as_bytes()).unwrap();
 }

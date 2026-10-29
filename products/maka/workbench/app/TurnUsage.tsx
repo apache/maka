@@ -100,6 +100,7 @@ export function TurnUsage(props: {
           request,
         );
         if (!active()) return;
+        const nextCursor = page.nextCursor ?? null;
         checked += page.attempts.length;
         if (
           (fence !== null &&
@@ -111,7 +112,7 @@ export function TurnUsage(props: {
           page.total < 0 ||
           (expectedTotal !== null && page.total !== expectedTotal) ||
           checked > page.total ||
-          (page.nextCursor === null
+          (nextCursor === null
             ? checked !== page.total
             : checked >= page.total || page.attempts.length === 0)
         )
@@ -136,8 +137,8 @@ export function TurnUsage(props: {
           )
             matching.push(attempt);
         }
-        if (page.nextCursor === null) break;
-        cursor = page.nextCursor;
+        if (nextCursor === null) break;
+        cursor = nextCursor;
         reading.set({ kind: 'loading', checked });
       }
       reading.set({ kind: 'ready', attempts: matching });

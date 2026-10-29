@@ -73,14 +73,16 @@ async fn sink(delay: Option<oneshot::Receiver<()>>) -> (String, tokio::task::Joi
 #[tokio::test]
 async fn real_http_stream_has_exact_bytes_and_reopens_for_replay() {
     let expected = [b"prefix".as_slice(), &vec![42; 128 * 1024], b"suffix"].concat();
-    for _ in 0..2 {
-        let (url, server) = sink(None).await;
-        // A fresh cursor is opened for each attempt; no transport replay buffer.
-        let source = RequestBody::stream(futures_util::stream::iter(vec![
+    let source = RequestBody::replayable(|| {
+        RequestBody::stream(futures_util::stream::iter(vec![
             Ok(Bytes::from_static(b"prefix")),
             Ok(Bytes::from(vec![42; 128 * 1024])),
             Ok(Bytes::from_static(b"suffix")),
-        ]));
+        ]))
+    });
+    let replay = source.replay_source().unwrap();
+    for source in std::iter::once(source).chain(std::iter::once_with(|| replay.open())) {
+        let (url, server) = sink(None).await;
         let (body, mut receipt) = body(source, CancellationToken::new());
         let response = reqwest::Client::builder()
             .no_proxy()
@@ -132,11 +134,11 @@ async fn cancellation_keeps_giant_allocation_owned_until_last_transport_slice_dr
     assert_eq!(frame.len(), CHUNK_BYTES);
     drop(body);
     assert_eq!(dropped.load(Ordering::SeqCst), 0);
-    let settlement = tokio::spawn(async move { receipt.finish().await });
-    tokio::task::yield_now().await;
-    assert!(!settlement.is_finished());
+    let settlement = receipt.finish();
+    tokio::pin!(settlement);
+    assert!(futures_util::poll!(settlement.as_mut()).is_pending());
     drop(frame);
-    settlement.await.unwrap().unwrap();
+    settlement.await.unwrap();
     assert_eq!(dropped.load(Ordering::SeqCst), 1);
 }
 

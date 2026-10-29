@@ -169,6 +169,19 @@ async fn shared_worker_bounds_private_ops_and_releases_contexts_on_actual_comple
         let pending = tokio::spawn({ let callbacks=callbacks.clone(); async move { callbacks.call_with_context("one",vec![Value::Null],held).await } });
         started.acquire().await.unwrap().forget();
         vm.terminate("test request termination");
+        let failure = vm.failed().await.to_string();
+        assert_eq!(
+            failure,
+            "plugin VM: test request termination (phase: script poll)"
+        );
+        vm.terminate("later termination must not replace the first reason");
+        let Err(load_error) = vm.load(
+            "after-termination.mjs".into(),
+            "export const value = 1;".into(),
+        ) else {
+            panic!("a terminated VM must refuse new modules");
+        };
+        assert_eq!(load_error.to_string(), failure);
         assert!(pending.await.unwrap().is_err());
         assert!(weak.upgrade().is_none(), "terminal reply follows all context releases");
         module.close().await.unwrap();

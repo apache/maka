@@ -89,7 +89,7 @@ async fn selected_python_runs_through_exec_grammar_catalog_and_durable_journal()
         }
         let prefix=log.prefix(100,1024*1024).await.unwrap();
         assert_eq!(prefix.events.iter().filter(|event|matches!(&event.event.fact,Fact::ToolDispatched {name,call,..} if name=="echo-tool" && matches!(call.origin,ToolOrigin::CodeMode {..}))).count(),1);
-        assert!(log.invocation_recovery(&invocation,100,1024*1024).await.unwrap().uncertain_operations.is_empty());
+        assert!(log.invocation_recovery(&invocation).await.unwrap().uncertain_operations.is_empty());
         Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
     }).await.unwrap();
 }

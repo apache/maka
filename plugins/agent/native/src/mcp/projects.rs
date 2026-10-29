@@ -100,9 +100,6 @@ impl Projects {
         })
         .await
         .map_err(|_| "agent_mcp_configuration_unavailable")??;
-        if files::merge(&self.global, &[&file]).len() > 64 {
-            return Err("At most 64 effective MCP servers may be configured per workspace".into());
-        }
         let workspace = maka_agent_facts::artifact::content_digest(
             &serde_json::to_vec(&(
                 &workspace.path,

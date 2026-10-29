@@ -28,10 +28,13 @@ mod bridge_driver;
 #[cfg(feature = "native-desktop")]
 mod browser;
 mod browser_clipboard;
+mod browser_files;
+pub use browser_files::{BrowserAssetDirectory, BrowserAssetFiles, FilesFuture};
 pub mod cursor;
 pub mod desktop;
 #[cfg(feature = "native-desktop")]
 mod driver;
+pub mod extension_browser_host;
 #[cfg(feature = "native-desktop")]
 mod identity;
 mod invocation;
@@ -48,12 +51,15 @@ mod linux_image;
 mod linux_input;
 #[cfg(all(feature = "native-desktop", target_os = "macos"))]
 mod macos;
+mod native_interruption;
 #[cfg(feature = "native-desktop")]
 mod observation;
 mod permission_subject;
 pub mod protocol;
 #[cfg(feature = "native-desktop")]
 mod session;
+#[cfg(all(feature = "native-desktop", target_os = "windows"))]
+mod windows_permission_subject;
 
 #[cfg(not(feature = "native-desktop"))]
 pub use bridge_driver::Driver;
@@ -62,8 +68,16 @@ pub use desktop::{NativeEpochId, Session, SessionOwner};
 pub use driver::Driver;
 pub use invocation::{
     AuthorizationFuture, BrowserAccess, BrowserAttachmentAuthorization, BrowserAttachmentOrigin,
-    BrowserAuthorization, BrowserDocument, BrowserHostEffects, HostEffectFuture, InvocationContext,
-    OperationSettlement, SettlementFuture,
+    BrowserAuthorization, BrowserDocument, BrowserEffectScope, BrowserHostEffects,
+    BrowserLeaseChildRequest, BrowserPreparationBinding, BrowserPreparationHeader,
+    BrowserPreparationPolicy, BrowserPreparationTarget, BrowserSessionPreparation,
+    CheckedSettlementFuture, HostEffectFactory, HostEffectFuture, HostUncertaintyFuture,
+    InvocationCompletion, InvocationContext, OperationSettlement, SettlementFuture,
+};
+pub use maka_capabilities::computer::BrowserLeaseSubject;
+pub use native_interruption::{
+    InterruptionFuture, NativeBindingSource, NativeInterruption, NativeInterruptionDrain,
+    NativeInterruptionObserver,
 };
 pub use permission_subject::{ComputerAppBinding, ComputerAppTarget};
 pub fn facade() -> String {

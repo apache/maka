@@ -78,8 +78,12 @@ async fn final_actions_use_original_turn_accounting_and_fork_before_a_later_acti
         assert_eq!(final_row["timing"]["finished"]["outcome"], "completed");
         let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
         wait_view_state(&mut view, |view, screen| screen.contains("FINAL_A") && screen.contains("fixture-model") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Fork from this turn" && !node.state.disabled && node.frame.origin.y.0 >= 0.0 && node.frame.origin.y.0 < view.surface().viewport().height.0)).await;
-        let usage_opener = support::wait_enabled_button(&mut view, "View this turn's model usage").await;
-        activate(&mut view, "View this turn's model usage").await;
+        tab_to_label(&mut view, "View this turn's model usage").await;
+        let usage_opener = view.surface().focused().unwrap();
+        view.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
         let usage = wait_view(&mut view, |screen| screen.contains("1 main model request in this turn") && screen.contains("Output tokens")).await;
         // Accessibility is scoped to the active dialog; the terminal line can
         // also contain conversation text painted outside its bounds.
@@ -107,7 +111,7 @@ async fn final_actions_use_original_turn_accounting_and_fork_before_a_later_acti
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         wait_view_state(&mut view, |view, screen| {
             !screen.contains("Main model usage")
-                && view.accessibility_snapshot().iter().any(|node| node.id == usage_opener.id && node.focused)
+                && view.accessibility_snapshot().iter().any(|node| node.id == usage_opener && node.focused)
         }).await;
         assert!(view.accessibility_snapshot().iter().any(|node| node.focused && node.label == "View this turn's model usage"));
         editable_composer(&mut view).await;

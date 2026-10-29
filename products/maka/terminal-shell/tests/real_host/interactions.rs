@@ -959,3 +959,39 @@ async fn the_production_pty_leaves_requests_unanswered_then_records_cancel_and_d
         fixture.finish().await;
     }).await.expect("production PTY form decisions timed out");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn browser_file_download_consent_is_visible_and_does_not_grant_page_access() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        use maka_agent_facts::interaction::{GrantCapability, GrantScope};
+        let mut fixture = Fixture::open().await;
+        let client = fixture.client().await;
+        support::mutate(&client, "send", json!({"sessionId":fixture.session,"message":"Keep the download consent fixture Run active","model":fixture.selection})).await;
+        let original = fixture.next_request().await;
+        let mut target = maka_workspace_api::computer::target();
+        target.capability = GrantCapability::BrowserDownload;
+        target.scope = GrantScope::BrowserOrigin { origin: "https://download.example".into() };
+        let pending = publish(&fixture, "browser_download_consent", json!({
+            "kind":"client_capability", "toolUseId":"original_download_call", "target":target
+        })).await;
+        let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+        wait_request(&mut view, "Capability request", "Browser file downloads for this session").await;
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node|
+            node.label.contains("download files from the displayed browser origin"))).await;
+        wait_enabled_node(&mut view, "Allow").await;
+        support::click_button(&mut view, "Allow").await;
+        wait_view(&mut view, |screen| screen.contains("Capability allowed")).await;
+        let store = fixture.store.session(&fixture.session).await.unwrap();
+        let download = store.client_capability_grant(&fixture.session, &target).await.unwrap().unwrap();
+        assert_eq!(download.target, target);
+        let mut page = target.clone();
+        page.capability = GrantCapability::Browser;
+        assert!(store.client_capability_grant(&fixture.session, &page).await.unwrap().is_none());
+        assert!(matches!(store.interaction(&pending.request_id).await.unwrap().unwrap().outcome,
+            Some(InteractionOutcome::ClientCapabilityDecision { decision: Decision::Allow, .. })));
+        original.finish().await;
+        fixture.idle(&client, &fixture.session).await;
+        bindings.close().await.unwrap();
+        fixture.finish().await;
+    }).await.expect("real Host browser file download consent workflow timed out");
+}

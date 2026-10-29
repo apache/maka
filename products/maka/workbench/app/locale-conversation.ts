@@ -145,7 +145,6 @@ export const conversationMessages = {
     '已信任项目 MCP 配置。准备好后可发送草稿。',
     '已信任專案 MCP 設定。準備好後可傳送草稿。',
   ],
-
   'A fresh start in your workspace': [
     'A fresh start in your workspace',
     '在工作区中开启新对话',
@@ -486,6 +485,13 @@ export const conversationMessages = {
     '分支對話已建立，可在對話清單中開啟。',
   ],
   'Fork from this turn': ['Fork from this turn', '从本轮创建分支', '從本輪建立分支'],
+  'Edit and resend': ['Edit and resend', '编辑后重新发送', '編輯後重新傳送'],
+  'Regenerate in a fork': ['Regenerate in a fork', '在分支中重新生成', '在分支中重新產生'],
+  'This message has no text to edit.': [
+    'This message has no text to edit.',
+    '这条消息没有可编辑的文字。',
+    '這則訊息沒有可編輯的文字。',
+  ],
   'Form cancelled': ['Form cancelled', '表单已取消', '表單已取消'],
   'Form declined': ['Form declined', '已拒绝填写表单', '已拒絕填寫表單'],
   'Form request': ['Form request', '表单请求', '表單請求'],
@@ -582,6 +588,7 @@ export const conversationMessages = {
     '傳送訊息，或開始一項任務…',
   ],
   'Message queue': ['Message queue', '消息队列', '訊息佇列'],
+  'Drop files here': ['Drop files here', '拖到这里添加文件', '拖到這裡加入檔案'],
   'Messages waiting for a turn': [
     'Messages waiting for a turn',
     '等待处理的消息',
@@ -1488,4 +1495,31 @@ export const conversationMessages = {
       '允许请求工具录制计算机播放的音频。此授权持续至该会话当前权限边界失效。',
       '允許請求工具錄製電腦播放的音訊。此授權持續至該對話目前權限邊界失效。',
     ],
+  'Browser file downloads for this session': [
+    'Browser file downloads for this session',
+    '此会话的浏览器文件下载权限',
+    '此對話的瀏覽器檔案下載權限',
+  ],
+  "This allows the requesting tool to download files from the displayed browser origin. Browser page access is a separate permission. The grant lasts for this session's current permission boundary.":
+    [
+      "This allows the requesting tool to download files from the displayed browser origin. Browser page access is a separate permission. The grant lasts for this session's current permission boundary.",
+      '允许请求工具从所显示的浏览器来源下载文件。页面访问权限需单独授权。此授权持续至该会话当前权限边界失效。',
+      '允許請求工具從所顯示的瀏覽器來源下載檔案。頁面存取權限須另行授權。此授權持續至該對話目前權限邊界失效。',
+    ],
+  'Browsing history for this browser profile': [
+    'Browsing history for this browser profile',
+    '此浏览器配置的浏览记录权限',
+    '此瀏覽器設定檔的瀏覽紀錄權限',
+  ],
+  "Allow this tool to read the selected browser profile's browsing history for this session. Page access, downloads, and other browser profiles need separate permission. Reconnecting the browser requires permission again.":
+    [
+      "Allow this tool to read the selected browser profile's browsing history for this session. Page access, downloads, and other browser profiles need separate permission. Reconnecting the browser requires permission again.",
+      '允许此工具在本会话中读取所选浏览器配置的浏览记录。页面访问、下载及其他浏览器配置需要分别授权。重新连接浏览器后需再次授权。',
+      '允許此工具在本對話中讀取所選瀏覽器設定檔的瀏覽紀錄。頁面存取、下載及其他瀏覽器設定檔需要分別授權。重新連線瀏覽器後須再次授權。',
+    ],
+  'Browser profile: {browser}': [
+    'Browser profile: {browser}',
+    '浏览器配置：{browser}',
+    '瀏覽器設定檔：{browser}',
+  ],
 } as const satisfies Catalog;

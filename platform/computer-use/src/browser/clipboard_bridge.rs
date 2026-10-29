@@ -32,13 +32,13 @@ const SCRIPT: &str = include_str!("clipboard-page.js");
 const CONTROL: &str = "globalThis.__makaVirtualClipboard";
 
 pub(super) struct Backend {
-    pub provider: BrowserConnection,
+    pub provider: Provider,
     pub generation: String,
     pub store: Arc<Store>,
 }
 
 impl Backend {
-    pub fn new(provider: BrowserConnection, generation: String) -> Self {
+    pub fn new(provider: Provider, generation: String) -> Self {
         Self {
             provider,
             generation,
@@ -174,6 +174,7 @@ struct CleanupOwner {
     shared: Arc<Shared>,
     worker: tokio::task::JoinHandle<()>,
     initialization: Completion,
+    socket: Option<Cdp>,
 }
 
 enum CleanupState {
@@ -248,21 +249,33 @@ async fn install(
     shared: &Arc<Shared>,
     session: Option<String>,
     installation: Arc<Installation>,
+    socket: &Cdp,
 ) -> Result<(), ToolError> {
-    installation.state.lock().unwrap().progress = InstallationProgress::Started;
+    let previously_started = {
+        let mut state = installation.state.lock().unwrap();
+        let started = matches!(
+            state.progress,
+            InstallationProgress::Started | InstallationProgress::Settled
+        );
+        state.progress = InstallationProgress::Started;
+        started
+    };
     let result = async {
-        for method in ["Runtime.enable", "Page.enable"] {
-            shared.socket.connection.call(session.as_deref(), method, json!({})).await.map_err(Cdp::failure)?;
+        let enabled = socket.raw_call(session.as_deref(), "Runtime.enable", json!({})).await;
+        if !previously_started && enabled.as_ref().is_err_and(Cdp::is_pre_dispatch_guard_failure) {
+            installation.state.lock().unwrap().progress = InstallationProgress::Unstarted;
         }
-        let tree = shared.socket.connection.call_observation(session.as_deref(), "Page.getFrameTree", json!({})).await.map_err(Cdp::failure)?;
+        enabled.map_err(Cdp::failure)?;
+        socket.raw_call(session.as_deref(), "Page.enable", json!({})).await.map_err(Cdp::failure)?;
+        let tree = socket.raw_observation(session.as_deref(), "Page.getFrameTree", json!({})).await.map_err(Cdp::failure)?;
         {
             let mut state = shared.state.lock().unwrap();
             if !state.open { return Ok(()); }
             update_tree(&mut state, &session, &tree["frameTree"]);
         }
-        shared.socket.connection.call(session.as_deref(), "Runtime.addBinding", json!({"name":installation.name})).await.map_err(Cdp::failure)?;
+        socket.raw_call(session.as_deref(), "Runtime.addBinding", json!({"name":installation.name})).await.map_err(Cdp::failure)?;
         let source = format!("({SCRIPT})({})", json!(installation.name));
-        let reply = shared.socket.connection.call(session.as_deref(), "Page.addScriptToEvaluateOnNewDocument", json!({"source":source,"runImmediately":true})).await.map_err(Cdp::failure);
+        let reply = socket.raw_call(session.as_deref(), "Page.addScriptToEvaluateOnNewDocument", json!({"source":source,"runImmediately":true})).await.map_err(Cdp::failure);
         let reply=match reply {
             Ok(reply)=>reply,
             Err(error)=>{
@@ -280,7 +293,7 @@ async fn install(
             }
         };
         installation.state.lock().unwrap().script=script;
-        let verified = shared.socket.connection.call(session.as_deref(), "Runtime.evaluate", json!({
+        let verified = socket.raw_call(session.as_deref(), "Runtime.evaluate", json!({
             "expression":format!("{CONTROL}?.bindingName === {}",json!(installation.name)),"returnByValue":true
         })).await.map_err(Cdp::failure)?;
         if verified["result"]["value"] != true {
@@ -318,6 +331,7 @@ async fn answer(
     document: RequestDocument,
     capability: Capability,
     payload: Value,
+    socket: Cdp,
 ) -> Result<(), ToolError> {
     let RequestDocument {
         session,
@@ -336,10 +350,8 @@ async fn answer(
         .await;
     let mut observed = Vec::new();
     if authorization.is_ok() {
-        let tree = shared
-            .socket
-            .connection
-            .call_observation(session.as_deref(), "Page.getFrameTree", json!({}))
+        let tree = socket
+            .raw_observation(session.as_deref(), "Page.getFrameTree", json!({}))
             .await
             .map_err(Cdp::failure)?;
         collect_frames(&tree["frameTree"], &mut observed);
@@ -417,10 +429,8 @@ async fn answer(
         json!(installation.name),
         json!(response)
     );
-    shared
-        .socket
-        .connection
-        .call(
+    socket
+        .raw_call(
             session.as_deref(),
             "Runtime.evaluate",
             json!({
@@ -542,16 +552,23 @@ fn observe(shared: &Arc<Shared>, event: CdpEvent) {
             let future_shared = shared.clone();
             let future_installation = installation.clone();
             // Teardown takes this same lock before closing the producer.
-            let accepted=capability.host.spawn(Box::pin(async move {
-                let result=async {
-                    if !future_shared.state.lock().unwrap().open {return Ok(());}
-                    future_installation.state.lock().unwrap().progress=InstallationProgress::Started;
-                    future_shared.socket.connection.call(Some(&child),"Target.setAutoAttach",json!({"autoAttach":true,"waitForDebuggerOnStart":false,"flatten":true})).await.map_err(Cdp::failure)?;
-                    install(&future_shared,Some(child),future_installation.clone()).await
-                }.await;
-                future_installation.complete(&result);
-                result
-            }));
+            let rejected_installation = installation.clone();
+            let accepted = shared.socket.spawn_host_effect(&capability.host, move |socket| {
+                Box::pin(async move {
+                    let result = async {
+                        if !future_shared.state.lock().unwrap().open { return Ok(()); }
+                        future_installation.state.lock().unwrap().progress = InstallationProgress::Started;
+                        let attached = socket.raw_call(Some(&child), "Target.setAutoAttach", json!({"autoAttach":true,"waitForDebuggerOnStart":false,"flatten":true})).await;
+                        if attached.as_ref().is_err_and(Cdp::is_pre_dispatch_guard_failure) {
+                            future_installation.state.lock().unwrap().progress = InstallationProgress::Unstarted;
+                        }
+                        attached.map_err(Cdp::failure)?;
+                        install(&future_shared, Some(child), future_installation.clone(), &socket).await
+                    }.await;
+                    future_installation.complete(&result);
+                    result
+                })
+            }, Box::new(move |error| rejected_installation.complete(&Err(error))));
             if let Err(error) = accepted {
                 installation.complete(&Err(error));
             }
@@ -622,18 +639,27 @@ fn observe(shared: &Arc<Shared>, event: CdpEvent) {
             if request_id(&payload).is_none() {
                 return;
             }
-            let _ = capability.host.spawn(Box::pin(answer(
-                shared.clone(),
-                RequestDocument {
-                    session,
-                    installation,
-                    context_id,
-                    context,
-                    frame,
+            let answering = shared.clone();
+            let host = capability.host.clone();
+            let _ = shared.socket.spawn_host_effect(
+                &host,
+                move |socket| {
+                    Box::pin(answer(
+                        answering,
+                        RequestDocument {
+                            session,
+                            installation,
+                            context_id,
+                            context,
+                            frame,
+                        },
+                        capability,
+                        payload,
+                        socket,
+                    ))
                 },
-                capability.clone(),
-                payload,
-            )));
+                Box::new(|_| {}),
+            );
         }
         _ => {}
     }
@@ -708,25 +734,35 @@ impl Bridge {
                 shared: shared.clone(),
                 worker,
                 initialization: pending.clone(),
+                socket: None,
             }))),
             turn: turn.into(),
         });
         let installing = shared.clone();
         let installed = reply.clone();
-        let accepted = host.spawn(Box::pin(async move {
-            let result = async {
-                for (route, installation) in initial {
-                    if !installing.state.lock().unwrap().open {
-                        break;
+        let rejected = reply.clone();
+        let accepted = shared.socket.spawn_host_effect(
+            &host,
+            move |socket| {
+                Box::pin(async move {
+                    let result = async {
+                        for (route, installation) in initial {
+                            if !installing.state.lock().unwrap().open {
+                                break;
+                            }
+                            install(&installing, route, installation, &socket).await?;
+                        }
+                        Ok(())
                     }
-                    install(&installing, route, installation).await?;
-                }
-                Ok(())
-            }
-            .await;
-            installed.send_replace(Some(result.clone()));
-            result
-        }));
+                    .await;
+                    installed.send_replace(Some(result.clone()));
+                    result
+                })
+            },
+            Box::new(move |error| {
+                rejected.send_replace(Some(Err(error)));
+            }),
+        );
         if let Err(error) = accepted {
             reply.send_replace(Some(Err(error)));
         }
@@ -787,6 +823,13 @@ impl Bridge {
     }
 
     pub async fn cleanup(&mut self) -> Result<(), ToolError> {
+        self.cleanup_with_socket(None).await
+    }
+
+    pub async fn cleanup_with_socket(
+        &mut self,
+        admitted_socket: Option<Cdp>,
+    ) -> Result<(), ToolError> {
         self.begin_close();
         enum Action {
             Observe(Completion),
@@ -805,11 +848,16 @@ impl Bridge {
                 CleanupState::Open(_) => {
                     let (reply, pending) = watch::channel(None);
                     match std::mem::replace(&mut *cleanup, CleanupState::Closing(pending.clone())) {
-                        CleanupState::Open(owner) => Action::Start {
-                            owner,
-                            reply,
-                            pending,
-                        },
+                        CleanupState::Open(mut owner) => {
+                            owner.socket = Some(
+                                admitted_socket.unwrap_or_else(|| owner.shared.socket.clone()),
+                            );
+                            Action::Start {
+                                owner,
+                                reply,
+                                pending,
+                            }
+                        }
                         _ => unreachable!("Clipboard cleanup starts only from its open owner"),
                     }
                 }
@@ -845,6 +893,11 @@ impl Bridge {
 
 impl CleanupOwner {
     async fn cleanup(&mut self) -> Result<(), ToolError> {
+        let socket = self
+            .socket
+            .as_ref()
+            .expect("Clipboard cleanup captures its socket before starting")
+            .clone();
         let mut failures = Vec::new();
         match (&mut self.worker).await {
             Ok(()) => {}
@@ -911,13 +964,7 @@ impl CleanupOwner {
                 if method == "Page.removeScriptToEvaluateOnNewDocument" && script.is_none() {
                     continue;
                 }
-                match self
-                    .shared
-                    .socket
-                    .connection
-                    .call(route.as_deref(), method, params)
-                    .await
-                {
+                match socket.raw_call(route.as_deref(), method, params).await {
                     Err(error) => route_failures.push(format!("{method}: {error}")),
                     Ok(reply) if reply.get("exceptionDetails").is_some() => {
                         route_failures.push(format!(
@@ -1039,6 +1086,8 @@ mod tests {
             Cdp {
                 connection: Arc::new(connection),
                 dialogs: None,
+                extension_context: None,
+                preparation: crate::browser::extension::PreparationTransport::NotRequired,
             },
             Wire {
                 requests: received,
@@ -1077,6 +1126,7 @@ mod tests {
                     shared,
                     worker,
                     initialization,
+                    socket: None,
                 }))),
                 turn: "turn".into(),
             },
@@ -1089,7 +1139,8 @@ mod tests {
             provider: BrowserConnection {
                 id: "fixture".into(),
                 endpoint: "http://127.0.0.1".into(),
-            },
+            }
+            .into(),
             generation: "fixture".into(),
             info: TabInfo {
                 id: "page".into(),
@@ -1097,14 +1148,23 @@ mod tests {
                 url: "https://fixture.example".into(),
                 kind: "page".into(),
                 websocket: None,
+                extension: None,
             },
             socket: Some(socket),
+            socket_prepared: true,
+            page_assets: Default::default(),
+            origin_proof: None,
+            navigation_admission: None,
+            extension_claim: None,
+            extension_wire: None,
+            extension_host_operation: None,
+            extension_acquisition: None,
+            fixed_presentation: None,
             frame: None,
             refs: HashMap::new(),
             frames: frames::Frames::default(),
             ax: ax::Projection::default(),
             previous: None,
-            capture: None,
             navigation: None,
             cursor_world: None,
             cursor_epoch: crate::desktop::NativeEpochId::new(),
@@ -1113,10 +1173,12 @@ mod tests {
             cursor_spec: None,
             last_turn: "turn".into(),
             dialogs: None,
+            downloads: None,
             dialog_host: None,
             clipboard: None,
             clipboard_store: Arc::default(),
             clipboard_authorization: None,
+            attachment_settlement: None,
         }
     }
 
@@ -1437,5 +1499,275 @@ mod tests {
         tab.cleanup_clipboard().await.unwrap();
         assert!(tab.clipboard.is_none());
         assert!(wire.requests.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn install_and_answer_use_explicit_socket_after_original_transport_ends() {
+        let (mut bridge, mut old_wire) = installed_bridge().await;
+        old_wire.server.abort();
+        let _ = (&mut old_wire.server).await;
+        assert!(
+            bridge
+                .shared
+                .socket
+                .raw_call(None, "Runtime.enable", json!({}))
+                .await
+                .is_err()
+        );
+        let original = bridge.shared.socket.connection.clone();
+        let installation = Installation::new(None);
+        bridge
+            .shared
+            .state
+            .lock()
+            .unwrap()
+            .routes
+            .insert(None, installation.clone());
+        let (current, mut wire) = socket().await;
+        let shared = bridge.shared.clone();
+        let mut installing = Box::pin(install(&shared, None, installation.clone(), &current));
+        for method in [
+            "Runtime.enable",
+            "Page.enable",
+            "Page.getFrameTree",
+            "Runtime.addBinding",
+            "Page.addScriptToEvaluateOnNewDocument",
+            "Runtime.evaluate",
+        ] {
+            let request = tokio::select! {
+                result = &mut installing => panic!("installation ended before {method}: {result:?}"),
+                request = wire.request() => request,
+            };
+            assert_eq!(request["method"], method);
+            wire.reply(
+                &request,
+                match method {
+                    "Page.getFrameTree" => frame_tree(),
+                    "Page.addScriptToEvaluateOnNewDocument" => {
+                        json!({"identifier":"current-script"})
+                    }
+                    "Runtime.evaluate" => json!({"result":{"value":true}}),
+                    _ => json!({}),
+                },
+            );
+        }
+        installing.await.unwrap();
+        let capability = Capability {
+            authorization: Arc::new(Authority),
+            host: Arc::new(HostEffects::default()),
+        };
+        let context = Context {
+            unique: "current-unique".into(),
+            frame: "main".into(),
+            origin: BrowserAttachmentOrigin::Site("https://fixture.example".into()),
+        };
+        let frame = FrameIdentity {
+            id: "main".into(),
+            loader: "document".into(),
+            parent: None,
+        };
+        {
+            let mut state = shared.state.lock().unwrap();
+            state.capability = Some(capability.clone());
+            state.contexts.insert((None, 7), context.clone());
+            state.frames.insert((None, frame.id.clone()), frame.clone());
+        }
+        let cleanup_socket = current.clone();
+        let mut answering = Box::pin(answer(
+            shared.clone(),
+            RequestDocument {
+                session: None,
+                installation,
+                context_id: 7,
+                context,
+                frame,
+            },
+            capability,
+            json!({"operation":"read","id":9}),
+            current,
+        ));
+        let tree = tokio::select! {
+            result = &mut answering => panic!("answer skipped frame freshness: {result:?}"),
+            request = wire.request() => request,
+        };
+        assert_eq!(tree["method"], "Page.getFrameTree");
+        wire.reply(&tree, frame_tree());
+        let response = tokio::select! {
+            result = &mut answering => panic!("answer skipped the actual response: {result:?}"),
+            request = wire.request() => request,
+        };
+        assert_eq!(response["method"], "Runtime.evaluate");
+        assert_eq!(response["params"]["uniqueContextId"], "current-unique");
+        wire.reply(&response, json!({"result":{"value":true}}));
+        answering.await.unwrap();
+        assert!(
+            Arc::ptr_eq(&bridge.shared.socket.connection, &original),
+            "callback admission cannot replace shared authority"
+        );
+        assert!(
+            bridge
+                .shared
+                .socket
+                .raw_call(None, "Runtime.enable", json!({}))
+                .await
+                .is_err()
+        );
+        assert!(old_wire.requests.try_recv().is_err());
+        assert!(wire.requests.try_recv().is_err());
+        let mut cleanup = Box::pin(bridge.cleanup_with_socket(Some(cleanup_socket)));
+        let first = tokio::select! {
+            result = &mut cleanup => panic!("current cleanup skipped its original ACK: {result:?}"),
+            request = wire.request() => request,
+        };
+        acknowledge_cleanup(&mut wire, first, None).await;
+        cleanup.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cleanup_current_socket_is_chosen_once_and_later_overrides_cannot_replay() {
+        let (mut bridge, mut original_wire) = installed_bridge().await;
+        let (current, mut current_wire) = socket().await;
+        let (replacement, mut replacement_wire) = socket().await;
+        let mut first = Box::pin(bridge.cleanup_with_socket(Some(current)));
+        let request = tokio::select! {
+            result = &mut first => panic!("cleanup ended before the first current ACK: {result:?}"),
+            request = current_wire.request() => request,
+        };
+        assert_eq!(request["method"], "Runtime.evaluate");
+        assert!(original_wire.requests.try_recv().is_err());
+        drop(first);
+        let mut second = Box::pin(bridge.cleanup_with_socket(Some(replacement.clone())));
+        assert!(futures_util::poll!(second.as_mut()).is_pending());
+        assert!(replacement_wire.requests.try_recv().is_err());
+        acknowledge_cleanup(&mut current_wire, request, None).await;
+        second.await.unwrap();
+        bridge.cleanup_with_socket(Some(replacement)).await.unwrap();
+        assert!(matches!(
+            &*bridge.cleanup.lock().unwrap(),
+            CleanupState::Terminal {
+                result: Ok(()),
+                _owner: None
+            }
+        ));
+        assert!(original_wire.requests.try_recv().is_err());
+        assert!(current_wire.requests.try_recv().is_err());
+        assert!(replacement_wire.requests.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn first_typed_guard_refusal_is_unsent_and_cleanup_does_not_remove_uninstalled_state() {
+        let (mut bridge, mut wire) = installed_bridge().await;
+        let installation = bridge.shared.state.lock().unwrap().routes[&None].clone();
+        {
+            let mut state = installation.state.lock().unwrap();
+            state.progress = InstallationProgress::Unstarted;
+            state.script = DocumentScript::Absent;
+        }
+        let mut guarded = bridge.shared.socket.clone();
+        guarded.preparation = crate::browser::extension::PreparationTransport::Unadmitted;
+        let result = install(&bridge.shared, None, installation.clone(), &guarded).await;
+        assert!(matches!(result, Err(ToolError::Failed(_))));
+        assert!(matches!(
+            installation.state.lock().unwrap().progress,
+            InstallationProgress::Unstarted
+        ));
+        assert!(wire.requests.try_recv().is_err());
+        let mut cleanup = Box::pin(bridge.cleanup());
+        tokio::select! {
+            result = &mut cleanup => result.unwrap(),
+            request = wire.request() => panic!("a proven unsent installation cannot issue cleanup removals: {request}"),
+        }
+        drop(cleanup);
+        assert!(bridge.shared.state.lock().unwrap().routes.is_empty());
+        assert!(wire.requests.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn first_written_installation_unknown_keeps_started_custody_and_original_cleanup_owner() {
+        let (mut bridge, mut wire) = installed_bridge().await;
+        let installation = bridge.shared.state.lock().unwrap().routes[&None].clone();
+        {
+            let mut state = installation.state.lock().unwrap();
+            state.progress = InstallationProgress::Unstarted;
+            state.script = DocumentScript::Absent;
+        }
+        let current = bridge.shared.socket.clone();
+        let mut installing = Box::pin(install(
+            &bridge.shared,
+            None,
+            installation.clone(),
+            &current,
+        ));
+        let written = tokio::select! {
+            result = &mut installing => panic!("the first actual request was not written: {result:?}"),
+            request = wire.request() => request,
+        };
+        assert_eq!(written["method"], "Runtime.enable");
+        wire.server.abort();
+        let _ = (&mut wire.server).await;
+        assert!(matches!(
+            installing.await,
+            Err(ToolError::OutcomeUnknown(_))
+        ));
+        assert!(matches!(
+            installation.state.lock().unwrap().progress,
+            InstallationProgress::Settled
+        ));
+        assert!(bridge.cleanup().await.is_err());
+        let first = {
+            let state = bridge.cleanup.lock().unwrap();
+            let CleanupState::Terminal {
+                result: Err(error),
+                _owner: Some(owner),
+            } = &*state
+            else {
+                panic!("written unknown cleanup must retain its exact owner");
+            };
+            assert!(Arc::ptr_eq(&owner.shared, &bridge.shared));
+            error.to_string()
+        };
+        assert_eq!(bridge.cleanup().await.unwrap_err().to_string(), first);
+        assert_eq!(bridge.shared.state.lock().unwrap().routes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_current_cleanup_retains_selected_transport_and_ignores_new_override() {
+        let (mut bridge, mut original_wire) = installed_bridge().await;
+        let (current, mut current_wire) = socket().await;
+        let selected = current.connection.clone();
+        let (replacement, mut replacement_wire) = socket().await;
+        let mut cleanup = Box::pin(bridge.cleanup_with_socket(Some(current)));
+        let first = tokio::select! {
+            result = &mut cleanup => panic!("selected cleanup skipped the original wire: {result:?}"),
+            request = current_wire.request() => request,
+        };
+        acknowledge_cleanup(&mut current_wire, first, Some("selected cleanup refusal")).await;
+        let cause = cleanup.await.unwrap_err().to_string();
+        {
+            let retained = bridge.cleanup.lock().unwrap();
+            let CleanupState::Terminal {
+                _owner: Some(owner),
+                ..
+            } = &*retained
+            else {
+                panic!("failed cleanup must retain the exact selected transport owner");
+            };
+            assert!(Arc::ptr_eq(
+                &owner.socket.as_ref().unwrap().connection,
+                &selected
+            ));
+            assert!(!Arc::ptr_eq(&owner.shared.socket.connection, &selected));
+        }
+        assert_eq!(
+            bridge
+                .cleanup_with_socket(Some(replacement))
+                .await
+                .unwrap_err()
+                .to_string(),
+            cause
+        );
+        assert!(original_wire.requests.try_recv().is_err());
+        assert!(replacement_wire.requests.try_recv().is_err());
+        assert!(current_wire.requests.try_recv().is_err());
     }
 }

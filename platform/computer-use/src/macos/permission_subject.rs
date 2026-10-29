@@ -24,6 +24,8 @@ use std::path::Path;
 
 pub(crate) enum Request {
     Name(String),
+    // Raw computer calls approve the application, not a preselected window.
+    RawApp(String),
     Window {
         window_id: u64,
         expected_process: Option<(u32, String)>,
@@ -34,6 +36,33 @@ impl Request {
     pub(crate) fn resolve(self, language: Language) -> Result<ComputerAppTarget, ToolError> {
         super::require_desktop()?;
         let (app, binding) = match self {
+            Self::RawApp(name) => {
+                let selected = raw_app_candidate(&name, &apps::list_all_apps())?;
+                let app = match selected {
+                    Some((application_id, path)) => {
+                        let name = path.to_str().ok_or_else(|| {
+                            failed("application bundle path is not valid Unicode")
+                        })?;
+                        let app = apps::resolve_app_info(name).map_err(failed)?;
+                        let actual_path = std::fs::canonicalize(
+                            app.launch_path
+                                .as_ref()
+                                .ok_or_else(|| failed("application bundle path is unavailable"))?,
+                        )
+                        .map_err(failed)?;
+                        if app.bundle_id.as_deref() != Some(application_id.as_str())
+                            || actual_path != path
+                        {
+                            return Err(failed(
+                                "application identity changed during app resolution",
+                            ));
+                        }
+                        app
+                    }
+                    None => apps::resolve_app_info(&name).map_err(failed)?,
+                };
+                (app, None)
+            }
             Self::Name(name) => {
                 let requested_path = Path::new(&name)
                     .is_absolute()
@@ -123,6 +152,55 @@ impl Request {
         target.binding = binding;
         Ok(target)
     }
+}
+
+// Check app identity ambiguity without turning the number of open windows
+// into an app permission rule. Process/window provenance is bound later by the
+// existing native Controller, after this canonical app subject is approved.
+fn raw_app_candidate(
+    name: &str,
+    candidates: &[AppInfo],
+) -> Result<Option<(String, std::path::PathBuf)>, ToolError> {
+    let requested_path = Path::new(name)
+        .is_absolute()
+        .then(|| std::fs::canonicalize(name))
+        .transpose()
+        .map_err(failed)?;
+    let mut identities = std::collections::BTreeSet::new();
+    for app in candidates {
+        let matches = if let Some(requested) = &requested_path {
+            app.launch_path
+                .as_ref()
+                .and_then(|path| std::fs::canonicalize(path).ok())
+                .as_ref()
+                == Some(requested)
+        } else {
+            app.name.eq_ignore_ascii_case(name)
+                || app.bundle_id.as_deref() == Some(name)
+                || app.launch_path.as_deref() == Some(name)
+        };
+        if !matches {
+            continue;
+        }
+        let bundle = app
+            .bundle_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| failed("matched application has no bundle identifier"))?;
+        let path = std::fs::canonicalize(
+            app.launch_path
+                .as_ref()
+                .ok_or_else(|| failed("matched application has no bundle path"))?,
+        )
+        .map_err(failed)?;
+        identities.insert((bundle.to_owned(), path));
+    }
+    if identities.len() > 1 {
+        return Err(failed(
+            "application matches multiple installed copies; choose an exact app path or window",
+        ));
+    }
+    Ok(identities.into_iter().next())
 }
 
 pub(crate) fn matching_processes(
@@ -268,6 +346,44 @@ mod tests {
         changed.bundle_id = Some("org.example.OtherApp".into());
         assert!(
             matching_processes(canonical.to_str().unwrap(), &[changed], Some(&approved)).is_err()
+        );
+    }
+
+    #[test]
+    fn raw_app_scope_deduplicates_aliases_but_refuses_distinct_installed_copies() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first/Editor.app");
+        let second = directory.path().join("second/Editor.app");
+        let alias = directory.path().join("Editor.app");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::os::unix::fs::symlink(&first, &alias).unwrap();
+        let record = |pid, path: &Path| AppInfo {
+            name: "Editor".into(),
+            pid,
+            bundle_id: Some("org.example.Editor".into()),
+            running: true,
+            active: false,
+            launch_path: Some(path.to_str().unwrap().into()),
+            kind: Some("desktop".into()),
+            last_used: None,
+        };
+        let same_copy = [record(11, &first), record(11, &alias)];
+        assert_eq!(
+            raw_app_candidate("org.example.Editor", &same_copy).unwrap(),
+            Some((
+                "org.example.Editor".into(),
+                std::fs::canonicalize(&first).unwrap()
+            ))
+        );
+        let different_copies = [record(11, &alias), record(22, &second)];
+        assert!(raw_app_candidate("org.example.Editor", &different_copies).is_err());
+        assert_eq!(
+            raw_app_candidate(first.to_str().unwrap(), &different_copies).unwrap(),
+            Some((
+                "org.example.Editor".into(),
+                std::fs::canonicalize(&first).unwrap()
+            ))
         );
     }
 }

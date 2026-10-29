@@ -42,13 +42,13 @@ just run --root /path/to/business-host
 
 UI 实例可将声明的服务导入绑定到同一来源中的 Host 提供者。`UiContext.services` 和 `operations` 使用 UI 消费者的实际会话与原始 receipt，同时保留可信代码可用的完整 `UiContext.host`。一个包可以同时分发后台与 UI，无需为每个内部服务额外发布客户端端点。
 
-CLI 的所有构建（包括 debug）都会嵌入当前 TypeScript bundle；修改插件源文件后需重新构建 CLI。`just product` 先构建当前仓库的 CLI 编译器，再导出供检查的独立 bundle；修改导出结果不会改变嵌入的资源。构建根据组合生成代码及具名包的精确字节生成 `product-version.txt`；安装与更新会校验实际包字节是否匹配该标识。bundle 输出是生成产物：修改源文件后重新构建，不要直接编辑输出文件。标识缺失、格式错误或内容不匹配时需要重新构建。需要与开发构建同时生成产物时，使用独立输出目录：
+CLI 的所有构建（包括 debug）都会嵌入当前 TypeScript bundle；修改插件源文件后需重新构建 CLI。`just product` 只构建轻量的 `maka-ui-build` 工具，再导出供检查的独立 bundle，无需构建产品 CLI；修改导出结果不会改变嵌入的资源。构建根据组合生成代码及具名包的精确字节生成 `product-version.txt`；安装与更新会校验实际包字节是否匹配该标识。bundle 输出是生成产物：修改源文件后重新构建，不要直接编辑输出文件。标识缺失、格式错误或内容不匹配时需要重新构建。需要与开发构建同时生成产物时，使用独立输出目录：
 
 ```sh
 just product --output ~/.cache/maka/product-export
 ```
 
-UI 入口使用 NSH 编译器构建为独立 ES 模块，图片等资源保留在同一个不可变包内。Cargo 构建先发现声明中的 UI 源文件，再直接调用编译器，不嵌套运行 Cargo。`just product` 和 workspace 的 npm build/test 命令使用 Cargo 返回的精确编译器路径。单独使用 Node 插件包构建器时，使用 PATH 中的 `maka`，也可通过 `MAKA_UI_BUNDLER` 指定 Maka 可执行文件。
+UI 入口使用 NSH 编译器构建为独立 ES 模块，图片等资源保留在同一个不可变包内。Cargo 构建先发现声明中的 UI 源文件，再直接调用编译器，不嵌套运行 Cargo。`just product` 和 workspace 的 npm build/test 命令使用 Cargo 返回的精确编译器路径。单独使用 Node 插件包构建器时，也会在需要编译 UI 时构建这个轻量工具；`MAKA_UI_BUNDLER` 可指定已有的 `maka-ui-build` 可执行文件。
 
 单独编译一个 NSH UI 模块：
 
@@ -87,4 +87,4 @@ npm --workspace @maka-agent/product run typecheck
 npm --workspace @maka-agent/product test
 ```
 
-测试只构建一次，再使用刚构建的同一 CLI 检查完整的 Host/UI 包、业务组合与工具展示声明。原生渲染、焦点和输入变更由对应 shell 的测试验证。
+npm 测试使用轻量编译器，检查完整的 Host/UI 包与工具展示声明。`cargo test --locked -p maka-cli --test product_composition` 通过实际 CLI 验证业务组合，运行时无需 Node。原生渲染、焦点和输入变更由对应 shell 的测试验证。

@@ -18,8 +18,51 @@
  */
 
 use super::*;
-use cua_driver_core::browser::cdp_ws::CdpEvent;
+use cua_driver_core::browser::cdp_ws::{CdpEvent, CdpMetadataRead};
 use tokio::sync::mpsc;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct NodeIdentity {
+    pub backend_node_id: Option<u64>,
+    pub node_name: Option<String>,
+    pub frame_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct NodeDescription {
+    node: NodeIdentity,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PropertyValue {
+    pub object_id: Option<String>,
+    pub value: Option<Box<serde_json::value::RawValue>>,
+}
+
+impl PropertyValue {
+    pub(super) fn text(&self) -> Result<Option<String>, serde_json::Error> {
+        let Some(raw) = self.value.as_deref() else {
+            return Ok(None);
+        };
+        if raw.get().as_bytes().first() != Some(&b'"') {
+            return Ok(None);
+        }
+        serde_json::from_str(raw.get()).map(Some)
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct PropertyHandle {
+    pub name: String,
+    pub value: Option<PropertyValue>,
+}
+
+#[derive(Deserialize)]
+struct PropertyHandles {
+    result: Vec<PropertyHandle>,
+}
 
 #[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 pub(super) struct Frame {
@@ -114,7 +157,50 @@ fn scopes_match(used: &[Frame], current: &HashMap<Option<String>, Value>) -> boo
     true
 }
 
+impl Frames {
+    pub(super) fn observation_branch(&self, events: mpsc::UnboundedReceiver<CdpEvent>) -> Self {
+        Self {
+            enabled: self.enabled,
+            pending: self.pending.clone(),
+            events: Some(events),
+            children: self.children.clone(),
+        }
+    }
+}
+
 impl Tab {
+    pub(super) async fn frame_node_identity(
+        &self,
+        session: Option<&str>,
+        params: Value,
+    ) -> Result<NodeIdentity, ToolError> {
+        let json = self
+            .socket
+            .as_ref()
+            .ok_or_else(|| failed("tab connection unavailable"))?
+            .observe_metadata_in(session, CdpMetadataRead::DescribeNode, params)
+            .await?;
+        serde_json::from_str::<NodeDescription>(&json)
+            .map(|described| described.node)
+            .map_err(failed)
+    }
+
+    pub(super) async fn frame_property_handles(
+        &self,
+        session: Option<&str>,
+        params: Value,
+    ) -> Result<Vec<PropertyHandle>, ToolError> {
+        let json = self
+            .socket
+            .as_ref()
+            .ok_or_else(|| failed("tab connection unavailable"))?
+            .observe_metadata_in(session, CdpMetadataRead::GetProperties, params)
+            .await?;
+        serde_json::from_str::<PropertyHandles>(&json)
+            .map(|properties| properties.result)
+            .map_err(failed)
+    }
+
     pub(super) async fn frame_observation(
         &self,
         session: Option<&str>,
@@ -437,6 +523,7 @@ impl Tab {
         })?;
         let element = match element {
             ElementRef::Dom(element) => element,
+            ElementRef::DomCua(element) => element.element,
             ElementRef::Dialog(_) => {
                 return Err(failed(
                     "JavaScript dialog is no longer active; observe again",
@@ -669,6 +756,67 @@ mod scope_tests {
         assert!(
             !scopes_match(&[child], &current),
             "untracked parent was admitted"
+        );
+    }
+
+    #[test]
+    fn typed_node_identity_ignores_only_unneeded_raw_utf16_data() {
+        let json = r#"{"node":{"backendNodeId":17,"nodeName":"IFRAME","frameId":"child","attributes":["title","\ud800"],"nodeValue":"\udc00"}}"#;
+        assert!(serde_json::from_str::<Value>(json).is_err());
+        let described: NodeDescription = serde_json::from_str(json).unwrap();
+        assert_eq!(described.node.backend_node_id, Some(17));
+        assert_eq!(described.node.node_name.as_deref(), Some("IFRAME"));
+        assert_eq!(described.node.frame_id.as_deref(), Some("child"));
+        // Identity reads retain no alternate frame or guessed backend when the
+        // required source field itself has the wrong type.
+        assert!(
+            serde_json::from_str::<NodeDescription>(
+                r#"{"node":{"backendNodeId":"17","nodeName":"IFRAME"}}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn typed_property_handles_preserve_object_ids_without_decoding_descriptions() {
+        let json = r#"{"result":[{"name":"status","value":{"type":"string","value":"value","description":"\ud800"}},{"name":"value","value":{"type":"object","objectId":"same-node","description":"\udc00"}},{"name":"length","value":{"type":"number","value":2}}]}"#;
+        assert!(serde_json::from_str::<Value>(json).is_err());
+        let handles: PropertyHandles = serde_json::from_str(json).unwrap();
+        assert_eq!(handles.result.len(), 3);
+        assert_eq!(handles.result[0].name, "status");
+        assert_eq!(
+            handles.result[0]
+                .value
+                .as_ref()
+                .unwrap()
+                .text()
+                .unwrap()
+                .as_deref(),
+            Some("value")
+        );
+        assert_eq!(
+            handles.result[1]
+                .value
+                .as_ref()
+                .unwrap()
+                .object_id
+                .as_deref(),
+            Some("same-node")
+        );
+        assert_eq!(
+            handles.result[2].value.as_ref().unwrap().text().unwrap(),
+            None
+        );
+        assert_eq!(
+            handles.result[2]
+                .value
+                .as_ref()
+                .unwrap()
+                .value
+                .as_deref()
+                .unwrap()
+                .get(),
+            "2"
         );
     }
 }

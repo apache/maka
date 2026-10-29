@@ -22,6 +22,7 @@
 mod mutations;
 mod neutral_focus;
 mod prefix_scroll;
+mod readonly_evaluate;
 mod text_events;
 
 use cua_driver_core::browser::cdp_ws::CdpConnection;

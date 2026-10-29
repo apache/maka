@@ -203,15 +203,15 @@ about 518 ms overall, versus about 308 ms in the original native reference. The
 measurement boundaries include different surrounding work; their contribution
 has not been profiled.
 
-Separate Linux product audio fixtures now verify that an old epoch's recording
-survives reset, a new VM cannot stop it, and its natural completion does not
-stop a replacement recording. They also verify cleanup after canonical Computer
-permission revocation and final owner close against exact private Pulse stream
-identities. Start's T2 confirms startup; background capture belongs to the
-Session/Epoch and can remain active after its Run ends. The owner-close fixture
-checks that distinction without inventing an unfinished Start operation.
-The public Stop result's audio bytes also match the independently retained WAV.
-These tests use generated output on an isolated null sink; physical audio,
+Three Linux product audio fixtures have been added to cover recording across
+reset, rejection of an old recording's Stop from a new VM, and replacement
+isolation during natural completion. They also cover canonical Computer
+permission revocation, final owner close, and equality between public Stop bytes
+and the retained WAV. Their source distinguishes Start's completed startup T2
+from background capture owned by the Session/Epoch after its Run ends.
+At the Maka `e7f781fce6c` checkpoint (Cua `30defb12ca5a`), these three
+fixtures had not been run. Retained execution receipts are still required for
+the candidate under test, using generated output on an isolated null sink. Physical audio,
 Host transport and permission UI remain separate verification scopes.
 
 ### Windows worker lifecycle: implementation and evidence limits

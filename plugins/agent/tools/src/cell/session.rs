@@ -39,9 +39,6 @@ use std::{
 use tokio::sync::{oneshot, watch};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-const MAX_CELLS: usize = 4;
-const MAX_OUTPUT_BYTES: usize = 128 * 1024;
-
 #[derive(Clone)]
 pub(crate) struct Cells(Arc<State>);
 
@@ -197,9 +194,6 @@ impl Cells {
         });
         {
             let mut cells = self.0.cells.lock().unwrap();
-            if cells.len() >= MAX_CELLS {
-                return Err(ToolError::Failed("at most 4 cells may be running or awaiting their final observation; use wait first".into()));
-            }
             cells.insert(id.clone(), cell);
         }
         let CodeInput {
@@ -413,7 +407,7 @@ async fn publish_notifications(
 ) -> Result<(), ToolError> {
     let mut high_water = state.notification_high_water.lock().await;
     for text in context.take_notifications() {
-        let mut remaining = max_tokens.saturating_mul(4).min(MAX_OUTPUT_BYTES);
+        let mut remaining = max_tokens.saturating_mul(4);
         let model_text = clip(&text, &mut remaining);
         *high_water = journal.notify(cell_id.into(), text, model_text).await?;
         state.notification_changed.notify_one();
@@ -447,7 +441,7 @@ fn project(observation: Observation, max_tokens: usize) -> ToolSuccess {
             (content, json!({"state":"terminated","cell_id":cell_id}))
         }
     };
-    let mut remaining = max_tokens.saturating_mul(4).min(MAX_OUTPUT_BYTES);
+    let mut remaining = max_tokens.saturating_mul(4);
     let mut parts = vec![ToolContent::Text(clip(
         &summary.to_string(),
         &mut remaining,

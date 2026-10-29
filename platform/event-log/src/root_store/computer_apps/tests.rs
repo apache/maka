@@ -792,7 +792,13 @@ fn request(
             basis,
             display: ComputerAppDisplay {
                 name: "Fixture application".into(),
-                app_path: "/Applications/Fixture.app".into(),
+                app_path: match &target.scope {
+                    GrantScope::ComputerApp {
+                        platform: ComputerAppPlatform::Windows,
+                        ..
+                    } => r"C:\Fixture\fixture.exe".into(),
+                    _ => "/Applications/Fixture.app".into(),
+                },
                 risk: None,
                 warning: Some("Native classification unavailable in fixture".into()),
             },
@@ -1330,6 +1336,62 @@ async fn profile_revoke_waits_only_for_accepted_dispatch_t1_and_blocks_following
     assert!(
         !store
             .computer_app_granted(&invocation, "next-effect", &app, &basis)
+            .await
+            .unwrap()
+    );
+    root.shutdown().await.unwrap();
+}
+
+// Append in the real existing root_store/computer_apps/tests.rs fixture.
+// The fixture's request display path must follow the target platform (below).
+#[tokio::test]
+async fn windows_app_session_consent_is_canonical_and_does_not_cross_platform_identity() {
+    let (_dir, _owner, root, store, invocation, basis) = fixture().await;
+    let mut windows = target(r"C:\Fixture\fixture.exe");
+    windows.scope = GrantScope::ComputerApp {
+        platform: ComputerAppPlatform::Windows,
+        application_id: r"C:\Fixture\fixture.exe".into(),
+    };
+    decide(
+        &store,
+        &invocation,
+        basis,
+        &windows,
+        "windows-consent",
+        "windows-effect",
+        ComputerAppDecision::Session,
+    )
+    .await;
+    assert!(
+        store
+            .computer_app_granted(&invocation, "next-windows-effect", &windows, &basis)
+            .await
+            .unwrap()
+    );
+    let mut other_platform = windows.clone();
+    other_platform.scope = GrantScope::ComputerApp {
+        platform: ComputerAppPlatform::Macos,
+        application_id: r"C:\Fixture\fixture.exe".into(),
+    };
+    assert!(
+        !store
+            .computer_app_granted(&invocation, "next-windows-effect", &other_platform, &basis)
+            .await
+            .unwrap()
+    );
+    let mut other_executable = windows.clone();
+    other_executable.scope = GrantScope::ComputerApp {
+        platform: ComputerAppPlatform::Windows,
+        application_id: r"C:\Other\fixture.exe".into(),
+    };
+    assert!(
+        !store
+            .computer_app_granted(
+                &invocation,
+                "next-windows-effect",
+                &other_executable,
+                &basis
+            )
             .await
             .unwrap()
     );

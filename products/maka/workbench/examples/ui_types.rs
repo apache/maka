@@ -101,6 +101,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "extends": "./.nsh/tsconfig.json",
         "compilerOptions": {
             "skipLibCheck": false,
+            "allowImportingTsExtensions": true,
             "paths": {
                 "nsh": ["./.nsh/types/nsh/index.d.ts"],
                 "nsh/*": ["./.nsh/types/nsh/*.d.ts"],

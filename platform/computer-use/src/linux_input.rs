@@ -65,7 +65,7 @@ pub(crate) struct Scroll {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum NativeScrollDirection {
+pub(crate) enum NativeScrollDirection {
     Up,
     Down,
     Left,
@@ -134,7 +134,7 @@ pub(crate) enum Error {
     ElementNotInWindow,
 }
 
-fn parse_command<T: serde::de::DeserializeOwned>(mut input: Value) -> Result<T, Error> {
+pub(crate) fn parse_command<T: serde::de::DeserializeOwned>(mut input: Value) -> Result<T, Error> {
     fn sort_fields(value: &mut Value) {
         match value {
             Value::Object(fields) => {

@@ -179,6 +179,7 @@ mod tests {
         let chunk = HistoryChunk {
             model_part: None,
             final_output: false,
+            has_references: false,
             model: None,
             origin: None,
             compaction: None,
@@ -216,6 +217,7 @@ mod tests {
         let mut chunk = HistoryChunk {
             model_part: None,
             final_output: false,
+            has_references: false,
             model: None,
             origin: None,
             compaction: None,
@@ -271,6 +273,7 @@ mod tests {
         let chunk = HistoryChunk {
             model_part: None,
             final_output: false,
+            has_references: false,
             model: None,
             origin: None,
             compaction: None,
@@ -298,6 +301,7 @@ mod tests {
         let chunk = HistoryChunk {
             model_part: None,
             final_output: false,
+            has_references: false,
             model: None,
             origin: Some(maka_agent_facts::message::MessageOrigin::WorkhubTask {
                 task_id: "task-original".into(),
@@ -351,6 +355,7 @@ mod tests {
         let mut chunk = HistoryChunk {
             model_part: None,
             final_output: false,
+            has_references: false,
             model: None,
             origin: None,
             compaction: None,

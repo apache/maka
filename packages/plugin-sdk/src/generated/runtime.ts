@@ -3436,11 +3436,19 @@ export type FormField1 =
       [k: string]: unknown | undefined;
     };
 export type FormFormat = 'email' | 'uri' | 'date' | 'date-time';
-export type GrantCapability = 'browser' | 'computer_use' | 'computer_audio' | 'desktop_mcp' | 'mcp';
+export type GrantCapability =
+  | ('browser' | 'computer_use' | 'computer_audio' | 'desktop_mcp' | 'mcp')
+  | 'browser_download'
+  | 'browser_history';
 export type GrantScope =
   | {
       kind: 'browser_origin';
       origin: string;
+    }
+  | {
+      kind: 'browser_profile';
+      browserId: string;
+      generation: string;
     }
   | {
       kind: 'capability';
@@ -3455,7 +3463,7 @@ export type GrantScope =
       platform: ComputerAppPlatform;
       applicationId: string;
     };
-export type ComputerAppPlatform = 'macos';
+export type ComputerAppPlatform = 'macos' | 'windows';
 export type ComputerAppRisk = 'low' | 'high';
 export type InteractionOutcome =
   | {
@@ -4467,6 +4475,12 @@ export type Identity2 =
       kind: 'background';
       grant: Id;
       [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'browser_lease';
+      sessionId: string;
+      turnId: string;
+      [k: string]: unknown | undefined;
     };
 /**
  * Resolving a reference requires the original package/scope, a live activation,
@@ -5354,6 +5368,15 @@ export interface ComputerConfiguration {
    * Explicit opt-in to recording computer output audio.
    */
   audio?: boolean;
+  /**
+   * Optional browser preparation allowed by Maka Host policy.
+   *
+   * This policy is captured for one activation. Updated configuration applies
+   * to new admissions after the replacement is ready; accepted work drains
+   * under its captured policy. Commit/adoption acknowledges desired input only.
+   * Old header removal and native cleanup require their own completion.
+   */
+  browserPreparation?: ComputerBrowserPreparation;
 }
 /**
  * An explicitly configured browser provider. The REPL cannot supply endpoints,
@@ -5362,6 +5385,58 @@ export interface ComputerConfiguration {
 export interface BrowserConnection {
   id: string;
   endpoint: string;
+}
+/**
+ * Maka Host policy for requesting or adopting optional browser preparations.
+ * The raw fields are independently configurable. Effective Maka popup adoption
+ * and relay use `popup || !request_headers.is_empty()` so headers can reach the
+ * first request.
+ *
+ * | `popup` | `request_headers` | Effective Maka popup adoption/relay |
+ * | --- | --- | --- |
+ * | `false` | empty | `false` |
+ * | `true` | empty | `true` |
+ * | `false` | nonempty | `true` |
+ * | `true` | nonempty | `true` |
+ *
+ * Defaults request neither preparation; they do not report native hook state.
+ * Original full preparation may still run fixed preparers enabled natively.
+ */
+export interface ComputerBrowserPreparation {
+  /**
+   * Raw Maka opt-in for popup adoption and relay.
+   *
+   * Nonempty `request_headers` also enables effective Maka popup adoption and
+   * relay, even when this raw flag is `false`.
+   *
+   * `false` or omitting an enable call does not confirm that Original page
+   * hooks are off. No native popup-state query or disable RPC is established.
+   */
+  popup?: boolean;
+  /**
+   * Request headers passed to the native browser preparation boundary.
+   *
+   * A nonempty list also enables effective Maka popup adoption and relay so
+   * headers can reach the first request.
+   *
+   * An empty list alone does not confirm that existing native hooks are off.
+   * An explicitly submitted empty list needs an actual disable acknowledgement;
+   * leaving the default empty list unsubmitted provides no such confirmation.
+   */
+  requestHeaders?: ComputerBrowserPreparationHeader[];
+}
+/**
+ * A request header selected by Maka Host browser preparation policy.
+ */
+export interface ComputerBrowserPreparationHeader {
+  /**
+   * Header name validated by the native browser provider.
+   */
+  name: string;
+  /**
+   * Header value validated by the native browser provider.
+   */
+  value: string;
 }
 export interface ComputerEvaluate {
   code: string;
@@ -8293,6 +8368,11 @@ export interface AgentQueueMutation {
 }
 export interface AgentHistoryChunk {
   modelPart?: ModelPartIdentity | null;
+  /**
+   * The original user input has quotes, directory references or inline references.
+   * Present only on the first fragment; display text cannot reconstruct these references.
+   */
+  hasReferences?: boolean;
   /**
    * Part of the successfully completed native Turn's final output at `through`.
    * Includes all body parts and source citations; never a Thinking field.

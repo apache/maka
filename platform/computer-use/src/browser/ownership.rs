@@ -21,15 +21,23 @@ use super::*;
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct BrowserIdentity {
-    port: u16,
-    debugger: String,
+pub(super) enum BrowserIdentity {
+    Cdp {
+        port: u16,
+        debugger: String,
+    },
+    Extension {
+        adapter: String,
+        extension: String,
+        instance: String,
+        generation: String,
+        host_pid: u32,
+    },
 }
-
 impl BrowserIdentity {
     pub(super) fn new(provider: &BrowserConnection, generation: &str) -> Result<Self, ToolError> {
         let url = Cdp::url(generation, provider)?;
-        Ok(Self {
+        Ok(Self::Cdp {
             port: url.port_or_known_default().unwrap(),
             debugger: match url.query() {
                 Some(query) => format!("{}?{query}", url.path()),
@@ -37,7 +45,24 @@ impl BrowserIdentity {
             },
         })
     }
-
+    pub(super) fn of(provider: &Provider, generation: &str) -> Result<Self, ToolError> {
+        match provider {
+            Provider::Cdp(provider) => Self::new(provider, generation),
+            Provider::Extension { connection, .. } => {
+                let actual = connection.identity();
+                if actual.generation != generation {
+                    return Err(failed("extension provider generation changed"));
+                }
+                Ok(Self::Extension {
+                    adapter: actual.adapter.clone(),
+                    extension: actual.extension_id.clone(),
+                    instance: actual.instance_id.clone(),
+                    generation: actual.generation.clone(),
+                    host_pid: actual.host_pid,
+                })
+            }
+        }
+    }
     pub(super) fn tab(&self, id: &str) -> TabIdentity {
         TabIdentity {
             browser: self.clone(),
@@ -53,33 +78,57 @@ pub(super) struct TabIdentity {
 }
 
 #[derive(Clone)]
-struct Creator {
-    owner: uuid::Uuid,
-    turn: String,
-    provider: BrowserConnection,
-    generation: String,
+pub(super) struct Creator {
+    pub(super) owner: uuid::Uuid,
+    pub(super) turn: String,
+    pub(super) provider: Provider,
+    pub(super) generation: String,
 }
 
-enum Disposition {
+pub(super) enum Disposition {
     Live,
     Closing,
 }
 
-struct Lease {
-    creator: Creator,
-    disposition: Disposition,
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum Origin {
+    AgentCreated,
+    UserClaimed,
+}
+
+#[derive(Clone)]
+pub(super) struct UncertainCreation {
+    pub(super) creator: Creator,
+    pub(super) extension: Option<cua_driver_core::browser::ExtensionCreationReceipt>,
+}
+
+pub(super) struct Lease {
+    pub(super) viewport: Option<Option<crate::protocol::BrowserViewport>>,
+    pub(super) input: Option<std::sync::Arc<super::owned_input::Resource>>,
+    pub(super) extension_sequence: Option<u64>,
+    pub(super) origin: Origin,
+    pub(super) extension: Option<super::extension::ClaimState>,
+    pub(super) creator: Creator,
+    pub(super) disposition: Disposition,
 }
 
 #[derive(Default)]
 pub(crate) struct Host {
-    tabs: HashMap<TabIdentity, Lease>,
-    uncertain_creations: HashMap<BrowserIdentity, Creator>,
+    pub(super) tabs: HashMap<TabIdentity, Lease>,
+    pub(super) extension: HashMap<(uuid::Uuid, BrowserIdentity), super::extension::ProviderState>,
+    pub(super) next_extension_sequence: u64,
+    pub(super) uncertain_creations: HashMap<(uuid::Uuid, BrowserIdentity), UncertainCreation>,
     pub(super) cursor_scopes: HashMap<(uuid::Uuid, TabIdentity), super::cursor::CursorEndpoint>,
+    pub(super) download_metadata: super::downloads::Store,
 }
 
 impl Host {
     pub(super) fn known(&self, browser: &BrowserIdentity) -> Result<(), ToolError> {
-        if self.uncertain_creations.contains_key(browser) {
+        if self
+            .uncertain_creations
+            .keys()
+            .any(|(_, current)| current == browser)
+        {
             return Err(ToolError::CleanupUnconfirmed(
                 "a browser tab creation has an unknown outcome; its targets cannot be reassigned"
                     .into(),
@@ -110,7 +159,85 @@ impl Host {
                     "the tab's previous close has not settled".into(),
                 ));
             }
-            lease.creator.turn = turn.to_owned();
+            if let Some(input) = &lease.input {
+                input.check_settled()?;
+            }
+            // Extension cleanup ownership comes from an actual preparation or
+            // creation receipt. Selecting metadata cannot move that obligation.
+            if lease.extension.is_none() {
+                lease.creator.turn = turn.to_owned();
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_owned_input(&self, identity: &TabIdentity) -> Result<(), ToolError> {
+        if let Some(input) = self
+            .tabs
+            .get(identity)
+            .and_then(|lease| lease.input.as_ref())
+        {
+            input.check_settled()?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn reserve_owned_input(
+        &mut self,
+        identity: TabIdentity,
+        owner: uuid::Uuid,
+        turn: &str,
+        provider: Provider,
+        generation: String,
+        input: std::sync::Arc<super::owned_input::Resource>,
+    ) -> Result<(), ToolError> {
+        self.use_tab(&identity, owner, turn)?;
+        match self.tabs.entry(identity) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().input = Some(input);
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                if provider.extension().is_some() {
+                    return Err(failed("owned input lost its actual extension lease"));
+                }
+                // Configured-CDP existing user tabs had no cleanup lease before
+                // input. Record this admitted physical resource on the SAME
+                // canonical map; Stop must preserve the user's physical tab.
+                entry.insert(Lease {
+                    viewport: None,
+                    input: Some(input),
+                    extension_sequence: None,
+                    origin: Origin::UserClaimed,
+                    extension: None,
+                    creator: Creator {
+                        owner,
+                        turn: turn.to_owned(),
+                        provider,
+                        generation,
+                    },
+                    disposition: Disposition::Live,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_owned_inputs(
+        &self,
+        owner: uuid::Uuid,
+        turn: Option<&str>,
+        epoch: Option<crate::desktop::NativeEpochId>,
+    ) -> Result<(), ToolError> {
+        for lease in self
+            .tabs
+            .values()
+            .filter(|lease| lease.creator.owner == owner)
+        {
+            if let Some(input) = &lease.input
+                && input.belongs(turn, epoch)
+            {
+                input.check_settled()?;
+            }
         }
         Ok(())
     }
@@ -120,12 +247,18 @@ impl Host {
         identity: TabIdentity,
         owner: uuid::Uuid,
         turn: &str,
-        provider: BrowserConnection,
+        provider: impl Into<Provider>,
         generation: String,
     ) -> Result<(), ToolError> {
+        let provider = provider.into();
         match self.tabs.entry(identity) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(Lease {
+                    viewport: None,
+                    input: None,
+                    extension_sequence: None,
+                    origin: Origin::AgentCreated,
+                    extension: None,
                     creator: Creator {
                         owner,
                         turn: turn.to_owned(),
@@ -160,16 +293,20 @@ impl Host {
         identity: BrowserIdentity,
         owner: uuid::Uuid,
         turn: &str,
-        provider: BrowserConnection,
+        provider: impl Into<Provider>,
         generation: String,
     ) {
+        let provider = provider.into();
         self.uncertain_creations.insert(
-            identity,
-            Creator {
-                owner,
-                turn: turn.to_owned(),
-                provider,
-                generation,
+            (owner, identity),
+            UncertainCreation {
+                creator: Creator {
+                    owner,
+                    turn: turn.to_owned(),
+                    provider,
+                    generation,
+                },
+                extension: None,
             },
         );
     }
@@ -179,39 +316,60 @@ impl Host {
         owner: uuid::Uuid,
         turn: Option<&str>,
     ) -> Result<Vec<TabIdentity>, ToolError> {
+        self.check_owned_inputs(owner, turn, None)?;
+        let extension_finished = self.finish_extension(owner, turn).await?;
         let belongs = |creator: &Creator| {
             creator.owner == owner && turn.is_none_or(|turn| creator.turn == turn)
         };
         let uncertain: Vec<_> = self
             .uncertain_creations
             .iter()
-            .filter(|(_, creator)| belongs(creator))
-            .map(|(identity, creator)| (identity.clone(), creator.clone()))
+            .filter(|(_, uncertain)| belongs(&uncertain.creator))
+            .map(|((_, identity), uncertain)| (identity.clone(), uncertain.clone()))
             .collect();
-        for (identity, creator) in uncertain {
-            let (generation, _) = inventory(&creator.provider).await.map_err(cleanup)?;
-            if BrowserIdentity::new(&creator.provider, &generation)? == identity {
+        for (identity, uncertain) in uncertain {
+            let creator = uncertain.creator;
+            let (generation, _) = creator.provider.inventory().await.map_err(cleanup)?;
+            if BrowserIdentity::of(&creator.provider, &generation)? == identity {
                 return Err(ToolError::CleanupUnconfirmed(
                     "the browser tab creation outcome remains unknown; creation was not replayed"
                         .into(),
                 ));
             }
-            self.uncertain_creations.remove(&identity);
+            self.uncertain_creations.remove(&(owner, identity));
+        }
+        let user_inputs: Vec<_> = self
+            .tabs
+            .iter()
+            .filter(|(_, lease)| {
+                belongs(&lease.creator)
+                    && lease.extension.is_none()
+                    && lease.origin == Origin::UserClaimed
+                    && matches!(lease.disposition, Disposition::Live)
+            })
+            .map(|(identity, _)| identity.clone())
+            .collect();
+        // A Live user input resource needs no physical tab close. Closing user
+        // leases instead follow the existing inventory/gone-proof path below:
+        // input UP completion cannot erase an earlier explicit-close debt.
+        for identity in &user_inputs {
+            self.tabs.remove(identity);
         }
         let mut groups: HashMap<BrowserIdentity, Vec<TabIdentity>> = HashMap::new();
         for (identity, lease) in &self.tabs {
-            if belongs(&lease.creator) {
+            if belongs(&lease.creator) && lease.extension.is_none() {
                 groups
                     .entry(identity.browser.clone())
                     .or_default()
                     .push(identity.clone());
             }
         }
-        let mut finished = Vec::new();
+        let mut finished = extension_finished;
+        finished.extend(user_inputs);
         for (browser, identities) in groups {
             let creator = self.tabs[&identities[0]].creator.clone();
-            let (generation, tabs) = inventory(&creator.provider).await.map_err(cleanup)?;
-            if BrowserIdentity::new(&creator.provider, &generation)? != browser {
+            let (generation, tabs) = creator.provider.inventory().await.map_err(cleanup)?;
+            if BrowserIdentity::of(&creator.provider, &generation)? != browser {
                 for identity in identities {
                     self.tabs.remove(&identity);
                     finished.push(identity);
@@ -231,7 +389,7 @@ impl Host {
                         "a previous tab close has not settled; close was not replayed".into(),
                     ));
                 }
-                let mut connection = Cdp::connect(&creator.generation, &creator.provider)
+                let connection = Cdp::connect(&creator.generation, creator.provider.cdp()?)
                     .await
                     .map_err(cleanup)?;
                 for identity in &pending {
@@ -246,8 +404,8 @@ impl Host {
                         ));
                     }
                 }
-                let (generation, tabs) = inventory(&creator.provider).await.map_err(cleanup)?;
-                if BrowserIdentity::new(&creator.provider, &generation)? == browser
+                let (generation, tabs) = creator.provider.inventory().await.map_err(cleanup)?;
+                if BrowserIdentity::of(&creator.provider, &generation)? == browser
                     && tabs
                         .iter()
                         .any(|tab| pending.iter().any(|identity| identity.target == tab.id))
@@ -262,10 +420,69 @@ impl Host {
                 finished.push(identity);
             }
         }
+        if turn.is_none() {
+            self.download_metadata.close_owner(owner).await?;
+        }
         Ok(finished)
     }
 }
 
 fn cleanup(error: ToolError) -> ToolError {
     ToolError::CleanupUnconfirmed(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_owner_creation_uncertainty_cannot_overwrite_another_owner() {
+        let provider = BrowserConnection {
+            id: "fixture".into(),
+            endpoint: "http://127.0.0.1:9222".into(),
+        };
+        let generation = "ws://127.0.0.1:9222/devtools/browser/fixture";
+        let browser = BrowserIdentity::new(&provider, generation).unwrap();
+        let first = uuid::Uuid::new_v4();
+        let second = uuid::Uuid::new_v4();
+        let mut host = Host::default();
+        host.creation_unknown(
+            browser.clone(),
+            first,
+            "first",
+            provider.clone(),
+            generation.into(),
+        );
+        host.creation_unknown(
+            browser.clone(),
+            second,
+            "second",
+            provider,
+            generation.into(),
+        );
+        assert_eq!(host.uncertain_creations.len(), 2);
+        assert_eq!(
+            host.uncertain_creations[&(first, browser.clone())]
+                .creator
+                .turn,
+            "first"
+        );
+        assert_eq!(
+            host.uncertain_creations[&(second, browser.clone())]
+                .creator
+                .turn,
+            "second"
+        );
+        assert!(matches!(
+            host.known(&browser),
+            Err(ToolError::CleanupUnconfirmed(_))
+        ));
+        host.uncertain_creations.remove(&(second, browser.clone()));
+        assert!(matches!(
+            host.known(&browser),
+            Err(ToolError::CleanupUnconfirmed(_))
+        ));
+        host.uncertain_creations.remove(&(first, browser.clone()));
+        host.known(&browser).unwrap();
+    }
 }

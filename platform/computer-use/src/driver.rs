@@ -17,6 +17,8 @@
  * under the License.
  */
 
+pub(crate) mod native_computer;
+
 use crate::desktop::{NativeCleanup, NativeEpochId, observe_retirement};
 use cua_driver_sdk::{
     ConfiguredDriverOptions, CuaDriver, CuaDriverSession, DriverError, RuntimeAuthorizationOptions,
@@ -29,6 +31,22 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::{Mutex, OnceCell, watch};
 use tokio_util::sync::CancellationToken;
+
+pub(crate) fn native_configuration(audio_enabled: bool) -> ConfiguredDriverOptions {
+    ConfiguredDriverOptions {
+        claude_code_compatibility: false,
+        audio_enabled,
+        authorization: RuntimeAuthorizationOptions {
+            allowed_modes: vec![SessionPermissionMode::Standard],
+            compatibility_mode: SessionPermissionMode::Standard,
+            compatibility_capability_manifest_path: None,
+            compatibility_bounded_manifest_path: None,
+            unrestricted_acknowledged: false,
+            max_session_ttl_seconds: 86400,
+            max_idle_ttl_seconds: 86400,
+        },
+    }
+}
 
 #[derive(Default)]
 enum State {
@@ -45,10 +63,13 @@ pub struct Driver {
     state: State,
     pub(crate) audio_enabled: bool,
     sessions: std::collections::HashMap<NativeEpochId, Arc<BoundSession>>,
+    #[cfg(target_os = "windows")]
+    native_owner: crate::desktop::worker::native_owner::NativeOwner,
     retiring_epochs: std::collections::HashMap<NativeEpochId, RetiringEpoch>,
     pub(crate) cursors: crate::cursor::Host,
     pub(crate) windows: crate::desktop::worker::Worker,
     pub(crate) browsers: Arc<tokio::sync::Mutex<crate::browser::Host>>,
+    pub(crate) extension_browsers: crate::browser::provider::ExtensionCache,
     #[cfg(target_os = "macos")]
     mac_controllers: std::collections::HashMap<i32, MacController>,
 }
@@ -60,6 +81,8 @@ struct MacController {
 }
 
 struct BoundSession {
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    native_turns: Mutex<native_computer::NativeTurns>,
     session: Arc<CuaDriverSession>,
     started: OnceCell<Result<(), ToolError>>,
 }
@@ -67,6 +90,8 @@ struct BoundSession {
 struct RetiringEpoch {
     pending: NativeCleanup,
     _session: Option<Arc<CuaDriverSession>>,
+    // Retain actual held-input owners even after an unconfirmed cleanup.
+    _bound: Option<Arc<BoundSession>>,
     #[cfg(target_os = "macos")]
     _controllers: Vec<crate::macos::controller::Controller>,
 }
@@ -74,6 +99,27 @@ struct RetiringEpoch {
 enum NativeCoordinates {
     Captured,
     WindowPixels,
+}
+
+#[derive(Clone)]
+pub(crate) enum AudioCompletion {
+    #[cfg(not(target_os = "windows"))]
+    Embedded(cua_driver_sdk::AudioCompletion),
+    #[cfg(target_os = "windows")]
+    Worker(crate::desktop::worker::native_owner::NativeAudioCompletion),
+}
+impl AudioCompletion {
+    pub(crate) async fn wait(&self) -> Result<(), ToolError> {
+        match self {
+            #[cfg(not(target_os = "windows"))]
+            Self::Embedded(completion) => completion
+                .wait()
+                .await
+                .map_err(|error| ToolError::CleanupUnconfirmed(error.to_string())),
+            #[cfg(target_os = "windows")]
+            Self::Worker(completion) => completion.wait().await,
+        }
+    }
 }
 
 impl BoundSession {
@@ -98,6 +144,118 @@ impl BoundSession {
 }
 
 impl Driver {
+    #[cfg(target_os = "windows")]
+    pub(crate) async fn windows_native_generation(
+        driver: &Arc<Mutex<Self>>,
+        epoch: NativeEpochId,
+    ) -> Result<crate::desktop::worker::native_owner::NativeGeneration, ToolError> {
+        let owner = driver.lock().await.native_owner.clone();
+        owner.generation(epoch).await
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) async fn invoke_in_generation(
+        driver: &Arc<Mutex<Self>>,
+        name: &str,
+        input: Value,
+        epoch: NativeEpochId,
+        expected: crate::desktop::worker::native_owner::NativeGeneration,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<CallResult, ToolError> {
+        Self::invoke_with_coordinates(
+            driver,
+            name,
+            input,
+            epoch,
+            cancellation,
+            language,
+            NativeCoordinates::Captured,
+            Some(expected),
+        )
+        .await
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) async fn invoke_native_window_pixels_in_generation(
+        driver: &Arc<Mutex<Self>>,
+        name: &str,
+        input: Value,
+        epoch: NativeEpochId,
+        expected: crate::desktop::worker::native_owner::NativeGeneration,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<CallResult, ToolError> {
+        Self::invoke_with_coordinates(
+            driver,
+            name,
+            input,
+            epoch,
+            cancellation,
+            language,
+            NativeCoordinates::WindowPixels,
+            Some(expected),
+        )
+        .await
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) async fn start_windows_audio(
+        driver: &Arc<Mutex<Self>>,
+        input: Value,
+        epoch: NativeEpochId,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<(CallResult, AudioCompletion), ToolError> {
+        let (owner, audio) = {
+            let driver = driver.lock().await;
+            if matches!(driver.state, State::Closing(_) | State::Closed) {
+                return Err(ToolError::Failed("Computer Use Host is closing".into()));
+            }
+            (driver.native_owner.clone(), driver.audio_enabled)
+        };
+        let reply = owner
+            .invoke(
+                "start_audio_recording",
+                input,
+                epoch,
+                None,
+                false,
+                audio,
+                cancellation,
+                language,
+            )
+            .await?;
+        let result = windows_native_result(reply.result, language)?;
+        let completion = reply.audio.ok_or_else(|| {
+            ToolError::CleanupUnconfirmed(
+                "native audio started without its original capture observation".into(),
+            )
+        })?;
+        Ok((result, AudioCompletion::Worker(completion)))
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn finish_windows_turn(
+        &self,
+        epoch: NativeEpochId,
+        session: &str,
+        turn: &str,
+    ) -> BoxFuture<'static, Result<(), ToolError>> {
+        let owner = self.native_owner.clone();
+        let session = session.to_owned();
+        let turn = turn.to_owned();
+        // Same explicit cleanup custody: losing an observer does not cancel a
+        // native monitor/process retirement already accepted by the Host.
+        let task = tokio::spawn(async move { owner.finish_turn(epoch, &session, &turn).await });
+        Box::pin(async move {
+            task.await.map_err(|error| {
+                ToolError::CleanupUnconfirmed(format!(
+                    "native turn close custodian failed: {error}"
+                ))
+            })?
+        })
+    }
     #[cfg(target_os = "macos")]
     pub(crate) async fn mac_controller(
         driver: &Arc<Mutex<Self>>,
@@ -307,17 +465,20 @@ impl Driver {
         if let Some(retirement) = self.retiring_epochs.get(&epoch) {
             return Box::pin(observe_retirement(retirement.pending.clone()));
         }
-        let session = self
-            .sessions
-            .remove(&epoch)
-            .map(|bound| bound.session.clone());
+        let bound = self.sessions.remove(&epoch);
+        let session = bound.as_ref().map(|bound| bound.session.clone());
         #[cfg(target_os = "macos")]
         let controllers: Vec<_> = self
             .mac_controllers
             .values()
             .map(|record| record.controller.clone())
             .collect();
+        #[cfg(target_os = "windows")]
+        let native_owner = self.native_owner.clone();
+        #[cfg(not(target_os = "windows"))]
         let has_resources = session.is_some();
+        #[cfg(target_os = "windows")]
+        let has_resources = true;
         #[cfg(target_os = "macos")]
         let has_resources = has_resources || !controllers.is_empty();
         if !has_resources {
@@ -329,6 +490,7 @@ impl Driver {
             RetiringEpoch {
                 pending: pending.clone(),
                 _session: session.clone(),
+                _bound: bound.clone(),
                 #[cfg(target_os = "macos")]
                 _controllers: controllers.clone(),
             },
@@ -337,26 +499,29 @@ impl Driver {
         // delay AX retirement past a replacement or cancel native teardown.
         tokio::spawn(async move {
             let mut failures = Vec::new();
+            #[cfg(target_os = "windows")]
+            if let Err(error) = native_owner.close_epoch(epoch).await {
+                failures.push(error.to_string());
+            }
+            #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+            if let Some(bound) = bound
+                && let Err(error) = bound.close_raw_native().await
+            {
+                // Actual input/clipboard resources remain on this same
+                // retired binding. Do not drain or close its SDK session.
+                let _ = reply.send(Some(Err(error)));
+                return;
+            }
             #[cfg(target_os = "macos")]
             for controller in controllers {
                 if let Err(error) = controller.release_epoch(epoch).await {
                     failures.push(error.to_string());
                 }
             }
-            if let Some(session) = session {
-                let ended = session
-                    .end_session(cua_driver_contract::EndSessionInput { session: None })
-                    .await;
-                session.close();
-                match ended {
-                    Ok(_) | Err(DriverError::Shutdown) => {}
-                    Err(DriverError::Tool { error_code, .. })
-                        if matches!(
-                            error_code.as_str(),
-                            "permission_denied" | "session_ended" | "authorization_revoked"
-                        ) => {}
-                    Err(error) => failures.push(error.to_string()),
-                }
+            if let Some(session) = session
+                && let Err(error) = close_retired_sdk_session(session).await
+            {
+                failures.push(error.to_string());
             }
             let result = if failures.is_empty() {
                 Ok(())
@@ -366,6 +531,47 @@ impl Driver {
             let _ = reply.send(Some(result));
         });
         Box::pin(observe_retirement(pending))
+    }
+
+    // Terminal Host cleanup only. A new attempt releases the original fixed
+    // resources; it cannot resume the old user action or change its receipt.
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    fn retry_failed_raw_retirement(&mut self, epoch: NativeEpochId) -> NativeCleanup {
+        let retirement = self
+            .retiring_epochs
+            .get_mut(&epoch)
+            .expect("terminal cleanup retries an existing retired epoch");
+        let failed = retirement
+            .pending
+            .borrow()
+            .as_ref()
+            .is_some_and(Result::is_err);
+        if !failed {
+            return retirement.pending.clone();
+        }
+        let bound = retirement._bound.clone();
+        let session = retirement._session.clone();
+        let (reply, pending) = watch::channel(None);
+        // The old watch stays terminal Err for all existing observers. Only
+        // this existing record tracks the genuinely new fixed-cleanup attempt.
+        retirement.pending = pending.clone();
+        tokio::spawn(async move {
+            if let Some(bound) = bound
+                && let Err(error) = bound.close_raw_native().await
+            {
+                let _ = reply.send(Some(Err(error)));
+                return;
+            }
+            let result = if let Some(session) = session {
+                close_retired_sdk_session(session)
+                    .await
+                    .map_err(|error| ToolError::CleanupUnconfirmed(error.to_string()))
+            } else {
+                Ok(())
+            };
+            let _ = reply.send(Some(result));
+        });
+        pending
     }
 
     fn reap_retired_epochs(&mut self) {
@@ -378,31 +584,54 @@ impl Driver {
         &self,
         epoch: NativeEpochId,
     ) -> BoxFuture<'static, Result<(), ToolError>> {
-        let bound = self.sessions.get(&epoch).map(|bound| bound.session.clone());
-        Box::pin(async move {
-            if let Some(bound) = bound {
-                bound
-                    .discard_audio()
-                    .await
-                    .map_err(|error| ToolError::CleanupUnconfirmed(error.to_string()))?;
-            }
-            Ok(())
-        })
+        #[cfg(target_os = "windows")]
+        {
+            let owner = self.native_owner.clone();
+            return Box::pin(async move { owner.discard_audio(epoch).await });
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let bound = self.sessions.get(&epoch).map(|bound| bound.session.clone());
+            Box::pin(async move {
+                if let Some(bound) = bound {
+                    bound
+                        .discard_audio()
+                        .await
+                        .map_err(|error| ToolError::CleanupUnconfirmed(error.to_string()))?;
+                }
+                Ok(())
+            })
+        }
     }
 
     pub(crate) fn audio_completion(
         &self,
         epoch: NativeEpochId,
-    ) -> BoxFuture<'static, Result<cua_driver_sdk::AudioCompletion, ToolError>> {
-        let bound = self.sessions.get(&epoch).map(|bound| bound.session.clone());
-        Box::pin(async move {
-            let bound = bound
-                .ok_or_else(|| ToolError::Failed("Computer audio epoch is unavailable".into()))?;
-            bound
-                .audio_completion()
-                .await
-                .map_err(|error| ToolError::CleanupUnconfirmed(error.to_string()))
-        })
+    ) -> BoxFuture<'static, Result<AudioCompletion, ToolError>> {
+        #[cfg(target_os = "windows")]
+        {
+            let owner = self.native_owner.clone();
+            return Box::pin(async move {
+                owner
+                    .audio_completion(epoch)
+                    .await
+                    .map(AudioCompletion::Worker)
+            });
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let bound = self.sessions.get(&epoch).map(|bound| bound.session.clone());
+            Box::pin(async move {
+                let bound = bound.ok_or_else(|| {
+                    ToolError::Failed("Computer audio epoch is unavailable".into())
+                })?;
+                bound
+                    .audio_completion()
+                    .await
+                    .map(AudioCompletion::Embedded)
+                    .map_err(|error| ToolError::CleanupUnconfirmed(error.to_string()))
+            })
+        }
     }
 
     pub async fn invoke(
@@ -421,6 +650,8 @@ impl Driver {
             cancellation,
             language,
             NativeCoordinates::Captured,
+            #[cfg(target_os = "windows")]
+            None,
         )
         .await
     }
@@ -441,6 +672,8 @@ impl Driver {
             cancellation,
             language,
             NativeCoordinates::WindowPixels,
+            #[cfg(target_os = "windows")]
+            None,
         )
         .await
     }
@@ -617,10 +850,19 @@ impl Driver {
         cancellation: &CancellationToken,
         language: Language,
         coordinates: NativeCoordinates,
+        #[cfg(target_os = "windows")] expected_generation: Option<
+            crate::desktop::worker::native_owner::NativeGeneration,
+        >,
     ) -> Result<CallResult, ToolError> {
         if ![
             "list_apps",
             "list_windows",
+            "native_list_windows",
+            "native_list_apps",
+            "native_launch_app",
+            "native_secondary_action",
+            "bring_to_front",
+            "get_desktop_state",
             "get_window_state",
             "click",
             "type_text",
@@ -630,6 +872,10 @@ impl Driver {
             "set_value",
             "launch_app",
             "element_bounds",
+            #[cfg(target_os = "windows")]
+            "bring_to_front",
+            #[cfg(target_os = "windows")]
+            "native_secondary_action",
             "start_audio_recording",
             "stop_audio_recording",
         ]
@@ -642,42 +888,61 @@ impl Driver {
                 "Computer Use cancelled before dispatch".into(),
             ));
         }
-        let bound = driver.lock().await.bind_epoch(epoch, language)?;
-        let session = bound.ready(language).await?;
-        if cancellation.is_cancelled() {
-            return Err(ToolError::Failed(
-                "Computer Use cancelled before dispatch".into(),
-            ));
-        }
-        // Every operation, including inventory whose schema has no `session`
-        // field, uses the same bound SDK surface. Once dispatched, await its
-        // result: dropping an FFI future is not evidence of settlement.
-        let result = match coordinates {
-            NativeCoordinates::Captured => session.call_tool(name.into(), input.to_string()).await,
-            NativeCoordinates::WindowPixels => {
-                session
-                    .call_tool_with_native_window_pixels(name.into(), input.to_string())
-                    .await
+        #[cfg(target_os = "windows")]
+        let result = {
+            let (owner, audio) = {
+                let driver = driver.lock().await;
+                if matches!(driver.state, State::Closing(_) | State::Closed) {
+                    return Err(ToolError::Failed("Computer Use Host is closing".into()));
+                }
+                (driver.native_owner.clone(), driver.audio_enabled)
+            };
+            owner
+                .invoke(
+                    name,
+                    input,
+                    epoch,
+                    expected_generation,
+                    matches!(coordinates, NativeCoordinates::WindowPixels),
+                    audio,
+                    cancellation,
+                    language,
+                )
+                .await?
+                .result
+        };
+        #[cfg(not(target_os = "windows"))]
+        let result = {
+            let bound = driver.lock().await.bind_epoch(epoch, language)?;
+            let session = bound.ready(language).await?;
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Failed(
+                    "Computer Use cancelled before dispatch".into(),
+                ));
             }
+            // Every operation, including inventory whose schema has no `session`
+            // field, uses the same bound SDK surface. Once dispatched, await its
+            // result: dropping an FFI future is not evidence of settlement.
+            match coordinates {
+                NativeCoordinates::Captured => {
+                    session.call_tool(name.into(), input.to_string()).await
+                }
+                NativeCoordinates::WindowPixels => {
+                    session
+                        .call_tool_with_native_window_pixels(name.into(), input.to_string())
+                        .await
+                }
+            }
+            .map_err(|error| native_error(error, language))?
+        };
+        #[cfg(target_os = "windows")]
+        {
+            windows_native_result(result, language)
         }
-        .map_err(|error| native_error(error, language))?;
-        if result.is_error {
-            let code = result
-                .error_code
-                .as_deref()
-                .unwrap_or("computer_use_refused");
-            let message = refusal(code, &result.text, language);
-            let message = format!("{code}: {message}");
-            return Err(
-                if matches!(code, "input_outcome_unknown" | "action_outcome_mismatch") {
-                    ToolError::OutcomeUnknown(message)
-                } else {
-                    ToolError::Failed(message)
-                },
-            );
+        #[cfg(not(target_os = "windows"))]
+        {
+            native_call_result(result, language)
         }
-        serde_json::from_str(&result.raw_json)
-            .map_err(|error| ToolError::OutcomeUnknown(format!("invalid native result: {error}")))
     }
 
     fn bind_epoch(
@@ -699,22 +964,10 @@ impl Driver {
         }
         if matches!(self.state, State::Idle) {
             self.state = State::Active(
-                CuaDriver::create_configured(ConfiguredDriverOptions {
-                    claude_code_compatibility: false,
-                    audio_enabled: self.audio_enabled,
-                    authorization: RuntimeAuthorizationOptions {
-                        allowed_modes: vec![SessionPermissionMode::Standard],
-                        compatibility_mode: SessionPermissionMode::Standard,
-                        compatibility_capability_manifest_path: None,
-                        compatibility_bounded_manifest_path: None,
-                        unrestricted_acknowledged: false,
-                        max_session_ttl_seconds: 86400,
-                        max_idle_ttl_seconds: 86400,
-                    },
-                })
-                // No operation has been dispatched during construction. In
-                // particular, a non-interactive desktop is a known refusal.
-                .map_err(|error| ToolError::Failed(error.to_string()))?,
+                CuaDriver::create_configured(native_configuration(self.audio_enabled))
+                    // No operation has been dispatched during construction. In
+                    // particular, a non-interactive desktop is a known refusal.
+                    .map_err(|error| ToolError::Failed(error.to_string()))?,
             );
         }
         let State::Active(driver) = &self.state else {
@@ -738,6 +991,8 @@ impl Driver {
                 entry.insert(Arc::new(BoundSession {
                     session,
                     started: OnceCell::new(),
+                    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+                    native_turns: Mutex::new(Default::default()),
                 }))
             }
         };
@@ -757,8 +1012,16 @@ impl Driver {
         };
         self.state = State::Closing(driver.clone());
         let mut failures = Vec::new();
-        for retirement in self.retiring_epochs.values() {
-            if let Err(error) = observe_retirement(retirement.pending.clone()).await {
+        let epochs: Vec<_> = self.retiring_epochs.keys().copied().collect();
+        for epoch in epochs {
+            let pending = self.retiring_epochs[&epoch].pending.clone();
+            #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+            let pending = if pending.borrow().as_ref().is_some_and(Result::is_err) {
+                self.retry_failed_raw_retirement(epoch)
+            } else {
+                pending.clone()
+            };
+            if let Err(error) = observe_retirement(pending).await {
                 failures.push(error.to_string());
             }
         }
@@ -767,6 +1030,10 @@ impl Driver {
             if let Err(error) = record.controller.close().await {
                 failures.push(error.to_string());
             }
+        }
+        #[cfg(target_os = "windows")]
+        if let Err(error) = self.native_owner.close().await {
+            failures.push(error.to_string());
         }
         if let Err(error) = self.windows.close().await {
             failures.push(error.to_string());
@@ -790,6 +1057,75 @@ impl Driver {
         self.state = State::Closed;
         Ok(())
     }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_native_result(
+    result: crate::desktop::worker::native_owner::NativeResult,
+    language: Language,
+) -> Result<CallResult, ToolError> {
+    if result.is_error {
+        let code = result
+            .error_code
+            .as_deref()
+            .unwrap_or("computer_use_refused");
+        let message = format!("{code}: {}", refusal(code, &result.text, language));
+        return Err(if code == "native_interruption_cleanup_unconfirmed" {
+            ToolError::CleanupUnconfirmed(message)
+        } else if matches!(code, "input_outcome_unknown" | "action_outcome_mismatch") {
+            ToolError::OutcomeUnknown(message)
+        } else {
+            ToolError::Failed(message)
+        });
+    }
+    serde_json::from_str(&result.raw_json)
+        .map_err(|error| ToolError::OutcomeUnknown(format!("invalid native result: {error}")))
+}
+
+async fn close_retired_sdk_session(session: Arc<CuaDriverSession>) -> Result<(), DriverError> {
+    let ended = session
+        .end_session(cua_driver_contract::EndSessionInput { session: None })
+        .await;
+    session.close();
+    match ended {
+        Ok(_) | Err(DriverError::Shutdown) => Ok(()),
+        Err(DriverError::Tool { error_code, .. })
+            if matches!(
+                error_code.as_str(),
+                "permission_denied" | "session_ended" | "authorization_revoked"
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn native_call_result(
+    result: cua_driver_sdk::ToolResult,
+    language: Language,
+) -> Result<CallResult, ToolError> {
+    if result.is_error {
+        let code = result
+            .error_code
+            .as_deref()
+            .unwrap_or("computer_use_refused");
+        let message = refusal(code, &result.text, language);
+        let message = format!("{code}: {message}");
+        return Err(if code == "native_interruption_cleanup_unconfirmed" {
+            ToolError::CleanupUnconfirmed(message)
+        } else if matches!(
+            code,
+            "input_outcome_unknown" | "action_outcome_mismatch" | "native_launch_outcome_unknown"
+        ) {
+            ToolError::OutcomeUnknown(message)
+        } else {
+            ToolError::Failed(message)
+        });
+    }
+    serde_json::from_str(&result.raw_json)
+        .map_err(|error| ToolError::OutcomeUnknown(format!("invalid native result: {error}")))
 }
 
 #[cfg(target_os = "macos")]
@@ -1043,6 +1379,86 @@ mod tests {
                 }
                 other => panic!("unexpected native error: {other}"),
             }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_launch_wire_error_keeps_unknown_distinct_from_refusal() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        for (code, uncertain) in [
+            ("native_launch_outcome_unknown", true),
+            ("native_launch_failed", false),
+            ("native_launch_outcome_unknown_extra", false),
+        ] {
+            let directory = tempfile::Builder::new()
+                .prefix("mcu-launch-wire-")
+                .tempdir_in("/tmp")
+                .unwrap();
+            let socket = directory.path().join("d.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let response = serde_json::json!({
+                "ok": true,
+                "result": {
+                    "isError": true,
+                    "content": [{"type": "text", "text": "launcher worker did not settle"}],
+                    "structuredContent": {"code": code, "effect": "unverifiable"}
+                }
+            });
+            let peer = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let metadata: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(metadata["method"], "metadata");
+                writeln!(
+                    stream,
+                    "{}",
+                    serde_json::json!({
+                        "ok": true,
+                        "result": cua_driver_core::daemon::current_daemon_metadata()
+                    })
+                )
+                .unwrap();
+
+                let (mut stream, _) = listener.accept().unwrap();
+                line.clear();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                writeln!(stream, "{response}").unwrap();
+                request
+            });
+            // Only a disposable protocol peer runs. No launcher or desktop
+            // actuator is registered or executed by this boundary keeper.
+            let sdk = CuaDriver::connect(Some(socket.to_string_lossy().into_owned())).unwrap();
+            let result = sdk
+                .call_tool(
+                    "native_launch_app".into(),
+                    serde_json::json!({"app": "fixture.desktop"}).to_string(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.error_code.as_deref(), Some(code));
+            match native_call_result(result, Language::En).unwrap_err() {
+                ToolError::OutcomeUnknown(message) => {
+                    assert!(uncertain, "unexpected unknown for {code}");
+                    assert_eq!(message, format!("{code}: launcher worker did not settle"));
+                }
+                ToolError::Failed(message) => {
+                    assert!(!uncertain, "unknown launch was downgraded: {message}");
+                    assert_eq!(message, format!("{code}: launcher worker did not settle"));
+                }
+                other => panic!("unexpected native launch error: {other}"),
+            }
+            let request = peer.join().unwrap();
+            assert_eq!(request["name"], "native_launch_app");
+            assert_eq!(request["args"]["app"], "fixture.desktop");
         }
     }
 
@@ -1306,6 +1722,7 @@ mod tests {
             Arc::new(BoundSession {
                 session: expired,
                 started,
+                native_turns: Mutex::new(Default::default()),
             }),
         );
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;

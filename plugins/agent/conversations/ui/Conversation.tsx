@@ -62,6 +62,7 @@ import {
 import {
   acceptedSend,
   mergeChunks,
+  openingUserMessage,
   replayStartCursor,
   updateHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
@@ -85,6 +86,7 @@ import {
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
+import { MessageEdit } from '../../../../products/maka/workbench/app/MessageEdit';
 import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
@@ -181,6 +183,17 @@ type ConversationProps = {
   client: ScopedHost;
   control: Control;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
+  /**
+   * Edit and resend a user message, or regenerate a reply (desktop): fork before
+   * the turn with its text, which the fork sends when `send` is set.
+   */
+  edit?(
+    action: Extract<SessionAction, { kind: 'fork' }>,
+    text: string,
+    send: boolean,
+  ): Promise<boolean>;
+  /** Text for an empty draft once it loads, taken once (a fork made to edit or regenerate). */
+  takePrefill?(): { text: string; send: boolean } | null;
   commands(): void;
   visible(): boolean;
   foreground(): boolean;
@@ -241,6 +254,16 @@ export function Conversation(props: ConversationProps) {
   const client = props.client;
   const sessionId = client.sessionId;
   const rows = signal<Row[]>([]);
+  const loadedOpening = (turnId: string | undefined) =>
+    openingUserMessage(rows(), turnId, historyWindow()?.before);
+  const opensTurn = (row: Row) => {
+    const first = loadedOpening(row.turnId);
+    return (
+      first !== null &&
+      first.position?.sourceSequence === row.position?.sourceSequence &&
+      first.position?.itemIndex === row.position?.itemIndex
+    );
+  };
   const live = signal<Row[]>([]);
   const toolActivity = signal<ToolActivity[]>([]);
   const parts = signal<LivePart[]>([]);
@@ -2092,6 +2115,17 @@ export function Conversation(props: ConversationProps) {
   });
   props.attach(ownHandle);
 
+  // A fork made to regenerate a reply sends its prefilled text once sending is possible,
+  // unless the draft was changed first.
+  const autoSend = signal<string | null>(null);
+  effect(() => {
+    const text = autoSend();
+    if (text === null || sendBlockedReason()) return;
+    untracked(() => {
+      autoSend.set(null);
+      if (draft() === text) void send(text);
+    });
+  });
   cleanup(() => {
     alive = false;
     historyIdentity = {};
@@ -2122,6 +2156,12 @@ export function Conversation(props: ConversationProps) {
         draft.set(stored.text);
         attachments.restore(stored.attachments);
         draftReady.set(true);
+        const prefill = props.takePrefill?.() ?? null;
+        if (prefill && stored.text === '' && stored.attachments.length === 0) {
+          changeDraft(prefill.text);
+          props.focusComposer();
+          if (prefill.send) autoSend.set(prefill.text);
+        }
         void attachments.start();
         const operations = await pendingSends(client);
         if (!alive) return;
@@ -2442,8 +2482,34 @@ export function Conversation(props: ConversationProps) {
                             sessionId={sessionId}
                             through={() => latestKnown}
                             fork={props.fork}
+                            extra={
+                              !platform.isTerminal && props.edit ? (
+                                <MessageEdit
+                                  regenerate
+                                  row={() => loadedOpening(row().turnId)}
+                                  sessionId={sessionId}
+                                  through={() => latestKnown}
+                                  opensTurn={() => true}
+                                  edit={props.edit!}
+                                />
+                              ) : undefined
+                            }
                           />
                         )}
+                        editMessage={
+                          !platform.isTerminal && props.edit
+                            ? (row, ownerKey) => (
+                                <MessageEdit
+                                  row={row}
+                                  ownerKey={ownerKey}
+                                  sessionId={sessionId}
+                                  through={() => latestKnown}
+                                  opensTurn={() => opensTurn(row())}
+                                  edit={props.edit!}
+                                />
+                              )
+                            : undefined
+                        }
                       />
                     );
                   }}

@@ -43,3 +43,69 @@ pub struct BrowserConnection {
     pub id: String,
     pub endpoint: String,
 }
+
+/// Backend-validated source of a browser lease observation.
+/// The discriminator and routing string are neither ownership nor permission.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BrowserLeaseSubject {
+    #[serde(rename_all = "camelCase")]
+    PhysicalClaim { claim_id: String },
+    #[serde(rename_all = "camelCase")]
+    FixedSession { scope_id: String },
+}
+impl BrowserLeaseSubject {
+    /// Return an observed routing identity, never a sealed proof or grant.
+    pub fn routing_id(&self) -> &str {
+        match self {
+            Self::PhysicalClaim { claim_id } => claim_id,
+            Self::FixedSession { scope_id } => scope_id,
+        }
+    }
+}
+
+#[cfg(test)]
+mod browser_subject_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn browser_subject_wire_preserves_the_closed_domain() {
+        for (subject, wire) in [
+            (
+                BrowserLeaseSubject::PhysicalClaim {
+                    claim_id: "claim-a".into(),
+                },
+                json!({"kind":"physical_claim","claimId":"claim-a"}),
+            ),
+            (
+                BrowserLeaseSubject::FixedSession {
+                    scope_id: "scope-a".into(),
+                },
+                json!({"kind":"fixed_session","scopeId":"scope-a"}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&subject).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_value::<BrowserLeaseSubject>(wire).unwrap(),
+                subject
+            );
+        }
+    }
+
+    #[test]
+    fn browser_subject_rejects_missing_mixed_and_untyped_tokens() {
+        for wire in [
+            json!({"kind":"physical_claim","scopeId":"scope-a"}),
+            json!({"kind":"fixed_session","claimId":"claim-a"}),
+            json!({"kind":"fixed_session","scopeId":"scope-a","claimId":"claim-a"}),
+            json!({"claimId":"claim-a"}),
+            json!("scope-a"),
+        ] {
+            assert!(
+                serde_json::from_value::<BrowserLeaseSubject>(wire.clone()).is_err(),
+                "wire={wire}"
+            );
+        }
+    }
+}

@@ -22,11 +22,39 @@ use maka_agent_facts::language::Language;
 
 #[cfg(feature = "native-desktop")]
 pub(crate) fn documentation(language: Language) -> &'static str {
+    let source = documentation_source(language);
+    source
+        .split_once("<!-- named-browser-documents -->")
+        .map_or(source, |(text, _)| text)
+}
+
+#[cfg(feature = "native-desktop")]
+fn documentation_source(language: Language) -> &'static str {
     match language {
         Language::En => include_str!("api.md"),
         Language::ZhCn => include_str!("api.zh-CN.md"),
         Language::ZhTw => include_str!("api.zh-TW.md"),
     }
+}
+
+/// Read an exact named document from the same localized source as the general API.
+/// Name availability is not a capability grant or a claim that its feature is enabled.
+#[cfg(feature = "native-desktop")]
+pub(crate) fn named_documentation(language: Language, name: &str) -> Option<&'static str> {
+    let source = documentation_source(language)
+        .split_once("<!-- named-browser-documents -->")?
+        .1;
+    for block in source.split("<!-- browser-document: ").skip(1) {
+        let (names, body) = block.split_once(" -->")?;
+        let (body, _) = body.split_once("<!-- /browser-document -->")?;
+        if names
+            .split_ascii_whitespace()
+            .any(|candidate| candidate == name)
+        {
+            return Some(body.strip_prefix('\n').unwrap_or(body));
+        }
+    }
+    None
 }
 
 pub fn reset(language: Language) -> &'static str {
@@ -110,5 +138,33 @@ pub(crate) fn browser_unknown(language: Language) -> &'static str {
         Language::En => "; repeating a mutation may duplicate its effects",
         Language::ZhCn => "；重复变更操作可能产生重复效果",
         Language::ZhTw => "；重複變更操作可能產生重複效果",
+    }
+}
+
+#[cfg(all(test, feature = "native-desktop"))]
+mod named_documentation_tests {
+    use super::*;
+
+    #[test]
+    fn named_lookup_is_exact_and_cannot_become_a_filesystem_path() {
+        for language in [Language::En, Language::ZhCn, Language::ZhTw] {
+            assert!(named_documentation(language, "session-naming").is_some());
+            assert!(named_documentation(language, "capabilities/browser/viewport").is_some());
+            for missing in [
+                "",
+                " session-naming",
+                "session-naming ",
+                "Session-Naming",
+                "../api",
+                "__proto__",
+            ] {
+                assert!(
+                    named_documentation(language, missing).is_none(),
+                    "accepted {missing:?}"
+                );
+            }
+            assert!(!documentation(language).contains("<!-- named-browser-documents -->"));
+            assert!(!documentation(language).contains("<!-- browser-document: "));
+        }
     }
 }

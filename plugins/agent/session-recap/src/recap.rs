@@ -526,6 +526,7 @@ mod tests {
                     chunks: vec![history::Chunk {
                         model_part: None,
                         final_output: false,
+                        has_references: false,
                         model: None,
                         origin: None,
                         compaction: None,

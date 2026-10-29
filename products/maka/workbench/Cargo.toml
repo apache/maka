@@ -59,9 +59,7 @@ clipboard-win = "5.4.1"
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 
 [build-dependencies]
-nsh-bundler = { workspace = true, features = ["bundle"] }
-nsh-core.workspace = true
-nsh-base.workspace = true
+maka-ui-build.workspace = true
 
 [dev-dependencies]
 nsh-bundler = { workspace = true, features = ["bundle"] }

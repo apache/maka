@@ -282,7 +282,7 @@ async fn explicit_raw_reads_and_new_writes_reject_wrong_scope_missing_and_corrup
     .await
     .unwrap();
     assert!(
-        log.invocation_recovery(&other, 1, 1024)
+        log.invocation_recovery(&other)
             .await
             .unwrap()
             .uncertain_operations

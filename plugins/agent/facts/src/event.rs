@@ -419,6 +419,9 @@ pub enum CommitError {
     /// A captured permission boundary changed before T1; no effect was admitted.
     #[error("permission grant is no longer current")]
     PermissionRevoked,
+    /// A physical native interruption fences only this logical Turn's helper.
+    #[error("native Computer Use is stopped for this logical Turn")]
+    NativeTurnInterrupted,
     #[error("event rejected: {0}")]
     Rejected(String),
     #[error("event commit outcome unknown: {0}")]

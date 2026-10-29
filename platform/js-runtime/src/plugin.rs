@@ -256,7 +256,7 @@ impl Vm {
     /// Entrypoints are prebuilt ESM bundles: no imports or top-level await.
     pub fn load(&self, name: String, source: String) -> Result<Module> {
         if self.0.health.stopped.is_cancelled() {
-            return Err(failed("VM is stopped"));
+            return Err(self.0.health.error());
         }
         let bytes = self
             .0

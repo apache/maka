@@ -89,8 +89,7 @@ async fn connect_inner(
             let root_path = path.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let namespaces = RootNamespaces::for_current_account()?;
-                std::fs::create_dir_all(&root_path)?;
-                let canonical = root_path.canonicalize()?;
+                let canonical = root::prepare_directory(&root_path)?;
                 let key = hex::encode(Sha256::digest(canonical.as_os_str().as_encoded_bytes()));
                 root::private_directory(&namespaces.ownership)?;
                 // Before initialization there is no Root ID. Serialize launchers

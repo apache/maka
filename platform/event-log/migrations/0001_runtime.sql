@@ -951,6 +951,7 @@ CREATE UNIQUE INDEX computer_app_native_effect ON interaction_requests(
 
 CREATE INDEX interaction_browser_origin_decision ON interaction_requests(
     session_id,
+    json_extract(record_json,'$.request.target.capability'),
     json_extract(record_json,'$.request.target.providerId'),
     json_extract(record_json,'$.request.target.contractId'),
     json_extract(record_json,'$.request.target.serverId'),
@@ -961,7 +962,7 @@ CREATE INDEX interaction_browser_origin_decision ON interaction_requests(
     json_extract(record_json,'$.request.basis.binding.permissionEpoch'),
     request_id
 ) WHERE json_extract(record_json,'$.request.kind')='client_capability'
-    AND json_extract(record_json,'$.request.target.capability')='browser'
+    AND json_extract(record_json,'$.request.target.capability') IN ('browser','browser_download')
     AND json_extract(record_json,'$.request.target.scope.kind')='browser_origin';
 
 CREATE INDEX interaction_permission_basis ON interaction_requests(

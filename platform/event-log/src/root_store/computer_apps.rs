@@ -38,9 +38,10 @@ use sqlx::{Connection, SqliteConnection};
 use std::sync::Arc;
 pub(super) mod activity;
 
-// Only the existing Root active-work barrier is extended. There is no new lock
-// or authority state: this dependency ends at source SQL cleanup, before any
-// human wait or physical action. Accepted execution already owns that barrier.
+// Only the existing Root active-work barrier is extended, with no new lock or
+// authority state. App control ends this dependency at source SQL cleanup before
+// any human wait or physical action; a browser service receipt retains it through
+// settlement SQL cleanup. Accepted execution already owns the same barrier.
 struct ControlDependency(Arc<gates::Gates>);
 impl Drop for ControlDependency {
     fn drop(&mut self) {
@@ -473,6 +474,49 @@ impl SessionStore {
         display: &maka_agent_facts::interaction::ComputerAppDisplay,
         basis: &PermissionBasis,
     ) -> Result<u64, CommitError> {
+        self.append_app_dispatch_in_lane(
+            prefix,
+            event,
+            targets,
+            app,
+            display,
+            basis,
+            crate::append::ComputerLane::Other,
+        )
+        .await
+    }
+
+    pub async fn append_native_computer_app_dispatch(
+        &self,
+        prefix: &[EventWrite],
+        event: &EventWrite,
+        targets: &[GrantTarget],
+        app: &GrantTarget,
+        display: &maka_agent_facts::interaction::ComputerAppDisplay,
+        basis: &PermissionBasis,
+    ) -> Result<u64, CommitError> {
+        self.append_app_dispatch_in_lane(
+            prefix,
+            event,
+            targets,
+            app,
+            display,
+            basis,
+            crate::append::ComputerLane::Native,
+        )
+        .await
+    }
+
+    async fn append_app_dispatch_in_lane(
+        &self,
+        prefix: &[EventWrite],
+        event: &EventWrite,
+        targets: &[GrantTarget],
+        app: &GrantTarget,
+        display: &maka_agent_facts::interaction::ComputerAppDisplay,
+        basis: &PermissionBasis,
+        lane: crate::append::ComputerLane,
+    ) -> Result<u64, CommitError> {
         let Fact::ToolDispatched { operation_id, .. } = &event.event().fact else {
             return Err(CommitError::Rejected(
                 "app admission requires a native tool dispatch".into(),
@@ -496,7 +540,7 @@ impl SessionStore {
             .await
             .map_err(super::session_store::commit_error)?;
         log.scoped(Arc::new(pin))
-            .append_computer_app_dispatch(prefix, event, targets, app, display, basis)
+            .append_computer_app_dispatch(prefix, event, targets, app, display, basis, lane)
             .await
     }
 

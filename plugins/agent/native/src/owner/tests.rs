@@ -29,7 +29,6 @@ mod title_tests;
 
 mod todo_tests;
 
-mod computer;
 mod computer_controls;
 
 mod request_capture;

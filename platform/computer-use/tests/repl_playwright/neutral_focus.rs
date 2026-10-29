@@ -122,30 +122,18 @@ pub(super) fn fixture_html(path: &str) -> Option<&'static str> {
             include_str!("neutral_focus/fixtures/fill-empty.html")
         }
         "/input/fill-text?case=fill-text" => include_str!("neutral_focus/fixtures/fill-text.html"),
-        "/ce/ce-plain?case=ce-plain" => include_str!("neutral_focus/fixtures/ce-plain.html"),
-        "/ce/ce-focus-replace-cancel?case=ce-focus-replace-cancel" => {
-            include_str!("neutral_focus/fixtures/ce-focus-replace-cancel.html")
+        "/ce/ce-plain?case=ce-plain"
+        | "/ce/ce-focus-replace-cancel?case=ce-focus-replace-cancel"
+        | "/ce/ce-focus-detach?case=ce-focus-detach"
+        | "/ce/input-plain?case=input-plain"
+        | "/ce/textarea-plain?case=textarea-plain"
+        | "/ce/input-label?case=input-label" => {
+            include_str!("neutral_focus/fixtures/ce-plain.html")
         }
-        "/ce/ce-focus-detach?case=ce-focus-detach" => {
-            include_str!("neutral_focus/fixtures/ce-focus-detach.html")
-        }
-        "/ce/input-plain?case=input-plain" => {
-            include_str!("neutral_focus/fixtures/input-plain.html")
-        }
-        "/ce/textarea-plain?case=textarea-plain" => {
-            include_str!("neutral_focus/fixtures/textarea-plain.html")
-        }
-        "/ce/input-label?case=input-label" => {
-            include_str!("neutral_focus/fixtures/input-label.html")
-        }
-        "/ce/ce-redirect-input?case=ce-redirect-input" => {
+        "/ce/ce-redirect-input?case=ce-redirect-input"
+        | "/ce/ce-redirect-shadow-input?case=ce-redirect-shadow-input"
+        | "/ce/ce-redirect-frame-input?case=ce-redirect-frame-input" => {
             include_str!("neutral_focus/fixtures/ce-redirect-input.html")
-        }
-        "/ce/ce-redirect-shadow-input?case=ce-redirect-shadow-input" => {
-            include_str!("neutral_focus/fixtures/ce-redirect-shadow-input.html")
-        }
-        "/ce/ce-redirect-frame-input?case=ce-redirect-frame-input" => {
-            include_str!("neutral_focus/fixtures/ce-redirect-frame-input.html")
         }
         "/sentinel" => include_str!("neutral_focus/fixtures/sentinel.html"),
         _ => return None,

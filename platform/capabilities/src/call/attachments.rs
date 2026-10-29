@@ -58,3 +58,45 @@ pub trait ReadResource: Send + Sync + 'static {
 /// Actual request-local payloads. Slot names and metadata cannot construct them;
 /// the execution adapter owns capacity and retains these values through cleanup.
 pub type Attachments = BTreeMap<String, Arc<dyn ReadResource>>;
+
+// Append to existing capabilities/src/call/attachments.rs; re-export
+// immutable_bytes from capabilities/src/call.rs. No authority/native custody.
+struct FrozenBytes {
+    name: String,
+    bytes: Arc<[u8]>,
+    digest: String,
+}
+/// Freeze actual owned bytes for existing immutable resource transport.
+pub fn immutable_bytes(name: String, bytes: Vec<u8>) -> Arc<dyn ReadResource> {
+    use sha2::{Digest, Sha256};
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+    Arc::new(FrozenBytes {
+        name,
+        bytes: bytes.into(),
+        digest,
+    })
+}
+impl ReadResource for FrozenBytes {
+    fn resource_type(&self) -> ResourceType {
+        maka_plugin_core::contract::binary_resource_type()
+    }
+    fn bytes(&self) -> usize {
+        self.bytes.len()
+    }
+    fn metadata(&self) -> Value {
+        serde_json::json!({"name":self.name,"bytes":self.bytes.len(),"digest":self.digest})
+    }
+    fn read(&self, range: Range<usize>) -> Result<Vec<u8>, String> {
+        if range
+            .end
+            .checked_sub(range.start)
+            .is_none_or(|count| count > 64 * 1024)
+        {
+            return Err("invalid immutable resource range or exceeds 64 KiB".into());
+        }
+        self.bytes
+            .get(range)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| "invalid immutable resource range".into())
+    }
+}

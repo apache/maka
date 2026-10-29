@@ -106,10 +106,26 @@ pub(crate) struct Window {
     slot: u64,
 }
 
+/// A passive application slot on the same native controller owner.
+#[derive(Clone)]
+pub(crate) struct Application {
+    controller: Controller,
+    slot: u64,
+}
+
 impl std::fmt::Debug for Window {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Window")
+            .field("slot", &self.slot)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for Application {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Application")
             .field("slot", &self.slot)
             .finish_non_exhaustive()
     }
@@ -163,7 +179,32 @@ pub(crate) enum ResolveStep {
     },
 }
 
+/// Metadata from one observed primary AX target, not a window grant or handle.
+#[derive(Debug)]
+pub(crate) struct ApplicationObservation {
+    pub(crate) id: u32,
+    pub(crate) text: String,
+}
+
 enum Command {
+    PrimaryWindowId,
+    BindApplication {
+        epoch: NativeEpochId,
+    },
+    ObserveApplication {
+        slot: u64,
+    },
+    ApplicationAction {
+        slot: u64,
+        action: Action,
+        cancellation: CancellationToken,
+    },
+    ClearApplication {
+        slot: u64,
+    },
+    ReleaseApplication {
+        slot: u64,
+    },
     Bind {
         epoch: NativeEpochId,
         window_id: u32,
@@ -207,6 +248,12 @@ enum Command {
         index: u64,
         cancellation: CancellationToken,
     },
+    BeginApplicationIndexed {
+        slot: u64,
+        expected_window_id: u32,
+        index: u64,
+        cancellation: CancellationToken,
+    },
     FinishIndexed {
         token: IndexedId,
         chess_pid: Option<i32>,
@@ -231,9 +278,11 @@ enum Command {
 
 enum Response {
     Unit,
+    PrimaryWindowId(Option<u32>),
     Bound { slot: u64 },
     Geometry(WindowBounds),
     Observed(String),
+    ApplicationObserved(ApplicationObservation),
     Point([f64; 2]),
     Pasted { restored: bool },
     Position([i64; 2]),
@@ -340,6 +389,27 @@ impl Controller {
         self.transport().await?.request(command).await
     }
 
+    /// Observe the AX primary selection without binding a window or slot.
+    pub(crate) async fn primary_window_id(&self) -> Result<Option<u32>, ToolError> {
+        match self.request(Command::PrimaryWindowId).await? {
+            Response::PrimaryWindowId(id) => Ok(id),
+            _ => Err(unexpected()),
+        }
+    }
+
+    pub(crate) async fn bind_application(
+        &self,
+        epoch: NativeEpochId,
+    ) -> Result<Application, ToolError> {
+        match self.request(Command::BindApplication { epoch }).await? {
+            Response::Bound { slot } => Ok(Application {
+                controller: self.clone(),
+                slot,
+            }),
+            _ => Err(unexpected()),
+        }
+    }
+
     pub(crate) async fn bind_window(
         &self,
         epoch: NativeEpochId,
@@ -432,6 +502,32 @@ impl Controller {
             .await?
         {
             Response::Indexed(IndexedStep::Ready(point)) => Ok(point),
+            _ => Err(unexpected()),
+        }
+    }
+
+    pub(crate) async fn begin_application_indexed(
+        &self,
+        application: &Application,
+        expected_window_id: u32,
+        index: u64,
+        cancellation: CancellationToken,
+    ) -> Result<IndexedStep, ToolError> {
+        if !self.same_owner(&application.controller) {
+            return Err(failed(
+                "native AX application belongs to another controller",
+            ));
+        }
+        match self
+            .request(Command::BeginApplicationIndexed {
+                slot: application.slot,
+                expected_window_id,
+                index,
+                cancellation,
+            })
+            .await?
+        {
+            Response::Indexed(step) => Ok(step),
             _ => Err(unexpected()),
         }
     }
@@ -667,6 +763,47 @@ impl Window {
     }
 }
 
+impl Application {
+    pub(crate) async fn observe(&self) -> Result<ApplicationObservation, ToolError> {
+        match self
+            .controller
+            .request(Command::ObserveApplication { slot: self.slot })
+            .await?
+        {
+            Response::ApplicationObserved(observation) => Ok(observation),
+            _ => Err(unexpected()),
+        }
+    }
+
+    pub(crate) async fn action(
+        &self,
+        action: Action,
+        cancellation: CancellationToken,
+    ) -> Result<(), ToolError> {
+        unit(
+            self.controller
+                .request(Command::ApplicationAction {
+                    slot: self.slot,
+                    action,
+                    cancellation,
+                })
+                .await?,
+        )
+    }
+
+    pub(crate) async fn clear(&self) -> Result<(), ToolError> {
+        self.controller
+            .retire(Command::ClearApplication { slot: self.slot })
+            .await
+    }
+
+    pub(crate) async fn release(&self) -> Result<(), ToolError> {
+        self.controller
+            .retire(Command::ReleaseApplication { slot: self.slot })
+            .await
+    }
+}
+
 impl Transport {
     async fn start(
         pid: i32,
@@ -889,6 +1026,89 @@ struct WindowSlot {
     target: Target,
 }
 
+struct ApplicationSlot {
+    epoch: NativeEpochId,
+    observed: Option<Target>,
+}
+
+impl ApplicationSlot {
+    fn indexed_target(&self, expected_window_id: u32) -> Result<&Target, ToolError> {
+        let target = self
+            .observed
+            .as_ref()
+            .ok_or_else(|| failed("stale_element: observe the application before indexed input"))?;
+        check_indexed_window(target.window_id, expected_window_id)?;
+        Ok(target)
+    }
+
+    fn action(
+        &mut self,
+        action: Action,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ToolError> {
+        if !Target::handles(&action) {
+            return Err(failed(
+                "application slot requires a retained semantic action",
+            ));
+        }
+        self.observed
+            .as_mut()
+            .ok_or_else(|| failed("stale_element: observe the application before semantic input"))?
+            .action(action, cancellation)
+    }
+}
+
+fn check_indexed_window(actual: u32, expected: u32) -> Result<(), ToolError> {
+    if actual != expected {
+        return Err(failed(
+            "stale_target: application observation and captured window differ",
+        ));
+    }
+    Ok(())
+}
+
+enum Slot {
+    Window(WindowSlot),
+    Application(ApplicationSlot),
+}
+
+impl Slot {
+    fn epoch(&self) -> NativeEpochId {
+        match self {
+            Self::Window(window) => window.epoch,
+            Self::Application(application) => application.epoch,
+        }
+    }
+
+    fn window(&self) -> Result<&WindowSlot, ToolError> {
+        match self {
+            Self::Window(window) => Ok(window),
+            Self::Application(_) => Err(failed("native AX application slot is not a window")),
+        }
+    }
+
+    fn window_mut(&mut self) -> Result<&mut WindowSlot, ToolError> {
+        match self {
+            Self::Window(window) => Ok(window),
+            Self::Application(_) => Err(failed("native AX application slot is not a window")),
+        }
+    }
+
+    fn application_mut(&mut self) -> Result<&mut ApplicationSlot, ToolError> {
+        match self {
+            Self::Application(application) => Ok(application),
+            Self::Window(_) => Err(failed("native AX window slot is not an application")),
+        }
+    }
+
+    fn application(&self) -> Result<&ApplicationSlot, ToolError> {
+        match self {
+            Self::Application(application) => Ok(application),
+            Self::Window(_) => Err(failed("native AX window slot is not an application")),
+        }
+    }
+}
+
 struct PendingIndexed {
     epoch: NativeEpochId,
     slot: u64,
@@ -939,7 +1159,7 @@ struct WorkerState {
     generation: String,
     bundle: Option<String>,
     windows: Windows,
-    slots: HashMap<u64, WindowSlot>,
+    slots: HashMap<u64, Slot>,
     indexed: HashMap<IndexedId, PendingIndexed>,
     resolving: HashMap<ResolveId, PendingResolve>,
     position: [i64; 2],
@@ -983,13 +1203,39 @@ impl WorkerState {
     fn slot(&self, slot: u64) -> Result<&WindowSlot, ToolError> {
         self.slots
             .get(&slot)
-            .ok_or_else(|| failed("native AX window handle has retired"))
+            .ok_or_else(|| failed("native AX window handle has retired"))?
+            .window()
     }
 
     fn slot_mut(&mut self, slot: u64) -> Result<&mut WindowSlot, ToolError> {
         self.slots
             .get_mut(&slot)
-            .ok_or_else(|| failed("native AX window handle has retired"))
+            .ok_or_else(|| failed("native AX window handle has retired"))?
+            .window_mut()
+    }
+
+    fn application_slot_mut(&mut self, slot: u64) -> Result<&mut ApplicationSlot, ToolError> {
+        self.slots
+            .get_mut(&slot)
+            .ok_or_else(|| failed("native AX application handle has retired"))?
+            .application_mut()
+    }
+
+    fn observe_application(&mut self, slot: u64) -> Result<ApplicationObservation, ToolError> {
+        // Take before any fallible refresh: a failed observation cannot leave
+        // old indices available as the application's newly observed context.
+        let previous = self.application_slot_mut(slot)?.observed.take();
+        let id = self
+            .windows
+            .primary_window_id()?
+            .ok_or_else(|| failed("application has no primary AX window"))?;
+        let mut target = match previous {
+            Some(target) if target.window_id == id => target,
+            _ => Target::bind(self.pid as u32, u64::from(id))?,
+        };
+        let text = target.observe()?;
+        self.application_slot_mut(slot)?.observed = Some(target);
+        Ok(ApplicationObservation { id, text })
     }
 
     fn handle(&mut self, command: Command) -> Result<Response, ToolError> {
@@ -998,6 +1244,8 @@ impl WorkerState {
             Command::ReleaseEpoch { .. }
                 | Command::Clear { .. }
                 | Command::ReleaseWindow { .. }
+                | Command::ClearApplication { .. }
+                | Command::ReleaseApplication { .. }
                 | Command::Position
                 | Command::SetPosition { .. }
                 | Command::CancelIndexed { .. }
@@ -1007,10 +1255,51 @@ impl WorkerState {
             verify_generation(self.pid, &self.generation)?;
         }
         match command {
+            Command::PrimaryWindowId => {
+                Ok(Response::PrimaryWindowId(self.windows.primary_window_id()?))
+            }
+            Command::BindApplication { epoch } => {
+                let slot = self.token()?;
+                self.slots.insert(
+                    slot,
+                    Slot::Application(ApplicationSlot {
+                        epoch,
+                        observed: None,
+                    }),
+                );
+                Ok(Response::Bound { slot })
+            }
+            Command::ObserveApplication { slot } => Ok(Response::ApplicationObserved(
+                self.observe_application(slot)?,
+            )),
+            Command::ApplicationAction {
+                slot,
+                action,
+                cancellation,
+            } => {
+                self.application_slot_mut(slot)?
+                    .action(action, &cancellation)?;
+                Ok(Response::Unit)
+            }
+            Command::ClearApplication { slot } => {
+                if let Some(application) = self.slots.get_mut(&slot) {
+                    application.application_mut()?.observed = None;
+                }
+                Ok(Response::Unit)
+            }
+            Command::ReleaseApplication { slot } => {
+                if let Some(application) = self.slots.get_mut(&slot) {
+                    application.application_mut()?;
+                }
+                self.slots.remove(&slot);
+                self.indexed.retain(|_, pending| pending.slot != slot);
+                Ok(Response::Unit)
+            }
             Command::Bind { epoch, window_id } => {
                 let target = Target::bind(self.pid as u32, u64::from(window_id))?;
                 let slot = self.token()?;
-                self.slots.insert(slot, WindowSlot { epoch, target });
+                self.slots
+                    .insert(slot, Slot::Window(WindowSlot { epoch, target }));
                 Ok(Response::Bound { slot })
             }
             Command::Verify { slot } => {
@@ -1033,11 +1322,14 @@ impl WorkerState {
             )),
             Command::Clear { slot } => {
                 if let Some(window) = self.slots.get_mut(&slot) {
-                    window.target.clear();
+                    window.window_mut()?.target.clear();
                 }
                 Ok(Response::Unit)
             }
             Command::ReleaseWindow { slot } => {
+                if let Some(window) = self.slots.get(&slot) {
+                    window.window()?;
+                }
                 self.slots.remove(&slot);
                 self.indexed.retain(|_, pending| pending.slot != slot);
                 Ok(Response::Unit)
@@ -1064,7 +1356,7 @@ impl WorkerState {
                 Ok(Response::Pasted { restored })
             }
             Command::ReleaseEpoch { epoch } => {
-                self.slots.retain(|_, slot| slot.epoch != epoch);
+                self.slots.retain(|_, slot| slot.epoch() != epoch);
                 self.indexed.retain(|_, pending| pending.epoch != epoch);
                 self.resolving.retain(|_, pending| pending.epoch() != epoch);
                 Ok(Response::Unit)
@@ -1079,6 +1371,26 @@ impl WorkerState {
                 index,
                 cancellation,
             } => self.begin_indexed(slot, index, cancellation),
+            Command::BeginApplicationIndexed {
+                slot,
+                expected_window_id,
+                index,
+                cancellation,
+            } => {
+                let application = self
+                    .slots
+                    .get(&slot)
+                    .ok_or_else(|| failed("native AX application handle has retired"))?
+                    .application()?;
+                let epoch = application.epoch;
+                let selection = indexed_selection(
+                    application.indexed_target(expected_window_id)?,
+                    index,
+                    self.bundle.as_deref(),
+                    &cancellation,
+                )?;
+                self.prepare_indexed(slot, epoch, selection, cancellation)
+            }
             Command::FinishIndexed { token, chess_pid } => self.finish_indexed(token, chess_pid),
             Command::CancelIndexed { token } => {
                 self.indexed.remove(&token);
@@ -1134,6 +1446,16 @@ impl WorkerState {
         let epoch = window.epoch;
         let selection =
             indexed_selection(&window.target, index, self.bundle.as_deref(), &cancellation)?;
+        self.prepare_indexed(slot, epoch, selection, cancellation)
+    }
+
+    fn prepare_indexed(
+        &mut self,
+        slot: u64,
+        epoch: NativeEpochId,
+        selection: IndexedSelection,
+        cancellation: CancellationToken,
+    ) -> Result<Response, ToolError> {
         if selection.clickable.needs_chess_application() {
             let token = IndexedId(self.token()?);
             self.indexed.insert(
@@ -1597,11 +1919,276 @@ const _: () = {
     assert_send::<Envelope>();
     assert_send::<Controller>();
     assert_send::<Window>();
+    assert_send::<Application>();
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn application_indexed_input_rejects_another_owner_before_mailbox_admission() {
+        let current = Controller::new(123, "fixture-generation".into(), None);
+        let other = Controller::new(123, "fixture-generation".into(), None);
+        let application = Application {
+            controller: other.clone(),
+            slot: 17,
+        };
+        assert!(
+            matches!(current.begin_application_indexed(&application, 27, 1,
+            CancellationToken::new()).await,
+            Err(ToolError::Failed(reason)) if reason == "native AX application belongs to another controller")
+        );
+        for owner in [current, other] {
+            assert!(matches!(
+                *owner.inner.lifecycle.lock().unwrap(),
+                Lifecycle::Dormant
+            ));
+        }
+    }
+
+    #[test]
+    fn application_indexed_input_requires_observation_and_the_captured_window() {
+        let slot = ApplicationSlot {
+            epoch: NativeEpochId::new(),
+            observed: None,
+        };
+        assert!(
+            matches!(slot.indexed_target(27), Err(ToolError::Failed(reason))
+            if reason == "stale_element: observe the application before indexed input")
+        );
+        check_indexed_window(27, 27).unwrap();
+        assert!(
+            matches!(check_indexed_window(28, 27), Err(ToolError::Failed(reason))
+            if reason == "stale_target: application observation and captured window differ")
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires explicit disposable task-owned Mac app PID, path, and window ID"]
+    async fn application_indexed_input_rejects_a_window_different_from_the_real_observation() {
+        let (Ok(pid), Ok(path), Ok(window)) = (
+            std::env::var("MAKA_MAC_TASK_APP_PID"),
+            std::env::var("MAKA_MAC_TASK_APP_PATH"),
+            std::env::var("MAKA_MAC_TASK_WINDOW_ID"),
+        ) else {
+            eprintln!("skipped: task-owned Mac app fixture was not explicitly supplied");
+            return;
+        };
+        let pid: u32 = pid
+            .parse()
+            .expect("task fixture PID must be an actual process ID");
+        let window: u32 = window
+            .parse()
+            .expect("task fixture window ID must be explicit");
+        assert_ne!(pid, 0);
+        assert_ne!(window, 0);
+        let path = std::fs::canonicalize(path).expect("task fixture app path must exist");
+        let candidates = platform_macos::apps::list_all_apps();
+        let candidates: Vec<_> = candidates
+            .into_iter()
+            .filter(|app| {
+                u32::try_from(app.pid).ok() == Some(pid)
+                    && app
+                        .launch_path
+                        .as_ref()
+                        .and_then(|candidate| std::fs::canonicalize(candidate).ok())
+                        .as_ref()
+                        == Some(&path)
+            })
+            .collect();
+        assert_eq!(
+            candidates.len(),
+            1,
+            "task PID must match the exact task-owned app path"
+        );
+        let controller = Controller::new(
+            i32::try_from(pid).unwrap(),
+            crate::identity::process(pid).unwrap(),
+            candidates[0].bundle_id.clone(),
+        );
+        let application = controller
+            .bind_application(NativeEpochId::new())
+            .await
+            .unwrap();
+        let observed = application.observe().await.unwrap();
+        assert_eq!(
+            observed.id, window,
+            "task fixture window must be the actual observed primary"
+        );
+        let different = if window == 1 { 2 } else { 1 };
+        assert!(
+            matches!(controller.begin_application_indexed(&application, different, 1,
+            CancellationToken::new()).await,
+            Err(ToolError::Failed(reason)) if reason == "stale_target: application observation and captured window differ")
+        );
+        application.release().await.unwrap();
+        controller.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn application_binding_and_observation_use_their_own_mailbox_commands() {
+        let controller = Controller::new(123, "fixture-generation".into(), None);
+        let (sender, receiver) = mpsc::channel();
+        let (wake, _reader) = UnixStream::pair().unwrap();
+        *controller.inner.lifecycle.lock().unwrap() = Lifecycle::Running(Arc::new(Transport {
+            sender: Mutex::new(Some(sender)),
+            wake,
+            thread: Mutex::new(None),
+        }));
+        let epoch = NativeEpochId::new();
+        let mut binding = Box::pin(controller.bind_application(epoch));
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(binding.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let envelope = receiver.try_recv().unwrap();
+        assert!(
+            matches!(envelope.command, Command::BindApplication { epoch: actual } if actual == epoch)
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "binding admitted another command"
+        );
+        assert!(
+            envelope
+                .reply
+                .send(Ok(Response::Bound { slot: 17 }))
+                .is_ok()
+        );
+        let application = binding.await.unwrap();
+        assert!(application.controller.same_owner(&controller));
+        assert_eq!(application.slot, 17);
+
+        let mut observation = Box::pin(application.observe());
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(observation.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let envelope = receiver.try_recv().unwrap();
+        assert!(matches!(
+            envelope.command,
+            Command::ObserveApplication { slot: 17 }
+        ));
+        assert!(
+            envelope
+                .reply
+                .send(Ok(Response::ApplicationObserved(ApplicationObservation {
+                    id: 27,
+                    text: "fixture observation".into(),
+                })))
+                .is_ok()
+        );
+        let actual = observation.await.unwrap();
+        assert_eq!(actual.id, 27);
+        assert_eq!(actual.text, "fixture observation");
+    }
+
+    #[test]
+    fn application_slot_cannot_be_used_as_a_window_or_act_without_observation() {
+        let epoch = NativeEpochId::new();
+        let mut slot = Slot::Application(ApplicationSlot {
+            epoch,
+            observed: None,
+        });
+        assert_eq!(slot.epoch(), epoch);
+        assert!(
+            matches!(slot.window(), Err(ToolError::Failed(reason)) if reason == "native AX application slot is not a window")
+        );
+        assert!(
+            matches!(slot.window_mut(), Err(ToolError::Failed(reason)) if reason == "native AX application slot is not a window")
+        );
+        let application = slot.application_mut().unwrap();
+        assert!(matches!(
+            application.action(Action::SetValue { index: 1, value: "value".into() }, &CancellationToken::new()),
+            Err(ToolError::Failed(reason)) if reason == "stale_element: observe the application before semantic input"
+        ));
+        assert!(matches!(
+            application.action(Action::TypeText { index: None, text: "text".into() }, &CancellationToken::new()),
+            Err(ToolError::Failed(reason)) if reason == "application slot requires a retained semantic action"
+        ));
+        assert!(application.observed.is_none());
+    }
+
+    #[tokio::test]
+    async fn application_observation_refuses_closed_owners_and_preserves_unknown_retirement() {
+        let controller = Controller::new(123, "never-a-real-process-generation".into(), None);
+        controller.close().await.unwrap();
+        let application = Application {
+            controller: controller.clone(),
+            slot: 17,
+        };
+        assert!(
+            matches!(controller.bind_application(NativeEpochId::new()).await,
+            Err(ToolError::Failed(reason)) if reason == "native AX controller is closed")
+        );
+        assert!(matches!(application.observe().await,
+            Err(ToolError::Failed(reason)) if reason == "native AX controller is closed"));
+        application.clear().await.unwrap();
+        application.release().await.unwrap();
+        assert!(matches!(
+            *controller.inner.lifecycle.lock().unwrap(),
+            Lifecycle::Terminal { result: Ok(()), .. }
+        ));
+
+        *controller.inner.lifecycle.lock().unwrap() = Lifecycle::Terminal {
+            result: Err(cleanup_error("original close was not confirmed")),
+            _owner: None,
+        };
+        for result in [application.clear().await, application.release().await] {
+            assert!(matches!(result,
+                Err(ToolError::CleanupUnconfirmed(reason)) if reason == "original close was not confirmed"));
+        }
+    }
+
+    #[tokio::test]
+    async fn primary_window_observation_uses_the_mailbox_without_binding_a_slot() {
+        let controller = Controller::new(123, "fixture-generation".into(), None);
+        let (sender, receiver) = mpsc::channel();
+        let (wake, _reader) = UnixStream::pair().unwrap();
+        *controller.inner.lifecycle.lock().unwrap() = Lifecycle::Running(Arc::new(Transport {
+            sender: Mutex::new(Some(sender)),
+            wake,
+            thread: Mutex::new(None),
+        }));
+        for expected in [Some(27), None] {
+            let mut pending = Box::pin(controller.primary_window_id());
+            std::future::poll_fn(|context| {
+                assert!(std::future::Future::poll(pending.as_mut(), context).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            let envelope = receiver.try_recv().unwrap();
+            assert!(matches!(envelope.command, Command::PrimaryWindowId));
+            assert!(
+                receiver.try_recv().is_err(),
+                "observation admitted an extra command"
+            );
+            assert!(
+                envelope
+                    .reply
+                    .send(Ok(Response::PrimaryWindowId(expected)))
+                    .is_ok()
+            );
+            assert_eq!(pending.await.unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn primary_window_observation_does_not_restart_a_closed_controller() {
+        let controller = Controller::new(123, "never-a-real-process-generation".into(), None);
+        controller.close().await.unwrap();
+        assert!(matches!(
+            controller.primary_window_id().await,
+            Err(ToolError::Failed(reason)) if reason == "native AX controller is closed"
+        ));
+        assert!(matches!(
+            *controller.inner.lifecycle.lock().unwrap(),
+            Lifecycle::Terminal { result: Ok(()), .. }
+        ));
+    }
 
     #[tokio::test]
     async fn retiring_an_unused_controller_does_not_start_native_work() {

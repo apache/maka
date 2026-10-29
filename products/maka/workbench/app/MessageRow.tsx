@@ -62,6 +62,7 @@ export function MessageRow({
   toolMaxHeight,
   onToolReading,
   finalActions,
+  editMessage,
 }: {
   item: () => Row;
   /** How many identical failures this row stands for. */
@@ -77,6 +78,8 @@ export function MessageRow({
   toolMaxHeight: () => number;
   onToolReading?(key: string): void;
   finalActions?(row: () => Row, ownerKey: () => string): JSX.Element;
+  /** An action on a user message, beside its copy button. */
+  editMessage?(row: () => Row, ownerKey: () => string): JSX.Element;
 }) {
   const rowKey = (row: Row) => ownerKey?.() ?? messageKey(row);
   return (
@@ -369,6 +372,7 @@ export function MessageRow({
                   sessionId={sessionId}
                   through={through}
                 />
+                {editMessage?.(row, () => rowKey(row()))}
               </View>
             </If>
           </View>

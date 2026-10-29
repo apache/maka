@@ -73,6 +73,62 @@ pub struct Configuration {
     /// Explicit opt-in to recording computer output audio.
     #[serde(default)]
     pub audio: bool,
+    /// Optional browser preparation allowed by Maka Host policy.
+    ///
+    /// This policy is captured for one activation. Updated configuration applies
+    /// to new admissions after the replacement is ready; accepted work drains
+    /// under its captured policy. Commit/adoption acknowledges desired input only.
+    /// Old header removal and native cleanup require their own completion.
+    #[serde(default)]
+    pub browser_preparation: BrowserPreparation,
+}
+
+/// Maka Host policy for requesting or adopting optional browser preparations.
+/// The raw fields are independently configurable. Effective Maka popup adoption
+/// and relay use `popup || !request_headers.is_empty()` so headers can reach the
+/// first request.
+///
+/// | `popup` | `request_headers` | Effective Maka popup adoption/relay |
+/// | --- | --- | --- |
+/// | `false` | empty | `false` |
+/// | `true` | empty | `true` |
+/// | `false` | nonempty | `true` |
+/// | `true` | nonempty | `true` |
+///
+/// Defaults request neither preparation; they do not report native hook state.
+/// Original full preparation may still run fixed preparers enabled natively.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "ComputerBrowserPreparation")]
+pub struct BrowserPreparation {
+    /// Raw Maka opt-in for popup adoption and relay.
+    ///
+    /// Nonempty `request_headers` also enables effective Maka popup adoption and
+    /// relay, even when this raw flag is `false`.
+    ///
+    /// `false` or omitting an enable call does not confirm that Original page
+    /// hooks are off. No native popup-state query or disable RPC is established.
+    pub popup: bool,
+    /// Request headers passed to the native browser preparation boundary.
+    ///
+    /// A nonempty list also enables effective Maka popup adoption and relay so
+    /// headers can reach the first request.
+    ///
+    /// An empty list alone does not confirm that existing native hooks are off.
+    /// An explicitly submitted empty list needs an actual disable acknowledgement;
+    /// leaving the default empty list unsubmitted provides no such confirmation.
+    pub request_headers: Vec<BrowserPreparationHeader>,
+}
+
+/// A request header selected by Maka Host browser preparation policy.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "ComputerBrowserPreparationHeader")]
+pub struct BrowserPreparationHeader {
+    /// Header name validated by the native browser provider.
+    pub name: String,
+    /// Header value validated by the native browser provider.
+    pub value: String,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, JsonSchema)]
@@ -120,15 +176,46 @@ pub fn audio_target() -> maka_agent_facts::interaction::GrantTarget {
 }
 
 pub fn is_browser_target(candidate: &maka_agent_facts::interaction::GrantTarget) -> bool {
+    is_browser_origin_target(
+        candidate,
+        maka_agent_facts::interaction::GrantCapability::Browser,
+    )
+}
+
+/// Match independent browsing-history consent for the actual selected profile.
+pub fn is_browser_history_target(candidate: &maka_agent_facts::interaction::GrantTarget) -> bool {
     use maka_agent_facts::interaction::{GrantCapability, GrantScope};
+    let mut expected = target();
+    expected.capability = GrantCapability::BrowserHistory;
+    expected.scope = candidate.scope.clone();
+    candidate == &expected
+        && matches!(&candidate.scope,
+        GrantScope::BrowserProfile { browser_id, generation }
+            if !browser_id.is_empty() && !generation.is_empty())
+        && candidate.validate().is_ok()
+}
+
+/// Recognize file download consent from the original Computer Use producer.
+pub fn is_browser_download_target(candidate: &maka_agent_facts::interaction::GrantTarget) -> bool {
+    is_browser_origin_target(
+        candidate,
+        maka_agent_facts::interaction::GrantCapability::BrowserDownload,
+    )
+}
+
+fn is_browser_origin_target(
+    candidate: &maka_agent_facts::interaction::GrantTarget,
+    capability: maka_agent_facts::interaction::GrantCapability,
+) -> bool {
+    use maka_agent_facts::interaction::GrantScope;
     if candidate.validate().is_err()
-        || candidate.capability != GrantCapability::Browser
+        || candidate.capability != capability
         || !matches!(candidate.scope, GrantScope::BrowserOrigin { .. })
     {
         return false;
     }
     let mut expected = target();
-    expected.capability = GrantCapability::Browser;
+    expected.capability = capability;
     expected.scope = candidate.scope.clone();
     candidate == &expected
 }
@@ -192,6 +279,88 @@ mod tests {
     use maka_agent_facts::interaction::{GrantCapability, GrantScope};
 
     #[test]
+    fn browser_preparation_defaults_disable_both_host_preparations() {
+        let validator = jsonschema::validator_for(&configuration_schema()).unwrap();
+        let expected = serde_json::json!({"popup": false, "requestHeaders": []});
+        for input in [
+            serde_json::json!({}),
+            serde_json::json!({"browserPreparation": {}}),
+            serde_json::json!({"browserPreparation": {"popup": false}}),
+            serde_json::json!({"browserPreparation": {"requestHeaders": []}}),
+        ] {
+            assert!(
+                validator.is_valid(&input),
+                "schema rejects optional controls: {input}"
+            );
+            let configuration: Configuration = serde_json::from_value(input.clone())
+                .expect("omitted browser preparation controls use Host policy defaults");
+            assert_eq!(
+                serde_json::to_value(configuration.browser_preparation)
+                    .expect("browser preparation serializes"),
+                expected,
+                "input {input}",
+            );
+        }
+    }
+
+    #[test]
+    fn browser_preparation_controls_are_independent() {
+        let validator = jsonschema::validator_for(&configuration_schema()).unwrap();
+        for popup in [false, true] {
+            for request_headers in [
+                serde_json::json!([]),
+                serde_json::json!([{"name": "X-Maka-Test", "value": "retained value"}]),
+            ] {
+                let expected = serde_json::json!({
+                    "popup": popup,
+                    "requestHeaders": request_headers,
+                });
+                let input = serde_json::json!({
+                    "browserPreparation": expected.clone(),
+                });
+                assert!(
+                    validator.is_valid(&input),
+                    "schema rejects independent controls: {input}"
+                );
+                let configuration: Configuration = serde_json::from_value(input)
+                    .expect("popup and request headers can be configured independently");
+                assert_eq!(
+                    serde_json::to_value(configuration.browser_preparation)
+                        .expect("browser preparation serializes"),
+                    expected,
+                    "popup and request headers must survive deserialization independently",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn browser_preparation_schema_and_decoder_reject_invalid_input() {
+        let validator = jsonschema::validator_for(&configuration_schema()).unwrap();
+        for input in [
+            serde_json::json!({"browserPreparation": {"unexpected": true}}),
+            serde_json::json!({"browserPreparation": {"requestHeaders": [{
+                "name": "X-Maka-Test", "value": "value", "unexpected": true,
+            }]}}),
+            serde_json::json!({"browserPreparation": {"popup": "true"}}),
+            serde_json::json!({"browserPreparation": {"requestHeaders": {}}}),
+            serde_json::json!({"browserPreparation": {"requestHeaders": [{"name": 1, "value": "value"}]}}),
+            serde_json::json!({"browserPreparation": {"requestHeaders": [{"name": "X-Maka-Test", "value": 1}]}}),
+            serde_json::json!({"browserPreparation": {"requestHeaders": [{"name": "X-Maka-Test"}]}}),
+            serde_json::json!({"browserPreparation": {"requestHeaders": [{"value": "value"}]}}),
+        ] {
+            assert!(
+                !validator.is_valid(&input),
+                "schema accepts invalid controls: {input}"
+            );
+            assert!(
+                serde_json::from_value::<Configuration>(input.clone()).is_err(),
+                "invalid browser preparation accepted: {input}",
+            );
+        }
+    }
+
+    #[test]
     fn browser_consent_requires_the_original_computer_producer_and_canonical_origin() {
         let mut browser = target();
         browser.capability = GrantCapability::Browser;
@@ -216,5 +385,67 @@ mod tests {
         assert!(!is_browser_target(&browser));
         assert!(!is_browser_target(&target()));
         assert!(!is_browser_target(&audio_target()));
+    }
+
+    #[test]
+    fn browser_download_consent_is_independent_and_requires_the_exact_producer() {
+        let mut download = target();
+        download.capability = GrantCapability::BrowserDownload;
+        download.scope = GrantScope::BrowserOrigin {
+            origin: "https://download.example".into(),
+        };
+        assert!(is_browser_download_target(&download));
+        assert!(!is_browser_target(&download));
+        let mut read = download.clone();
+        read.capability = GrantCapability::Browser;
+        assert!(is_browser_target(&read));
+        assert!(!is_browser_download_target(&read));
+        for field in ["provider", "contract", "server", "tool"] {
+            let mut foreign = download.clone();
+            match field {
+                "provider" => foreign.provider_id = "foreign".into(),
+                "contract" => foreign.contract_id = "foreign".into(),
+                "server" => foreign.server_id = "foreign".into(),
+                "tool" => foreign.tool_name = "foreign".into(),
+                _ => unreachable!(),
+            }
+            assert!(!is_browser_download_target(&foreign));
+        }
+        download.scope = GrantScope::Capability {};
+        assert!(!is_browser_download_target(&download));
+    }
+}
+
+#[cfg(test)]
+mod browser_history_target_tests {
+    use super::*;
+    use maka_agent_facts::interaction::{GrantCapability, GrantScope};
+    #[test]
+    fn history_consent_cannot_alias_site_or_capability_consent() {
+        let mut history = target();
+        history.capability = GrantCapability::BrowserHistory;
+        history.scope = GrantScope::BrowserProfile {
+            browser_id: "maka:instance".to_owned(),
+            generation: "generation".to_owned(),
+        };
+        assert!(is_browser_history_target(&history));
+        assert!(!is_browser_target(&history));
+        assert!(!is_browser_download_target(&history));
+        let mut foreign = history.clone();
+        foreign.scope = GrantScope::BrowserOrigin {
+            origin: "https://example.test".to_owned(),
+        };
+        assert!(!is_browser_history_target(&foreign));
+        foreign.scope = GrantScope::Capability {};
+        assert!(!is_browser_history_target(&foreign));
+        foreign = history.clone();
+        foreign.tool_name = "other_tool".to_owned();
+        assert!(!is_browser_history_target(&foreign));
+        let mut next_profile = history.clone();
+        next_profile.scope = GrantScope::BrowserProfile {
+            browser_id: "maka:instance".to_owned(),
+            generation: "other-generation".to_owned(),
+        };
+        assert_ne!(history, next_profile);
     }
 }

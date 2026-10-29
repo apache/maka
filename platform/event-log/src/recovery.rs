@@ -134,69 +134,61 @@ const SESSION_UNFINISHED_INVOCATIONS: &str = "WITH pending AS MATERIALIZED (
 impl EventLog {
     /// Read only unresolved execution authority in one SQLite snapshot. Text,
     /// streamed observations, opening inputs and settled results are excluded.
-    /// Bounds cover the projected operations, not the model-history prefix.
     pub async fn invocation_recovery(
         &self,
         invocation: &Invocation,
-        max_operations: usize,
-        max_bytes: usize,
     ) -> Result<InvocationRecovery, StoreError> {
         self.validate_root()?;
-        let limit = max_operations
-            .checked_add(1)
-            .and_then(|n| i64::try_from(n).ok())
-            .ok_or(StoreError::PrefixTooLarge)?;
         let invocation = invocation.clone();
-        self.connection.read(move |connection| Box::pin(async move {
-        let mut transaction = connection.begin().await?;
-        require_local(&mut transaction, &invocation.invocation_id).await?;
-        let identity: String = sqlx::query_scalar(
-            "SELECT json_extract(event_json, '$.invocation') FROM runtime_events
+        self.connection
+            .read(move |connection| {
+                Box::pin(async move {
+                    let mut transaction = connection.begin().await?;
+                    require_local(&mut transaction, &invocation.invocation_id).await?;
+                    let identity: String = sqlx::query_scalar(
+                        "SELECT json_extract(event_json, '$.invocation') FROM runtime_events
              WHERE invocation_id = ? AND kind = 'invocation_opened'",
-        ).bind(&invocation.invocation_id).fetch_one(&mut *transaction).await?;
-        if serde_json::from_str::<Invocation>(&identity)? != invocation {
-            return Err(StoreError::InvalidTransition(
-                "stored invocation identity changed".into(),
-            ));
-        }
-        let mut evidence = InvocationRecovery {
-            unfinished_executor: false,
-            unfinished_model_steps: Vec::new(),
-            uncertain_operations: Vec::new(),
-            undispatched_calls: Vec::new(),
-        };
-        {
-            let query = unresolved!(" SELECT kind, id, name, input, call,
-                    length(CAST(id AS BLOB)) + length(CAST(name AS BLOB)) + length(CAST(input AS BLOB)) + length(CAST(call AS BLOB))
-                FROM unresolved LIMIT ?2");
-            let mut rows = sqlx::query(query).bind(&invocation.invocation_id).bind(limit).fetch(&mut *transaction);
-            let mut bytes = 0usize;
-            let mut count = 0usize;
-            while let Some(row) = rows.try_next().await? {
-                let size = usize::try_from(row.try_get::<i64, _>(5)?)
-                    .map_err(|_| StoreError::PrefixTooLarge)?;
-                bytes = bytes.checked_add(size).ok_or(StoreError::PrefixTooLarge)?;
-                if count == max_operations || bytes > max_bytes {
-                    return Err(StoreError::PrefixTooLarge);
-                }
-                count += 1;
-                match row.try_get::<i64, _>(0)? {
-                    0 => evidence.unfinished_model_steps.push(row.try_get(1)?),
-                    1 => evidence.uncertain_operations.push(row.try_get(1)?),
-                    2 => evidence.undispatched_calls.push(UndispatchedCall {
-                        operation_id: row.try_get(1)?,
-                        identity: serde_json::from_str(row.try_get(4)?)?,
-                        name: row.try_get(2)?,
-                        input: serde_json::from_str(row.try_get(3)?)?,
-                    }),
-                    3 => evidence.unfinished_executor = true,
-                    _ => unreachable!("query emits only recovery fact kinds"),
-                }
-            }
-        }
-        transaction.commit().await?;
-        Ok(evidence)
-        })).await
+                    )
+                    .bind(&invocation.invocation_id)
+                    .fetch_one(&mut *transaction)
+                    .await?;
+                    if serde_json::from_str::<Invocation>(&identity)? != invocation {
+                        return Err(StoreError::InvalidTransition(
+                            "stored invocation identity changed".into(),
+                        ));
+                    }
+                    let mut evidence = InvocationRecovery {
+                        unfinished_executor: false,
+                        unfinished_model_steps: Vec::new(),
+                        uncertain_operations: Vec::new(),
+                        undispatched_calls: Vec::new(),
+                    };
+                    {
+                        let query =
+                            unresolved!(" SELECT kind, id, name, input, call FROM unresolved");
+                        let mut rows = sqlx::query(query)
+                            .bind(&invocation.invocation_id)
+                            .fetch(&mut *transaction);
+                        while let Some(row) = rows.try_next().await? {
+                            match row.try_get::<i64, _>(0)? {
+                                0 => evidence.unfinished_model_steps.push(row.try_get(1)?),
+                                1 => evidence.uncertain_operations.push(row.try_get(1)?),
+                                2 => evidence.undispatched_calls.push(UndispatchedCall {
+                                    operation_id: row.try_get(1)?,
+                                    identity: serde_json::from_str(row.try_get(4)?)?,
+                                    name: row.try_get(2)?,
+                                    input: serde_json::from_str(row.try_get(3)?)?,
+                                }),
+                                3 => evidence.unfinished_executor = true,
+                                _ => unreachable!("query emits only recovery fact kinds"),
+                            }
+                        }
+                    }
+                    transaction.commit().await?;
+                    Ok(evidence)
+                })
+            })
+            .await
     }
 
     /// Read a page of current unsealed local obligations after an opening cursor.

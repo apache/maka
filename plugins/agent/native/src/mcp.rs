@@ -46,6 +46,7 @@ use maka_agent_facts::{
 };
 use maka_event_log::RootStore;
 use maka_mcp::Connection;
+use maka_tool_catalog::input::Projection;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -88,11 +89,6 @@ impl Servers {
             return Ok(servers);
         }
         let mut names = BTreeSet::new();
-        if configurations.len() > 64 {
-            return Err(StartupError::clean(
-                "At most 64 MCP servers may be configured",
-            ));
-        }
         for config in configurations {
             maka_mcp::validate(config).map_err(StartupError::clean)?;
             if !names.insert(&config.name) {
@@ -138,6 +134,9 @@ impl Servers {
             );
             for tool in connection.tools() {
                 let name = tool.definition.name.clone();
+                let mut definition = tool.definition.clone();
+                let (input_projection, input_schema) = Projection::project(definition.input_schema);
+                definition.input_schema = input_schema;
                 if tool.read_only {
                     servers.planning.push(name.clone());
                 }
@@ -145,7 +144,7 @@ impl Servers {
                     .bindings
                     .insert(name.clone(), Some(generation.clone()));
                 servers.registrations.push(ToolRegistration {
-                    definition: tool.definition.clone(),
+                    definition,
                     nesting: ToolNesting::Nestable,
                     semantics: ToolSemantics::Parallel,
                     handler: ToolHandler::Prepared(Arc::new(Binding {
@@ -157,6 +156,7 @@ impl Servers {
                         generation: generation.clone(),
                         preapproved: config.preapproved,
                         read_only: tool.read_only,
+                        input_projection,
                     })),
                 });
             }
@@ -183,6 +183,7 @@ struct Binding {
     generation: String,
     preapproved: bool,
     read_only: bool,
+    input_projection: Projection,
 }
 fn permitted(configuration: &ResolvedConfiguration, name: &str, read_only: bool) -> bool {
     configuration
@@ -210,6 +211,7 @@ impl ToolPreparer for Binding {
         let generation = self.generation.clone();
         let read_only = self.read_only;
         let preapproved = self.preapproved;
+        let input_projection = self.input_projection;
         Box::pin(async move {
             let store = Arc::new(
                 store
@@ -230,6 +232,10 @@ impl ToolPreparer for Binding {
             if cancellation.is_cancelled() {
                 return Err(ToolRejection::Cancelled);
             }
+            let approval_input = (!preapproved
+                && matches!(input_projection, Projection::RequestEnvelope))
+            .then(|| input.clone());
+            let input = input_projection.decode(input)?;
             let live = maka_agent_authority::permissions::live(&store, &context.invocation)
                 .await
                 .map_err(|error| ToolRejection::PreparationFailed {
@@ -252,7 +258,7 @@ impl ToolPreparer for Binding {
                                 binding: &generation,
                                 service: &format!("MCP server {server}"),
                             },
-                            &input,
+                            approval_input.as_ref().unwrap_or(&input),
                             &cancel,
                         )
                         .await?;

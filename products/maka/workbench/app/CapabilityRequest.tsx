@@ -17,10 +17,10 @@
  * under the License.
  */
 
-import { tr } from './locale';
 import { Text, View } from 'nsh';
 import type { InteractionRequest } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import { Icon } from './Icon';
+import { tr } from './locale';
 import { bodyTextStyle, C, captionTextStyle, codeTextStyle } from './ui';
 
 type Request = Extract<InteractionRequest, { kind: 'client_capability' }>;
@@ -45,7 +45,9 @@ export function computerCapability(request: Request): boolean {
     target.toolName === 'cua_repl' &&
     (((target.capability === 'computer_use' || target.capability === 'computer_audio') &&
       target.scope.kind === 'capability') ||
-      (target.capability === 'browser' && target.scope.kind === 'browser_origin'))
+      ((target.capability === 'browser' || target.capability === 'browser_download') &&
+        target.scope.kind === 'browser_origin') ||
+      (target.capability === 'browser_history' && target.scope.kind === 'browser_profile'))
   );
 }
 export function CapabilityRequest(props: { request: Request; sessionId: string }) {
@@ -67,9 +69,13 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
             {computerCapability(props.request)
               ? props.request.target.capability === 'computer_audio'
                 ? tr('Computer output audio for this session')
-                : props.request.target.capability === 'browser'
-                  ? tr('Browser access for this session')
-                  : tr('Computer access for this session')
+                : props.request.target.capability === 'browser_history'
+                  ? tr('Browsing history for this browser profile')
+                  : props.request.target.capability === 'browser_download'
+                    ? tr('Browser file downloads for this session')
+                    : props.request.target.capability === 'browser'
+                      ? tr('Browser access for this session')
+                      : tr('Computer access for this session')
               : tr('Requested client capability')}
           </Text>
           <Text style={[{ ...codeTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
@@ -84,13 +90,21 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
                 ? tr(
                     "This allows the requesting tool to record audio played by the computer. The grant lasts for this session's current permission boundary.",
                   )
-                : props.request.target.capability === 'browser'
+                : props.request.target.capability === 'browser_history'
                   ? tr(
-                      "This allows the requesting tool to access pages on the displayed browser origin. The grant lasts for this session's current permission boundary.",
+                      "Allow this tool to read the selected browser profile's browsing history for this session. Page access, downloads, and other browser profiles need separate permission. Reconnecting the browser requires permission again.",
                     )
-                  : tr(
-                      "This allows the requesting tool to inspect and control the local computer, including screenshots, keyboard and pointer actions. The grant lasts for this session's current permission boundary.",
-                    )}
+                  : props.request.target.capability === 'browser_download'
+                    ? tr(
+                        "This allows the requesting tool to download files from the displayed browser origin. Browser page access is a separate permission. The grant lasts for this session's current permission boundary.",
+                      )
+                    : props.request.target.capability === 'browser'
+                      ? tr(
+                          "This allows the requesting tool to access pages on the displayed browser origin. The grant lasts for this session's current permission boundary.",
+                        )
+                      : tr(
+                          "This allows the requesting tool to inspect and control the local computer, including screenshots, keyboard and pointer actions. The grant lasts for this session's current permission boundary.",
+                        )}
             </Text>
           </If>
         </View>
@@ -98,14 +112,20 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
       <View style={{ gap: 8 }}>
         <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Scope')}</Text>
         <Text style={[{ ...bodyTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
-          {props.request.target.scope.kind === 'browser_origin'
-            ? tr('Browser origin: {origin}', { origin: props.request.target.scope.origin })
-            : props.request.target.scope.kind === 'mcp_tool'
-              ? tr('Only {server} · {tool}', {
-                  server: props.request.target.scope.serverId,
-                  tool: props.request.target.scope.toolName,
+          {props.request.target.scope.kind === 'browser_profile'
+            ? tr('Browser profile: {browser}', {
+                browser: props.request.target.scope.browserId,
+              })
+            : props.request.target.scope.kind === 'browser_origin'
+              ? tr('Browser origin: {origin}', {
+                  origin: props.request.target.scope.origin,
                 })
-              : tr('Applies to this capability within the current permission boundary.')}
+              : props.request.target.scope.kind === 'mcp_tool'
+                ? tr('Only {server} · {tool}', {
+                    server: props.request.target.scope.serverId,
+                    tool: props.request.target.scope.toolName,
+                  })
+                : tr('Applies to this capability within the current permission boundary.')}
         </Text>
       </View>
       <If when={!computerCapability(props.request)}>
@@ -115,7 +135,14 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
           )}
         </Text>
       </If>
-      <View style={{ gap: 8, borderTopWidth: 1, borderTopColor: C.line, paddingTop: 16 }}>
+      <View
+        style={{
+          gap: 8,
+          borderTopWidth: 1,
+          borderTopColor: C.line,
+          paddingTop: 16,
+        }}
+      >
         <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Request details')}</Text>
         <Each
           of={[

@@ -150,7 +150,7 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
         )
         .await;
         let secret = "private summary text ".repeat(100);
-        let delta = hidden(
+        let metadata = hidden(
             &log,
             &mut view,
             &compact,
@@ -175,13 +175,13 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
         assert_eq!(running.session.read_state, previous.read_state);
         assert_eq!(running.session.last_message, previous.last_message);
         assert!(
-            log.active_transcript(&compact, delta.sequence)
+            log.active_transcript(&compact, metadata.sequence)
                 .await
                 .unwrap()
                 .is_empty()
         );
         let delivery = log
-            .session_stream_events("session", old_end.sequence, delta.sequence, 1, 4096)
+            .session_stream_events("session", old_end.sequence, metadata.sequence, 1, 4096)
             .await
             .unwrap();
         assert_eq!(delivery.events.len(), 1);
@@ -190,8 +190,8 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
             StreamFact::ContextChanged
         ));
         assert!(delivery.next_after.is_none());
-        assert_eq!(delivery.through_sequence, delta.sequence);
-        crate::transcript_cache::materialize_all_rows(&log, "session", delta.sequence)
+        assert_eq!(delivery.through_sequence, metadata.sequence);
+        crate::transcript_cache::materialize_all_rows(&log, "session", metadata.sequence)
             .await
             .unwrap();
         assert_eq!(

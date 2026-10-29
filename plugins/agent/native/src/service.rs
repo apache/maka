@@ -519,6 +519,7 @@ impl Handler for Agent {
                                 .into_iter()
                                 .map(|chunk| HistoryChunk {
                                     model_part: chunk.model_part,
+                                    has_references: chunk.has_references,
                                     final_output: chunk.final_output,
                                     model: chunk.model,
                                     origin: chunk.origin,

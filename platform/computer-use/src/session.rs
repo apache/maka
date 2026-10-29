@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod native_computer;
+
 use crate::{driver::Driver, protocol::*};
 use cua_driver_contract::{
     AppInfo, ListAppsOutput, ListWindowsOutput, WindowInfo, WindowStateOutput,
@@ -33,6 +35,7 @@ use tokio_util::sync::CancellationToken;
 /// Native targets and observation identities have one Session owner. REPL
 /// objects contain only random handles; the Host supplies current admission.
 pub struct Session {
+    raw_computer: native_computer::RawComputer,
     native: std::sync::Arc<tokio::sync::Mutex<Driver>>,
     epoch: crate::desktop::NativeEpochId,
     #[cfg(all(target_os = "linux", not(target_env = "musl")))]
@@ -42,7 +45,7 @@ pub struct Session {
     state: EpochState,
     browsers: crate::browser::Browsers,
     owner: crate::desktop::SessionOwner,
-    audio: Option<cua_driver_sdk::AudioCompletion>,
+    audio: Option<crate::driver::AudioCompletion>,
 }
 
 enum EpochState {
@@ -68,6 +71,7 @@ impl Session {
         owner: crate::desktop::SessionOwner,
     ) -> Self {
         Self {
+            raw_computer: Default::default(),
             native: native.clone(),
             epoch,
             #[cfg(all(target_os = "linux", not(target_env = "musl")))]
@@ -84,6 +88,33 @@ impl Session {
             owner,
             audio: None,
         }
+    }
+
+    /// Internal service path for a retained page event, never a model command.
+    pub(crate) async fn adopt_browser_lease_child(
+        &mut self,
+        request: crate::BrowserLeaseChildRequest,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Value, ToolError> {
+        if !matches!(self.state, EpochState::Open) {
+            return Err(failed("Computer Use Session is closed"));
+        }
+        self.owner.ensure_open()?;
+        if self.id.as_deref() != Some(invocation.session())
+            || request.turn_id != invocation.turn()
+            || request.native_epoch != self.epoch.to_string()
+            || invocation.operation_id().is_none_or(str::is_empty)
+        {
+            return Err(failed(
+                "Browser lease-child service changed its actual Session/turn/epoch",
+            ));
+        }
+        let cursor = self.owner.cursor();
+        self.browsers
+            .adopt_extension_popup(request, invocation, &cursor, cancellation, language)
+            .await
     }
 
     async fn invoke_native(
@@ -162,6 +193,19 @@ impl Session {
                 Command::GetApp {
                     target: AppReference::Name(name),
                 } => Request::Name(name.clone()),
+                Command::NativeComputer {
+                    call: NativeComputerCall::Invoke { operation, args },
+                } if !matches!(operation, NativeComputerMethod::ListApps) => {
+                    let input = args.first().unwrap_or(&Value::Null);
+                    let name = input
+                        .get("app")
+                        .and_then(Value::as_str)
+                        .filter(|name| !name.trim().is_empty())
+                        .ok_or_else(|| {
+                            failed("Computer Use app approval requires a non-empty app")
+                        })?;
+                    Request::RawApp(name.into())
+                }
                 Command::GetApp {
                     target: AppReference::Window { window_id },
                 } => Request::Window {
@@ -201,6 +245,24 @@ impl Session {
             }
             Ok(Some(target))
         }
+        #[cfg(target_os = "windows")]
+        if let Command::NativeComputer {
+            call: NativeComputerCall::Invoke { operation, args },
+        } = command
+        {
+            let input = native_computer::windows_permission_input(*operation, args)?;
+            if let Some(window) = input {
+                let target = tokio::task::spawn_blocking(move || {
+                    crate::windows_permission_subject::resolve_window(window, language)
+                })
+                .await
+                .map_err(failed)??;
+                if cancellation.is_cancelled() {
+                    return Err(failed("Computer Use cancelled during app resolution"));
+                }
+                return Ok(Some(target));
+            }
+        }
         #[cfg(not(target_os = "macos"))]
         {
             let _ = (command, language);
@@ -214,7 +276,44 @@ impl Session {
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<Value, ToolError> {
-        let session = invocation.session();
+        self.prepare_invoke(command, invocation, cancellation, language)
+            .await?
+            .wait()
+            .await
+    }
+
+    /// Arm deferred browser waits before the caller releases its Session lock.
+    pub async fn prepare_invoke(
+        &mut self,
+        command: Command,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<crate::InvocationCompletion, ToolError> {
+        if let Command::BrowserWait { handle, operation } = command {
+            self.admit_invocation(invocation.session(), cancellation)?;
+            return self
+                .browsers
+                .prepare_wait(handle, operation, invocation, cancellation, language)
+                .await;
+        }
+        if let Command::BrowserDownloadWait { handle, options } = command {
+            self.admit_invocation(invocation.session(), cancellation)?;
+            return self
+                .browsers
+                .prepare_download(handle, options, invocation, cancellation, language)
+                .await;
+        }
+        self.invoke_immediate(command, invocation, cancellation, language)
+            .await
+            .map(crate::InvocationCompletion::ready)
+    }
+
+    fn admit_invocation(
+        &mut self,
+        session: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ToolError> {
         if cancellation.is_cancelled() {
             return Err(failed("Computer Use cancelled before dispatch"));
         }
@@ -226,33 +325,92 @@ impl Session {
             return Err(failed("Computer Use Session identity mismatch"));
         }
         self.id.get_or_insert_with(|| session.into());
+        Ok(())
+    }
+
+    async fn invoke_immediate(
+        &mut self,
+        command: Command,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Value, ToolError> {
+        #[cfg(target_os = "windows")]
+        {
+            crate::desktop::worker::native_owner::in_turn(
+                invocation,
+                self.invoke_in_turn(command, invocation, cancellation, language),
+            )
+            .await
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.invoke_in_turn(command, invocation, cancellation, language)
+                .await
+        }
+    }
+
+    async fn invoke_in_turn(
+        &mut self,
+        command: Command,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Value, ToolError> {
+        let session = invocation.session();
+        self.admit_invocation(session, cancellation)?;
         let cursor = self.owner.cursor();
         let mut result = match command {
+            Command::NativeComputer { call } => {
+                self.native_computer(call, invocation, cancellation, language)
+                    .await
+            }
             Command::Documentation => Ok(json!(crate::language::documentation(language))),
+            Command::ReadDocumentation { name } => {
+                crate::language::named_documentation(language, &name)
+                    .map(|text| json!(text))
+                    .ok_or_else(|| failed(format!("Documentation is not available: {name}")))
+            }
             Command::StartAudioRecording { options } => {
-                let started = self
-                    .invoke_native(
-                        "start_audio_recording",
+                #[cfg(target_os = "windows")]
+                {
+                    let (started, completion) = Driver::start_windows_audio(
+                        &self.native,
                         serde_json::to_value(options).map_err(failed)?,
+                        self.epoch,
                         cancellation,
                         language,
                     )
                     .await?;
-                let snapshot = self.native.lock().await.audio_completion(self.epoch);
-                match snapshot.await {
-                    Ok(completion) => self.audio = Some(completion),
-                    Err(snapshot) => {
-                        return match self.discard_audio().await {
-                            Ok(()) => Err(failed(format!(
-                                "Computer audio startup was stopped because its completion could not be bound: {snapshot}"
-                            ))),
-                            Err(cleanup) => Err(ToolError::CleanupUnconfirmed(format!(
-                                "Computer audio completion could not be bound: {snapshot}; startup cleanup: {cleanup}"
-                            ))),
-                        };
-                    }
+                    self.audio = Some(completion);
+                    Ok(started.structured_content.unwrap_or(Value::Null))
                 }
-                Ok(started.structured_content.unwrap_or(Value::Null))
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let started = self
+                        .invoke_native(
+                            "start_audio_recording",
+                            serde_json::to_value(options).map_err(failed)?,
+                            cancellation,
+                            language,
+                        )
+                        .await?;
+                    let snapshot = self.native.lock().await.audio_completion(self.epoch);
+                    match snapshot.await {
+                        Ok(completion) => self.audio = Some(completion),
+                        Err(snapshot) => {
+                            return match self.discard_audio().await {
+                                Ok(()) => Err(failed(format!(
+                                    "Computer audio startup was stopped because its completion could not be bound: {snapshot}"
+                                ))),
+                                Err(cleanup) => Err(ToolError::CleanupUnconfirmed(format!(
+                                    "Computer audio completion could not be bound: {snapshot}; startup cleanup: {cleanup}"
+                                ))),
+                            };
+                        }
+                    }
+                    Ok(started.structured_content.unwrap_or(Value::Null))
+                }
             }
             Command::StopAudioRecording => {
                 let stopped = self
@@ -263,7 +421,7 @@ impl Session {
             }
             Command::ConfigureCursor { options } => {
                 let cursor = self.owner.configure_cursor(options)?;
-                let browsers = self.browsers.configure_cursor(&cursor).await;
+                let browsers = self.browsers.configure_cursor(&cursor, invocation).await;
                 let mut native = self.native.lock().await;
                 let cursor = self.owner.cursor();
                 let native = native.cursors.configure(&cursor).await;
@@ -272,7 +430,7 @@ impl Session {
             Command::CursorState { .. } => {
                 let native = self.native.lock().await.cursors.state(&cursor).await;
                 Ok(
-                    json!({"settings":cursor,"native":native,"browsers":self.browsers.cursor_state(&cursor, language).await}),
+                    json!({"settings":cursor,"native":native,"browsers":self.browsers.cursor_state(&cursor, crate::browser::BrowserCall::new(invocation, cancellation, language)).await?}),
                 )
             }
             Command::ListApps { .. } => self.apps(session, cancellation, language).await,
@@ -601,6 +759,13 @@ impl Session {
         Ok(result)
     }
     pub async fn discard_audio(&mut self) -> Result<(), ToolError> {
+        #[cfg(target_os = "windows")]
+        if let Some(crate::driver::AudioCompletion::Worker(capture)) = self.audio.as_ref() {
+            // This epoch may outlive a replacement input binding. Its exact
+            // original output observation, not "current", selects cleanup.
+            capture.discard().await?;
+        }
+        #[cfg(not(target_os = "windows"))]
         if self.id.is_some() {
             let cleanup = self.native.lock().await.discard_audio(self.epoch);
             cleanup.await?;
@@ -635,20 +800,45 @@ impl Session {
             return Ok(());
         }
         #[cfg(target_os = "windows")]
-        let audio = self.discard_audio().await;
+        let native = {
+            let close = self
+                .native
+                .lock()
+                .await
+                .finish_windows_turn(self.epoch, session, turn);
+            close.await
+        };
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        let raw = Driver::finish_raw_native_turn(&self.native, self.epoch, turn).await;
         let cursor = self.owner.cursor();
         let browsers = self.browsers.finish_turn(turn, &cursor, language).await;
         #[cfg(target_os = "windows")]
         {
-            match (audio, browsers) {
+            match (native, browsers) {
                 (Ok(()), Ok(())) => Ok(()),
                 (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                (Err(audio), Err(browsers)) => Err(ToolError::CleanupUnconfirmed(format!(
-                    "{audio}; browser turn cleanup: {browsers}"
+                (Err(native), Err(browsers)) => Err(ToolError::CleanupUnconfirmed(format!(
+                    "{native}; browser turn cleanup: {browsers}"
                 ))),
             }
         }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        {
+            match (raw, browsers) {
+                (Ok(()), Ok(())) => {
+                    self.raw_computer.handles.retain(|_, owner| owner != turn);
+                    Ok(())
+                }
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(raw), Err(browser)) => Err(ToolError::CleanupUnconfirmed(format!(
+                    "{raw}; browser turn cleanup: {browser}"
+                ))),
+            }
+        }
+        #[cfg(not(any(
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "musl"))
+        )))]
         {
             browsers
         }
@@ -683,15 +873,24 @@ impl Session {
     }
     async fn retire_target(&mut self, handle: &str) -> Result<(), ToolError> {
         #[cfg(target_os = "macos")]
-        if let Some(target) = self.targets.get_mut(handle) {
-            target.invalidate_observation();
-            if let Some(window) = target.macos.as_ref() {
-                window.release().await.map_err(|error| {
-                    ToolError::CleanupUnconfirmed(format!(
-                        "native accessibility window release was not confirmed: {error}"
-                    ))
-                })?;
+        {
+            self.raw_computer.retiring_mac_window(handle);
+            let result = async {
+                if let Some(target) = self.targets.get_mut(handle) {
+                    target.invalidate_observation();
+                    if let Some(window) = target.macos.as_ref() {
+                        window.release().await.map_err(|error| {
+                            ToolError::CleanupUnconfirmed(format!(
+                                "native accessibility window release was not confirmed: {error}"
+                            ))
+                        })?;
+                    }
+                }
+                Ok(())
             }
+            .await;
+            self.raw_computer.retired_mac_window(handle, &result);
+            result?;
         }
         self.targets.remove(handle);
         Ok(())
@@ -877,7 +1076,7 @@ impl Session {
         #[cfg(not(target_os = "macos"))]
         let frozen_result: Option<CallResult> = None;
         #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-        let linux_observation = if Driver::linux_x11_selected() {
+        let linux_observation = if ax && Driver::linux_x11_selected() {
             Some(
                 Driver::observe_native_window(
                     &self.native,
@@ -1441,7 +1640,10 @@ impl Session {
                     frame: target.page_frame.clone().ok_or_else(|| {
                         failed("native pointer input requires retained app-state geometry")
                     })?,
-                    accessibility: target.macos.clone(),
+                    accessibility: target
+                        .macos
+                        .clone()
+                        .map(crate::macos::page_scroll::dispatch::AccessibilityTarget::Window),
                     position,
                     operation,
                 };
@@ -1745,6 +1947,8 @@ impl Session {
         if !failures.is_empty() {
             return Err(ToolError::CleanupUnconfirmed(failures.join("; ")));
         }
+        #[cfg(target_os = "macos")]
+        self.raw_computer.clear_mac_targets();
         self.id = None;
         self.audio = None;
         #[cfg(all(target_os = "linux", not(target_env = "musl")))]

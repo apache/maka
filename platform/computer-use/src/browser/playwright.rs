@@ -19,7 +19,11 @@
 
 use super::*;
 
+mod download_media;
+mod evaluate;
 mod mutation;
+#[path = "wait.rs"]
+pub(super) mod wait;
 pub(super) use mutation::validate_mutation;
 use std::{collections::HashSet, future::Future, pin::Pin, sync::Mutex};
 use tokio_util::sync::CancellationToken;
@@ -151,7 +155,7 @@ impl Tab {
         let context = world["executionContextId"]
             .as_u64()
             .ok_or_else(|| failed("Playwright isolated world unavailable"))?;
-        let existing=cdp_value(self.frame_observation(frame.session.as_deref(),"Runtime.evaluate",json!({"contextId":context,"expression":"globalThis.__makaPlaywright","objectGroup":resources.group,"returnByValue":false})).await?)?;
+        let existing=cdp_value(self.frame_observation(frame.session.as_deref(),"Runtime.evaluate",json!({"contextId":context,"expression":"globalThis.__makaPlaywright?.makaProtectedInput ? globalThis.__makaPlaywright : undefined","objectGroup":resources.group,"returnByValue":false})).await?)?;
         if let Some(object) = existing["objectId"].as_str() {
             return Ok(object.into());
         }
@@ -186,22 +190,23 @@ impl Tab {
             .as_str()
             .ok_or_else(|| failed("frame locator did not return an object"))?;
         let properties = self
-            .frame_request(
+            .frame_property_handles(
                 frame.session.as_deref(),
-                "Runtime.getProperties",
                 json!({"objectId":envelope_id,"ownProperties":true}),
             )
             .await?;
-        let properties = properties["result"]
-            .as_array()
-            .ok_or_else(|| failed("frame locator metadata unavailable"))?;
         let property = |name: &str| {
             properties
                 .iter()
-                .find(|entry| entry["name"] == name)
-                .map(|entry| &entry["value"])
+                .find(|entry| entry.name == name)
+                .and_then(|entry| entry.value.as_ref())
         };
-        match property("status").and_then(|value| value["value"].as_str()) {
+        let status = property("status")
+            .map(frames::PropertyValue::text)
+            .transpose()
+            .map_err(failed)?
+            .flatten();
+        match status.as_deref() {
             Some("missing") => {
                 return Err(AttemptError::Retry(failed(
                     "frame locator has no matching element",
@@ -220,7 +225,7 @@ impl Tab {
             }
         }
         let node = property("value")
-            .and_then(|value| value["objectId"].as_str())
+            .and_then(|value| value.object_id.as_deref())
             .ok_or_else(|| failed("frame locator did not resolve an element"))?;
         Ok(node.to_owned())
     }
@@ -234,30 +239,18 @@ impl Tab {
     ) -> Attempt<frames::Frame> {
         let node = self.playwright_element(parent, segment, resources).await?;
         let described = self
-            .frame_request(
-                parent.session.as_deref(),
-                "DOM.describeNode",
-                json!({"objectId":node}),
-            )
+            .frame_node_identity(parent.session.as_deref(), json!({"objectId":node}))
             .await?;
-        let backend = described["node"]["backendNodeId"]
-            .as_u64()
+        let backend = described
+            .backend_node_id
             .ok_or_else(|| failed("frame owner identity unavailable"))?;
-        if !matches!(
-            described["node"]["nodeName"].as_str(),
-            Some("IFRAME" | "FRAME")
-        ) {
+        if !matches!(described.node_name.as_deref(), Some("IFRAME" | "FRAME")) {
             return Err(AttemptError::Retry(failed(
                 "frame locator must select an iframe or frame element",
             )));
         }
         Ok(self
-            .resolve_frame(
-                parent,
-                backend,
-                described["node"]["frameId"].as_str(),
-                catalog,
-            )
+            .resolve_frame(parent, backend, described.frame_id.as_deref(), catalog)
             .await?)
     }
 
@@ -335,20 +328,24 @@ impl Tab {
         &mut self,
         plan: &LocatorPlan,
         operation: BrowserReadOperation,
-        options: BrowserReadOptions,
+        budget: super::ReadBudget,
         document: crate::BrowserDocument,
-        cancellation: &CancellationToken,
-        language: Language,
+        call: super::BrowserCall<'_>,
     ) -> Result<Value, ToolError> {
-        validate(&operation, &options)?;
+        let cancellation = call.cancellation;
+        let effect = self.read_effect()?;
         let resources = Resources::new();
-        let timeout = options.timeout_ms.unwrap_or(3000).min(3000);
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout);
+        let timeout = budget.remaining;
+        check_input(cancellation)?;
+        if timeout.is_zero() {
+            return Err(failed("Playwright selector deadline exceeded"));
+        }
+        let deadline = tokio::time::Instant::now() + timeout;
         // Lazy tab bindings do not have a debugger socket yet. The connection
-        // and document proof belong to this read's deadline too; human consent
-        // has already completed before entering this method.
+        // and document proof belong to this read's deadline too; Host consent
+        // has already completed; authorization spent the same remaining budget.
         let ready = async {
-            self.verify(language).await?;
+            self.verify(call).await?;
             if self.document() != document {
                 return Err(failed(
                     "document changed during browser authorization; retry the operation",
@@ -358,46 +355,40 @@ impl Tab {
         };
         tokio::select! {
             biased;
-            _=cancellation.cancelled()=>return Err(failed("Browser read cancelled")),
-            result=tokio::time::timeout_at(deadline,ready)=>result.map_err(|_|failed("Playwright selector deadline exceeded"))??,
+            _=cancellation.cancelled()=>return Err(effect.interrupted("Browser read cancelled")),
+            result=tokio::time::timeout_at(deadline,ready)=>result.map_err(|_|effect.interrupted("Playwright selector deadline exceeded"))??,
         }
         if matches!(operation, BrowserReadOperation::DomSnapshot) {
             let result = self
-                .playwright_snapshot_read(
-                    document,
-                    cancellation,
-                    language,
-                    &resources,
-                    Duration::from_millis(timeout),
-                    deadline,
-                )
+                .playwright_snapshot_read(document, call, &resources, deadline)
                 .await;
             resources.cleanup(self).await;
-            return result.map_err(|error| match error {
-                ToolError::OutcomeUnknown(message) => failed(message),
-                error => error,
-            });
+            return result.map_err(|error| effect.read_failure(error));
         }
         let result=async {
             loop {
                 check_input(cancellation)?;
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(failed("Playwright selector deadline exceeded"));
+                }
                 let attempt=async {
                     let result=self.playwright_attempt(&plan.selector,&operation,&resources).await?;
                     if !self.frame_scopes_current(&result.used).await? {return Err(AttemptError::Fatal(failed("frame changed during browser read; retry the operation")));}
-                    self.refresh_info(language).await?;
+                    self.refresh_info(call).await?;
                     if self.document()!=document {return Err(AttemptError::Fatal(failed("document changed during browser read; retry the operation")));}
                     check_input(cancellation)?;
                     Ok(result.value)
                 };
                 let result=tokio::select! {
                     biased;
-                    _=cancellation.cancelled()=>return Err(failed("Browser read cancelled")),
-                    result=tokio::time::timeout_at(deadline,attempt)=>result.map_err(|_|failed("Playwright selector deadline exceeded"))?,
+                    _=cancellation.cancelled()=>return Err(effect.interrupted("Browser read cancelled")),
+                    result=tokio::time::timeout_at(deadline,attempt)=>result.map_err(|_|effect.interrupted("Playwright selector deadline exceeded"))?,
                 };
                 match result {
                     Ok(value)=>return Ok(value),
                     Err(AttemptError::Fatal(error))=>return Err(error),
                     Err(AttemptError::Retry(error))=>{
+                        if effect.uncertain(&error) { return Err(error); }
                         if tokio::time::Instant::now()>=deadline {return Err(error);}
                         tokio::select! {
                             biased;
@@ -409,10 +400,7 @@ impl Tab {
             }
         }.await;
         resources.cleanup(self).await;
-        result.map_err(|error| match error {
-            ToolError::OutcomeUnknown(message) => failed(message),
-            error => error,
-        })
+        result.map_err(|error| effect.read_failure(error))
     }
 
     async fn capture_snapshot(
@@ -459,12 +447,16 @@ impl Tab {
     async fn playwright_snapshot_read(
         &mut self,
         document: crate::BrowserDocument,
-        cancellation: &CancellationToken,
-        language: Language,
+        call: super::BrowserCall<'_>,
         resources: &Resources,
-        budget: Duration,
         deadline: tokio::time::Instant,
     ) -> Result<Value, ToolError> {
+        let cancellation = call.cancellation;
+        let effect = self.read_effect()?;
+        check_input(cancellation)?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(failed("Playwright snapshot deadline exceeded"));
+        }
         let mandatory = async {
             let main = self.main_frame().await?;
             let snapshot = self
@@ -473,7 +465,7 @@ impl Tab {
                 .map_err(|error| match error {
                     AttemptError::Retry(error) | AttemptError::Fatal(error) => error,
                 })?;
-            self.refresh_info(language).await?;
+            self.refresh_info(call).await?;
             if self.document() != document {
                 return Err(failed(
                     "document changed during browser read; retry the operation",
@@ -484,26 +476,35 @@ impl Tab {
         };
         let root = tokio::select! {
             biased;
-            _=cancellation.cancelled()=>return Err(failed("Browser read cancelled")),
-            result=tokio::time::timeout_at(deadline,mandatory)=>result.map_err(|_|failed("Playwright snapshot deadline exceeded"))??,
+            _=cancellation.cancelled()=>return Err(effect.interrupted("Browser read cancelled")),
+            result=tokio::time::timeout_at(deadline,mandatory)=>result.map_err(|_|effect.interrupted("Playwright snapshot deadline exceeded"))??,
         };
         if !root.iframes.iter().any(|owner| owner["visible"] == true) {
             return Ok(json!(clean_snapshot(&root.full)));
         }
         // The main snapshot is already validated. Optional renderer or child
         // failures retain it, while caller cancellation still interrupts.
+        check_input(cancellation)?;
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(json!(clean_snapshot(&root.full)));
+        }
         let catalog = tokio::select! {
             biased;
-            _=cancellation.cancelled()=>return Err(failed("Browser read cancelled")),
-            result=tokio::time::timeout(budget,self.frame_catalog())=>match result {Ok(Ok(catalog))=>catalog,_=>return Ok(json!(clean_snapshot(&root.full)))},
+            _=cancellation.cancelled()=>return Err(effect.interrupted("Browser read cancelled")),
+            result=tokio::time::timeout_at(deadline,self.frame_catalog())=>match result {
+                Ok(Ok(catalog))=>catalog,
+                Ok(Err(error)) if effect.uncertain(&error)=>return Err(error),
+                Err(_) if matches!(effect, ReadEffect::ExtensionPreparation)=>return Err(effect.interrupted("Playwright snapshot deadline exceeded")),
+                _=>return Ok(json!(clean_snapshot(&root.full))),
+            },
         };
         if catalog.main().ok().as_ref() != Some(&root.frame) {
             return Ok(json!(clean_snapshot(&root.full)));
         }
         let result = tokio::select! {
             biased;
-            _=cancellation.cancelled()=>return Err(failed("Browser read cancelled")),
-            result=self.expand_snapshot(root,&catalog,cancellation,resources,budget)=>result,
+            _=cancellation.cancelled()=>return Err(effect.interrupted("Browser read cancelled")),
+            result=self.expand_snapshot(root,&catalog,cancellation,resources,deadline,effect)=>result?,
         };
         check_input(cancellation)?;
         Ok(json!(clean_snapshot(&result)))
@@ -515,13 +516,15 @@ impl Tab {
         catalog: &'a frames::Catalog,
         cancellation: &'a CancellationToken,
         resources: &'a Resources,
-        budget: Duration,
-    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+        deadline: tokio::time::Instant,
+        effect: ReadEffect,
+    ) -> Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>> {
         Box::pin(async move {
             let children=snapshot.iframes.iter().filter(|owner|owner["visible"]==true).map(|owner|{
                 let ancestors=snapshot.ancestors.clone();let frame=snapshot.frame.clone();
                 async move {
-                    let reference=owner["reference"].as_str()?;
+                    let Some(reference)=owner["reference"].as_str() else {return Ok(None)};
+                    if tokio::time::Instant::now() >= deadline {return Ok(None)};
                     let capture=async {
                         let split=self.playwright_script(&frame,json!({"selector":format!("aria-ref={reference}"),"operation":{"kind":"selectorSegments"}}),true,resources).await?;
                         let segments:Vec<Segment>=serde_json::from_value(read_reply(split["value"].clone())?).map_err(failed)?;
@@ -529,13 +532,21 @@ impl Tab {
                         let child=self.playwright_frame(&frame,segment,catalog,resources).await?;
                         self.capture_snapshot(child,ancestors,resources,cancellation).await
                     };
-                    let child=tokio::time::timeout(budget,capture).await.ok()?.ok()?;
-                    let nested=self.expand_snapshot(child,catalog,cancellation,resources,budget).await;
-                    Some((reference.to_owned(),nested))
+                    let child=match tokio::time::timeout_at(deadline,capture).await {
+                        Ok(Ok(child))=>child,
+                        Ok(Err(AttemptError::Retry(error)|AttemptError::Fatal(error))) if effect.uncertain(&error)=>return Err(error),
+                        Err(_) if matches!(effect,ReadEffect::ExtensionPreparation)=>return Err(effect.interrupted("Playwright snapshot deadline exceeded")),
+                        _=>return Ok(None),
+                    };
+                    let nested=self.expand_snapshot(child,catalog,cancellation,resources,deadline,effect).await?;
+                    Ok(Some((reference.to_owned(),nested)))
                 }
             });
-            let children = futures_util::future::join_all(children).await;
-            merge_snapshot(snapshot.full, &snapshot.iframes, children)
+            let children = futures_util::future::join_all(children)
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, ToolError>>()?;
+            Ok(merge_snapshot(snapshot.full, &snapshot.iframes, children))
         })
     }
 }

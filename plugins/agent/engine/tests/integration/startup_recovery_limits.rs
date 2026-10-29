@@ -26,7 +26,7 @@ use crate::support::recovery;
 use recovery::{invocation, opening};
 
 #[tokio::test]
-async fn recovery_excludes_large_stream_history_but_bounds_execution_authority() {
+async fn recovery_excludes_large_stream_history_and_validates_execution_identity() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.sqlite");
     {
@@ -62,21 +62,13 @@ async fn recovery_excludes_large_stream_history_but_bounds_execution_authority()
     foreign.session_id = "unrelated".into();
     assert!(
         matches!(
-            log.invocation_recovery(&foreign, 100, 65536).await,
+            log.invocation_recovery(&foreign).await,
             Err(StoreError::InvalidTransition(_))
         ),
         "an invocation ID cannot substitute another Session"
     );
     assert!(matches!(
         log.unfinished_invocations(0, 0).await,
-        Err(StoreError::PrefixTooLarge)
-    ));
-    assert!(matches!(
-        log.invocation_recovery(&invocation(), 0, 128 * 1024).await,
-        Err(StoreError::PrefixTooLarge)
-    ));
-    assert!(matches!(
-        log.invocation_recovery(&invocation(), 100, 0).await,
         Err(StoreError::PrefixTooLarge)
     ));
     assert_eq!(
@@ -104,4 +96,88 @@ async fn recovery_excludes_large_stream_history_but_bounds_execution_authority()
             .unfinished_model_steps
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn recovery_reads_all_pending_calls_and_large_original_arguments() {
+    use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelStep, ModelToolCall};
+    let directory = tempfile::tempdir().unwrap();
+    let log = EventLog::open(&directory.path().join("events.sqlite"))
+        .await
+        .unwrap();
+    opening(&log).await;
+    request(&log).await;
+    let parts = (0..10_002).map(|index| ModelPart::ToolCall {
+        call: ModelToolCall {
+            id: format!("call-{index}"),
+            name: "read".into(),
+            input: serde_json::json!({"value": if index == 0 { "x".repeat(8 * 1024 * 1024 + 1) } else { "tail".into() }}).into(),
+            provider_options: None,
+            provider_executed: false,
+        },
+    }).collect();
+    append(
+        &log,
+        Fact::ModelCompleted {
+            step_id: "step".into(),
+            output: ModelStep {
+                parts,
+                finish_reason: ModelFinishReason::ToolCalls,
+                usage: Default::default(),
+                provider_options: None,
+                response_id: None,
+                model: None,
+                timestamp: None,
+            },
+        },
+    )
+    .await;
+    append(
+        &log,
+        Fact::ToolDispatched {
+            operation_id: "step:call-10001".into(),
+            presentation: None,
+            title: None,
+            call: maka_agent_facts::tool_call::ToolCallIdentity {
+                tool_call_id: "call-10001".into(),
+                origin: maka_agent_facts::tool_call::ToolOrigin::Provider {
+                    step_id: "step".into(),
+                },
+            },
+            name: "read".into(),
+            input: serde_json::json!({"value":"tail"}),
+        },
+    )
+    .await;
+    append(
+        &log,
+        Fact::ToolSettled {
+            operation_id: "step:call-10001".into(),
+            outcome: maka_agent_facts::event::ToolOutcome::Failed {
+                message: "already settled".into(),
+            },
+        },
+    )
+    .await;
+    let state = log.invocation_recovery(&invocation()).await.unwrap();
+    assert_eq!(state.undispatched_calls.len(), 10_001);
+    let first = state
+        .undispatched_calls
+        .iter()
+        .find(|call| call.operation_id == "step:call-0")
+        .unwrap();
+    assert_eq!(
+        first.input.as_json().unwrap()["value"]
+            .as_str()
+            .unwrap()
+            .len(),
+        8 * 1024 * 1024 + 1
+    );
+    assert!(
+        state
+            .undispatched_calls
+            .iter()
+            .any(|call| call.operation_id == "step:call-10000")
+    );
+    log.close().await.unwrap();
 }

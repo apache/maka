@@ -154,6 +154,9 @@ A retiring scope passes its surviving opener to the replacement, including
 its node generation and caret. Covered openers stay eligible as return
 targets; focus moves only inside the current input scope. Animated dialog
 exits retain this return target until their native navigation completes.
+Inputs painted behind a modal consume their automatic focus request while
+covered. Closing the modal restores its opener ahead of background inputs
+mounted in the closing batch; a newly opened focus scope keeps its own autofocus.
 Within a mount batch, focus selection and events follow command order. The
 implicit reveal of a newly selected focus waits until the batch's final cell
 positions and scroll limits are applied. It follows only the still-current

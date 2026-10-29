@@ -20,8 +20,10 @@
 //! Call ownership shared by native and JavaScript adapters, never a wire grant.
 
 mod attachments;
+mod files;
+pub use files::OwnedTempDirectory;
 mod resources;
-pub use attachments::{Attachments, ReadResource, ResourceEncoding};
+pub use attachments::{Attachments, ReadResource, ResourceEncoding, immutable_bytes};
 pub use resources::{Resources, Ticket};
 
 use maka_agent_facts::event::Invocation;
@@ -46,6 +48,11 @@ pub enum Identity {
     },
     Background {
         grant: crate::authorization::Id,
+    },
+    /// Captured browser source lease observation, not a grant or Agent invocation.
+    BrowserLease {
+        session_id: String,
+        turn_id: String,
     },
 }
 impl Identity {

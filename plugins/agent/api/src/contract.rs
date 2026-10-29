@@ -1227,6 +1227,10 @@ pub struct HistoryAttachment {
 pub struct HistoryChunk {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_part: Option<maka_agent_ports::session::history::ModelPartIdentity>,
+    /// The original user input has quotes, directory references or inline references.
+    /// Present only on the first fragment; display text cannot reconstruct these references.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_references: bool,
     /// Part of the successfully completed native Turn's final output at `through`.
     /// Includes all body parts and source citations; never a Thinking field.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

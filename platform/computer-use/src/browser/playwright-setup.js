@@ -26,6 +26,26 @@ const engine = new (module.exports.InjectedScript())(globalThis, {
   isUtilityWorld: true,
   customEngines: [],
 });
+engine.makaProtectedInput = (element) => {
+  const tag = element.nodeName;
+  if (typeof tag !== 'string' || tag.toLowerCase() !== 'input') return false;
+  if ((element.getAttribute('type') ?? '').toLowerCase() === 'hidden') return true;
+  const attributes = ['type', 'autocomplete', 'id', 'name', 'placeholder', 'aria-label', 'title'];
+  const text = attributes
+    .map((name) => element.getAttribute(name) ?? '')
+    .join(' ')
+    .toLowerCase();
+  const separators = ['', '-', '_', ' '];
+  const terms = ['password', 'passcode', 'passwd', 'phone', 'mobile'];
+  for (const separator of separators) {
+    terms.push('user' + separator + 'name', 'e' + separator + 'mail');
+    for (const next of separators) terms.push('one' + separator + 'time' + next + 'code');
+  }
+  return (
+    terms.some((term) => text.includes(term)) ||
+    text.split(/\W+/).some((word) => ['otp', '2fa', 'mfa', 'tel'].includes(word))
+  );
+};
 // Adapt the upstream data tree before rendering. No live DOM value or attribute
 // changes, and the published dependency remains byte-identical.
 engine.makaSnapshot = (root, protectedInput) => {

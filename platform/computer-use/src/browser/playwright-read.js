@@ -30,26 +30,7 @@ function read(request) {
     const visible = elements.filter((element) => this.elementState(element, 'visible').matches);
     return visible.length === 1 ? value(visible[0]) : { status: 'strict', count: elements.length };
   };
-  const protectedInput = (element) => {
-    const tag = element.nodeName;
-    if (typeof tag !== 'string' || tag.toLowerCase() !== 'input') return false;
-    if ((element.getAttribute('type') ?? '').toLowerCase() === 'hidden') return true;
-    const attributes = ['type', 'autocomplete', 'id', 'name', 'placeholder', 'aria-label', 'title'];
-    const text = attributes
-      .map((name) => element.getAttribute(name) ?? '')
-      .join(' ')
-      .toLowerCase();
-    const separators = ['', '-', '_', ' '];
-    const terms = ['password', 'passcode', 'passwd', 'phone', 'mobile'];
-    for (const separator of separators) {
-      terms.push('user' + separator + 'name', 'e' + separator + 'mail');
-      for (const next of separators) terms.push('one' + separator + 'time' + next + 'code');
-    }
-    return (
-      terms.some((term) => text.includes(term)) ||
-      text.split(/\W+/).some((word) => ['otp', '2fa', 'mfa', 'tel'].includes(word))
-    );
-  };
+  const protectedInput = this.makaProtectedInput;
   switch (request.operation.kind) {
     case 'domSnapshot': {
       const root = document.body ?? document.documentElement;
@@ -76,6 +57,37 @@ function read(request) {
         });
       }
       return value({ full: snapshot.full, iframes });
+    }
+    case 'waitFor': {
+      const element = elements[0];
+      const state = request.operation.state;
+      if (state === 'attached')
+        return value({ ready: !!element, reason: 'Element is not attached' });
+      if (state === 'detached')
+        return value({ ready: !element, reason: 'Element is still attached' });
+      if (!element) return value({ ready: state === 'hidden', reason: 'Element is not attached' });
+      const result = this.elementState(element, state);
+      if (result.received === 'error:notconnected')
+        return value({ ready: false, reason: 'Element is not connected' });
+      return value({ ready: !!result.matches, reason: 'Element is not ' + state });
+    }
+    case 'waitDiagnostics': {
+      const report = { matchCount: elements.length, visibleCount: 0, matches: [] };
+      for (const element of elements) {
+        const visible = element.getClientRects().length > 0;
+        report.visibleCount += Number(visible);
+        if (report.matches.length < 5)
+          report.matches.push({
+            tag: element.tagName.toLowerCase(),
+            role: element.getAttribute('role'),
+            type: element.getAttribute('type'),
+            ariaLabel: element.getAttribute('aria-label'),
+            text: (element.textContent ?? '').trim().slice(0, 120),
+            visible,
+            disabled: 'disabled' in element && Boolean(element.disabled),
+          });
+      }
+      return value(report);
     }
     case 'count':
       return value(elements.length);

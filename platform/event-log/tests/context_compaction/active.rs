@@ -345,6 +345,36 @@ async fn active_cut_rejects_pending_child_and_changed_summary_repair_source() {
     log.append(&request("active", "repair", ModelPurpose::Summary, &source))
         .await
         .unwrap();
+    let before_private = log.prefix(100, 65536).await.unwrap();
+    let rejected = log
+        .append(&event(
+            "active",
+            Fact::ModelObserved {
+                step_id: "repair".into(),
+                event: ModelObservation::Part(fixtures::record(
+                    "active",
+                    "repair",
+                    0,
+                    maka_agent_facts::model::ModelPart::Text {
+                        text_kind: maka_agent_facts::model::TextKind::Text,
+                        text: "private failed summary".into(),
+                        provider_options: None,
+                    },
+                )),
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        rejected
+            .to_string()
+            .contains("private summary output cannot be journaled")
+    );
+    assert_eq!(
+        log.prefix(100, 65536).await.unwrap().digest,
+        before_private.digest,
+        "private failed Summary prose cannot change the canonical repair source"
+    );
     log.append(&event(
         "active",
         Fact::ModelInterrupted {

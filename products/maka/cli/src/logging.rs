@@ -27,6 +27,47 @@ pub(super) fn initialize() -> Result<(), maka_host_runtime::HostError> {
         .try_init()
 }
 
+/// Task-owned passive extension RPC metadata only. The extension bootstrap precedes
+/// normal logging, and stdout must remain the exact extension-message protocol.
+pub(super) fn initialize_extension_browser_trace_if_requested() {
+    if !extension_browser_trace_requested(
+        std::env::var_os("MAKA_EXTENSION_RPC_TRACE").as_deref(),
+        std::env::args_os().nth(1).as_deref(),
+    ) {
+        return;
+    }
+    if initialize_extension_browser_trace_subscriber().is_err() {
+        // Collection failure invalidates the experiment, not extension behavior.
+        eprintln!("extension RPC phase trace subscriber unavailable");
+    }
+}
+
+fn initialize_extension_browser_trace_subscriber() -> Result<(), maka_host_runtime::HostError> {
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+    let targets = tracing_subscriber::filter::Targets::new().with_target(
+        "maka::extension_rpc_phase",
+        tracing_subscriber::filter::LevelFilter::TRACE,
+    );
+    tracing_subscriber::fmt()
+        .with_max_level(tracing_subscriber::filter::LevelFilter::TRACE)
+        .with_ansi(false)
+        .with_writer(std::io::stderr)
+        .finish()
+        .with(targets)
+        .try_init()?;
+    Ok(())
+}
+
+fn extension_browser_trace_requested(
+    value: Option<&std::ffi::OsStr>,
+    origin: Option<&std::ffi::OsStr>,
+) -> bool {
+    value == Some(std::ffi::OsStr::new("1"))
+        && origin
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|origin| origin.starts_with("chrome-extension://"))
+}
+
 /// Explicit terminal diagnostics stay in a file and include no text or keys.
 pub(super) fn initialize_terminal_interaction() -> Result<(), maka_host_runtime::HostError> {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -103,6 +144,61 @@ pub(super) fn capture(file: std::fs::File) -> std::io::Result<()> {
 mod tests {
     use sqlx::{ConnectOptions, Connection};
     use std::{process::Command, time::Duration};
+
+    #[test]
+    fn extension_rpc_phase_trace_reaches_stderr_without_other_targets_or_stdout() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "logging::tests::extension_rpc_trace_worker",
+                "--nocapture",
+            ])
+            .env("MAKA_LOGGING_EXTENSION_RPC_PROBE", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stdout.contains("stdout-protocol-guard"));
+        assert!(!stdout.contains("EXTENSION_TRACE_SENTINEL"));
+        assert!(stderr.contains("EXTENSION_TRACE_SENTINEL"), "{stderr}");
+        assert!(!stderr.contains("UNRELATED_TRACE_SENTINEL"), "{stderr}");
+        assert!(!stderr.contains('\u{1b}'), "{stderr}");
+    }
+
+    #[test]
+    fn extension_rpc_trace_worker() {
+        if std::env::var_os("MAKA_LOGGING_EXTENSION_RPC_PROBE").is_none() {
+            return;
+        }
+        super::initialize_extension_browser_trace_subscriber().unwrap();
+        log::trace!(target:"maka::extension_rpc_phase", "EXTENSION_TRACE_SENTINEL");
+        log::trace!(target:"unrelated_extension_trace_target", "UNRELATED_TRACE_SENTINEL");
+        println!("stdout-protocol-guard");
+    }
+
+    #[test]
+    fn extension_rpc_trace_is_exact_opt_in_and_extension_bootstrap_only() {
+        use std::ffi::OsStr;
+        for (value, origin, expected) in [
+            (None, Some("chrome-extension://fixture/"), false),
+            (Some("0"), Some("chrome-extension://fixture/"), false),
+            (Some("true"), Some("chrome-extension://fixture/"), false),
+            (Some("1"), None, false),
+            (Some("1"), Some("run"), false),
+            (Some("1"), Some("https://fixture.invalid/"), false),
+            (Some("1"), Some("chrome-extension://fixture/"), true),
+        ] {
+            assert_eq!(
+                super::extension_browser_trace_requested(
+                    value.map(OsStr::new),
+                    origin.map(OsStr::new)
+                ),
+                expected,
+                "value={value:?}, origin={origin:?}"
+            );
+        }
+    }
 
     #[cfg(unix)]
     #[test]

@@ -246,71 +246,84 @@ async fn native_browser_consent_accepts_original_producer_and_rejects_foreign_pr
         };
         let invocation = projection.root_turn.unwrap().invocation;
         let observed: Result<(), String> = async {
-            for (id, original) in [("browser_original", true), ("browser_foreign", false)] {
-                let mut target = maka_workspace_api::computer::target();
-                target.capability = maka_agent_facts::interaction::GrantCapability::Browser;
-                target.scope = maka_agent_facts::interaction::GrantScope::BrowserOrigin {
-                    origin: "https://example.com".into(),
-                };
-                if !original {
-                    target.provider_id = "foreign_browser_provider".into();
-                }
-                let record = InteractionRecord {
-                    session_id: session.clone(),
-                    turn_id: invocation.turn_id.clone(),
-                    run_id: invocation.run_id.clone(),
-                    request_id: id.into(),
-                    created_at: 1,
-                    outcome: None,
-                    request: maka_agent_facts::interaction::InteractionRequest::ClientCapability {
-                        tool_use_id: "browser_tool".into(),
-                        target: target.clone(),
-                        basis: Some(basis),
-                    },
-                };
-                store
-                    .establish_run_interaction(&invocation, &record)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let result = fixture
-                    .mutation(
-                        2,
-                        "respond",
-                        json!({"sessionId":session,"requestId":id,
-                    "answer":{"kind":"client_capability","decision":"allow"}}),
-                        Uuid::new_v4(),
-                    )
-                    .await?;
-                let grant = store
-                    .client_capability_grant(&session, &target)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                if original {
-                    if result["kind"] != "recorded"
-                        || result["record"]["outcome"]["decision"] != "allow"
-                        || grant.as_ref().map(|grant| &grant.target) != Some(&target)
-                    {
-                        return Err(format!(
-                            "original browser producer was not granted: {result}"
-                        ));
+            for (name, capability) in [
+                (
+                    "page",
+                    maka_agent_facts::interaction::GrantCapability::Browser,
+                ),
+                (
+                    "download",
+                    maka_agent_facts::interaction::GrantCapability::BrowserDownload,
+                ),
+            ] {
+                for (id, original) in [("browser_original", true), ("browser_foreign", false)] {
+                    let id = format!("{name}_{id}");
+                    let mut target = maka_workspace_api::computer::target();
+                    target.capability = capability;
+                    target.scope = maka_agent_facts::interaction::GrantScope::BrowserOrigin {
+                        origin: "https://example.com".into(),
+                    };
+                    if !original {
+                        target.provider_id = "foreign_browser_provider".into();
                     }
-                } else {
-                    if result != json!({"kind":"rejected","reason":"unsupported"})
-                        || grant.is_some()
-                    {
-                        return Err(format!(
-                            "foreign browser producer acquired authority: {result}"
-                        ));
-                    }
-                    if store
-                        .interaction(id)
+                    let record = InteractionRecord {
+                        session_id: session.clone(),
+                        turn_id: invocation.turn_id.clone(),
+                        run_id: invocation.run_id.clone(),
+                        request_id: id.clone(),
+                        created_at: 1,
+                        outcome: None,
+                        request:
+                            maka_agent_facts::interaction::InteractionRequest::ClientCapability {
+                                tool_use_id: "browser_tool".into(),
+                                target: target.clone(),
+                                basis: Some(basis),
+                            },
+                    };
+                    store
+                        .establish_run_interaction(&invocation, &record)
                         .await
-                        .map_err(|error| error.to_string())?
-                        .ok_or("foreign request disappeared")?
-                        .outcome
-                        .is_some()
-                    {
-                        return Err("unsupported producer was answered".into());
+                        .map_err(|error| error.to_string())?;
+                    let result = fixture
+                        .mutation(
+                            2,
+                            "respond",
+                            json!({"sessionId":session,"requestId":id,
+                    "answer":{"kind":"client_capability","decision":"allow"}}),
+                            Uuid::new_v4(),
+                        )
+                        .await?;
+                    let grant = store
+                        .client_capability_grant(&session, &target)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    if original {
+                        if result["kind"] != "recorded"
+                            || result["record"]["outcome"]["decision"] != "allow"
+                            || grant.as_ref().map(|grant| &grant.target) != Some(&target)
+                        {
+                            return Err(format!(
+                                "original browser producer was not granted: {result}"
+                            ));
+                        }
+                    } else {
+                        if result != json!({"kind":"rejected","reason":"unsupported"})
+                            || grant.is_some()
+                        {
+                            return Err(format!(
+                                "foreign browser producer acquired authority: {result}"
+                            ));
+                        }
+                        if store
+                            .interaction(&id)
+                            .await
+                            .map_err(|error| error.to_string())?
+                            .ok_or("foreign request disappeared")?
+                            .outcome
+                            .is_some()
+                        {
+                            return Err("unsupported producer was answered".into());
+                        }
                     }
                 }
             }

@@ -361,7 +361,7 @@ impl AttemptWriter {
         }
         if let Some(metadata) = metadata
             && (self.binding.purpose == ModelPurpose::Main
-                || matches!(metadata, ModelObservation::Finished { .. }))
+                || matches!(metadata, ModelObservation::ResponseMetadata { .. } | ModelObservation::Finished { .. }))
         {
             observations.push(metadata);
         }

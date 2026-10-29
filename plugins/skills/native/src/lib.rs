@@ -125,10 +125,12 @@ impl Library {
             maka_skills::prepare_bundled().map_err(|_| "skills_bundled_unavailable")?;
         }
         let mut ids = BTreeSet::new();
+        let policy_path = maka_fs_tools::workspace::project::host_path(&managed)
+            .map_err(|_| "skills_configuration_invalid")?;
         let policy = Arc::new(
             Policy {
                 default: Access::Read,
-                rules: vec![Rule::subtree(&managed, Access::Deny)],
+                rules: vec![Rule::subtree(policy_path, Access::Deny)],
                 deny_globs: vec![],
             }
             .compile()

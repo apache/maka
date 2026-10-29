@@ -19,6 +19,20 @@
 
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod browser_capability;
+pub use browser_capability::{
+    BundleOptions as PageAssetBundleOptions, Viewport as BrowserViewport,
+};
+
+mod browser_cua;
+pub use browser_cua::BrowserCuaOperation;
+
+mod browser_wait;
+pub use browser_wait::BrowserWaitOperation;
+
+mod browser_download;
+pub use browser_download::{BrowserDownloadOptions, BrowserMediaTarget};
+
 fn deserialize_numbers<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -55,7 +69,30 @@ pub use crate::browser_clipboard::{
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Command {
+    BrowserViewportSet {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+        options: BrowserViewport,
+    },
+    BrowserViewportReset {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+    },
+    TabPageAssetsList {
+        handle: Handle,
+    },
+    TabPageAssetsBundle {
+        handle: Handle,
+        options: PageAssetBundleOptions,
+    },
+
+    NativeComputer {
+        call: NativeComputerCall,
+    },
     Documentation,
+    ReadDocumentation {
+        name: String,
+    },
     StartAudioRecording {
         options: AudioOptions,
     },
@@ -104,6 +141,43 @@ pub enum Command {
         browser_id: String,
         reference: BrowserTabReference,
     },
+    BrowserSelect {
+        selection: BrowserSelection,
+    },
+    BrowserSelectedTab {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+    },
+    BrowserNameSession {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+        name: String,
+    },
+    BrowserHistory {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+        options: BrowserHistoryOptions,
+    },
+    BrowserManagedTabs {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+    },
+    BrowserUserOpenTabs {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+    },
+    BrowserUserGetTabContext {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+        #[serde(rename = "tabId")]
+        tab_id: String,
+    },
+    BrowserUserClaimTab {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+        #[serde(rename = "tabId")]
+        tab_id: String,
+    },
     TabMetadata {
         handle: Handle,
     },
@@ -137,6 +211,14 @@ pub enum Command {
         )]
         prompt_text: Option<String>,
     },
+    BrowserEvaluate {
+        handle: Handle,
+        locator: Option<LocatorPlan>,
+        mode: BrowserEvaluateMode,
+        #[serde(rename = "scriptJson")]
+        script_json: String,
+        options: BrowserEvaluateOptions,
+    },
     BrowserRead {
         handle: Handle,
         locator: LocatorPlan,
@@ -148,6 +230,33 @@ pub enum Command {
         handle: Handle,
         locator: LocatorPlan,
         operation: BrowserMutationOperation,
+    },
+    BrowserCua {
+        handle: Handle,
+        operation: BrowserCuaOperation,
+    },
+    BrowserWait {
+        handle: Handle,
+        operation: BrowserWaitOperation,
+    },
+    BrowserDownloadWait {
+        handle: Handle,
+        #[serde(default)]
+        options: BrowserDownloadOptions,
+    },
+    BrowserDownloadPath {
+        handle: Handle,
+        scope: String,
+        #[serde(rename = "downloadId")]
+        download_id: String,
+        #[serde(default)]
+        options: BrowserDownloadOptions,
+    },
+    BrowserDownloadMedia {
+        handle: Handle,
+        target: BrowserMediaTarget,
+        #[serde(default)]
+        options: BrowserDownloadOptions,
     },
     GetTab {
         reference: TabReference,
@@ -227,6 +336,51 @@ pub enum BrowserTabReference {
     New,
 }
 
+/// The fixed scope passed to one read-only browser evaluation.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BrowserEvaluateMode {
+    Page,
+    Element,
+    All,
+}
+
+/// Evaluate preserves the selected runtime's numeric timeout clamp independently
+/// of locator read option validation. Other JavaScript values use the default.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrowserEvaluateOptions {
+    pub timeout_ms: Option<serde_json::Value>,
+}
+impl BrowserEvaluateOptions {
+    #[cfg(feature = "native-desktop")]
+    pub(crate) fn budget(&self) -> std::time::Duration {
+        let milliseconds = self
+            .timeout_ms
+            .as_ref()
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(3000.0)
+            .clamp(0.0, 3000.0);
+        std::time::Duration::from_secs_f64(milliseconds / 1000.0)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum BrowserSelection {
+    Default,
+    Url { url: String },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserHistoryOptions {
+    pub queries: Option<Vec<String>>,
+    pub limit: Option<f64>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocatorPlan {
@@ -236,6 +390,7 @@ pub struct LocatorPlan {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum BrowserReadOperation {
+    WaitDiagnostics,
     DomSnapshot,
     Count,
     AllTextContents,
@@ -421,4 +576,53 @@ where
     D: serde::Deserializer<'de>,
 {
     Distance::deserialize(deserializer).map(Some)
+}
+
+// Private additions for composition inside the existing protocol module.
+// The Command variant is: NativeComputer { call: NativeComputerCall }.
+// Input stays raw until the selected platform boundary; it grants no authority.
+// Existing audio commands retain their original Host consent/admission path.
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NativeComputerCall {
+    Invoke {
+        operation: NativeComputerMethod,
+        args: Vec<serde_json::Value>,
+    },
+    DragStart {
+        handle: String,
+        point: serde_json::Value,
+    },
+    DragMove {
+        handle: String,
+        point: serde_json::Value,
+    },
+    DragEnd {
+        handle: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeComputerMethod {
+    PerformSecondaryAction,
+    Click,
+    Drag,
+    ActivateWindow,
+    GetScreenshot,
+    ListApps,
+    ListWindows,
+    Move,
+    MoveRelative,
+    PressKey,
+    Scroll,
+    TypeText,
+    LaunchApp,
+    GetWindowState,
+    GetAppState,
+    Paste,
+    SelectText,
+    SetValue,
+    GetWindow,
 }

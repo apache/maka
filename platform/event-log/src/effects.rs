@@ -30,8 +30,16 @@ use uuid::Uuid;
 
 /// Durable observation of the original resource owner; never a live grant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Owner {
+#[serde(untagged)]
+pub enum Owner {
+    Resource(ResourceOwner),
+    Native(NativeOwner),
+}
+
+/// Existing resource activation provenance, preserving its original JSON shape.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResourceOwner {
     pub package_id: String,
     pub entry_id: String,
     pub scope: maka_plugin_core::scope::Scope,
@@ -39,9 +47,51 @@ pub struct Owner {
     pub generation: u64,
 }
 
+/// Actual native deployment source and UUID activation epoch from NativeContext.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeOwner {
+    pub package_id: String,
+    pub entry_id: String,
+    pub scope: maka_plugin_core::scope::Scope,
+    pub source: maka_plugin_core::deployment::DeploymentRef,
+    pub epoch: Uuid,
+}
+impl Owner {
+    /// Original package namespace for this observation.
+    pub fn package_id(&self) -> &str {
+        match self {
+            Self::Resource(owner) => &owner.package_id,
+            Self::Native(owner) => &owner.package_id,
+        }
+    }
+    /// Original selected entry, without activating another service.
+    pub fn entry_id(&self) -> &str {
+        match self {
+            Self::Resource(owner) => &owner.entry_id,
+            Self::Native(owner) => &owner.entry_id,
+        }
+    }
+    /// Original data scope, shared by both closed provenance forms.
+    pub fn scope(&self) -> &maka_plugin_core::scope::Scope {
+        match self {
+            Self::Resource(owner) => &owner.scope,
+            Self::Native(owner) => &owner.scope,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "input", rename_all = "snake_case")]
 pub enum Operation {
+    #[serde(rename_all = "camelCase")]
+    BrowserLeaseChild {
+        browser_id: String,
+        generation: String,
+        opener_subject: maka_capabilities::computer::BrowserLeaseSubject,
+        opener_tab_id: u64,
+        url: String,
+    },
     Http {
         method: maka_capabilities::http::Method,
         url: String,
@@ -100,9 +150,20 @@ impl EventLog {
         if matches!(request.source, Identity::Agent { .. }) {
             return Err(invalid("Agent effects belong to their invocation journal"));
         }
+        if matches!(request.source, Identity::BrowserLease { .. })
+            || matches!(request.operation, Operation::BrowserLeaseChild { .. })
+        {
+            let session = browser_lease_session(&request)?;
+            if self.expected_session.as_deref() != Some(session) {
+                return Err(invalid(
+                    "browser lease effect requires its selected Session SQL owner",
+                ));
+            }
+            self.check_bound_session(session)?;
+        }
         let namespace = Namespace::new(
-            request.owner.package_id.clone(),
-            request.owner.scope.clone(),
+            request.owner.package_id().to_owned(),
+            request.owner.scope().clone(),
         )
         .map_err(|error| invalid(error.to_string()))?;
         let raw = serde_json::to_string(&request)?;
@@ -205,6 +266,50 @@ impl EventLog {
             .await
     }
 }
+pub(crate) fn browser_lease_session(request: &Request) -> Result<&str, StoreError> {
+    let (
+        Identity::BrowserLease {
+            session_id,
+            turn_id,
+        },
+        Owner::Native(owner),
+        maka_capabilities::authorization::Boundary::Session { boundary, .. },
+        Operation::BrowserLeaseChild {
+            browser_id,
+            generation,
+            opener_subject,
+            ..
+        },
+    ) = (
+        &request.source,
+        &request.owner,
+        &request.boundary,
+        &request.operation,
+    )
+    else {
+        return Err(invalid(
+            "browser lease effect requires native provenance and a Session boundary",
+        ));
+    };
+    boundary
+        .validate()
+        .map_err(|error| invalid(error.to_string()))?;
+    owner.source.validate().map_err(invalid)?;
+    if session_id != &boundary.session_id
+        || turn_id.is_empty()
+        || owner.entry_id.is_empty()
+        || owner.epoch.is_nil()
+        || browser_id.is_empty()
+        || generation.is_empty()
+        || opener_subject.routing_id().is_empty()
+    {
+        return Err(invalid(
+            "browser lease effect identity does not match its captured source",
+        ));
+    }
+    Ok(session_id)
+}
+
 fn invalid(message: impl Into<String>) -> StoreError {
     StoreError::InvalidTransition(message.into())
 }

@@ -206,7 +206,8 @@ impl ToolJournal {
                 Ok(sequence) => sequence,
                 Err(
                     error @ (crate::event::CommitError::Retired
-                    | crate::event::CommitError::PermissionRevoked),
+                    | crate::event::CommitError::PermissionRevoked
+                    | crate::event::CommitError::NativeTurnInterrupted),
                 ) => {
                     if let Some(prior) = prior {
                         sink.commit(prior).await.map_err(|flush| {
@@ -218,6 +219,12 @@ impl ToolJournal {
                     return Err(ToolError::Failed(match error {
                         crate::event::CommitError::Retired => {
                             "session retired before effect".into()
+                        }
+                        crate::event::CommitError::PermissionRevoked => {
+                            "permission grant is no longer current".into()
+                        }
+                        crate::event::CommitError::NativeTurnInterrupted => {
+                            "native Computer Use is stopped for this logical Turn".into()
                         }
                         _ => error.to_string(),
                     }));

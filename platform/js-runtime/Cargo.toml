@@ -39,6 +39,11 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 
+[build-dependencies]
+deno_core.workspace = true
+deno_webidl = "=0.260.0"
+deno_web = "=0.291.0"
+
 # Deno still uses sha2 0.10. Preserve its hardware backend until it migrates;
 # that version's assembly crate does not support Windows.
 [target.'cfg(all(target_arch = "aarch64", not(target_os = "windows")))'.dependencies]

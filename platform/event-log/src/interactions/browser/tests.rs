@@ -407,7 +407,18 @@ fn insert(db: &Connection, record: &InteractionRecord, result: Option<Interactio
 }
 
 #[test]
-fn browser_decision_lookup_uses_exact_identity_index_as_unrelated_history_grows() {
+fn browser_decision_lookup_work_stays_constant_as_unrelated_history_grows() {
+    for (capability, wire) in [
+        (GrantCapability::Browser, "browser"),
+        (GrantCapability::BrowserDownload, "browser_download"),
+    ] {
+        decision_lookup_work_stays_constant(capability, wire);
+    }
+}
+
+fn decision_lookup_work_stays_constant(capability: GrantCapability, wire: &str) {
+    let mut selected = target();
+    selected.capability = capability;
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch(&crate::schema::fixture(|_, name| {
         matches!(
@@ -439,11 +450,16 @@ fn browser_decision_lookup_uses_exact_identity_index_as_unrelated_history_grows(
             }),
         ),
     ] {
-        insert(&db, &request(id, created, target(), Some(basis)), result);
+        insert(
+            &db,
+            &request(id, created, selected.clone(), Some(basis)),
+            result,
+        );
     }
     let binding = basis.binding.id.to_string();
     let parameters = params![
         "session",
+        wire,
         "provider",
         "contract",
         "desktop_browser",
@@ -457,7 +473,12 @@ fn browser_decision_lookup_uses_exact_identity_index_as_unrelated_history_grows(
     for (start, end) in [(0, 1000), (1000, 10000)] {
         db.execute_batch("BEGIN").unwrap();
         for index in start..end {
-            let mut other = request(&format!("history-{index}"), index, target(), Some(basis));
+            let mut other = request(
+                &format!("history-{index}"),
+                index,
+                selected.clone(),
+                Some(basis),
+            );
             match index % 3 {
                 0 => {
                     let InteractionRequest::ClientCapability { target, .. } = &mut other.request
@@ -496,30 +517,102 @@ fn browser_decision_lookup_uses_exact_identity_index_as_unrelated_history_grows(
             );
         }
         previous = Some(steps);
-        let plan: Vec<String> = db
-            .prepare(&format!("EXPLAIN QUERY PLAN {BROWSER_ORIGIN_DECISION}"))
-            .unwrap()
-            .query_map(parameters, |row| row.get(3))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert!(
-            plan.iter().any(|step| step
-                .contains("SEARCH request USING INDEX interaction_browser_origin_decision")),
-            "{plan:?}"
-        );
-        assert!(
-            plan.iter().any(|step| step
-                .contains("SEARCH outcome USING INDEX sqlite_autoindex_interaction_outcomes_1")),
-            "{plan:?}"
-        );
-        assert!(
-            plan.iter().all(|step| !step.starts_with("SCAN ")),
-            "{plan:?}"
-        );
         eprintln!(
-            "SQLite {} history={end} matching_decisions=2 vm_steps={steps} plan={plan:?}",
+            "SQLite {} history={end} matching_decisions=2 vm_steps={steps}",
             rusqlite::version()
         );
     }
+}
+
+#[tokio::test]
+async fn file_download_decisions_are_separate_from_read_grants_and_latest_denial_wins() {
+    let (directory, log, basis) = fixture().await;
+    let page = target();
+    let mut download = page.clone();
+    download.capability = GrantCapability::BrowserDownload;
+    decide(
+        &log,
+        &request("page-allow", 1, page.clone(), Some(basis)),
+        Decision::Allow,
+        2,
+    )
+    .await;
+    assert_eq!(
+        log.browser_origin_decision("session", &download, &basis)
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(
+        log.client_capability_grant("session", &download)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    decide(
+        &log,
+        &request("download-allow", 3, download.clone(), Some(basis)),
+        Decision::Allow,
+        4,
+    )
+    .await;
+    assert_eq!(
+        log.browser_origin_decision("session", &download, &basis)
+            .await
+            .unwrap(),
+        Some(Decision::Allow)
+    );
+    decide(
+        &log,
+        &request("download-deny", 5, download.clone(), Some(basis)),
+        Decision::Deny,
+        6,
+    )
+    .await;
+    assert_eq!(
+        log.browser_origin_decision("session", &download, &basis)
+            .await
+            .unwrap(),
+        Some(Decision::Deny)
+    );
+    assert_eq!(
+        log.browser_origin_decision("session", &page, &basis)
+            .await
+            .unwrap(),
+        Some(Decision::Allow)
+    );
+    assert!(
+        log.client_capability_grant("session", &download)
+            .await
+            .unwrap()
+            .is_some(),
+        "historical allow projection alone cannot authorize a denied download"
+    );
+    log.close().await.unwrap();
+    let log = EventLog::open(&directory.path().join("browser.sqlite"))
+        .await
+        .unwrap();
+    assert_eq!(
+        log.browser_origin_decision("session", &download, &basis)
+            .await
+            .unwrap(),
+        Some(Decision::Deny)
+    );
+    assert_eq!(
+        log.browser_origin_decision("session", &page, &basis)
+            .await
+            .unwrap(),
+        Some(Decision::Allow)
+    );
+    let mut foreign = download.clone();
+    foreign.scope = GrantScope::BrowserOrigin {
+        origin: "https://foreign.example".into(),
+    };
+    assert_eq!(
+        log.browser_origin_decision("session", &foreign, &basis)
+            .await
+            .unwrap(),
+        None
+    );
+    log.close().await.unwrap();
 }

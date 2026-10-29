@@ -423,11 +423,13 @@ impl Run {
         let selected = lease.store();
         let tasks = tokio_util::task::TaskTracker::new();
         let owner = Arc::new(Computer {
+            popup_provenance: None,
             store: root,
             configuration: Configuration {
                 desktop: maka_capabilities::computer::Desktop::Local,
                 browsers: vec![],
                 audio,
+                browser_preparation: Default::default(),
             },
             sessions: sessions::Sessions::with_audio(audio, tasks.clone()),
             resources: Arc::default(),

@@ -40,6 +40,12 @@ export const commonMessages = {
   Close: msg_closeModels,
   'Close · Esc': ['Close · Esc', '关闭 · Esc', '關閉 · Esc'],
   'Connections & models': ['Connections & models', '连接与模型', '連線與模型'],
+  'Add a model connection': ['Add a model connection', '添加模型连接', '新增模型連線'],
+  'Conversations need a model. Add a connection with your API key or account first.': [
+    'Conversations need a model. Add a connection with your API key or account first.',
+    '对话需要一个模型。请先用 API 密钥或账号添加一个连接。',
+    '對話需要一個模型。請先用 API 金鑰或帳號新增一個連線。',
+  ],
   'Draft could not be saved or restored. Its existing contents are preserved.': [
     'Draft could not be saved or restored. Its existing contents are preserved.',
     '无法保存或恢复草稿。已有内容已保留。',

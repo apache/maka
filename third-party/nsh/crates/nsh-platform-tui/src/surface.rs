@@ -1256,8 +1256,8 @@ impl Surface {
         {
             self.set_focus_from(Some(reveal.target.0), crate::input::FocusSource::Mount);
         }
-        let opened_popups = self.reconcile_focus_return(focus_return);
-        self.reconcile_focus(removed_focus);
+        let (opened_popups, restored_modal) = self.reconcile_focus_return(focus_return);
+        self.reconcile_focus_after_return(removed_focus, restored_modal, &opened_popups);
         self.focus_opened_popups(&opened_popups);
         if let Some(reveal) = focus_reveal
             && self.focus == Some(reveal.target.0)
@@ -1683,6 +1683,10 @@ impl Surface {
     /// The newest modal is the root of the active input scope.
     pub(crate) fn visible_ids(&self) -> Vec<NodeId> {
         let ids = self.paint_ids();
+        self.input_scope_ids(&ids)
+    }
+
+    pub(crate) fn input_scope_ids(&self, ids: &[NodeId]) -> Vec<NodeId> {
         let active = if let Some(modal) = ids
             .iter()
             .rev()
@@ -1693,7 +1697,8 @@ impl Surface {
             self.collect_visible(modal, &mut active);
             active
         } else {
-            ids.into_iter()
+            ids.iter()
+                .copied()
                 .filter(|&id| !self.is_dying(id) && self.navigation_accepts(id))
                 .collect()
         };

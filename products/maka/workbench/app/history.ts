@@ -19,6 +19,7 @@
 
 import type {
   AgentHistoryAttachment,
+  AgentHistoryPage,
   HistoryCompaction,
   HistoryModel,
   HistoryTurnTiming,
@@ -42,6 +43,7 @@ export type Row = {
   totalBytes?: number;
   tool?: any;
   attachments?: AgentHistoryAttachment[];
+  hasReferences?: boolean;
   turnId?: string;
   timestamp?: number;
   timing?: HistoryTurnTiming;
@@ -57,6 +59,29 @@ export type Row = {
   preview?: { stepOrder: number; ordinal: number; revision: number };
   closedAt?: number | null;
 };
+
+/** The opening user message, only when the loaded window proves the turn's start. */
+export function openingUserMessage(
+  rows: readonly Row[],
+  turnId: string | undefined,
+  before: AgentHistoryPage['before'] | undefined,
+): Row | null {
+  if (turnId === undefined) return null;
+  let precedingTurnLoaded = before === null;
+  for (const row of rows) {
+    if (row.turnId !== undefined && row.turnId !== turnId) precedingTurnLoaded = true;
+    if (row.role === 'user' && row.field === 'body' && row.turnId === turnId)
+      return precedingTurnLoaded ? row : null;
+  }
+  return null;
+}
+
+/** Whether replaying the displayed text retains all material in the original user input. */
+export function canRegenerateFromText(row: Row): boolean {
+  return (
+    row.attachments !== undefined && row.attachments.length === 0 && row.hasReferences === false
+  );
+}
 
 export function replayStartCursor(
   through: number,
@@ -98,6 +123,7 @@ export function historyMetadata(chunk: any, through: number, previous?: Row) {
     totalBytes: chunk.totalBytes,
     attachments:
       chunk.offset === 0 ? (chunk.attachments ?? []) : (previous?.attachments ?? chunk.attachments),
+    hasReferences: chunk.offset === 0 ? (chunk.hasReferences ?? false) : previous?.hasReferences,
     timing: chunk.timing,
     model: chunk.model,
     modelPart: chunk.modelPart,
@@ -160,7 +186,7 @@ export function mergeChunks(rows: Row[], chunks: any[], older = false, through =
       turnId: chunk.turnId,
       timestamp: chunk.timestamp,
       ...((previous?.metadataThrough ?? -1) > through
-        ? historyMetadata(previous, previous!.metadataThrough!)
+        ? historyMetadata(previous, previous!.metadataThrough!, previous)
         : historyMetadata(chunk, through, previous)),
       position: chunk.position,
       field: chunk.field,

@@ -22,19 +22,83 @@
 use super::*;
 
 mod clipboard;
+#[path = "../cua.rs"]
+mod cua;
 mod geometry;
 mod keyboard;
 mod shortcut;
 
 const ELEMENT: &str = include_str!("mutation/element.js");
 
+#[derive(Clone, Copy)]
+enum MutationClock {
+    Selector(tokio::time::Instant),
+    Host,
+}
+impl MutationClock {
+    fn expired(self) -> bool {
+        matches!(self,Self::Selector(deadline) if tokio::time::Instant::now()>=deadline)
+    }
+    fn selector(self) -> tokio::time::Instant {
+        match self {
+            Self::Selector(deadline) => deadline,
+            Self::Host => unreachable!("selector preparation always has its selector clock"),
+        }
+    }
+    async fn elapsed(self) {
+        match self {
+            Self::Selector(deadline) => tokio::time::sleep_until(deadline).await,
+            Self::Host => std::future::pending::<()>().await,
+        }
+    }
+    async fn observe<T>(
+        self,
+        effect: ReadEffect,
+        cancellation: &CancellationToken,
+        future: impl std::future::Future<Output = Result<T, ToolError>>,
+    ) -> Result<T, ToolError> {
+        match self {
+            Self::Selector(deadline) => {
+                let mut budget = Some(super::super::ReadBudget {
+                    remaining: deadline.saturating_duration_since(tokio::time::Instant::now()),
+                });
+                super::super::read_step_for(&mut budget, cancellation, effect, future).await
+            }
+            Self::Host => super::wait::cancellable_observation(effect, cancellation, future).await,
+        }
+    }
+}
+
 struct MutationContext<'a> {
     document: &'a crate::BrowserDocument,
-    deadline: tokio::time::Instant,
+    clock: MutationClock,
     cancellation: &'a CancellationToken,
+    invocation: &'a crate::InvocationContext<'a>,
     resources: &'a Resources,
     language: Language,
     cursor: &'a crate::cursor::Spec,
+}
+
+impl MutationContext<'_> {
+    fn check_deadline(&self) -> Result<(), ToolError> {
+        check_input(self.cancellation)?;
+        if self.clock.expired() {
+            return Err(
+                if self
+                    .resources
+                    .mutated
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    ToolError::OutcomeUnknown(
+                        "Locator deadline exceeded after a page effect; do not replay".into(),
+                    )
+                } else {
+                    failed("Playwright selector deadline exceeded")
+                },
+            );
+        }
+        Ok(())
+    }
 }
 
 struct Selected {
@@ -92,6 +156,29 @@ fn timeout(operation: &BrowserMutationOperation) -> Duration {
     Duration::from_secs_f64(operation.timeout_ms().unwrap_or(3000.0).min(maximum) / 1000.0)
 }
 
+// Raw AX names have a small preprocessing layer before the shared key layout.
+// Keep it local: locator keyboard names retain their existing behavior.
+fn accessibility_key_names(value: &str) -> String {
+    value
+        .split('+')
+        .map(|key| {
+            if key.len() == 1 {
+                return key.to_owned();
+            }
+            let lower = key.to_ascii_lowercase();
+            let modifier = lower
+                .strip_suffix("_l")
+                .or_else(|| lower.strip_suffix("_r"));
+            if let Some(base @ ("alt" | "control" | "meta" | "super" | "shift")) = modifier {
+                base.to_owned()
+            } else {
+                key.replace('_', "")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
 fn check_cancelled(cancellation: &CancellationToken, dispatched: bool) -> Result<(), ToolError> {
     if cancellation.is_cancelled() && dispatched {
         return Err(ToolError::OutcomeUnknown(
@@ -101,7 +188,124 @@ fn check_cancelled(cancellation: &CancellationToken, dispatched: bool) -> Result
     check_input(cancellation)
 }
 
+#[derive(Clone, Copy)]
+enum KeySource {
+    Accessibility,
+    Cua,
+}
+#[derive(Clone, Copy)]
+enum KeyRepeat {
+    Track,
+    Disabled,
+}
+
 impl Tab {
+    pub(in crate::browser) async fn accessibility_key(
+        &mut self,
+        index: Option<u64>,
+        value: &str,
+        call: super::super::BrowserCall<'_>,
+        cursor: &crate::cursor::Spec,
+    ) -> Result<(), ToolError> {
+        self.browser_current_key(
+            index,
+            &accessibility_key_names(value),
+            call,
+            cursor,
+            KeySource::Accessibility,
+        )
+        .await
+    }
+
+    async fn browser_current_key(
+        &mut self,
+        index: Option<u64>,
+        value: &str,
+        call: super::super::BrowserCall<'_>,
+        cursor: &crate::cursor::Spec,
+        source: KeySource,
+    ) -> Result<(), ToolError> {
+        let cancellation = call.cancellation;
+        let language = call.language;
+        let document = self.document();
+        let frame = match index {
+            Some(index) => self
+                .verify_element(index, language)
+                .await?
+                .frame
+                .ok_or_else(|| failed("keyboard target frame was not proven"))?,
+            None => self.main_frame().await?,
+        };
+        let mut used = vec![frame.clone()];
+        if frame.parent.is_some() {
+            let frames = self.frames().await?;
+            while let Some(parent) = used.last().and_then(|frame| frame.parent.as_deref()) {
+                let ancestor = frames
+                    .iter()
+                    .find(|frame| frame.id == parent)
+                    .ok_or_else(|| failed("keyboard target ancestor frame changed"))?;
+                if used.iter().any(|frame| frame.id == ancestor.id) {
+                    return Err(failed("keyboard target frame ancestry is invalid"));
+                }
+                used.push(ancestor.clone());
+            }
+        }
+        let resources = Resources::new();
+        let result = async {
+            let engine = self.playwright_engine(&frame, &resources).await?;
+            let object = cdp_value(self.frame_observation(
+                frame.session.as_deref(), "Runtime.callFunctionOn", json!({
+                    "objectId":engine,"functionDeclaration":"function(){return document.documentElement;}",
+                    "returnByValue":false,"objectGroup":resources.group,
+                }),
+            ).await?)?["objectId"].as_str()
+                .ok_or_else(|| failed("current browser document is unavailable"))?.to_owned();
+            let mut selected = Selected { object, frame: frame.clone(), used };
+            let target_macos = match source {
+                KeySource::Accessibility=>self.locator_target_macos(&selected, &resources).await?,
+                KeySource::Cua=>cfg!(target_os="macos"),
+            };
+            let chord = Self::locator_chord(value, target_macos)?;
+            let clipboard = shortcut::clipboard(&chord, target_macos);
+            if matches!(source,KeySource::Cua) && clipboard.is_some() {
+                selected = self.cua_focused_scope(&resources).await?;
+            }
+            let context = MutationContext {
+                document: &document,
+                clock: match source { KeySource::Accessibility=>MutationClock::Selector(tokio::time::Instant::now()+Duration::from_secs(3)),KeySource::Cua=>MutationClock::Host },
+                cancellation, invocation: call.invocation, resources: &resources, language, cursor,
+            };
+            // Recheck the same authorized document after metadata preparation.
+            let proof = self.origin_proof.clone()
+                .ok_or_else(|| failed("keyboard input lost its admitted document"))?;
+            proof.check_current(self).await?;
+            check_input(cancellation)?;
+            self.locator_document_current(&selected, &context).await?;
+            if let Some(operation) = clipboard {
+                self.locator_current_clipboard(&selected, operation, &context).await
+            } else {
+                self.before_input(cancellation, language).await?;
+                let repeat = match source { KeySource::Accessibility=>KeyRepeat::Track,KeySource::Cua=>KeyRepeat::Disabled };
+                self.browser_key_sequence(&chord, cancellation, Some(target_macos), repeat).await
+            }
+        }.await;
+        // This is the same admitted operation and isolated utility object group,
+        // not another invocation or keyboard owner.
+        resources.cleanup(self).await;
+        result.map_err(|error| {
+            if cancellation.is_cancelled()
+                && resources.mutated.load(std::sync::atomic::Ordering::Relaxed)
+                && matches!(error, ToolError::Failed(_))
+            {
+                ToolError::OutcomeUnknown(format!(
+                    "{error}; cancellation followed a page effect; do not replay"
+                ))
+            } else {
+                error
+            }
+        })
+    }
+
     async fn locator_input_target(
         &self,
         selected: &Selected,
@@ -244,29 +448,29 @@ impl Tab {
     ) -> Result<(), ToolError> {
         let MutationContext {
             document,
-            deadline,
+            clock,
             cancellation,
-            resources,
+            invocation,
             language,
             ..
         } = *context;
-        check_input(cancellation)?;
-        if tokio::time::Instant::now() >= deadline {
-            return Err(
-                if resources.mutated.load(std::sync::atomic::Ordering::Relaxed) {
-                    ToolError::OutcomeUnknown(
-                        "Locator deadline exceeded after a page effect; do not replay".into(),
-                    )
-                } else {
-                    failed("Playwright selector deadline exceeded")
-                },
-            );
-        }
-        self.refresh_info(language).await?;
+        context.check_deadline()?;
+        let effect = self.read_effect()?;
+        clock
+            .observe(
+                effect,
+                cancellation,
+                self.refresh_info(super::super::BrowserCall::new(
+                    invocation,
+                    cancellation,
+                    language,
+                )),
+            )
+            .await?;
         if self.document() != *document || !self.frame_scopes_current(&selected.used).await? {
             return Err(failed("document or frame changed before locator input"));
         }
-        check_input(cancellation)
+        context.check_deadline()
     }
 
     async fn locator_current(
@@ -290,7 +494,7 @@ impl Tab {
         if focused.is_some() && state["focused"] != true {
             return Err(failed("Element is not focused"));
         }
-        check_input(context.cancellation)
+        context.check_deadline()
     }
 
     async fn locator_prepare(
@@ -300,11 +504,12 @@ impl Tab {
         context: &MutationContext<'_>,
     ) -> Result<Selected, ToolError> {
         let MutationContext {
-            deadline,
+            clock,
             cancellation,
             resources,
             ..
         } = *context;
+        let deadline = clock.selector();
         let request = match operation {
             BrowserMutationOperation::Click { options }
             | BrowserMutationOperation::DoubleClick { options } => {
@@ -317,6 +522,7 @@ impl Tab {
             }
             _ => json!({"kind":"prepareText","requireEditable":true}),
         };
+        let effect = self.read_effect()?;
         loop {
             let attempt = async {
                 let selected = self.locator_element(query, resources).await?;
@@ -333,13 +539,16 @@ impl Tab {
                 }
                 Ok(selected)
             };
-            // Only the observation phase can be abandoned or repeated. The
-            // returned DOM object is retained for all subsequent page effects.
-            let result = tokio::select! {
-                biased;
-                ()=cancellation.cancelled()=>return Err(failed("Browser mutation cancelled")),
-                result=tokio::time::timeout_at(deadline,attempt)=>result.map_err(|_|failed("Playwright selector deadline exceeded"))?,
-            };
+            // A Extension observation can also activate session preparation.
+            // The same absolute deadline and actual first-poll classification
+            // preserve that uncertainty without replaying the accepted work.
+            let mut budget = Some(super::super::ReadBudget {
+                remaining: deadline.saturating_duration_since(tokio::time::Instant::now()),
+            });
+            let result = super::super::read_step_for(&mut budget, cancellation, effect, async {
+                Ok(attempt.await)
+            })
+            .await?;
             match result {
                 Ok(selected) => return Ok(selected),
                 Err(AttemptError::Fatal(error)) => return Err(error),
@@ -363,42 +572,43 @@ impl Tab {
         operation: BrowserMutationOperation,
         document: crate::BrowserDocument,
         cursor: &crate::cursor::Spec,
-        cancellation: &CancellationToken,
-        language: Language,
+        call: super::super::BrowserCall<'_>,
     ) -> Result<Value, ToolError> {
+        let cancellation = call.cancellation;
+        let language = call.language;
         validate_mutation(&operation)?;
         let resources = Resources::new();
         let deadline = tokio::time::Instant::now() + timeout(&operation);
         let context = MutationContext {
             document: &document,
-            deadline,
+            clock: MutationClock::Selector(deadline),
             cancellation,
+            invocation: call.invocation,
             resources: &resources,
             language,
             cursor,
         };
+        let effect = self.read_effect()?;
         let result = async {
-            tokio::select! {
-                biased;
-                ()=cancellation.cancelled()=>return Err(failed("Browser mutation cancelled")),
-                ready=tokio::time::timeout_at(deadline,self.verify(language))=>ready.map_err(|_|failed("Playwright selector deadline exceeded"))??,
-            }
-            let selected = self
-                .locator_prepare(
-                    &plan.selector,
-                    &operation,
-                    &context,
-                )
+            let mut budget = Some(super::super::ReadBudget {
+                remaining: deadline.saturating_duration_since(tokio::time::Instant::now()),
+            });
+            super::super::read_step_for(&mut budget, cancellation, effect, self.verify(call))
                 .await?;
-            let selected = if matches!(operation,
-                BrowserMutationOperation::Fill {..}|BrowserMutationOperation::Type {..}|BrowserMutationOperation::PressSequentially {..}
-            ) { self.locator_input_target(&selected, &resources).await? } else { selected };
-            self.locator_dispatch(
-                &selected,
-                &operation,
-                &context,
-            )
-            .await
+            let selected = self
+                .locator_prepare(&plan.selector, &operation, &context)
+                .await?;
+            let selected = if matches!(
+                operation,
+                BrowserMutationOperation::Fill { .. }
+                    | BrowserMutationOperation::Type { .. }
+                    | BrowserMutationOperation::PressSequentially { .. }
+            ) {
+                self.locator_input_target(&selected, &resources).await?
+            } else {
+                selected
+            };
+            self.locator_dispatch(&selected, &operation, &context).await
         }
         .await;
         resources.cleanup(self).await;
@@ -425,7 +635,7 @@ impl Tab {
         context: &MutationContext<'_>,
     ) -> Result<(), ToolError> {
         let MutationContext {
-            deadline,
+            clock,
             cancellation,
             resources,
             ..
@@ -584,7 +794,7 @@ impl Tab {
                 let mut progressed = false;
                 while let Some(character) = characters.next() {
                     check_cancelled(cancellation, true)?;
-                    if tokio::time::Instant::now() >= deadline {
+                    if clock.expired() {
                         return Err(ToolError::OutcomeUnknown(
                             "Sequential input deadline exceeded after focusing; do not replay"
                                 .into(),
@@ -626,14 +836,13 @@ impl Tab {
         }
     }
 
-    async fn locator_key_event(
-        &self,
+    fn locator_key_params(
         key: &keyboard::KeyDescription,
         down: bool,
         modifiers: u32,
         repeat: bool,
         commands: &[&str],
-    ) -> Result<(), ToolError> {
+    ) -> Value {
         let mut event = json!({
             "type":if down && key.text.is_empty() {"rawKeyDown"}else if down {"keyDown"}else{"keyUp"},
             "key":key.key,"code":key.code,"windowsVirtualKeyCode":key.key_code,
@@ -646,9 +855,7 @@ impl Tab {
                 event["commands"] = json!(commands);
             }
         }
-        self.frame_request(None, "Input.dispatchKeyEvent", event)
-            .await?;
-        Ok(())
+        event
     }
 
     async fn locator_key(
@@ -657,59 +864,72 @@ impl Tab {
         cancellation: &CancellationToken,
         target_macos: Option<bool>,
     ) -> Result<(), ToolError> {
-        let mut down = Vec::new();
-        let mut modifiers = 0;
-        let result = async {
-            for (index, key) in chord
-                .modifiers
-                .iter()
-                .chain(std::iter::once(&chord.key))
-                .enumerate()
-            {
-                check_cancelled(cancellation, !down.is_empty())?;
-                if index == chord.modifiers.len() {
-                    modifiers = chord.mask;
-                }
-                modifiers |= key.modifier_mask();
-                let repeat = down
-                    .iter()
-                    .any(|pressed: &&keyboard::KeyDescription| pressed.code == key.code);
-                // Even an unknown key-down reply requires an attempted release.
-                down.push(key);
-                let commands = target_macos
-                    .map(|mac| {
-                        shortcut::edit_commands(
-                            &keyboard::Chord {
-                                modifiers: Vec::new(),
-                                key: key.clone(),
-                                mask: modifiers,
+        self.browser_key_sequence(chord, cancellation, target_macos, KeyRepeat::Track)
+            .await
+    }
+    async fn browser_key_sequence(
+        &self,
+        chord: &keyboard::Chord,
+        cancellation: &CancellationToken,
+        target_macos: Option<bool>,
+        repeat_mode: KeyRepeat,
+    ) -> Result<(), ToolError> {
+        let keys: Vec<_> = chord
+            .modifiers
+            .iter()
+            .chain(std::iter::once(&chord.key))
+            .cloned()
+            .collect();
+        let modifier_count = chord.modifiers.len();
+        let mask = chord.mask;
+        self.owned_input(cancellation, None, move |_, input, cancellation| {
+            Box::pin(async move {
+                let mut down: Vec<&keyboard::KeyDescription> = Vec::new();
+                let mut modifiers = 0;
+                for (index, key) in keys.iter().enumerate() {
+                    check_cancelled(&cancellation, !down.is_empty())?;
+                    if index == modifier_count {
+                        modifiers = mask;
+                    }
+                    modifiers |= key.modifier_mask();
+                    let repeat = matches!(repeat_mode, KeyRepeat::Track)
+                        && down.iter().any(|pressed| pressed.code == key.code);
+                    let commands = target_macos
+                        .map(|mac| {
+                            shortcut::edit_commands(
+                                &keyboard::Chord {
+                                    modifiers: Vec::new(),
+                                    key: key.clone(),
+                                    mask: modifiers,
+                                },
+                                mac,
+                            )
+                        })
+                        .unwrap_or_default();
+                    let release_key = key.clone();
+                    input
+                        .key_down(
+                            Self::locator_key_params(key, true, modifiers, repeat, &commands),
+                            key.modifier_mask(),
+                            move |mask| {
+                                Self::locator_key_params(
+                                    &release_key.for_modifiers(mask),
+                                    false,
+                                    mask,
+                                    false,
+                                    &[],
+                                )
                             },
-                            mac,
                         )
-                    })
-                    .unwrap_or_default();
-                self.locator_key_event(key, true, modifiers, repeat, &commands)
-                    .await?;
-            }
-            Ok::<_, ToolError>(())
-        }
-        .await;
-        let mut cleanup = None;
-        for key in down.into_iter().rev() {
-            modifiers &= !key.modifier_mask();
-            if let Err(error) = self
-                .locator_key_event(&key.for_modifiers(modifiers), false, modifiers, false, &[])
-                .await
-            {
-                cleanup = Some(error);
-            }
-        }
-        if let Some(error) = cleanup {
-            return Err(ToolError::CleanupUnconfirmed(format!(
-                "locator key release was not acknowledged: {error}"
-            )));
-        }
-        result
+                        .await?;
+                    down.push(key);
+                }
+                // The common retained finalizer releases these exact issued keys in
+                // reverse order, including the error/cancellation path.
+                Ok(())
+            })
+        })
+        .await
     }
 
     async fn locator_click(
@@ -725,41 +945,57 @@ impl Tab {
             BrowserMouseButton::Right => "right",
             BrowserMouseButton::Middle => "middle",
         };
-        let mut down = Vec::new();
-        let mut modifiers = 0;
-        let result = async {
-            for key in &keys {
-                check_cancelled(cancellation, !down.is_empty())?;
+        self.owned_input(cancellation, None, move |page, input, cancellation| Box::pin(async move {
+            let mut modifiers = 0;
+            for (index, key) in keys.iter().enumerate() {
+                check_cancelled(&cancellation, index != 0)?;
                 modifiers |= key.modifier_mask();
-                down.push(key);
-                self.locator_key_event(key, true, modifiers, false, &[]).await?;
+                let release_key = key.clone();
+                input.key_down(
+                    Self::locator_key_params(key, true, modifiers, false, &[]),
+                    key.modifier_mask(),
+                    move |mask| Self::locator_key_params(&release_key.for_modifiers(mask), false, mask, false, &[]),
+                ).await?;
             }
-            check_cancelled(cancellation, !down.is_empty())?;
-            self.frame_request(None,"Input.dispatchMouseEvent",json!({"type":"mouseMoved","x":point[0],"y":point[1],"modifiers":modifiers})).await?;
+            check_cancelled(&cancellation, !keys.is_empty())?;
+            page.frame_request(None,"Input.dispatchMouseEvent",json!({"type":"mouseMoved","x":point[0],"y":point[1],"modifiers":modifiers})).await?;
             for click_count in 1..=count {
-                check_cancelled(cancellation, true)?;
-                let pressed=self.frame_request(None,"Input.dispatchMouseEvent",json!({"type":"mousePressed","x":point[0],"y":point[1],"button":button,"clickCount":click_count,"modifiers":modifiers})).await;
-                let released=self.frame_request(None,"Input.dispatchMouseEvent",json!({"type":"mouseReleased","x":point[0],"y":point[1],"button":button,"clickCount":click_count,"modifiers":modifiers})).await;
-                released.map_err(|error|ToolError::CleanupUnconfirmed(format!("locator mouse release was not acknowledged: {error}")))?;
-                pressed?;
+                check_cancelled(&cancellation, true)?;
+                let held = input.mouse_down(None,json!({"type":"mousePressed","x":point[0],"y":point[1],"button":button,"clickCount":click_count,"modifiers":modifiers})).await?;
+                input.release(held).await?;
             }
             Ok(())
-        }.await;
-        let mut cleanup = None;
-        for key in down.into_iter().rev() {
-            modifiers &= !key.modifier_mask();
-            if let Err(error) = self
-                .locator_key_event(&key.for_modifiers(modifiers), false, modifiers, false, &[])
-                .await
-            {
-                cleanup = Some(error);
+        })).await
+    }
+}
+
+#[cfg(test)]
+mod accessibility_keyboard_tests {
+    use super::*;
+
+    #[test]
+    fn raw_ax_modifier_suffixes_and_function_keys_use_existing_layout() {
+        for (input, code) in [
+            ("Alt", "AltLeft"),
+            ("Control", "ControlLeft"),
+            ("Meta", "MetaLeft"),
+            ("Super", "MetaLeft"),
+            ("Shift", "ShiftLeft"),
+        ] {
+            for side in ['L', 'R'] {
+                let value = accessibility_key_names(&format!("{input}_{side}+F_12"));
+                let chord = Tab::locator_chord(&value, false).unwrap();
+                assert_eq!(chord.modifiers.len(), 1);
+                assert_eq!(chord.modifiers[0].code, code);
+                assert_eq!(chord.key.code, "F12");
             }
         }
-        if let Some(error) = cleanup {
-            return Err(ToolError::CleanupUnconfirmed(format!(
-                "locator click modifier release was not acknowledged: {error}"
-            )));
-        }
-        result
+        assert_eq!(accessibility_key_names("ControlLeft++"), "ControlLeft++");
+        assert_eq!(accessibility_key_names("_"), "_");
+        assert_eq!(accessibility_key_names("Page_Down"), "PageDown");
+        assert!(
+            Tab::locator_chord("Control_L+F12", false).is_err(),
+            "raw AX adaptation must not silently change locator names"
+        );
     }
 }

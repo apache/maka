@@ -77,6 +77,20 @@ pub enum ModelObservation {
     },
 }
 
+impl ModelObservation {
+    /// Summary prose and unexecuted local requests remain private until validation.
+    pub fn is_summary_observation(&self) -> bool {
+        match self {
+            Self::Part(record) => {
+                matches!(record.part.as_ref(), ModelPart::ToolCall { call } if call.provider_executed)
+                    || matches!(record.part.as_ref(), ModelPart::ToolResult { .. })
+            }
+            Self::ResponseMetadata { .. } | Self::Finished { .. } => true,
+            Self::ProviderOptions { .. } => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolInputPhase {

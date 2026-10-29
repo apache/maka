@@ -53,21 +53,87 @@ async fn approval(
         changes.changed().await.unwrap();
     }
 }
-#[tokio::test]
-async fn mcp_native_direct_and_code_mode_calls_share_approval_permissions_and_journal() {
-    tokio::time::timeout(Duration::from_secs(60), exercise_mcp_permissions())
-        .await
-        .unwrap();
+#[derive(Default)]
+struct Scenario {
+    enveloped: bool,
+    code: bool,
+    deny: bool,
+    read_only: bool,
+    preapproved: bool,
+    trusted_readonly: bool,
+    revoke: bool,
 }
-async fn exercise_mcp_permissions() {
-    for (code, decision, read_only, preapproved, trusted_readonly, revoke) in [
-        (false, "allow", false, false, false, false),
-        (false, "deny", false, false, false, false),
-        (true, "allow", false, true, false, false),
-        (false, "allow", true, true, false, false),
-        (false, "allow", true, true, true, false),
-        (false, "allow", false, false, false, true),
-    ] {
+
+#[tokio::test]
+async fn mcp_permission_approval_preserves_enveloped_arguments() {
+    exercise_mcp_permissions(Scenario {
+        enveloped: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mcp_permission_denial_prevents_dispatch() {
+    exercise_mcp_permissions(Scenario {
+        deny: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mcp_permission_code_mode_preserves_result_and_origin() {
+    exercise_mcp_permissions(Scenario {
+        code: true,
+        preapproved: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mcp_permission_preapproval_does_not_override_read_only_workspace() {
+    exercise_mcp_permissions(Scenario {
+        read_only: true,
+        preapproved: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mcp_permission_trusted_read_only_tool_remains_callable() {
+    exercise_mcp_permissions(Scenario {
+        read_only: true,
+        preapproved: true,
+        trusted_readonly: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mcp_permission_revocation_is_rechecked_after_approval() {
+    exercise_mcp_permissions(Scenario {
+        revoke: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+async fn exercise_mcp_permissions(scenario: Scenario) {
+    let Scenario {
+        enveloped,
+        code,
+        deny,
+        read_only,
+        preapproved,
+        trusted_readonly,
+        revoke,
+    } = scenario;
+    let decision = if deny { "deny" } else { "allow" };
+    tokio::time::timeout(Duration::from_secs(60), async {
         let directory = tempfile::tempdir().unwrap();
         let record = directory.path().join("record");
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -78,6 +144,14 @@ async fn exercise_mcp_permissions() {
             None,
             |settings| {
                 let mut config = server(&record, preapproved);
+                if enveloped {
+                    let maka_mcp::TransportConfiguration::Stdio { args, .. } =
+                        &mut config.transport
+                    else {
+                        unreachable!("the MCP fixture uses stdio");
+                    };
+                    args[1] = "object-union".into();
+                }
                 if trusted_readonly {
                     config.read_only_tools = vec!["echo".into()];
                 }
@@ -114,17 +188,29 @@ async fn exercise_mcp_permissions() {
             );
             service_tools::named_tool_response(&mut first,"exec",json!({"code":"const r = await tools.mcp__fixture__echo({marker:'MCP_RESULT'}); if (r.isError || r.structuredContent.marker !== 'MCP_RESULT') throw Error('MCP result lost'); text(r.structuredContent);"})).await;
         } else {
-            assert!(
-                prompt["tools"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|tool| tool["function"]["name"] == "mcp__fixture__echo")
-            );
+            let tool = prompt["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["function"]["name"] == "mcp__fixture__echo")
+                .unwrap();
+            if enveloped {
+                let schema = &tool["function"]["parameters"];
+                assert_eq!(schema["type"], "object");
+                assert!(
+                    ["oneOf", "anyOf", "allOf", "$ref"]
+                        .iter()
+                        .all(|key| schema.get(*key).is_none())
+                );
+            }
             service_tools::named_tool_response(
                 &mut first,
                 "mcp__fixture__echo",
-                json!({"marker":"MCP_RESULT"}),
+                if enveloped {
+                    json!({"request":{"marker":"MCP_RESULT"}})
+                } else {
+                    json!({"marker":"MCP_RESULT"})
+                },
             )
             .await;
         }
@@ -145,6 +231,18 @@ async fn exercise_mcp_permissions() {
         let result = request(&mut next).await;
         let should_call = decision == "allow" && (!read_only || trusted_readonly) && !revoke;
         assert_eq!(calls(&record), usize::from(should_call));
+        if enveloped {
+            let observed = std::fs::read_to_string(&record)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .find(|event| event["method"] == "tools/call")
+                .unwrap();
+            assert_eq!(
+                observed["params"]["arguments"],
+                json!({"marker":"MCP_RESULT"})
+            );
+        }
         if should_call {
             assert!(
                 result["messages"]
@@ -169,7 +267,9 @@ async fn exercise_mcp_permissions() {
         }
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
-    }
+    })
+    .await
+    .expect("MCP permission scenario completes");
 }
 
 fn portable(record: &std::path::Path) -> Value {

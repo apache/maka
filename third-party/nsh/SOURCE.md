@@ -228,6 +228,11 @@ input listening for file drops. Other input fields keep their literal text.
 The file content is reported once through `onPaste`, or through `onFileDrop`
 when no paste listener is mounted, without inserting the paths as text.
 
+A local declaration adaptation names the private CSS alignment helper
+`LayoutAlign`, distinct from the public overlay `Align`. Its four layout
+property descriptors keep the same accepted values; runtime parsing is
+unchanged.
+
 The GPUI backend delivers files dragged in from other applications
 (`file_drop.rs`): while a drag is active, `AppView` lays a layer over the
 surface whose drag moves and drop drive `onFileDragEnter`, `onFileDragLeave`
