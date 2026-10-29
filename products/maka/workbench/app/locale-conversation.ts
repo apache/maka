@@ -378,11 +378,6 @@ export const conversationMessages = {
     '创建对话被拒绝：{reason}',
     '建立對話遭拒：{reason}',
   ],
-  'Conversation removal rejected: {reason}': [
-    'Conversation removal rejected: {reason}',
-    '会话删除被拒绝：{reason}',
-    '對話刪除遭拒：{reason}',
-  ],
   'Conversation terminals': ['Conversation terminals', '对话终端', '對話終端'],
   'Conversation todo dock': ['Conversation todo dock', '对话任务清单', '對話待辦清單'],
   Copied: ['Copied', '已复制', '已複製'],

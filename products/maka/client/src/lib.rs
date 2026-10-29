@@ -19,6 +19,7 @@
 
 //! View-independent Maka calls. The launcher retains this scope until `close` succeeds.
 mod journal;
+mod pending;
 pub use journal::{
     Draft, DraftAttachment, DraftEdit, DraftKey, DraftReference, Journal, Operation,
     UploadReference,
@@ -34,6 +35,7 @@ use maka_plugin_core::{
     deployment::DeploymentRef,
     operation::{OperationReply, RecoveryContract, receipt_reader_contract},
 };
+pub use pending::PendingFile;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{

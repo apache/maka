@@ -198,6 +198,7 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
     registry.class::<uploads::UploadIntake>();
     registry.class::<uploads::StagedFile>();
     registry.class::<uploads::StagedClipboard>();
+    registry.class::<uploads::StagedFiles>();
     registry.class::<ui_services::UiScope>();
     registry.value("host", make_host);
     registry
@@ -295,6 +296,112 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    pub fn staged_files(&self) -> Instance<uploads::StagedFiles> {
+        Instance::new(uploads::StagedFiles::new(self.owner.clone()))
+    }
+    pub async fn load_pending_draft(this: Instance<Self>) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            let (revision, state) = client.pending_draft().await?;
+            Ok(serde_json::json!({"revision":revision,"state":state}))
+        })
+        .await
+    }
+    pub async fn restore_pending_files(
+        this: Instance<Self>,
+        ids: Vec<String>,
+    ) -> Result<Vec<Instance<uploads::StagedFile>>, String> {
+        if ids.len() > 128 {
+            return Err("Too many selected files".into());
+        }
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        let result_owner = owner.clone();
+        let restored = execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            let mut files = Vec::new();
+            for id in ids {
+                let saved = client.pending_file(&id).await?;
+                let budget = owner.budget.clone();
+                let snapshot = tokio::task::spawn_blocking(move || {
+                    use std::io::Write;
+                    let mut writer =
+                        maka_ui_support::file::FileSnapshotWriter::new(&saved.name, budget)
+                            .map_err(|e| e.to_string())?;
+                    writer.write_all(&saved.bytes).map_err(|e| e.to_string())?;
+                    writer.finish().map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+                files.push((id, snapshot));
+            }
+            Ok(files)
+        })
+        .await?;
+        restored
+            .into_iter()
+            .map(|(id, snapshot)| uploads::restored_file(result_owner.clone(), id, snapshot))
+            .collect()
+    }
+    pub async fn save_pending_draft(
+        this: Instance<Self>,
+        revision: u64,
+        state: JsonValue,
+        ids: Vec<String>,
+        files: Instance<uploads::StagedFiles>,
+    ) -> Result<u64, String> {
+        if ids.len() > 128 {
+            return Err("Too many selected files".into());
+        }
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        let snapshots = files.with(|files| {
+            if !Arc::ptr_eq(&files.owner, &owner) {
+                return Err("Selected files belong to another client".to_owned());
+            }
+            Ok(files.files.clone())
+        })?;
+        drop(files);
+        execute(owner.clone(), async move {
+            use maka_capabilities::call::ReadResource;
+            let client = source.resolve(&owner).await?;
+            let known = client.pending_file_ids().await?;
+            let budget = owner.budget.clone();
+            let (fresh, _copies) = tokio::task::spawn_blocking(move || {
+                let mut copies = Vec::new();
+                let files = snapshots
+                    .into_iter()
+                    .filter(|(id, _)| !known.contains(id))
+                    .map(|(id, snapshot)| {
+                        copies.push(
+                            budget
+                                .reserve(maka_ui_support::budget::Kind::Encoded, snapshot.bytes())
+                                .map_err(|e| e.to_string())?,
+                        );
+                        let mut bytes = Vec::with_capacity(snapshot.bytes());
+                        for start in (0..snapshot.bytes()).step_by(65536) {
+                            bytes.extend(
+                                snapshot.read(start..(start + 65536).min(snapshot.bytes()))?,
+                            );
+                        }
+                        Ok(maka_app_client::PendingFile {
+                            id,
+                            name: snapshot.metadata()["name"]
+                                .as_str()
+                                .ok_or("Selected file name is missing")?
+                                .into(),
+                            bytes,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok::<_, String>((files, copies))
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+            client.save_pending_draft(revision, state, ids, fresh).await
+        })
+        .await
+    }
+
     /// Snapshot files selected for a conversation that has not yet been sent.
     pub async fn stage_files(
         this: Instance<Self>,

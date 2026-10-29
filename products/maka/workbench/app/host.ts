@@ -163,6 +163,23 @@ export function createHost(application: UiHost) {
   // Local journal methods serialize these actual Rust DTOs. Their receipt business
   // values remain unknown and continue through the application's existing guards.
   return {
+    loadPendingDraft: () =>
+      nativeHost.loadPendingDraft() as Promise<{ revision: number; state: unknown }>,
+    restorePendingFiles: (ids: string[]) => nativeHost.restorePendingFiles(ids),
+    savePendingDraft: async (
+      revision: number,
+      state: unknown,
+      ids: string[],
+      files: import('maka/host').StagedFile[],
+    ) => {
+      const selected = nativeHost.stagedFiles();
+      try {
+        for (const file of files) selected.push(file);
+        return await nativeHost.savePendingDraft(revision, state, ids, selected);
+      } finally {
+        selected.dispose();
+      }
+    },
     assetUri: (uri: string) => nativeHost.assetUri(uri),
     markdownImageSource(target: string) {
       const source = nativeHost.markdownImageSource(target);
