@@ -64,7 +64,7 @@ impl ParseError<'_> {
 
 // Swift.Error domains use the qualified type name and enum tag. Foundation
 // supplies the localized presentation.
-pub(super) fn default_swift_error(domain: &str, code: isize) -> ToolError {
+pub(in crate::macos) fn default_swift_error(domain: &str, code: isize) -> ToolError {
     let Some(error_class) = AnyClass::get(c"NSError") else {
         return ToolError::Failed(format!("NSError class unavailable for {domain} ({code})"));
     };

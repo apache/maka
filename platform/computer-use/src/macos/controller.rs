@@ -215,6 +215,13 @@ enum Command {
         cancellation: CancellationToken,
         focus: Arc<super::focus::Resource>,
     },
+    CoordinateClick {
+        slot: u64,
+        token: ResolveId,
+        input: super::mouse::Input,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    },
     BeginKeyboard {
         slot: u64,
         input: super::keyboard::Input,
@@ -939,6 +946,25 @@ impl Window {
 }
 
 impl Application {
+    pub(crate) async fn coordinate_click(
+        &self,
+        token: ResolveId,
+        input: super::mouse::Input,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    ) -> Result<(), ToolError> {
+        self.controller
+            .request(Command::CoordinateClick {
+                slot: self.slot,
+                token,
+                input,
+                cancellation,
+                focus,
+            })
+            .await
+            .and_then(unit)
+    }
+
     pub(crate) async fn keyboard(
         &self,
         input: super::keyboard::Input,
@@ -1553,6 +1579,37 @@ impl WorkerState {
                 target.native_action(action, &cancellation, &focus)?;
                 Ok(Response::Unit)
             }
+            Command::CoordinateClick {
+                slot,
+                token,
+                input,
+                cancellation,
+                focus,
+            } => {
+                let application = self
+                    .slots
+                    .get(&slot)
+                    .ok_or_else(|| failed("native AX application handle has retired"))?
+                    .application()?;
+                let target = match self.resolving.get(&token) {
+                    Some(PendingResolve::Ready { epoch, _target })
+                        if *epoch == application.epoch =>
+                    {
+                        _target
+                    }
+                    _ => return Err(failed("native click target has retired")),
+                };
+                super::mouse::send(
+                    self.pid,
+                    &self.generation,
+                    target,
+                    input,
+                    &focus,
+                    &cancellation,
+                    || application.observed.as_ref().and_then(Target::focus_window),
+                )?;
+                Ok(Response::Unit)
+            }
             Command::BeginKeyboard {
                 slot,
                 input,
@@ -2020,7 +2077,7 @@ fn check_cancelled(cancellation: &CancellationToken) -> Result<(), ToolError> {
     }
 }
 
-fn verify_generation(pid: i32, generation: &str) -> Result<(), ToolError> {
+pub(super) fn verify_generation(pid: i32, generation: &str) -> Result<(), ToolError> {
     let pid = u32::try_from(pid).map_err(failed)?;
     if crate::identity::process(pid)? != generation {
         return Err(failed("stale_target: native application process changed"));

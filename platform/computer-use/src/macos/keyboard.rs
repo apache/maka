@@ -19,7 +19,7 @@
 
 //! The Raw app keyboard path; event construction remains in Cua.
 
-mod aliases;
+pub(super) mod aliases;
 
 use super::focus::Resource;
 use crate::NativeMonitorPermit;

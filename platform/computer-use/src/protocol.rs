@@ -626,7 +626,6 @@ where
     Distance::deserialize(deserializer).map(Some)
 }
 
-// Private additions for composition inside the existing protocol module.
 // The Command variant is: NativeComputer { call: NativeComputerCall }.
 // Input stays raw until the selected platform boundary; it grants no authority.
 // Existing audio commands retain their original Host consent/admission path.

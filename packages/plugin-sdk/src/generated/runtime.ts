@@ -3439,7 +3439,8 @@ export type FormFormat = 'email' | 'uri' | 'date' | 'date-time';
 export type GrantCapability =
   | ('browser' | 'computer_use' | 'computer_audio' | 'desktop_mcp' | 'mcp')
   | 'browser_download'
-  | 'browser_history';
+  | 'browser_history'
+  | 'browser_upload';
 export type GrantScope =
   | {
       kind: 'browser_origin';

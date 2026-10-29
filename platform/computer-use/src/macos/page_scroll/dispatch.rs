@@ -251,7 +251,7 @@ async fn metadata(driver: &Arc<Mutex<Driver>>, query: Query) -> Result<Observati
     pending.await
 }
 
-async fn resolve_target(
+pub(crate) async fn resolve_target(
     controller: &Controller,
     driver: &Arc<Mutex<Driver>>,
     epoch: NativeEpochId,
@@ -306,7 +306,7 @@ async fn target_pixels(
     Ok(pixels)
 }
 
-async fn settle<T>(
+pub(crate) async fn settle<T>(
     result: Result<T, ToolError>,
     cleanup: impl std::future::Future<Output = Result<(), ToolError>>,
 ) -> Result<T, ToolError> {
