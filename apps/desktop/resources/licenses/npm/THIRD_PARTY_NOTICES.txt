@@ -813,10 +813,10 @@ THE SOFTWARE.
 
 ================================================================================
 
-Package: @hono/node-server@1.19.17
+Package: @hono/node-server@2.1.5
 Declared license: MIT
 Selected license: MIT
-Repository: https://github.com/honojs/node-server.git
+Repository: git+https://github.com/honojs/node-server.git
 
 --- LICENSE ---
 MIT License
@@ -1769,7 +1769,7 @@ the full license text.
 
 ================================================================================
 
-Package: @modelcontextprotocol/core@2.3.1
+Package: @modelcontextprotocol/core@2.4.0
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git
@@ -1994,9 +1994,9 @@ the full license text.
 
 ================================================================================
 
-Package: @modelcontextprotocol/node@2.1.0
-Declared license: MIT
-Selected license: MIT
+Package: @modelcontextprotocol/node@2.1.2
+Declared license: Apache-2.0
+Selected license: Apache-2.0
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git
 
 --- LICENSE ---
@@ -2219,7 +2219,7 @@ the full license text.
 
 ================================================================================
 
-Package: @modelcontextprotocol/server@2.3.1
+Package: @modelcontextprotocol/server@2.4.0
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git
@@ -11990,7 +11990,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: systeminformation@5.33.13
+Package: systeminformation@5.33.18
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/sebhildebrandt/systeminformation.git
