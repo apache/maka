@@ -1,7 +1,7 @@
 {
   "inputs": {
-    "Cargo.lock": "e3480b7eadf2abc5641addea0710fd7338c6301b17a8ff027d824e261c53fa38",
-    "Cargo.toml": "f6df8fb0a0c2a672f7a19ee04f4482ef186122fc60dc3c052c99798902136032",
+    "Cargo.lock": "e188a93d3e76492d27e8ab56658bd2c6ec385a8e4508a045fc2d455229db9dcd",
+    "Cargo.toml": "9e69727a19c4cadc4b946c8797af11bc628ccf77a34dbbc43662616659f52f12",
     "package-lock.json": "863e20d94f46507befd14d7abe94982bb110dff3efaa13b9d1c3b60333f8d64a",
     "package.json": "a513ba49c73a1cd6d8060d9a4f2edb47f5286469553cf3b3f4959b9ceb64fa58",
     "packages/plugin-sdk/src/composer-view.ts": "a7cfd9848361f49fcba93618c161591d647059750292c0ce976e86e20af5d3c9",
@@ -18,7 +18,7 @@
     "platform/background-health/Cargo.toml": "41e89dc7e43adf066306b03b3083cbd4163a5550f39d5be6669463d3c16c53a5",
     "platform/capabilities/Cargo.toml": "11a690e4a2679c59e1c22da27e25b97e8fe47a7ec38df19519c71c2406a0ce8f",
     "platform/code-runtime/Cargo.toml": "30a8e555effeaa063b11d255d60d6f858d53e3bd950e2f162382324ef0a7cc20",
-    "platform/computer-use/Cargo.toml": "ae7a4932ef191db94b0a1b84f780bfbb8ae2565ead2f3ed3200cd1a46ff25faa",
+    "platform/computer-use/Cargo.toml": "b790ac068d00b0dcbd6409d9a78861b1d12cf80bd07f8e6810744fca442707d7",
     "platform/computer-use/THIRD_PARTY_NOTICES": "8b25853c9fe8f668531e01e69c6c803e511b7beac5b642f52b4fdf545bfa5dea",
     "platform/event-log/Cargo.toml": "e8d149e2fee903a4fd155931cd3191f986416797c4e6ddf60be4e556583e2e14",
     "platform/host-js/Cargo.toml": "881688e22e1325226dc54c1d94ad370fef2b4ce68fbc0c61b3574fbbae29541f",
@@ -2773,5 +2773,5 @@
     "tools/ui-build/src/lib.rs": "a47a8b18ae4056eb408601bbdcc9b88f971bf62437b3f1e39a64cfb194f19af4",
     "tools/ui-build/src/main.rs": "9dc0ce6be54d8ed5cf6f40d151fde718822b65a3c36eca7c2b0008d5d9fd5426"
   },
-  "sha256": "424e858fe148c6049ad4673546cd785bf2e61e6ec7f8d6fd0e43177e25792918"
+  "sha256": "e62602da4d9391c91277d97a1a3e9425562edc13995fb4fa490b9ab95fc0db74"
 }

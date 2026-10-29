@@ -9934,7 +9934,7 @@ Apache License
 
 clipboard-rs@0.3.5 (MIT); authors declared by package: ChurchTao <swkzymlyy@gmail.com>
 
-git+https://github.com/maka-agent/cua?rev=bb63f88d7a1794b5b24afeb820776dcec3b01664#bb63f88d7a1794b5b24afeb820776dcec3b01664 :: LICENSE
+git+https://github.com/maka-agent/cua?rev=4d514c809dc56ede5413d3093a1bb4738c8ec5e6#4d514c809dc56ede5413d3093a1bb4738c8ec5e6 :: LICENSE
 https://crates.io/api/v1/crates/clipboard-rs/0.3.5/download :: LICENSE
 
 MIT License
@@ -9975,7 +9975,7 @@ platform-windows@0.38.0 (MIT)
 zbus@5.19.0 (MIT); authors declared by package: Zeeshan Ali Khan <zeeshanak@gnome.org>
 
 git+https://github.com/maka-agent/cua?rev=23221967ce6044c1fed303701f43fa54564f0f53#23221967ce6044c1fed303701f43fa54564f0f53
-git+https://github.com/maka-agent/cua?rev=bb63f88d7a1794b5b24afeb820776dcec3b01664#bb63f88d7a1794b5b24afeb820776dcec3b01664
+git+https://github.com/maka-agent/cua?rev=4d514c809dc56ede5413d3093a1bb4738c8ec5e6#4d514c809dc56ede5413d3093a1bb4738c8ec5e6
 
 Cua Driver Rust SDK and its workspace crates
 Source: https://github.com/trycua/cua
@@ -13310,7 +13310,7 @@ DEALINGS IN THE SOFTWARE.
 
 cua-cursor-motion@0.38.0 (MIT); authors declared by package: trycua
 
-git+https://github.com/maka-agent/cua?rev=bb63f88d7a1794b5b24afeb820776dcec3b01664#bb63f88d7a1794b5b24afeb820776dcec3b01664 :: LICENSE
+git+https://github.com/maka-agent/cua?rev=4d514c809dc56ede5413d3093a1bb4738c8ec5e6#4d514c809dc56ede5413d3093a1bb4738c8ec5e6 :: LICENSE
 
 MIT License
 
@@ -13338,7 +13338,7 @@ SOFTWARE.
 
 cua-driver-core@0.38.0 (MIT AND Apache-2.0)
 
-git+https://github.com/maka-agent/cua?rev=bb63f88d7a1794b5b24afeb820776dcec3b01664#bb63f88d7a1794b5b24afeb820776dcec3b01664 :: src/browser/extension_assets/maka-ui/LICENSE
+git+https://github.com/maka-agent/cua?rev=4d514c809dc56ede5413d3093a1bb4738c8ec5e6#4d514c809dc56ede5413d3093a1bb4738c8ec5e6 :: src/browser/extension_assets/maka-ui/LICENSE
 
 Apache License
                            Version 2.0, January 2004
@@ -13712,7 +13712,7 @@ third-party/gix-discover/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
 
 cua-driver-core@0.38.0 (MIT AND Apache-2.0)
 
-git+https://github.com/maka-agent/cua?rev=bb63f88d7a1794b5b24afeb820776dcec3b01664#bb63f88d7a1794b5b24afeb820776dcec3b01664 :: src/browser/extension_assets/maka-ui/NOTICE
+git+https://github.com/maka-agent/cua?rev=4d514c809dc56ede5413d3093a1bb4738c8ec5e6#4d514c809dc56ede5413d3093a1bb4738c8ec5e6 :: src/browser/extension_assets/maka-ui/NOTICE
 
 Apache Maka (incubating)
 Copyright 2026 The Apache Software Foundation
@@ -26312,6 +26312,7 @@ windows-strings@0.1.0 (MIT OR Apache-2.0); authors declared by package: Microsof
 windows-strings@0.3.1 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.4.2 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.5.1 (MIT OR Apache-2.0)
+windows-sys@0.52.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.59.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.61.2 (MIT OR Apache-2.0)
 windows-targets@0.52.6 (MIT OR Apache-2.0); authors declared by package: Microsoft
@@ -26357,6 +26358,7 @@ https://crates.io/api/v1/crates/windows-strings/0.1.0/download :: license-mit
 https://crates.io/api/v1/crates/windows-strings/0.3.1/download :: license-mit
 https://crates.io/api/v1/crates/windows-strings/0.4.2/download :: license-mit
 https://crates.io/api/v1/crates/windows-strings/0.5.1/download :: license-mit
+https://crates.io/api/v1/crates/windows-sys/0.52.0/download :: license-mit
 https://crates.io/api/v1/crates/windows-sys/0.59.0/download :: license-mit
 https://crates.io/api/v1/crates/windows-sys/0.61.2/download :: license-mit
 https://crates.io/api/v1/crates/windows-targets/0.52.6/download :: license-mit
@@ -47973,6 +47975,7 @@ windows-strings@0.1.0 (MIT OR Apache-2.0); authors declared by package: Microsof
 windows-strings@0.3.1 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.4.2 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.5.1 (MIT OR Apache-2.0)
+windows-sys@0.52.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.59.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.61.2 (MIT OR Apache-2.0)
 windows-targets@0.52.6 (MIT OR Apache-2.0); authors declared by package: Microsoft
@@ -48016,6 +48019,7 @@ https://crates.io/api/v1/crates/windows-strings/0.1.0/download :: license-apache
 https://crates.io/api/v1/crates/windows-strings/0.3.1/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-strings/0.4.2/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-strings/0.5.1/download :: license-apache-2.0
+https://crates.io/api/v1/crates/windows-sys/0.52.0/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-sys/0.59.0/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-sys/0.61.2/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-targets/0.52.6/download :: license-apache-2.0
@@ -49496,7 +49500,7 @@ zbus_xml@5.2.1 (MIT); authors declared by package: Zeeshan Ali Khan <zeeshanak@g
 zvariant@5.15.1 (MIT); authors declared by package: Zeeshan Ali Khan <zeeshanak@gnome.org>
 zvariant_derive@5.15.1 (MIT); authors declared by package: Zeeshan Ali Khan <zeeshanak@gnome.org>
 
-git+https://github.com/maka-agent/cua?rev=bb63f88d7a1794b5b24afeb820776dcec3b01664#bb63f88d7a1794b5b24afeb820776dcec3b01664 :: LICENSE
+git+https://github.com/maka-agent/cua?rev=4d514c809dc56ede5413d3093a1bb4738c8ec5e6#4d514c809dc56ede5413d3093a1bb4738c8ec5e6 :: LICENSE
 https://crates.io/api/v1/crates/zbus_macros/5.19.0/download :: LICENSE
 https://crates.io/api/v1/crates/zbus_names/4.3.5/download :: LICENSE
 https://crates.io/api/v1/crates/zbus_xml/5.2.1/download :: LICENSE
