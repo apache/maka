@@ -728,6 +728,8 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               id: result.session.id,
               title: result.session.title,
             });
+          if (original.method === 'openBot' && result.kind === 'opened')
+            await switchSession(result.sessionId);
           if (original.method === 'create' && result.kind === 'created') {
             await switchSession(result.session.id);
             if (selected() === result.session.id && !result.session.backend)
