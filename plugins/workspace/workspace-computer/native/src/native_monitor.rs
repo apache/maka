@@ -204,15 +204,14 @@ impl NativeMonitorAuthority for Receipt {
                 .lock()
                 .expect("Native monitor resource lock poisoned")
                 .clone();
-            if current.is_ok() {
-                if let Some(original) =
+            if current.is_ok()
+                && let Some(original) =
                     original.filter(|original| !Arc::ptr_eq(original, &resource))
-                {
-                    original.seal_admission();
-                    current = original.close().await;
-                    if current.is_ok() {
-                        current = self.current().await;
-                    }
+            {
+                original.seal_admission();
+                current = original.close().await;
+                if current.is_ok() {
+                    current = self.current().await;
                 }
             }
             if current.is_err() {

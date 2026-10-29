@@ -25,7 +25,7 @@ pub(crate) fn schema(include: impl Fn(&str, &str) -> bool) -> String {
     db.execute_batch(include_str!("../../migrations/0001_runtime.sql"))
         .unwrap();
     db.execute_batch(include_str!(
-        "../../migrations/0005_browser_upload_origin_index.sql"
+        "../../migrations/0006_browser_upload_origin_index.sql"
     ))
     .unwrap();
     let mut query = db.prepare(

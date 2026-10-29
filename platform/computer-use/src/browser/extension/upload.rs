@@ -365,6 +365,7 @@ impl UploadControl {
         self.scope
             .dispatch(self.scope.control.begin_upload(claim, files))
             .await
+            .map_err(|error| *error)
     }
     pub(in crate::browser) async fn write_upload_chunk(
         &self,
@@ -383,6 +384,7 @@ impl UploadControl {
                     .write_upload_chunk(stage, index, offset, bytes),
             )
             .await
+            .map_err(|error| *error)
     }
     pub(in crate::browser) async fn retain_upload_for_selection(
         &self,
@@ -391,6 +393,7 @@ impl UploadControl {
         self.scope
             .dispatch(self.scope.control.retain_upload_for_selection(stage))
             .await
+            .map_err(|error| *error)
     }
     pub(in crate::browser) async fn abandon_upload(
         &self,

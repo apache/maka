@@ -343,7 +343,10 @@ impl Authority {
         Ok(BinaryFileMetadata {
             name,
             bytes: metadata.len(),
-            modified: metadata.modified().ok(),
+            modified: metadata
+                .modified()
+                .ok()
+                .map(cap_std::time::SystemTime::into_std),
         })
     }
 
@@ -373,7 +376,10 @@ impl Authority {
         let mut writer = create(BinaryFileMetadata {
             name,
             bytes: before.len(),
-            modified: before.modified().ok(),
+            modified: before
+                .modified()
+                .ok()
+                .map(cap_std::time::SystemTime::into_std),
         })?;
         let mut copied = 0u64;
         let mut buffer = [0u8; 64 * 1024];

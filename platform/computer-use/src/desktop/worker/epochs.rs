@@ -219,7 +219,7 @@ enum Event {
 }
 
 struct Authorization {
-    callbacks: callbacks::WorkerCallbacks,
+    callbacks: WorkerCallbacks,
     id: u64,
     events: mpsc::UnboundedSender<Event>,
     identity: Option<ScopeIdentity>,

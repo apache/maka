@@ -24,7 +24,8 @@ const parse = JSON.parse;
 const decodeTabMetadata = (row) => {
   const { titleJson, tabGroupJson, ...info } = row;
   if (Object.prototype.hasOwnProperty.call(row, 'titleJson')) info.title = parse(titleJson);
-  if (Object.prototype.hasOwnProperty.call(row, 'tabGroupJson')) info.tabGroup = parse(tabGroupJson);
+  if (Object.prototype.hasOwnProperty.call(row, 'tabGroupJson'))
+    info.tabGroup = parse(tabGroupJson);
   return info;
 };
 const decodeBrowserState = (state) => ({
@@ -630,8 +631,12 @@ const documentation = async () => {
 };
 const observation = async (method, options = {}) => {
   const observed = await invoke(method, { options });
-  const value = method === 'listTabs' ? observed.map(decodeTabMetadata)
-    : method === 'getState' ? decodeBrowserState(observed) : observed;
+  const value =
+    method === 'listTabs'
+      ? observed.map(decodeTabMetadata)
+      : method === 'getState'
+        ? decodeBrowserState(observed)
+        : observed;
   await documentation();
   if (options.emit !== false) write(value);
   else if (value?.errors?.length) write({ errors: value.errors });
@@ -953,7 +958,11 @@ const bind = async (method, args, document = true) => {
         }
         if (options.clip) {
           const { x, y, width, height } = options.clip;
-          if ([x, y, width, height].some((value) => typeof value !== 'number' || !Number.isFinite(value)))
+          if (
+            [x, y, width, height].some(
+              (value) => typeof value !== 'number' || !Number.isFinite(value),
+            )
+          )
             throw new ErrorClass('tab.screenshot clip requires x, y, width, and height');
           screenshotOptions.clip = { x, y, width, height };
         }
@@ -1186,7 +1195,10 @@ const browserObject = (result) =>
     ...(result.apiProfile?.user === true
       ? {
           user: Object.freeze({
-            openTabs: () => invoke('browserUserOpenTabs', { browserId: result.id }).then((rows) => rows.map(decodeTabMetadata)),
+            openTabs: () =>
+              invoke('browserUserOpenTabs', { browserId: result.id }).then((rows) =>
+                rows.map(decodeTabMetadata),
+              ),
             getTabContext: async (tab) => {
               let id;
               if (typeof tab === 'string') {
@@ -1227,7 +1239,10 @@ const browserObject = (result) =>
         }
       : {}),
     tabs: Object.freeze({
-      list: () => invoke('browserManagedTabs', { browserId: result.id }).then((rows) => rows.map(decodeTabMetadata)),
+      list: () =>
+        invoke('browserManagedTabs', { browserId: result.id }).then((rows) =>
+          rows.map(decodeTabMetadata),
+        ),
       selected: () => bind('browserSelectedTab', { browserId: result.id }, false),
       get: async (id) => {
         if (!id) throw new ErrorClass('tabs.get requires a tab id');
@@ -1286,234 +1301,391 @@ Object.defineProperty(globalThis, 'agent', {
 // Compose after existing nodeRepl setup and before cua registration. Factory
 // and result-projector implementations are enclosed in this same lexical IIFE.
 const rawNativeComputer = (() => {
-// Private composition fragment. No provider, permission, or native implementation.
-// installedMethods and audioSurface must come from the actual trusted Host.
+  // Private composition fragment. No provider, permission, or native implementation.
+  // installedMethods and audioSurface must come from the actual trusted Host.
 
-const nonAudioMethods = Object.freeze({
-  linux: Object.freeze([
-    'perform_secondary_action', 'click', 'drag', 'drag_handle', 'activate_window',
-    'get_screenshot', 'list_apps', 'list_windows', 'move', 'move_relative',
-    'press_key', 'scroll', 'type_text', 'launch_app', 'get_window_state',
-  ]),
-  mac: Object.freeze([
-    'list_apps', 'get_app_state', 'click', 'drag', 'paste',
-    'perform_secondary_action', 'press_key', 'scroll', 'select_text',
-    'set_value', 'type_text',
-  ]),
-  windows: Object.freeze([
-    'activate_window', 'get_window_state', 'click', 'scroll', 'drag',
-    'press_key', 'type_text', 'launch_app', 'list_apps', 'list_windows',
-    'get_window', 'perform_secondary_action', 'set_value',
-  ]),
-});
+  const nonAudioMethods = Object.freeze({
+    linux: Object.freeze([
+      'perform_secondary_action',
+      'click',
+      'drag',
+      'drag_handle',
+      'activate_window',
+      'get_screenshot',
+      'list_apps',
+      'list_windows',
+      'move',
+      'move_relative',
+      'press_key',
+      'scroll',
+      'type_text',
+      'launch_app',
+      'get_window_state',
+    ]),
+    mac: Object.freeze([
+      'list_apps',
+      'get_app_state',
+      'click',
+      'drag',
+      'paste',
+      'perform_secondary_action',
+      'press_key',
+      'scroll',
+      'select_text',
+      'set_value',
+      'type_text',
+    ]),
+    windows: Object.freeze([
+      'activate_window',
+      'get_window_state',
+      'click',
+      'scroll',
+      'drag',
+      'press_key',
+      'type_text',
+      'launch_app',
+      'list_apps',
+      'list_windows',
+      'get_window',
+      'perform_secondary_action',
+      'set_value',
+    ]),
+  });
 
-function createNativeComputerSurface({
-  platform, installedMethods, invoke, projectResult, newDragRequestId,
-  audioSurface = {},
-}) {
-  if (!nonAudioMethods[platform] || !Array.isArray(installedMethods)
-      || typeof invoke !== 'function' || typeof projectResult !== 'function') {
-    throw new TypeError('native computer requires trusted Host installation metadata');
-  }
-  const client = { target: platform };
-  for (const name of Object.keys(audioSurface)) {
-    if (!['start_audio_recording', 'stop_audio_recording'].includes(name)
-        || typeof audioSurface[name] !== 'function') {
-      throw new TypeError('invalid existing Host audio surface');
+  function createNativeComputerSurface({
+    platform,
+    installedMethods,
+    invoke,
+    projectResult,
+    newDragRequestId,
+    audioSurface = {},
+  }) {
+    if (
+      !nonAudioMethods[platform] ||
+      !Array.isArray(installedMethods) ||
+      typeof invoke !== 'function' ||
+      typeof projectResult !== 'function'
+    ) {
+      throw new TypeError('native computer requires trusted Host installation metadata');
     }
-  }
-  const call = (request) => invoke('nativeComputer', { call: request });
-  for (const method of installedMethods) {
-    if (['start_audio_recording', 'stop_audio_recording'].includes(method)) {
-      if (typeof audioSurface[method] !== 'function') {
-        throw new TypeError('installed audio method requires its existing Host service');
+    const client = { target: platform };
+    for (const name of Object.keys(audioSurface)) {
+      if (
+        !['start_audio_recording', 'stop_audio_recording'].includes(name) ||
+        typeof audioSurface[name] !== 'function'
+      ) {
+        throw new TypeError('invalid existing Host audio surface');
       }
-      client[method] = audioSurface[method];
-      continue;
     }
-    if (!nonAudioMethods[platform].includes(method)) {
-      throw new TypeError('installed native method disagrees with selected platform');
-    }
-    if (method === 'drag_handle') {
-      if (typeof newDragRequestId !== 'function') {
-        throw new TypeError('installed drag handle requires its Host request identity');
+    const call = (request) => invoke('nativeComputer', { call: request });
+    for (const method of installedMethods) {
+      if (['start_audio_recording', 'stop_audio_recording'].includes(method)) {
+        if (typeof audioSurface[method] !== 'function') {
+          throw new TypeError('installed audio method requires its existing Host service');
+        }
+        client[method] = audioSurface[method];
+        continue;
       }
-      client[method] = () => {
-        const handle = newDragRequestId();
-        return {
-          start: async (point) => {
-            await call({ kind: 'drag_start', handle, point });
-          },
-          move_to: async (point) => {
-            await call({ kind: 'drag_move', handle, point });
-          },
-          end: async () => {
-            await call({ kind: 'drag_end', handle });
-          },
+      if (!nonAudioMethods[platform].includes(method)) {
+        throw new TypeError('installed native method disagrees with selected platform');
+      }
+      if (method === 'drag_handle') {
+        if (typeof newDragRequestId !== 'function') {
+          throw new TypeError('installed drag handle requires its Host request identity');
+        }
+        client[method] = () => {
+          const handle = newDragRequestId();
+          return {
+            start: async (point) => {
+              await call({ kind: 'drag_start', handle, point });
+            },
+            move_to: async (point) => {
+              await call({ kind: 'drag_move', handle, point });
+            },
+            end: async () => {
+              await call({ kind: 'drag_end', handle });
+            },
+          };
         };
-      };
-    } else {
-      client[method] = async (...args) => projectResult(
-        method, await call({ kind: 'invoke', operation: method, args }),
+      } else {
+        client[method] = async (...args) =>
+          projectResult(method, await call({ kind: 'invoke', operation: method, args }));
+      }
+    }
+    return new Proxy(
+      {},
+      {
+        get: (_target, key) =>
+          typeof client[key] === 'function' ? client[key].bind(client) : client[key],
+        has: (_target, key) => key in client,
+        ownKeys: () => Object.keys(client),
+        getOwnPropertyDescriptor: (_target, key) => Object.getOwnPropertyDescriptor(client, key),
+      },
+    );
+  }
+
+  // Raw results keep their platform shapes; no App-wrapper text reconstruction.
+
+  const textParts = (node) => {
+    const seen = new Set();
+    return [
+      [undefined, node.name],
+      ['Description', node.description],
+      ['Value', node.value],
+    ]
+      .filter(
+        ([, value]) =>
+          value !== undefined &&
+          value !== null &&
+          value.trim() &&
+          !seen.has(value) &&
+          seen.add(value),
+      )
+      .map(([title, text]) => ({ title, text }));
+  };
+  const containers = new Set(['group', 'panel', 'filler', 'section', 'generic']);
+  const texts = new Set(['text', 'static', 'label']);
+  const interactiveRoles = new Set([
+    'push button',
+    'button',
+    'toggle button',
+    'check box',
+    'radio button',
+    'entry',
+    'password text',
+    'link',
+    'menu item',
+    'check menu item',
+    'radio menu item',
+    'combo box',
+    'slider',
+    'spin button',
+    'scroll bar',
+    'scroll pane',
+    'viewport',
+  ]);
+  const interactiveStates = new Set([
+    'focusable',
+    'focused',
+    'editable',
+    'selected',
+    'checkable',
+    'checked',
+    'indeterminate',
+    'expanded',
+  ]);
+  const decorativeActions = new Set([
+    'dodefault',
+    'clickancestor',
+    'showcontextmenu',
+    'scrolltovisible',
+  ]);
+  const interactive = (node) =>
+    interactiveRoles.has(node.role) ||
+    node.states?.some((state) => interactiveStates.has(state)) ||
+    node.actions?.some((action) => !decorativeActions.has(action.toLowerCase()));
+  const content = (node) => textParts(node).length > 0 || ['image', 'icon'].includes(node.role);
+  const containsInteractive = (node) =>
+    interactive(node) || node.children.some(containsInteractive);
+
+  function view(input) {
+    const node = { ...input, children: input.children.map(view).filter(Boolean) };
+    const live = interactive(node);
+    if (
+      !content(node) &&
+      !node.children.length &&
+      !(node.native_id ?? node.id).startsWith('x11:') &&
+      !(
+        live &&
+        (!node.states || node.states.includes('enabled') || node.states.includes('focused'))
+      )
+    ) {
+      return undefined;
+    }
+    if (!live && !content(node) && containers.has(node.role)) {
+      if (node.children.length === 1) return node.children[0];
+      node.children = node.children.flatMap((child) =>
+        child.role === node.role && !interactive(child) && !content(child)
+          ? child.children
+          : [child],
       );
     }
-  }
-  return new Proxy({}, {
-    get: (_target, key) => typeof client[key] === 'function'
-      ? client[key].bind(client) : client[key],
-    has: (_target, key) => key in client,
-    ownKeys: () => Object.keys(client),
-    getOwnPropertyDescriptor: (_target, key) => Object.getOwnPropertyDescriptor(client, key),
-  });
-}
-
-// Raw results keep their platform shapes; no App-wrapper text reconstruction.
-
-const textParts = (node) => {
-  const seen = new Set();
-  return [[undefined, node.name], ['Description', node.description], ['Value', node.value]]
-    .filter(([, value]) => value !== undefined && value !== null && value.trim() && !seen.has(value) && seen.add(value))
-    .map(([title, text]) => ({ title, text }));
-};
-const containers = new Set(['group', 'panel', 'filler', 'section', 'generic']);
-const texts = new Set(['text', 'static', 'label']);
-const interactiveRoles = new Set(['push button', 'button', 'toggle button', 'check box',
-  'radio button', 'entry', 'password text', 'link', 'menu item', 'check menu item',
-  'radio menu item', 'combo box', 'slider', 'spin button', 'scroll bar', 'scroll pane', 'viewport']);
-const interactiveStates = new Set(['focusable', 'focused', 'editable', 'selected',
-  'checkable', 'checked', 'indeterminate', 'expanded']);
-const decorativeActions = new Set(['dodefault', 'clickancestor', 'showcontextmenu', 'scrolltovisible']);
-const interactive = (node) => interactiveRoles.has(node.role)
-  || node.states?.some((state) => interactiveStates.has(state))
-  || node.actions?.some((action) => !decorativeActions.has(action.toLowerCase()));
-const content = (node) => textParts(node).length > 0 || ['image', 'icon'].includes(node.role);
-const containsInteractive = (node) => interactive(node) || node.children.some(containsInteractive);
-
-function view(input) {
-  const node = { ...input, children: input.children.map(view).filter(Boolean) };
-  const live = interactive(node);
-  if (!content(node) && !node.children.length && !(node.native_id ?? node.id).startsWith('x11:')
-      && !(live && (!node.states || node.states.includes('enabled') || node.states.includes('focused')))) {
-    return undefined;
-  }
-  if (!live && !content(node) && containers.has(node.role)) {
-    if (node.children.length === 1) return node.children[0];
-    node.children = node.children.flatMap((child) => child.role === node.role
-      && !interactive(child) && !content(child) ? child.children : [child]);
-  }
-  if (!node.children.some(containsInteractive)) {
-    const own = textParts(node).map(({ text }) => text);
-    for (;;) {
-      let removed = false;
-      node.children = node.children.flatMap((child) => {
-        const parts = textParts(child);
-        if (texts.has(child.role) && parts.length && parts.every(({ text }) => own.some((value) => value.includes(text)))) {
-          removed = true;
-          return child.children;
+    if (!node.children.some(containsInteractive)) {
+      const own = textParts(node).map(({ text }) => text);
+      for (;;) {
+        let removed = false;
+        node.children = node.children.flatMap((child) => {
+          const parts = textParts(child);
+          if (
+            texts.has(child.role) &&
+            parts.length &&
+            parts.every(({ text }) => own.some((value) => value.includes(text)))
+          ) {
+            removed = true;
+            return child.children;
+          }
+          return [child];
+        });
+        if (!removed) break;
+      }
+    }
+    if (!live) {
+      const merged = [];
+      let adjacent = [];
+      const flush = () => {
+        if (adjacent.length === 1) merged.push(adjacent[0]);
+        else if (adjacent.length)
+          merged.push({
+            ...adjacent[0],
+            role: 'text',
+            name: undefined,
+            description: undefined,
+            value: adjacent
+              .flatMap(textParts)
+              .map(({ text }) => text)
+              .join(' '),
+          });
+        adjacent = [];
+      };
+      for (const child of node.children) {
+        if (texts.has(child.role) && !interactive(child) && !child.children.length)
+          adjacent.push(child);
+        else {
+          flush();
+          merged.push(child);
         }
-        return [child];
-      });
-      if (!removed) break;
+      }
+      flush();
+      node.children = merged;
     }
+    return node;
   }
-  if (!live) {
-    const merged = [];
-    let adjacent = [];
-    const flush = () => {
-      if (adjacent.length === 1) merged.push(adjacent[0]);
-      else if (adjacent.length) merged.push({ ...adjacent[0], role: 'text', name: undefined,
-        description: undefined, value: adjacent.flatMap(textParts).map(({ text }) => text).join(' ') });
-      adjacent = [];
-    };
-    for (const child of node.children) {
-      if (texts.has(child.role) && !interactive(child) && !child.children.length) adjacent.push(child);
-      else { flush(); merged.push(child); }
-    }
-    flush();
-    node.children = merged;
+
+  function description(node) {
+    const states = node.states;
+    const flags = ['focused', 'selected', 'expanded', 'indeterminate'].filter((state) =>
+      states?.includes(state),
+    );
+    if (states?.includes('checked')) flags.push('checked');
+    else if (states?.includes('checkable') && !states.includes('indeterminate'))
+      flags.push('unchecked');
+    if (states?.includes('editable')) flags.push('settable');
+    if (
+      states &&
+      !states.includes('enabled') &&
+      !containers.has(node.role) &&
+      !texts.has(node.role)
+    )
+      flags.push('disabled');
+    const parts = textParts(node);
+    const context =
+      node.actions?.filter((action) => action.toLowerCase() === 'showcontextmenu').length === 1;
+    const actions = node.actions?.filter(
+      (action, index) =>
+        !(
+          index === 0 &&
+          ['press', 'click', 'dodefault', 'clickancestor'].includes(action.toLowerCase())
+        ) && !(context && action.toLowerCase() === 'showcontextmenu'),
+    );
+    if (actions?.length) parts.push({ title: 'Secondary Actions', text: actions.join(', ') });
+    const long = (text) => text.length > 100 || text.includes('\n');
+    parts.sort((left, right) => Number(long(left.text)) - Number(long(right.text)));
+    const values = parts
+      .map(({ title, text }) =>
+        !title || (parts.length === 1 && title !== 'Secondary Actions')
+          ? text
+          : `${title}: ${text}`,
+      )
+      .join(', ');
+    const role = containers.has(node.role)
+      ? 'container'
+      : texts.has(node.role)
+        ? 'text'
+        : node.role === 'menu item'
+          ? ''
+          : node.role;
+    return [role, flags.length ? `(${flags.join(', ')})` : '', values]
+      .filter(Boolean)
+      .join(' ')
+      .replaceAll('\r', '\\r')
+      .replaceAll('\n', '\\n')
+      .replaceAll('\t', '\\t');
   }
-  return node;
-}
 
-function description(node) {
-  const states = node.states;
-  const flags = ['focused', 'selected', 'expanded', 'indeterminate'].filter((state) => states?.includes(state));
-  if (states?.includes('checked')) flags.push('checked');
-  else if (states?.includes('checkable') && !states.includes('indeterminate')) flags.push('unchecked');
-  if (states?.includes('editable')) flags.push('settable');
-  if (states && !states.includes('enabled') && !containers.has(node.role) && !texts.has(node.role)) flags.push('disabled');
-  const parts = textParts(node);
-  const context = node.actions?.filter((action) => action.toLowerCase() === 'showcontextmenu').length === 1;
-  const actions = node.actions?.filter((action, index) => !(index === 0
-    && ['press', 'click', 'dodefault', 'clickancestor'].includes(action.toLowerCase()))
-    && !(context && action.toLowerCase() === 'showcontextmenu'));
-  if (actions?.length) parts.push({ title: 'Secondary Actions', text: actions.join(', ') });
-  const long = (text) => text.length > 100 || text.includes('\n');
-  parts.sort((left, right) => Number(long(left.text)) - Number(long(right.text)));
-  const values = parts.map(({ title, text }) => !title || parts.length === 1 && title !== 'Secondary Actions'
-    ? text : `${title}: ${text}`).join(', ');
-  const role = containers.has(node.role) ? 'container' : texts.has(node.role) ? 'text'
-    : node.role === 'menu item' ? '' : node.role;
-  return [role, flags.length ? `(${flags.join(', ')})` : '', values].filter(Boolean).join(' ')
-    .replaceAll('\r', '\\r').replaceAll('\n', '\\n').replaceAll('\t', '\\t');
-}
-
-function treeText() {
-  const root = view(this);
-  if (!root) return '';
-  const lines = [];
-  const append = (node, depth) => {
-    lines.push(`${'\t'.repeat(depth)}${node.id} ${description(node)}`);
-    for (const child of node.children) append(child, depth + 1);
-  };
-  append(root, 0);
-  return lines.join('\n');
-}
-
-function decorateLinuxTree(node) {
-  for (const child of node.children) decorateLinuxTree(child);
-  Object.defineProperties(node, {
-    to_string: { value: treeText, configurable: true },
-    [Symbol.for('nodejs.util.inspect.custom')]: { value: treeText, configurable: true },
-  });
-  return node;
-}
-
-const valueMethods = new Set(['list_apps', 'list_windows', 'get_window', 'get_screenshot',
-  'get_window_state', 'get_app_state']);
-
-function nativeResultProjector({ platform, decode, emitImage }) {
-  const screenshot = (value) => ({ filepath: value.filepath,
-    bytes: decode(value.data_url.split(',')[1] ?? ''), data_url: value.data_url });
-  return async (method, value) => {
-    if (!valueMethods.has(method)) return undefined;
-    if (platform === 'linux' && method === 'get_screenshot') return value.map(screenshot);
-    if (platform === 'linux' && method === 'get_window_state') return {
-      ...value, ax_tree: decorateLinuxTree(value.ax_tree), screenshots: value.screenshots.map(screenshot),
+  function treeText() {
+    const root = view(this);
+    if (!root) return '';
+    const lines = [];
+    const append = (node, depth) => {
+      lines.push(`${'\t'.repeat(depth)}${node.id} ${description(node)}`);
+      for (const child of node.children) append(child, depth + 1);
     };
-    if (platform === 'windows' && method === 'get_window_state') {
-      for (const image of value.screenshots) await emitImage(image.url);
-    }
-    return value;
-  };
-}
+    append(root, 0);
+    return lines.join('\n');
+  }
 
+  function decorateLinuxTree(node) {
+    for (const child of node.children) decorateLinuxTree(child);
+    Object.defineProperties(node, {
+      to_string: { value: treeText, configurable: true },
+      [Symbol.for('nodejs.util.inspect.custom')]: { value: treeText, configurable: true },
+    });
+    return node;
+  }
+
+  const valueMethods = new Set([
+    'list_apps',
+    'list_windows',
+    'get_window',
+    'get_screenshot',
+    'get_window_state',
+    'get_app_state',
+  ]);
+
+  function nativeResultProjector({ platform, decode, emitImage }) {
+    const screenshot = (value) => ({
+      filepath: value.filepath,
+      bytes: decode(value.data_url.split(',')[1] ?? ''),
+      data_url: value.data_url,
+    });
+    return async (method, value) => {
+      if (!valueMethods.has(method)) return undefined;
+      if (platform === 'linux' && method === 'get_screenshot') return value.map(screenshot);
+      if (platform === 'linux' && method === 'get_window_state')
+        return {
+          ...value,
+          ax_tree: decorateLinuxTree(value.ax_tree),
+          screenshots: value.screenshots.map(screenshot),
+        };
+      if (platform === 'windows' && method === 'get_window_state') {
+        for (const image of value.screenshots) await emitImage(image.url);
+      }
+      return value;
+    };
+  }
 
   let dragSequence = 0;
-  const audioSurface = audioEnabled ? {
-    // Reuse the existing Host audio permission, recording and completion path.
-    start_audio_recording: async (options = {}) => {
-      await documentation();
-      await invoke('startAudioRecording', { options });
-    },
-    stop_audio_recording: async () => {
-      await documentation();
-      const result = await invoke('stopAudioRecording');
-      const content = audio(result.data_url);
-      return { filepath: result.filepath, bytes: decode(content.data), data_url: result.data_url };
-    },
-  } : {};
-  if (!nonAudioMethods[nativePlatform]) return Object.freeze({ target: nativePlatform, ...audioSurface });
+  const audioSurface = audioEnabled
+    ? {
+        // Reuse the existing Host audio permission, recording and completion path.
+        start_audio_recording: async (options = {}) => {
+          await documentation();
+          await invoke('startAudioRecording', { options });
+        },
+        stop_audio_recording: async () => {
+          await documentation();
+          const result = await invoke('stopAudioRecording');
+          const content = audio(result.data_url);
+          return {
+            filepath: result.filepath,
+            bytes: decode(content.data),
+            data_url: result.data_url,
+          };
+        },
+      }
+    : {};
+  if (!nonAudioMethods[nativePlatform])
+    return Object.freeze({ target: nativePlatform, ...audioSurface });
   return createNativeComputerSurface({
     platform: nativePlatform,
     installedMethods: [...nonAudioMethods[nativePlatform], ...Object.keys(audioSurface)],
@@ -1527,7 +1699,6 @@ function nativeResultProjector({ platform, decode, emitImage }) {
 })();
 // Existing cua registration replaces only its computer field with:
 //   computer: rawNativeComputer,
-
 
 Object.defineProperty(globalThis, 'cua', {
   value: Object.freeze({
