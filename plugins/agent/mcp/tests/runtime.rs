@@ -336,14 +336,8 @@ async fn stdio_forwards_only_explicit_credentials() {
 }
 
 #[tokio::test]
-async fn http_rejects_oversized_json_error_chunked_and_sse_before_eof() {
-    for mode in [
-        "http-large-json",
-        "http-large-error",
-        "http-large-chunked",
-        "http-large-sse",
-        "http-large-sse-lines",
-    ] {
+async fn http_preserves_large_json_chunked_and_sse_results() {
+    for mode in ["http-large-json", "http-large-chunked", "http-large-sse"] {
         let dir = tempfile::tempdir().unwrap();
         let record = dir.path().join("record");
         let mut server = tokio::process::Command::new(which::which("node").unwrap())
@@ -353,7 +347,7 @@ async fn http_rejects_oversized_json_error_chunked_and_sse_before_eof() {
             .kill_on_drop(true)
             .spawn()
             .unwrap();
-        let url = tokio::time::timeout(Duration::from_secs(3), async {
+        let url = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Ok(url) = std::fs::read_to_string(record.with_extension("url")) {
                     break url;
@@ -363,28 +357,67 @@ async fn http_rejects_oversized_json_error_chunked_and_sse_before_eof() {
         })
         .await
         .unwrap();
-        let config = serde_json::from_value(json!({"name":"bounded","startupTimeoutMs":5000,"transport":{"type":"streamable_http","url":url}})).unwrap();
-        let result = tokio::time::timeout(
-            Duration::from_secs(3),
-            Connection::connect(config, Default::default()),
-        )
-        .await;
+        let config = serde_json::from_value(json!({"name":"large","startupTimeoutMs":5000,"transport":{"type":"streamable_http","url":url}})).unwrap();
+        let connection = Connection::connect(config, Default::default())
+            .await
+            .unwrap();
+        let result = journal(connection.clone(), "echo", json!({})).await;
+        assert_eq!(
+            result["content"][0]["text"].as_str().unwrap().len(),
+            16 * 1024 * 1024 + 1
+        );
+        assert_eq!(
+            result["structuredContent"]["marker"],
+            "large-result-complete"
+        );
+        connection.close().await.unwrap();
         server.kill().await.unwrap();
         server.wait().await.unwrap();
-        let error = match result.expect("must reject before EOF/startup timeout") {
-            Ok(_) => panic!("accepted oversized {mode}"),
-            Err(error) => error,
-        };
-        assert!(error == "MCP initialization failed", "{mode}: {error}");
         assert_eq!(
             records(&record)
                 .iter()
-                .filter(|v| v["oversized"] == mode)
+                .filter(|entry| entry["method"] == "tools/call")
                 .count(),
-            1,
-            "must not replay failed POST"
+            1
         );
     }
+}
+
+#[tokio::test]
+async fn stdio_preserves_large_results_and_complete_catalog_pagination() {
+    let dir = tempfile::tempdir().unwrap();
+    let record = dir.path().join("record");
+    let connection = Connection::connect(config("large-catalog", &record), Default::default())
+        .await
+        .unwrap();
+    assert_eq!(connection.tools().len(), 1105);
+    assert!(
+        connection
+            .tools()
+            .iter()
+            .any(|tool| tool.remote_name == "tool_1104")
+    );
+    connection.close().await.unwrap();
+    let connection = Connection::connect(config("stdio-large", &record), Default::default())
+        .await
+        .unwrap();
+    let result = journal(
+        connection.clone(),
+        "echo",
+        json!({"marker":"stdio-large-complete"}),
+    )
+    .await;
+    assert_eq!(
+        result["content"][0]["text"].as_str().unwrap().len(),
+        16 * 1024 * 1024 + 1
+    );
+    assert_eq!(
+        result["structuredContent"]["marker"],
+        "stdio-large-complete"
+    );
+    connection.close().await.unwrap();
+    let result = Connection::connect(config("repeated-cursor", &record), Default::default()).await;
+    assert!(matches!(result, Err(error) if error == "MCP pagination cursor repeats"));
 }
 
 #[tokio::test]

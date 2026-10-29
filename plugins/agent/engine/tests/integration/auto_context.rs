@@ -323,7 +323,7 @@ async fn midturn_compaction_keeps_image_references_without_replaying_messages() 
                     target_session_id: "branch".into(),
                     expected_source_revision: source.revision,
                     purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                        turn_id: None,
+                        position: maka_agent_facts::session::ForkPosition::End,
                         side_conversation: false,
                     },
                 },

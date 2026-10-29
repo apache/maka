@@ -286,7 +286,7 @@ async fn external_backend_uses_canonical_admission_settlement_and_never_enters_m
         }
     }
     assert!(
-        log.invocation_recovery(&crashed, 32, 1024 * 1024)
+        log.invocation_recovery(&crashed)
             .await
             .unwrap()
             .unfinished_executor

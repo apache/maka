@@ -100,7 +100,7 @@ async fn foreign_openings_and_pauses_remain_evidence_without_local_recovery_or_r
     assert!(!log.has_pending_handoff("session").await.unwrap());
     for invocation in [&paused.invocation, &proof.invocation] {
         assert!(matches!(
-            log.invocation_recovery(invocation, 100, 65536).await,
+            log.invocation_recovery(invocation).await,
             Err(StoreError::ImportedInvocation)
         ));
     }
@@ -130,9 +130,7 @@ async fn foreign_openings_and_pauses_remain_evidence_without_local_recovery_or_r
         log.append(&successor).await.is_err(),
         "foreign pause cannot admit its reserved successor"
     );
-    log.invocation_recovery(&local.invocation, 100, 65536)
-        .await
-        .unwrap();
+    log.invocation_recovery(&local.invocation).await.unwrap();
     close(&log, &local).await;
     let mut fresh = opening("fresh", None);
     fresh.invocation.session_id = "proof-only".into();

@@ -196,7 +196,7 @@ async fn repeated_checkpoints_cross_old_history_limits_with_bounded_tail_and_exa
         },
     );
     log.append(&oversized).await.unwrap();
-    log.invocation_recovery(&oversized.event().invocation, 100, 8192)
+    log.invocation_recovery(&oversized.event().invocation)
         .await
         .unwrap();
     log.append(&fixtures::event(
