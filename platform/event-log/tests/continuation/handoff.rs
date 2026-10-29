@@ -126,10 +126,10 @@ async fn handoff_rejects_unresolved_provider_effects_but_accepts_effect_free_sum
                 provider_executed: true,
             })
         } else {
-            ModelEvent::PartDelta {
-                id: "partial".into(),
-                text: "unfinished summary".into(),
-                provider_options: None,
+            ModelEvent::ResponseMetadata {
+                id: Some("summary-response".into()),
+                model: None,
+                timestamp: None,
             }
         };
         append(

@@ -156,10 +156,10 @@ async fn private_summary_failure_allows_main_progress_only_without_provider_effe
                 provider_options: None,
             })
         } else {
-            ModelEvent::PartDelta {
-                id: "text".into(),
-                text: "private partial text".into(),
-                provider_options: None,
+            ModelEvent::ResponseMetadata {
+                id: Some("summary-response".into()),
+                model: None,
+                timestamp: None,
             }
         };
         log.append(&event(

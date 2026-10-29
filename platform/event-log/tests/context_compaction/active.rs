@@ -339,19 +339,31 @@ async fn active_cut_rejects_pending_child_and_changed_summary_repair_source() {
     log.append(&request("active", "repair", ModelPurpose::Summary, &source))
         .await
         .unwrap();
-    log.append(&event(
-        "active",
-        Fact::ModelObserved {
-            step_id: "repair".into(),
-            event: ModelEvent::PartDelta {
-                id: "partial".into(),
-                text: "private failed summary".into(),
-                provider_options: None,
+    let before_private = log.prefix(100, 65536).await.unwrap();
+    let rejected = log
+        .append(&event(
+            "active",
+            Fact::ModelObserved {
+                step_id: "repair".into(),
+                event: ModelEvent::PartDelta {
+                    id: "partial".into(),
+                    text: "private failed summary".into(),
+                    provider_options: None,
+                },
             },
-        },
-    ))
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        rejected
+            .to_string()
+            .contains("private summary output cannot be journaled")
+    );
+    assert_eq!(
+        log.prefix(100, 65536).await.unwrap().digest,
+        before_private.digest,
+        "private failed Summary prose cannot change the canonical repair source"
+    );
     log.append(&event(
         "active",
         Fact::ModelInterrupted {

@@ -60,6 +60,23 @@ pub(super) async fn step(
     )
     .await;
     assert!(view.push(&request).unwrap().is_empty());
+    if purpose == ModelPurpose::Summary {
+        let metadata = append(
+            log,
+            inv,
+            Fact::ModelObserved {
+                step_id: id.into(),
+                event: ModelEvent::ResponseMetadata {
+                    id: Some("summary-response".into()),
+                    model: None,
+                    timestamp: None,
+                },
+            },
+        )
+        .await;
+        assert!(view.push(&metadata).unwrap().is_empty());
+        return (metadata.sequence, request.event.id);
+    }
     let start = append(
         log,
         inv,
@@ -98,19 +115,21 @@ pub(super) async fn finish(
     id: &str,
     text: &str,
 ) -> Vec<maka_presentation::Row> {
-    let event = append(
-        log,
-        inv,
-        Fact::ModelObserved {
-            step_id: id.into(),
-            event: ModelEvent::PartFinished {
-                id: "part".into(),
-                provider_options: None,
+    if id != "summary" {
+        let event = append(
+            log,
+            inv,
+            Fact::ModelObserved {
+                step_id: id.into(),
+                event: ModelEvent::PartFinished {
+                    id: "part".into(),
+                    provider_options: None,
+                },
             },
-        },
-    )
-    .await;
-    view.push(&event).unwrap();
+        )
+        .await;
+        view.push(&event).unwrap();
+    }
     let Fact::ModelCompleted { mut output, .. } = accepted(text) else {
         unreachable!()
     };
