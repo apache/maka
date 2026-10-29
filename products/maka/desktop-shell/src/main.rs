@@ -33,6 +33,8 @@ mod host;
 mod placement;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod window;
+#[cfg(all(windows, feature = "direct2d-experiment"))]
+mod direct2d_folder;
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -155,6 +157,31 @@ fn run() -> Result<(), String> {
         let handle = tokio::runtime::Handle::current();
         host::Connection::admit(host, target.endpoint, root.path(), handle).await
     })?;
+    #[cfg(all(windows, feature = "direct2d-experiment"))]
+    {
+        let host::Connection { bindings, mut config, .. } = first;
+        let (_active, foreground) = tokio::sync::watch::channel(true);
+        config.context = config.context.with(maka_workbench::Foreground(foreground));
+        config.host.handle("workspace.chooseFolder", move |call| {
+            std::thread::spawn(move || match direct2d_folder::choose() {
+                Ok(Some(path)) => call.resolve(nsh_engine::JsonValue::from(path)),
+                Ok(None) => call.resolve(nsh_engine::JsonValue::Null),
+                Err(error) => call.reject(error),
+            });
+        });
+        let result = nsh_platform_windows::run_app(
+            nsh_platform_windows::AppSource::Config(config),
+            nsh_platform_windows::AppOptions {
+                app_id: "org.apache.maka.desktop".into(),
+                title: "Maka Direct2D experiment".into(),
+                size: (1280, 820),
+                ..Default::default()
+            },
+        );
+        runtime.block_on(bindings.close()).map_err(|error| error.to_string())?;
+        if result == ExitCode::SUCCESS { Ok(()) } else { Err("Direct2D experiment failed".into()) }
+    }
+    #[cfg(not(all(windows, feature = "direct2d-experiment")))]
     window::run(first, root, runtime)
 }
 

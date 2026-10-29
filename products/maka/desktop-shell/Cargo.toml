@@ -22,6 +22,9 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+direct2d-experiment = ["dep:nsh-platform-windows"]
+
 [dependencies]
 maka-event-log.workspace = true
 maka-host-runtime.workspace = true
@@ -39,3 +42,6 @@ embed-resource = "3.0"
 # Shaders compile at run time, so building needs no Metal Toolchain (macOS).
 nsh-platform-gpui = { workspace = true, features = ["runtime-shaders"] }
 gpui_platform = { package = "gpui-fast-platform", version = "0.1.10", default-features = false, features = ["font-kit", "wayland", "x11"] }
+
+[target.'cfg(windows)'.dependencies]
+nsh-platform-windows = { path = "../../../third-party/nsh/crates/nsh-platform-windows", optional = true }
