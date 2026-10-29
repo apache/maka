@@ -36,7 +36,7 @@ use maka_host_runtime::{
     application::{
         Handler, NativeActivation, NativeRegistry,
         host::{Client as HostClient, Configuration, Host, discovery::Registration},
-        transport::{Grant, HostEndpoint, NativeGrant, wire},
+        transport::{Grant, HostEndpoint, NativeGrant},
     },
     ipc::{self, LocalListener},
 };
@@ -59,7 +59,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{Notify, mpsc},
     task::{JoinHandle, JoinSet},
@@ -1761,6 +1761,22 @@ pub fn evidence(name: &str, snapshot: &str) {
 }
 
 /// Withhold one real IPC result without manufacturing a Host fact or Agent effect.
+async fn gate_read<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {
+    let length = reader.read_u32().await? as usize;
+    if length == 0 || length > 64 * 1024 * 1024 {
+        return Err(std::io::Error::other("invalid gate frame length"));
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).await?;
+    Ok(body)
+}
+
+async fn gate_write<W: AsyncWrite + Unpin>(writer: &mut W, frame: &[u8]) -> std::io::Result<()> {
+    writer.write_u32(frame.len() as u32).await?;
+    writer.write_all(frame).await?;
+    writer.flush().await
+}
+
 pub struct ReplyGate {
     pub address: PathBuf,
     armed: Arc<AtomicUsize>,
@@ -1769,6 +1785,11 @@ pub struct ReplyGate {
     worker: JoinHandle<()>,
 }
 impl ReplyGate {
+    pub fn create(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(
+            directory, target, "agent", "create", "mutation", false, None,
+        )
+    }
     pub fn start(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "send", "mutation", false, None)
     }
@@ -1885,19 +1906,22 @@ impl ReplyGate {
                                 let (down_read,mut down_write)=tokio::io::split(downstream);
                                 let (up_read,mut up_write)=tokio::io::split(upstream);
                                 let selected=Arc::new(AtomicBool::new(false)); let mark=selected.clone();
-                                let up=async move {let mut reader=wire::Reader::new(down_read); while let Ok(value)=reader.read::<Value>().await {
-                                    if value["endpoint"]==endpoint && value["method"]==method && before.as_ref().is_none_or(|cursor| value["input"]["position"]["kind"]=="before" && value["input"]["position"]["cursor"]==*cursor) {mark.store(true,Ordering::SeqCst);}
-                                    if wire::write(&mut up_write,&value).await.is_err(){break;}
+                                let up=async move {let mut reader=down_read; let mut opening=true; while let Ok(frame)=gate_read(&mut reader).await {
+                                    if opening && let Ok(value) = serde_json::from_slice::<Value>(&frame) && value.get("endpoint").is_some() && value.get("method").is_some() {
+                                        opening=false;
+                                        if value["endpoint"]==endpoint && value["method"]==method && before.as_ref().is_none_or(|cursor| value["input"]["position"]["kind"]=="before" && value["input"]["position"]["cursor"]==*cursor) {mark.store(true,Ordering::SeqCst);}
+                                    }
+                                    if gate_write(&mut up_write,&frame).await.is_err(){break;}
                                 }
                                 let _ = up_write.shutdown().await;
                                 };
-                                let down=async move {let mut reader=wire::Reader::new(up_read); while let Ok(value)=reader.read::<Value>().await {
-                                    if selected.load(Ordering::SeqCst) && value["kind"]==reply && armed.try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1)).is_ok() {
+                                let down=async move {let mut reader=up_read; while let Ok(frame)=gate_read(&mut reader).await {
+                                    if selected.load(Ordering::SeqCst) && serde_json::from_slice::<Value>(&frame).is_ok_and(|value| value["kind"]==reply) && armed.try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1)).is_ok() {
                                         held.notify_one();
                                         if disconnect { break; }
                                         release.notified().await;
                                     }
-                                    if wire::write(&mut down_write,&value).await.is_err(){break;}
+                                    if gate_write(&mut down_write,&frame).await.is_err(){break;}
                                 }
                                 let _ = down_write.shutdown().await;
                                 };

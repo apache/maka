@@ -25,6 +25,7 @@ import {
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
 import { tr } from '../../../../products/maka/workbench/app/locale';
+import type { StagedFile } from 'maka/host';
 import {
   batch,
   cleanup,
@@ -193,7 +194,7 @@ type ConversationProps = {
     send: boolean,
   ): Promise<boolean>;
   /** Text for an empty draft once it loads, taken once (a fork made to edit or regenerate). */
-  takePrefill?(): { text: string; send: boolean } | null;
+  takePrefill?(): { text: string; send: boolean; files?: StagedFile[] } | null;
   commands(): void;
   visible(): boolean;
   foreground(): boolean;
@@ -2204,6 +2205,12 @@ export function Conversation(props: ConversationProps) {
         const prefill = props.takePrefill?.() ?? null;
         if (prefill && stored.text === '' && stored.attachments.length === 0) {
           changeDraft(prefill.text);
+          try {
+            for (const file of prefill.files ?? [])
+              attachments.observeIntake(client.beginStagedUpload(file), () => {});
+          } finally {
+            for (const file of prefill.files ?? []) file.dispose();
+          }
           props.focusComposer();
           if (prefill.send) autoSend.set(prefill.text);
         }

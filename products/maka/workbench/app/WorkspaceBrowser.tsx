@@ -68,7 +68,11 @@ export type WorkspaceBrowserProps = {
   attach(node: ViewRef): void;
   close(): void;
   selectSession(id: string, expectedSessionId: string | null): Promise<void>;
-  create(workspace: BrowserWorkspace, expectedSessionId: string | null): Promise<void>;
+  create(
+    workspace: BrowserWorkspace,
+    expectedSessionId: string | null,
+    label?: string,
+  ): Promise<void>;
   newConversation(expectedSessionId: string | null): void;
   settings(expectedSessionId: string | null): void;
   search(expectedSessionId: string | null): void;
@@ -215,12 +219,14 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const createWorkspace = ({
     workspace,
     origin,
+    label,
   }: {
     workspace: BrowserWorkspace;
     origin: string | null;
+    label: string;
   }) => {
     if (alive && props.selected() === origin && !props.switching())
-      void props.create(workspace, origin);
+      void props.create(workspace, origin, label);
   };
   const toggleScopes = () => {
     choosingWorkspace.set(!choosingWorkspace());
@@ -433,6 +439,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                   selection: project()!.selection!,
                                 },
                                 origin: props.selected(),
+                                label: project()!.path ?? project()!.name,
                               })
                             : undefined
                         }

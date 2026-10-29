@@ -94,6 +94,10 @@ maka-ui-build.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+gpui = { package = "gpui-fast", version = "0.1.10", default-features = false }
+gpui_wgpu = { package = "gpui-fast-wgpu", version = "0.1.10", default-features = false, features = ["offscreen"] }
+nsh-platform-gpui.workspace = true
+nsh-gpui-terminal.workspace = true
 nsh-bundler.workspace = true
 nsh-core.workspace = true
 nsh-base.workspace = true

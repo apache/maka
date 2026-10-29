@@ -24,6 +24,7 @@ mod compaction;
 mod composer_completion;
 #[cfg(feature = "native-desktop")]
 mod computer;
+mod desktop_new_session;
 mod final_actions;
 mod interactions;
 mod keyboard;

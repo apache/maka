@@ -28,6 +28,7 @@ import type {
   AgentSession,
   AgentToolImageRead,
   AgentWorkspacePermissions,
+  AgentWorkspaceAccess,
   ClientDraftAttachment,
   ModelSelection,
   ThinkingLevel,
@@ -152,6 +153,15 @@ export interface ComposerPermissions {
   select(input: { session: AgentSession; settings: AgentWorkspacePermissions }): Promise<void>;
 }
 
+export interface PendingComposerPermissions {
+  readonly id: string;
+  access(): AgentWorkspaceAccess | null;
+  requestPermissions(): boolean | null;
+  pending(): boolean;
+  selectAccess(access: AgentWorkspaceAccess): void;
+  selectRequests(request: boolean): void;
+}
+
 type McpConfiguration = Extract<
   ServiceMethods['agent']['projectMcp']['output'],
   { kind: 'configuration' }
@@ -220,6 +230,24 @@ export interface ComposerSession<Element = unknown> {
 
 export interface ComposerViewInput<Element = unknown> {
   session(): ComposerSession<Element> | null;
+  pending?(): {
+    readonly id: string;
+    draft(): string;
+    workspace(): string;
+    permissions: PendingComposerPermissions;
+    changeDraft(text: string): void;
+    confirmation(): string;
+    submit(text: string, expected?: string): void;
+    sending(): boolean;
+    ready(): boolean;
+    files(): { id: string; name: string; bytes: number }[];
+    picking(): boolean;
+    selectFiles(files: string[]): void;
+    pasteClipboard(onText: (text: string) => void): void;
+    pasteChanged(): void;
+    removeFile(id: string): void;
+    openPicker(open: boolean): void;
+  } | null;
   attach(node: ComposerFocusHandle): void;
   commands(): ComposerCommand[];
   active(): boolean;
