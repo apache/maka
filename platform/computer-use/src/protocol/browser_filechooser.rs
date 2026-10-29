@@ -19,6 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(feature = "native-desktop")]
 use std::time::Duration;
 
 /// Chooser schema validation precedes browser dispatch. Explicit null is not a
@@ -36,6 +37,7 @@ pub struct BrowserFileChooserOptions {
 fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Value>, D::Error> {
     Value::deserialize(deserializer).map(Some)
 }
+#[cfg(feature = "native-desktop")]
 impl BrowserFileChooserOptions {
     pub(crate) fn timeout(&self) -> Result<Duration, maka_agent_facts::tools::ToolError> {
         let millis = match &self.timeout_ms {
