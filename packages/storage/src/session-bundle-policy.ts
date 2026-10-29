@@ -1673,33 +1673,43 @@ async function releaseUnpublishedBundleContext(
  * `link` created are candidates: the target's committed rows decide which of
  * them are live (their bytes stay until their own references are released), and
  * a path this import found already occupied is never touched.
+ *
+ * The committed-locator check and the removal are one turn in the Storage
+ * Root's context mutation queue, shared with the Context Store's own
+ * publication. Run outside it, a same-process `put` of the same bytes can
+ * commit a reference to one of these files after the snapshot was read but
+ * before the unlink completed: the reference was absent from the snapshot, yet
+ * the file it names is gone once the removal resumes, and `read` reports
+ * corrupt.
  */
 async function removeUnreferencedBundleContextPayloads(
   publishedContextPayloads: readonly string[],
   stateRoot: string,
 ): Promise<void> {
   if (publishedContextPayloads.length === 0) return;
-  const named = new Set<string>();
-  const targetContextPath = resolveInside(stateRoot, CONTEXT_OFFLOAD_DATABASE_NAME);
-  if (await pathExists(targetContextPath)) {
-    const target = new DatabaseSync(targetContextPath, { readOnly: true });
-    try {
-      for (const row of target
-        .prepare("SELECT payload FROM context_blobs WHERE storage_kind = 'managed_file'")
-        .iterate() as Iterable<{ payload?: unknown }>) {
-        if (row.payload instanceof Uint8Array) {
-          named.add(Buffer.from(row.payload).toString('utf8'));
+  await runWithContextValueMutation(stateRoot, async () => {
+    const named = new Set<string>();
+    const targetContextPath = resolveInside(stateRoot, CONTEXT_OFFLOAD_DATABASE_NAME);
+    if (await pathExists(targetContextPath)) {
+      const target = new DatabaseSync(targetContextPath, { readOnly: true });
+      try {
+        for (const row of target
+          .prepare("SELECT payload FROM context_blobs WHERE storage_kind = 'managed_file'")
+          .iterate() as Iterable<{ payload?: unknown }>) {
+          if (row.payload instanceof Uint8Array) {
+            named.add(Buffer.from(row.payload).toString('utf8'));
+          }
         }
+      } finally {
+        target.close();
       }
-    } finally {
-      target.close();
     }
-  }
-  const destinationRoot = resolveInside(stateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
-  for (const locator of publishedContextPayloads) {
-    if (named.has(locator)) continue;
-    await rm(resolveInside(destinationRoot, locator), { force: true });
-  }
+    const destinationRoot = resolveInside(stateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
+    for (const locator of publishedContextPayloads) {
+      if (named.has(locator)) continue;
+      await rm(resolveInside(destinationRoot, locator), { force: true });
+    }
+  });
 }
 
 /**
@@ -1761,7 +1771,9 @@ async function copyDeclaredContextValues(
     }
     await mkdir(dirname(to), { recursive: true, mode: 0o700 });
     await assertManagedDestinationDirectory(dirname(to), stateRoot);
-    if (await publishContextValue(from, to, stateRoot)) publishedContextPayloads.push(locator);
+    await publishContextValue(from, to, stateRoot, () => {
+      publishedContextPayloads.push(locator);
+    });
   }
 }
 
@@ -1824,10 +1836,18 @@ async function assertManagedDestinationDirectory(
  * race -- both need the write authority, and it is exclusive -- but an import
  * and the Store publishing the same blob can, and they must not share a name.
  *
- * Returns whether this call created the final path. A path that was already
- * there belongs to whatever put it, and is never the import's to remove.
+ * `onCreated` runs the moment the final path is this call's own creation,
+ * before anything after the link can throw. If the directory sync fails, the
+ * file exists while no committed row names it, so the rollback cleanup needs it
+ * in the tracked list to reclaim it. A path adopted through EEXIST belongs to
+ * whoever put it there and is never reported as created.
  */
-async function publishContextValue(from: string, to: string, stateRoot: string): Promise<boolean> {
+async function publishContextValue(
+  from: string,
+  to: string,
+  stateRoot: string,
+  onCreated: () => void,
+): Promise<void> {
   const staging = join(dirname(to), `.${basename(to)}.import.tmp`);
   await rm(staging, { force: true });
   let created = false;
@@ -1844,6 +1864,7 @@ async function publishContextValue(from: string, to: string, stateRoot: string):
     try {
       await link(staging, to);
       created = true;
+      onCreated();
       // The bytes were synced; the directory entry naming them was not. A crash
       // here otherwise keeps the committed reference and loses the name, which
       // reads exactly like a payload that never arrived.
@@ -1865,7 +1886,6 @@ async function publishContextValue(from: string, to: string, stateRoot: string):
   } finally {
     await unlink(staging).catch(() => {});
   }
-  return created;
 }
 
 function countContextRefs(databasePath: string, sessionIds: readonly string[]): number {
