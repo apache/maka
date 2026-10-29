@@ -273,16 +273,14 @@ impl Library {
                     }) else {
                         return rejected("read_only_source");
                     };
-                    let path = root
-                        .directory
-                        .join(id)
-                        .to_string_lossy()
-                        .replace(std::path::MAIN_SEPARATOR, "/");
                     (
                         id.to_owned(),
-                        Tree::read_view(&root.root.bind_scope(scope), &path)
-                            .await
-                            .map_err(store_error)?,
+                        Tree::read_view(
+                            &root.root.bind_scope(scope),
+                            &root.directory.join(id).to_string_lossy(),
+                        )
+                        .await
+                        .map_err(store_error)?,
                     )
                 };
                 if tree

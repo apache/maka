@@ -126,14 +126,6 @@ pub fn replace(
             .insert("projectRoots".into(), value);
     }
     if let Some(name) = &targets.processes {
-        let previous_paths = previous
-            .iter()
-            .map(|root| {
-                maka_fs_tools::workspace::project::host_path(&root.path)
-                    .map(|path| Value::String(path.into()))
-                    .map_err(|error| error.to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
         let filesystem = configuration_values(
             input,
             packages,
@@ -150,14 +142,12 @@ pub fn replace(
         rules.retain(|rule| {
             !(rule["scope"] == "subtree"
                 && rule["access"] == "write"
-                && previous_paths.contains(&rule["path"]))
+                && previous.iter().any(|root| {
+                    serde_json::to_value(&root.path).ok().as_ref() == Some(&rule["path"])
+                }))
         });
         for root in roots {
-            let path = Value::String(
-                maka_fs_tools::workspace::project::host_path(&root.path)
-                    .map_err(|error| error.to_string())?
-                    .into(),
-            );
+            let path = serde_json::to_value(&root.path).map_err(|error| error.to_string())?;
             if !rules.iter().any(|rule| rule["path"] == path) {
                 rules.push(serde_json::json!({"path":path,"scope":"subtree","access":"write"}));
             }

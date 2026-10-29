@@ -112,7 +112,7 @@ impl Client {
         )
         .await?;
         let mut anchor = wire::Reader::new(anchor);
-        let Response::Connected(mut connected) = anchor.read().await? else {
+        let Response::Connected(connected) = anchor.read().await? else {
             return Err("Host did not establish an application session".into());
         };
         if connected.version != VERSION
@@ -123,7 +123,7 @@ impl Client {
             return Err("Host protocol or incarnation changed".into());
         }
         connected.source.validate()?;
-        connected.catalogue = connected.catalogue.checked().await?;
+        connected.catalogue.validate()?;
         connected
             .catalogue
             .check_names(connected.consumers.keys())?;
@@ -270,7 +270,7 @@ impl Client {
         match self.control(SessionControl::Capture).await? {
             Response::Captured(result) => match result {
                 Ok(catalogue) => {
-                    let catalogue = catalogue.checked().await?;
+                    catalogue.validate()?;
                     catalogue.check_names(self.connected.consumers.keys())?;
                     self.phase = Phase::Ready;
                     Ok(catalogue)
@@ -291,17 +291,13 @@ impl Client {
         }
         match self.control(SessionControl::Refresh).await? {
             Response::Refreshed(result) => {
-                let result = match result {
-                    Ok(catalogue) => {
-                        let catalogue = catalogue.checked().await?;
-                        catalogue.check_names(self.connected.consumers.keys())?;
-                        self.connected.catalogue = catalogue;
-                        Ok(())
-                    }
-                    Err(error) => Err(error),
-                };
+                if let Ok(catalogue) = &result {
+                    catalogue.validate()?;
+                    catalogue.check_names(self.connected.consumers.keys())?;
+                    self.connected.catalogue = catalogue.clone();
+                }
                 self.phase = Phase::Ready;
-                result
+                result.map(|_| ())
             }
             _ => Err("Host refresh response mismatch".into()),
         }

@@ -491,9 +491,7 @@ async fn project_installation_keeps_its_reviewed_workspace_and_relative_resource
     let workspace = maka_agent_api::contract::Workspace {
         worktree: None,
         project_id: None,
-        path: maka_fs_tools::workspace::project::host_path(&project)
-            .unwrap()
-            .into(),
+        path: project.to_str().unwrap().into(),
         directory_identity,
         identity,
     };

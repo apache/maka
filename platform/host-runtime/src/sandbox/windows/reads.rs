@@ -291,12 +291,9 @@ mod tests {
     #[test]
     fn partial_read_propagation_is_retried_and_recovery_tracks_the_original_object() {
         let directory = tempfile::tempdir().unwrap();
-        let canonical = directory.path().canonicalize().unwrap();
-        let root =
-            std::path::Path::new(maka_fs_tools::workspace::project::host_path(&canonical).unwrap());
-        let journal = root.join("journal");
+        let journal = directory.path().join("journal");
         maka_event_log::root::private_directory(&journal).unwrap();
-        let tree = root.join("tree");
+        let tree = directory.path().join("tree");
         fs::create_dir(&tree).unwrap();
         let leaf = tree.join("leaf");
         fs::write(&leaf, "private").unwrap();
@@ -322,10 +319,10 @@ mod tests {
         );
         grant.apply(&journal, &file).unwrap();
         drop(leaf_file);
-        fs::rename(&tree, root.join("moved")).unwrap();
+        fs::rename(&tree, directory.path().join("moved")).unwrap();
         fs::create_dir(&tree).unwrap();
         recover(&journal).unwrap();
-        let (_, leaf_file) = Target::capture(&root.join("moved/leaf")).unwrap();
+        let (_, leaf_file) = Target::capture(&directory.path().join("moved/leaf")).unwrap();
         assert!(!acl::allows_read(&file, identity.sid()).unwrap());
         assert!(!acl::allows_read(&leaf_file, identity.sid()).unwrap());
         assert!(tree.is_dir(), "cleanup must not adopt the replacement path");

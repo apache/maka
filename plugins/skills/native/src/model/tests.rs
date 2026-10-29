@@ -259,10 +259,7 @@ async fn model_resolution_uses_original_eligibility_preferences_and_identity_bef
     schema("load", &loaded);
     assert_eq!(loaded["instructions"], "original review");
     assert_eq!(loaded["declaredTools"], json!(["Superuser"]));
-    assert_eq!(
-        loaded["relativePath"],
-        json!(std::path::Path::new("review").join("SKILL.md"))
-    );
+    assert_eq!(loaded["relativePath"], "review/SKILL.md");
     assert_eq!(loaded["receipt"]["ref"], "source:a:review");
     let absent = search(&library, &call, json!([])).await;
     assert_eq!(absent["totalEligible"], 2);
@@ -759,10 +756,7 @@ async fn preparation_language_preserves_opaque_skills_metadata_and_protocol_iden
         assert_eq!(loaded["kind"], "loaded");
         assert_eq!(loaded["metadata"]["id"], name);
         assert_eq!(loaded["instructions"], original_body);
-        assert_eq!(
-            loaded["relativePath"],
-            json!(std::path::Path::new(name).join("SKILL.md"))
-        );
+        assert_eq!(loaded["relativePath"], format!("{name}/SKILL.md"));
     }
     assert!(
         library

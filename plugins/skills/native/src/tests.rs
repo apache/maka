@@ -217,80 +217,6 @@ async fn original_discovery_paging_and_exact_body_reads_reject_stale_or_repurpos
 }
 
 #[tokio::test]
-async fn canonical_private_root_policy_allows_selected_skills_and_denies_private_skills() {
-    let dir = tempfile::tempdir().unwrap();
-    let selected = dir.path().join("selected");
-    let private = dir.path().join("private");
-    write(&selected, "allowed", "selected content");
-    write(&private, "hidden", "private content");
-    let library = Library::open(
-        Configuration {
-            home: None,
-            project_roots: vec![],
-            bundled: false,
-            manage: false,
-            preferences: true,
-            sources: vec![source("selected", &selected), source("private", &private)],
-        },
-        private.canonicalize().unwrap(),
-        preferences(dir.path()).await,
-    )
-    .unwrap();
-    let call = scope();
-    let Page::Page {
-        revision,
-        entries,
-        diagnostics,
-        ..
-    } = library
-        .snapshot(&call)
-        .await
-        .unwrap()
-        .list(first())
-        .unwrap()
-    else {
-        panic!()
-    };
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].reference, "source:selected:allowed");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|message| message.starts_with("private:"))
-    );
-    let Document::Page { text, .. } = library
-        .snapshot(&call)
-        .await
-        .unwrap()
-        .read(Read {
-            workspace: None,
-            reference: entries[0].reference.clone(),
-            revision: revision.clone(),
-            offset: 0,
-        })
-        .unwrap()
-    else {
-        panic!()
-    };
-    assert_eq!(text, "selected content");
-    assert!(matches!(
-        library
-            .snapshot(&call)
-            .await
-            .unwrap()
-            .read(Read {
-                workspace: None,
-                reference: "source:private:hidden".into(),
-                revision,
-                offset: 0,
-            })
-            .unwrap(),
-        Document::Unavailable
-    ));
-    call.finish().await.unwrap();
-}
-
-#[tokio::test]
 async fn selected_directory_handles_and_private_root_ceiling_remain_authoritative() {
     let dir = tempfile::tempdir().unwrap();
     let selected = dir.path().join("selected");
@@ -314,13 +240,8 @@ async fn selected_directory_handles_and_private_root_ceiling_remain_authoritativ
         preferences(dir.path()).await,
     )
     .unwrap();
-    match std::fs::rename(&selected, dir.path().join("original")) {
-        Ok(()) => write(&selected, "allowed", "replacement must not redirect"),
-        Err(error) => {
-            // A Windows sharing violation protects the captured directory before replacement.
-            assert!(cfg!(windows) && error.raw_os_error() == Some(32), "{error}");
-        }
-    }
+    std::fs::rename(&selected, dir.path().join("original")).unwrap();
+    write(&selected, "allowed", "replacement must not redirect");
     let call = scope();
     let Page::Page {
         revision,
@@ -522,12 +443,7 @@ async fn execution_basis_preserves_real_captures_and_rejects_replaced_skill_dire
     );
     assert_ne!(other_managed.execution_basis().unwrap(), basis);
     for name in ["custom", "home", "projects"] {
-        if let Err(error) = std::fs::rename(path.join(name), path.join(format!("original-{name}")))
-        {
-            assert!(cfg!(windows) && error.raw_os_error() == Some(32), "{error}");
-            assert_eq!(first.execution_basis().unwrap(), basis, "held {name}");
-            continue;
-        }
+        std::fs::rename(path.join(name), path.join(format!("original-{name}"))).unwrap();
         std::fs::create_dir(path.join(name)).unwrap();
         let mut changed = open();
         changed.managed = first.managed.clone();
