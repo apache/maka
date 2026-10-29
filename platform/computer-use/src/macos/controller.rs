@@ -189,6 +189,21 @@ pub(crate) enum ResolveStep {
     },
 }
 
+#[derive(Debug)]
+pub(crate) enum ElementClickStep {
+    NeedQuery {
+        token: ResolveId,
+        query: Query,
+        mutation_started: bool,
+    },
+    Ready {
+        token: ResolveId,
+        point: Option<[f64; 2]>,
+        window_id: u32,
+        mutation_started: bool,
+    },
+}
+
 /// Metadata from one observed primary AX target, not a window grant or handle.
 #[derive(Debug)]
 pub(crate) struct ApplicationObservation {
@@ -221,6 +236,22 @@ enum Command {
         input: super::mouse::Input,
         cancellation: CancellationToken,
         focus: Arc<super::focus::Resource>,
+    },
+    BeginElementClick {
+        slot: u64,
+        input: super::page_scroll::element_click::ElementInput,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    },
+    AdvanceElementClick {
+        token: ResolveId,
+        observation: Observation,
+    },
+    FinishElementClick {
+        token: ResolveId,
+    },
+    CancelElementClick {
+        token: ResolveId,
     },
     BeginKeyboard {
         slot: u64,
@@ -328,6 +359,7 @@ enum Response {
     Indexed(IndexedStep),
     Resolved(ResolveStep),
     Keyboard(KeyboardStep),
+    ElementClick(ElementClickStep),
     Stopped,
 }
 
@@ -974,6 +1006,95 @@ impl Window {
 }
 
 impl Application {
+    pub(crate) async fn element_click(
+        &self,
+        input: super::page_scroll::element_click::ElementInput,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+        cursor: crate::cursor::Spec,
+        native: Arc<tokio::sync::Mutex<crate::driver::Driver>>,
+    ) -> Result<(), ToolError> {
+        let application = self.clone();
+        let task = tokio::spawn(async move {
+            let mut step = match application
+                .controller
+                .request(Command::BeginElementClick {
+                    slot: application.slot,
+                    input,
+                    cancellation: cancellation.clone(),
+                    focus: focus.clone(),
+                })
+                .await?
+            {
+                Response::ElementClick(step) => step,
+                _ => return Err(unexpected()),
+            };
+            let token = match &step {
+                ElementClickStep::NeedQuery { token, .. }
+                | ElementClickStep::Ready { token, .. } => *token,
+            };
+            let mut mutation_started = false;
+            let result: Result<(), ToolError> = async {
+                loop {
+                    match step {
+                        ElementClickStep::NeedQuery { token: current, query, mutation_started: started } => {
+                            if current != token { return Err(unexpected()); }
+                            mutation_started |= started;
+                            super::mouse::check_admission(&focus, &cancellation)?;
+                            let pending = { native.lock().await.cursors.mac_metadata(query) };
+                            let observation = pending.await?;
+                            step = match application.controller.request(Command::AdvanceElementClick { token, observation }).await? {
+                                Response::ElementClick(step) => step,
+                                _ => return Err(unexpected()),
+                            };
+                        }
+                        ElementClickStep::Ready { token: current, point, window_id, mutation_started: started } => {
+                            if current != token { return Err(unexpected()); }
+                            mutation_started |= started;
+                            super::mouse::check_admission(&focus, &cancellation)?;
+                            if cursor.enabled && let Some(point) = point {
+                                let pending = { native.lock().await.cursors.update(
+                                    &cursor, Some(point), cursor_overlay::CursorAction::Click, Some(u64::from(window_id)),
+                                ) };
+                                let state = pending.await?;
+                                if !state.visible || state.renderer_pid.is_none() || state.requested_position != Some(point) {
+                                    return Err(failed("native cursor renderer did not acknowledge the element click position"));
+                                }
+                            }
+                            return application.controller.request(Command::FinishElementClick { token }).await.and_then(unit);
+                        }
+                    }
+                }
+            }.await;
+            let result = result.map_err(|error| {
+                if mutation_started
+                    && !matches!(
+                        error,
+                        ToolError::CleanupUnconfirmed(_) | ToolError::OutcomeUnknown(_)
+                    )
+                {
+                    super::mouse::unknown(error)
+                } else {
+                    error
+                }
+            });
+            match application
+                .controller
+                .retire(Command::CancelElementClick { token })
+                .await
+            {
+                Ok(()) => result,
+                Err(cleanup) => Err(cleanup_error(match result {
+                    Ok(()) => format!("native element click retirement: {cleanup}"),
+                    Err(error) => format!("{error}; native element click retirement: {cleanup}"),
+                })),
+            }
+        });
+        task.await.map_err(|error| {
+            cleanup_error(format!("native element click custodian failed: {error}"))
+        })?
+    }
+
     pub(crate) async fn coordinate_click(
         &self,
         token: ResolveId,
@@ -1466,6 +1587,11 @@ enum PendingResolve {
         epoch: NativeEpochId,
         _target: EventTarget,
     },
+    ElementClick {
+        epoch: NativeEpochId,
+        slot: u64,
+        preparation: Box<super::page_scroll::element_click::PendingClick>,
+    },
 }
 
 impl PendingResolve {
@@ -1473,7 +1599,8 @@ impl PendingResolve {
         match self {
             Self::WindowOrder { epoch, .. }
             | Self::Searching { epoch, .. }
-            | Self::Ready { epoch, .. } => *epoch,
+            | Self::Ready { epoch, .. }
+            | Self::ElementClick { epoch, .. } => *epoch,
         }
     }
 }
@@ -1582,6 +1709,7 @@ impl WorkerState {
                 | Command::SetPosition { .. }
                 | Command::CancelIndexed { .. }
                 | Command::CancelKeyboard { .. }
+                | Command::CancelElementClick { .. }
                 | Command::CancelResourceInputs { .. }
                 | Command::ReleaseResolve { .. }
                 | Command::Stop
@@ -1659,6 +1787,24 @@ impl WorkerState {
                 )?;
                 Ok(Response::Unit)
             }
+            Command::BeginElementClick {
+                slot,
+                input,
+                cancellation,
+                focus,
+            } => self.begin_element_click(slot, input, cancellation, focus),
+            Command::AdvanceElementClick { token, observation } => {
+                self.advance_element_click(token, observation)
+            }
+            Command::FinishElementClick { token } => {
+                let (_, _, preparation) = self.take_element_click(token)?;
+                preparation.finish()?;
+                Ok(Response::Unit)
+            }
+            Command::CancelElementClick { token } => {
+                self.cancel_element_click(token);
+                Ok(Response::Unit)
+            }
             Command::BeginKeyboard {
                 slot,
                 input,
@@ -1724,6 +1870,9 @@ impl WorkerState {
             Command::CancelResourceInputs { resource } => {
                 if let Some(resource) = resource.upgrade() {
                     self.cancel_keyboards(|pending| pending.preparation.uses_resource(&resource));
+                    self.cancel_element_clicks(|_, _, preparation| {
+                        preparation.uses_resource(&resource)
+                    });
                 }
                 Ok(Response::Unit)
             }
@@ -1734,6 +1883,7 @@ impl WorkerState {
                 Ok(Response::Unit)
             }
             Command::ClearApplication { slot } => {
+                self.cancel_element_clicks(|_, current, _| current == slot);
                 if let Some(application) = self.slots.get_mut(&slot) {
                     application.application_mut()?.observed = None;
                 }
@@ -1744,6 +1894,7 @@ impl WorkerState {
                     application.application_mut()?;
                 }
                 self.cancel_keyboards(|pending| pending.slot == slot);
+                self.cancel_element_clicks(|_, current, _| current == slot);
                 self.slots.remove(&slot);
                 self.indexed.retain(|_, pending| pending.slot != slot);
                 Ok(Response::Unit)
@@ -1780,6 +1931,7 @@ impl WorkerState {
                 Ok(Response::Unit)
             }
             Command::ReleaseWindow { slot } => {
+                self.cancel_element_clicks(|_, current, _| current == slot);
                 if let Some(window) = self.slots.get(&slot) {
                     window.window()?;
                 }
@@ -1810,6 +1962,7 @@ impl WorkerState {
             }
             Command::ReleaseEpoch { epoch } => {
                 self.cancel_keyboards(|pending| pending.epoch == epoch);
+                self.cancel_element_clicks(|current, _, _| current == epoch);
                 self.slots.retain(|_, slot| slot.epoch() != epoch);
                 self.indexed.retain(|_, pending| pending.epoch != epoch);
                 self.resolving.retain(|_, pending| pending.epoch() != epoch);
@@ -1881,12 +2034,145 @@ impl WorkerState {
                 self.advance_resolve(token, observation)
             }
             Command::ReleaseResolve { token } => {
+                self.cancel_element_click(token);
                 self.resolving.remove(&token);
                 Ok(Response::Unit)
             }
             Command::Stop => Err(cleanup_error(
                 "native AX stop must retire the run-loop owner",
             )),
+        }
+    }
+
+    fn begin_element_click(
+        &mut self,
+        slot: u64,
+        input: super::page_scroll::element_click::ElementInput,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    ) -> Result<Response, ToolError> {
+        let token = ResolveId(self.token()?);
+        let application = self
+            .slots
+            .get(&slot)
+            .ok_or_else(|| failed("native AX application handle has retired"))?
+            .application()?;
+        let epoch = application.epoch;
+        let target = application
+            .observed
+            .as_ref()
+            .ok_or_else(|| super::server_error("AX tree unexpectedly missing."))?;
+        let mut preparation = super::page_scroll::element_click::PendingClick::new(
+            self.pid,
+            self.generation.clone(),
+            self.bundle.clone(),
+            target,
+            input,
+            focus,
+            cancellation,
+        )?;
+        let progress = match preparation.begin() {
+            Ok(progress) => progress,
+            Err(error) => return Err(preparation.fail(error)),
+        };
+        let response = element_click_response(token, &preparation, progress);
+        self.resolving.insert(
+            token,
+            PendingResolve::ElementClick {
+                epoch,
+                slot,
+                preparation,
+            },
+        );
+        Ok(response)
+    }
+
+    fn take_element_click(
+        &mut self,
+        token: ResolveId,
+    ) -> Result<
+        (
+            NativeEpochId,
+            u64,
+            Box<super::page_scroll::element_click::PendingClick>,
+        ),
+        ToolError,
+    > {
+        let pending = self
+            .resolving
+            .remove(&token)
+            .ok_or_else(|| failed("native element click preparation has retired"))?;
+        match pending {
+            PendingResolve::ElementClick {
+                epoch,
+                slot,
+                preparation,
+            } => {
+                let valid = self.slots.get(&slot).is_some_and(|current| {
+                    current.epoch() == epoch && matches!(current, Slot::Application(_))
+                });
+                if !valid {
+                    return Err(preparation.fail(failed("native element application has retired")));
+                }
+                Ok((epoch, slot, preparation))
+            }
+            pending => {
+                self.resolving.insert(token, pending);
+                Err(failed("native element click token has a different purpose"))
+            }
+        }
+    }
+
+    fn advance_element_click(
+        &mut self,
+        token: ResolveId,
+        observation: Observation,
+    ) -> Result<Response, ToolError> {
+        let (epoch, slot, mut preparation) = self.take_element_click(token)?;
+        let progress = match preparation.advance(observation) {
+            Ok(progress) => progress,
+            Err(error) => return Err(preparation.fail(error)),
+        };
+        let response = element_click_response(token, &preparation, progress);
+        self.resolving.insert(
+            token,
+            PendingResolve::ElementClick {
+                epoch,
+                slot,
+                preparation,
+            },
+        );
+        Ok(response)
+    }
+
+    fn cancel_element_click(&mut self, token: ResolveId) {
+        match self.resolving.remove(&token) {
+            Some(PendingResolve::ElementClick { preparation, .. }) => preparation.cancel(),
+            Some(other) => {
+                self.resolving.insert(token, other);
+            }
+            None => {}
+        }
+    }
+
+    fn cancel_element_clicks(
+        &mut self,
+        matches: impl Fn(NativeEpochId, u64, &super::page_scroll::element_click::PendingClick) -> bool,
+    ) {
+        let tokens = self
+            .resolving
+            .iter()
+            .filter_map(|(token, pending)| match pending {
+                PendingResolve::ElementClick {
+                    epoch,
+                    slot,
+                    preparation,
+                } if matches(*epoch, *slot, preparation) => Some(*token),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for token in tokens {
+            self.cancel_element_click(token);
         }
     }
 
@@ -2116,12 +2402,35 @@ impl WorkerState {
 
     fn close(&mut self) -> Result<(), ToolError> {
         self.cancel_keyboards(|_| true);
+        self.cancel_element_clicks(|_, _, _| true);
         let closed = self.windows.close();
         self.indexed.clear();
         self.resolving.clear();
         self.slots.clear();
         closed
     }
+}
+
+fn element_click_response(
+    token: ResolveId,
+    preparation: &super::page_scroll::element_click::PendingClick,
+    progress: super::page_scroll::element_click::Progress,
+) -> Response {
+    use super::page_scroll::element_click::Progress;
+    let mutation_started = preparation.mutation_started();
+    Response::ElementClick(match progress {
+        Progress::NeedQuery(query) => ElementClickStep::NeedQuery {
+            token,
+            query,
+            mutation_started,
+        },
+        Progress::Ready { point, target } => ElementClickStep::Ready {
+            token,
+            point,
+            window_id: target.map_or(preparation.window_id(), |target| target.window_id),
+            mutation_started,
+        },
+    })
 }
 
 fn check_cancelled(cancellation: &CancellationToken) -> Result<(), ToolError> {
