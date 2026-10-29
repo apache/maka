@@ -121,10 +121,7 @@ async fn malformed_accepted_call_cannot_dispatch_and_recovers_exactly_once() {
     log.close().await.unwrap();
 
     let log = EventLog::open(&path).await.unwrap();
-    let recovery = log
-        .invocation_recovery(&invocation, 16, 16_384)
-        .await
-        .unwrap();
+    let recovery = log.invocation_recovery(&invocation).await.unwrap();
     assert_eq!(recovery.unfinished_model_steps, ["step"]);
     assert!(recovery.uncertain_operations.is_empty());
     assert_eq!(recovery.undispatched_calls.len(), 1);
@@ -272,7 +269,7 @@ async fn refusals_have_no_dispatch_or_uncertainty_and_cannot_alias_effects() {
         refusals.push(refusal);
     }
     assert!(
-        log.invocation_recovery(&invocation, 10, 16_384)
+        log.invocation_recovery(&invocation)
             .await
             .unwrap()
             .uncertain_operations

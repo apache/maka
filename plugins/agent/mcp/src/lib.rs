@@ -55,7 +55,6 @@ use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 pub use validation::validate;
 const CLEANUP: Duration = Duration::from_secs(5);
-const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct RemoteTool {
@@ -385,7 +384,7 @@ async fn own(
                             tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await
                         });
                         let transport = AsyncRwTransport::<RoleClient, _, _>::new(stdout, stdin)
-                            .with_max_line_length(MAX_MESSAGE);
+                            .with_max_line_length(usize::MAX);
                         let transport_cleaned = AtomicBool::new(false);
                         let result = run(
                             transport,
@@ -459,7 +458,7 @@ async fn own(
                     .map_err(|_| "MCP HTTP client construction failed")?;
                 let config = StreamableHttpClientTransportConfig::with_uri(url.clone())
                     .custom_headers(values)
-                    .max_sse_event_size(MAX_MESSAGE)
+                    .max_sse_event_size(usize::MAX)
                     .reinit_on_expired_session(false);
                 Ok::<_, String>(StreamableHttpClientTransport::with_client(
                     http::Client(client),
@@ -512,8 +511,7 @@ async fn run<T: Transport<RoleClient> + 'static>(
         let mut tools = Vec::new();
         let mut cursor = None;
         let mut cursors = HashSet::new();
-        let mut bytes = 0;
-        for _ in 0..64 {
+        loop {
             let page = service
                 .list_tools(
                     cursor
@@ -521,13 +519,7 @@ async fn run<T: Transport<RoleClient> + 'static>(
                 )
                 .await
                 .map_err(|_| "MCP tool discovery failed")?;
-            bytes += serde_json::to_vec(&page)
-                .map_err(|_| "MCP tool catalog is invalid")?
-                .len();
             tools.extend(page.tools);
-            if tools.len() > 1024 || bytes > 1024 * 1024 {
-                return Err("MCP tool catalog exceeds its limit".into());
-            }
             cursor = page.next_cursor;
             if cursor.is_none() {
                 let tools = validation::tools(config, tools)?;
@@ -537,7 +529,6 @@ async fn run<T: Transport<RoleClient> + 'static>(
                 return Err("MCP pagination cursor repeats".into());
             }
         }
-        Err("MCP tool discovery exceeds 64 pages".into())
     };
     let started = tokio::select! {
         result = tokio::time::timeout(Duration::from_millis(config.startup_timeout_ms), startup) => result.map_err(|_| "MCP startup timed out".to_owned()).and_then(|v| v),

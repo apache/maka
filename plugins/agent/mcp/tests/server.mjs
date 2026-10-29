@@ -68,6 +68,22 @@ function receive(message, send) {
       serverInfo: { name: 'fixture', version: '1' },
     });
   } else if (message.method === 'tools/list') {
+    if (mode === 'large-catalog') {
+      const page = Number(message.params?.cursor ?? 0);
+      reply({
+        tools: Array.from({ length: 17 }, (_, index) => ({
+          name: `tool_${page * 17 + index}`,
+          description: 'catalog payload '.repeat(80),
+          inputSchema: { type: 'object' },
+        })),
+        ...(page < 64 ? { nextCursor: String(page + 1) } : {}),
+      });
+      return;
+    }
+    if (mode === 'repeated-cursor') {
+      reply({ tools: [], nextCursor: 'same' });
+      return;
+    }
     reply(
       message.params?.cursor
         ? { tools: tools.slice(3) }
@@ -101,7 +117,7 @@ function receive(message, send) {
                 mimeType: 'text/plain',
               },
             ]
-          : [{ type: 'text', text: name === 'error' ? 'business failed' : JSON.stringify(args) }],
+          : [{ type: 'text', text: mode === 'stdio-large' ? 'x'.repeat(16 * 1024 * 1024 + 1) : name === 'error' ? 'business failed' : JSON.stringify(args) }],
       structuredContent: args,
       isError: name === 'error',
       _meta: { fixture: true },
@@ -129,27 +145,22 @@ if (mode.startsWith('http')) {
       response.writeHead(202).end();
       return;
     }
-    if (mode.startsWith('http-large') && message.method === 'initialize') {
-      log({ oversized: mode });
-      const sse = mode.includes('sse');
-      const chunk = mode.endsWith('lines')
-        ? 'data: ' + 'x'.repeat(32760) + '\r\n'
-        : 'x'.repeat(32768);
-      response.writeHead(mode === 'http-large-error' ? 500 : 200, {
-        'content-type': sse ? 'text/event-stream' : 'application/json',
-        ...(mode === 'http-large-json' ? { 'content-length': 20 * 1024 * 1024 } : {}),
-      });
-      if (sse) response.write('data: ');
-      for (let n = 0; n < 550 && !response.destroyed; n++) {
-        response.write(chunk);
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      // Deliberately never finish: the client must reject at the byte boundary,
-      // without waiting for EOF or the startup deadline.
-      return;
-    }
     receive(message, (result) => {
-      if (mode === 'http-sse') {
+      if (mode.startsWith('http-large') && message.method === 'tools/call') {
+        result.result.content = [{ type: 'text', text: 'x'.repeat(16 * 1024 * 1024 + 1) }];
+        result.result.structuredContent = { marker: 'large-result-complete' };
+        const body = JSON.stringify(result);
+        if (mode === 'http-large-sse') {
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.end('data: ' + body + '\n\n');
+        } else {
+          response.writeHead(200, {
+            'content-type': 'application/json',
+            ...(mode === 'http-large-json' ? { 'content-length': Buffer.byteLength(body) } : {}),
+          });
+          response.end(body);
+        }
+      } else if (mode === 'http-sse') {
         response.writeHead(200, { 'content-type': 'text/event-stream' });
         response.write(': heartbeat\r');
         setImmediate(() => {
