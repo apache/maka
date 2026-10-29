@@ -86,7 +86,7 @@ import {
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
-import { MessageEdit } from '../../../../products/maka/workbench/app/MessageEdit';
+import { MessageEdit, TurnRetry } from '../../../../products/maka/workbench/app/MessageEdit';
 import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
@@ -336,6 +336,12 @@ export function Conversation(props: ConversationProps) {
   const reading = signal<'chat' | 'trajectory'>('chat');
   const readingSize = signal({ width: 640, height: 192 });
   const innerReader = signal<string | null>(null);
+  // The process group whose activity list last reported its end.
+  const readerAtEnd = signal<string | null>(null);
+  // At the end of a paused group there is nothing below to reach, only
+  // following to resume, and nothing to follow once the run has ended.
+  const pausedAtEnd = () =>
+    !awayFromLatest() && innerReader() !== null && innerReader() === readerAtEnd();
   const metrics = signal<any>(null);
   const turnStates = new Map<string, TurnViewState>();
   const groupStates = new Map<string, GroupViewState>();
@@ -2483,6 +2489,10 @@ export function Conversation(props: ConversationProps) {
                               if (away) innerReader.set(initial.group.key);
                               else if (innerReader() === initial.group.key) innerReader.set(null);
                             }}
+                            settled={(atEnd) => {
+                              if (atEnd) readerAtEnd.set(initial.group.key);
+                              else if (readerAtEnd() === initial.group.key) readerAtEnd.set(null);
+                            }}
                           />
                         );
                       }
@@ -2536,6 +2546,30 @@ export function Conversation(props: ConversationProps) {
                               }
                             />
                           )}
+                          failureActions={
+                            platform.isTerminal
+                              ? undefined
+                              : (row) => (
+                                  // Only where the conversation ends in this failure.
+                                  <If
+                                    when={
+                                      run() !== 'running' && displayKeys().at(-1) === initial.rowId
+                                    }
+                                  >
+                                    <TurnRetry
+                                      row={() => loadedOpening(row().turnId)}
+                                      sessionId={sessionId}
+                                      through={() => latestKnown}
+                                      blocked={() =>
+                                        draft().trim() || attachments.files().length > 0
+                                          ? tr('Send or clear the draft first.')
+                                          : sendBlockedReason()
+                                      }
+                                      send={send}
+                                    />
+                                  </If>
+                                )
+                          }
                           editMessage={
                             !platform.isTerminal && props.edit
                               ? (row, ownerKey) => (
@@ -2565,7 +2599,11 @@ export function Conversation(props: ConversationProps) {
               ]}
             >
               <ReturnToLatest
-                visible={awayFromLatest() || innerReader() !== null}
+                visible={
+                  awayFromLatest() ||
+                  (innerReader() !== null && (!pausedAtEnd() || run() === 'running'))
+                }
+                paused={pausedAtEnd()}
                 activate={inputAction(ownHandle.jumpLatest, null)}
               />
             </View>

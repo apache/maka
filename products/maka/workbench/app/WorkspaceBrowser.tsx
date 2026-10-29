@@ -50,6 +50,7 @@ import { Icon } from './Icon';
 import type { Browsing, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
 import {
+  hasForkPrefix,
   sessionActionTarget,
   type SessionAction,
   type SessionActionTarget,
@@ -553,6 +554,10 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                           : session()?.activity === 'waiting'
                             ? `${sessionStatusCaption.waiting} · `
                             : ''}
+                        {/* Forks renamed or titled before the prefix still read as forks. */}
+                        {session()?.branch && !hasForkPrefix(session()!.title)
+                          ? `${tr('Fork')} · `
+                          : ''}
                         {session()?.workspace.path.split('/').filter(Boolean).at(-1) ||
                           session()?.workspace.path}
                       </Text>
