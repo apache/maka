@@ -486,6 +486,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -512,6 +515,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -1672,6 +1676,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -1698,6 +1705,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -3049,6 +3057,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -3075,6 +3086,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -5033,6 +5045,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -5059,6 +5074,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -5603,6 +5619,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -5629,6 +5648,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -8016,6 +8036,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -8042,6 +8065,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -9071,6 +9095,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -9097,6 +9124,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -10731,6 +10759,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -10757,6 +10788,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -11332,6 +11364,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -11358,6 +11393,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -11695,6 +11731,11 @@ export const contracts = {
             title: 'AgentMetadata',
             type: 'object',
             properties: {
+              pinned: {
+                description: "Omission preserves the conversation's position in the catalog.",
+                type: ['boolean', 'null'],
+                default: null,
+              },
               collaborationMode: {
                 description: 'Changing collaboration is only allowed while the Session is idle.',
                 anyOf: [
@@ -11912,6 +11953,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -11938,6 +11982,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -12429,6 +12474,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -12455,6 +12503,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -15019,6 +15068,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -15045,6 +15097,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -19064,6 +19117,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -19090,6 +19146,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -19872,6 +19929,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -19898,6 +19958,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -25283,6 +25344,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -25308,6 +25372,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -26815,6 +26880,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -26840,6 +26908,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',

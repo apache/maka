@@ -5821,6 +5821,7 @@ export interface AgentSession {
   revision: number;
   updatedAt: number;
   archived: boolean;
+  pinned: boolean;
   hasUnread: boolean;
   /**
    * Exact durable visible tail accepted by markRead; independent of preview clocks.
@@ -7718,6 +7719,10 @@ export interface AgentDirectory {
   selection: AgentDirectorySelection;
 }
 export interface AgentMetadata {
+  /**
+   * Omission preserves the conversation's position in the catalog.
+   */
+  pinned?: boolean | null;
   /**
    * Changing collaboration is only allowed while the Session is idle.
    */

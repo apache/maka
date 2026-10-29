@@ -20,6 +20,51 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+/// The indexed column is generated from canonical Session configuration.
+const PIN_ORDER: &str = "catalog_unpinned";
+
+/// Pinned conversations precede the existing ID order.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct CatalogKey {
+    pub unpinned: bool,
+    pub id: String,
+}
+impl CatalogKey {
+    async fn read(db: &mut SqliteConnection, id: &str) -> Result<Self, StoreError> {
+        let sql = format!("SELECT {PIN_ORDER} FROM session_control WHERE id = ?");
+        let unpinned = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+            .bind(id)
+            .fetch_optional(db)
+            .await?
+            .unwrap_or(true);
+        Ok(Self {
+            unpinned,
+            id: id.to_owned(),
+        })
+    }
+}
+
+#[derive(Clone)]
+pub(crate) enum CatalogPosition {
+    Start,
+    At(CatalogKey),
+    After(CatalogKey),
+    Before(CatalogKey),
+}
+impl CatalogPosition {
+    pub fn new(position: SessionPosition<'_>, key: CatalogKey) -> Self {
+        match position {
+            SessionPosition::Start => Self::Start,
+            SessionPosition::At(_) => Self::At(key),
+            SessionPosition::After(_) => Self::After(key),
+            SessionPosition::Before(_) => Self::Before(key),
+        }
+    }
+    pub fn reverse(&self) -> bool {
+        matches!(self, Self::Before(_))
+    }
+}
+
 const PREDICATE: &str = "
     NOT EXISTS (SELECT 1 FROM session_retirements WHERE session_id=id AND remove_session=1)
     AND (?1 = 0 OR (?1 = 1 AND archived = 0) OR (?1 = 2 AND archived = 1))
@@ -96,15 +141,15 @@ impl Selection {
     async fn ids(
         &self,
         connection: &mut SqliteConnection,
-        position: SessionPosition<'_>,
+        position: &CatalogPosition,
         limit: usize,
-    ) -> Result<Vec<String>, StoreError> {
+    ) -> Result<Vec<CatalogKey>, StoreError> {
         // SQL fragments are closed native state. Every caller value is bound.
-        let (comparison, order, cursor) = match position {
-            SessionPosition::Start => (">", "ASC", ""),
-            SessionPosition::At(cursor) => (">=", "ASC", cursor),
-            SessionPosition::After(cursor) => (">", "ASC", cursor),
-            SessionPosition::Before(cursor) => ("<", "DESC", cursor),
+        let (comparison, order, unpinned, cursor) = match position {
+            CatalogPosition::Start => (">", "ASC", false, ""),
+            CatalogPosition::At(key) => (">=", "ASC", key.unpinned, key.id.as_str()),
+            CatalogPosition::After(key) => (">", "ASC", key.unpinned, key.id.as_str()),
+            CatalogPosition::Before(key) => ("<", "DESC", key.unpinned, key.id.as_str()),
         };
         let visibility = if self.root_partition.is_some() {
             "AND EXISTS (SELECT 1 FROM root_control.session_routes r WHERE r.session_id=session_control.id AND r.partition=?11 AND r.ready=1 AND r.visible=1)"
@@ -112,10 +157,11 @@ impl Selection {
             ""
         };
         let sql = format!(
-            "SELECT id FROM session_control WHERE {PREDICATE} {visibility}
-            AND id {comparison} ?9 ORDER BY id {order} LIMIT ?10"
+            "SELECT {PIN_ORDER}, id FROM session_control WHERE {PREDICATE} {visibility}
+            AND ({PIN_ORDER}, id) {comparison} (?12, ?9)
+            ORDER BY {PIN_ORDER} {order}, id {order} LIMIT ?10"
         );
-        let query = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql))
+        let query = sqlx::query_as::<_, (bool, String)>(sqlx::AssertSqlSafe(sql))
             .bind(if self.filter.archived_only {
                 2
             } else {
@@ -130,13 +176,15 @@ impl Selection {
             .bind(&self.title_query)
             .bind(cursor)
             .bind(limit as i64);
-        let query = if let Some(partition) = self.root_partition {
-            query.bind(partition as i64)
-        } else {
-            query
-        };
-        let mut ids = query.fetch_all(connection).await?;
-        if matches!(position, SessionPosition::Before(_)) {
+        let mut ids: Vec<_> = query
+            .bind(self.root_partition.map(|partition| partition as i64))
+            .bind(unpinned)
+            .fetch_all(connection)
+            .await?
+            .into_iter()
+            .map(|(unpinned, id)| CatalogKey { unpinned, id })
+            .collect();
+        if position.reverse() {
             ids.reverse();
         }
         Ok(ids)
@@ -259,31 +307,39 @@ impl EventLog {
                         Some(cursor) if reverse => SessionPosition::Before(cursor),
                         Some(cursor) => SessionPosition::After(cursor),
                     };
-                    let mut ids = selection.ids(&mut tx, position, limit).await?;
+                    let position = match position {
+                        SessionPosition::Start => CatalogPosition::Start,
+                        SessionPosition::At(id)
+                        | SessionPosition::After(id)
+                        | SessionPosition::Before(id) => {
+                            CatalogPosition::new(position, CatalogKey::read(&mut tx, id).await?)
+                        }
+                    };
+                    let mut ids = selection.ids(&mut tx, &position, limit).await?;
                     if ids.is_empty()
-                        && let SessionPosition::At(cursor) = position
+                        && let CatalogPosition::At(cursor) = &position
                     {
                         ids = selection
-                            .ids(&mut tx, SessionPosition::Before(cursor), limit)
+                            .ids(&mut tx, &CatalogPosition::Before(cursor.clone()), limit)
                             .await?;
                     }
                     let previous_cursor = if let Some(first) = ids.first()
                         && !selection
-                            .ids(&mut tx, SessionPosition::Before(first), 1)
+                            .ids(&mut tx, &CatalogPosition::Before(first.clone()), 1)
                             .await?
                             .is_empty()
                     {
-                        Some(first.clone())
+                        Some(first.id.clone())
                     } else {
                         None
                     };
                     let next_cursor = if let Some(last) = ids.last()
                         && !selection
-                            .ids(&mut tx, SessionPosition::After(last), 1)
+                            .ids(&mut tx, &CatalogPosition::After(last.clone()), 1)
                             .await?
                             .is_empty()
                     {
-                        Some(last.clone())
+                        Some(last.id.clone())
                     } else {
                         None
                     };
@@ -291,7 +347,7 @@ impl EventLog {
                     let mut sessions = Vec::with_capacity(ids.len());
                     for id in ids {
                         sessions.push(
-                            read(&mut tx, &id)
+                            read(&mut tx, &id.id)
                                 .await?
                                 .ok_or(StoreError::SessionNotFound)?,
                         );
@@ -322,11 +378,11 @@ impl EventLog {
         &self,
         partition: usize,
         mut selection: Selection,
-        position: SessionPosition<'_>,
+        position: CatalogPosition,
         limit: usize,
         expected: (i64, i64),
         count_pending: bool,
-    ) -> Result<(Vec<String>, u64), StoreError> {
+    ) -> Result<(Vec<CatalogKey>, u64), StoreError> {
         self.validate_root()?;
         if partition >= crate::root_store::PARTITION_COUNT
             || limit == 0
@@ -334,28 +390,13 @@ impl EventLog {
         {
             return Err(invalid("invalid Root catalog page"));
         }
-        let (cursor, inclusive, reverse) = match position {
-            SessionPosition::Start => (None, false, false),
-            SessionPosition::At(id) => (Some(id.to_owned()), true, false),
-            SessionPosition::After(id) => (Some(id.to_owned()), false, false),
-            SessionPosition::Before(id) => (Some(id.to_owned()), false, true),
-        };
-        if let Some(cursor) = &cursor {
-            validate_id(cursor)?;
-        }
         selection.root_partition = Some(partition);
         self.connection
             .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     crate::root_store::catalog::require_snapshot(&mut tx, expected).await?;
-                    let position = match cursor.as_deref() {
-                        None => SessionPosition::Start,
-                        Some(id) if inclusive => SessionPosition::At(id),
-                        Some(id) if reverse => SessionPosition::Before(id),
-                        Some(id) => SessionPosition::After(id),
-                    };
-                    let ids = selection.ids(&mut tx, position, limit).await?;
+                    let ids = selection.ids(&mut tx, &position, limit).await?;
                     let pending = if count_pending {
                         selection.pending_count(&mut tx).await?
                     } else {
@@ -364,6 +405,14 @@ impl EventLog {
                     Ok((ids, pending))
                 })
             })
+            .await
+    }
+
+    pub(crate) async fn catalog_key(&self, id: &str) -> Result<CatalogKey, StoreError> {
+        self.validate_root()?;
+        let id = id.to_owned();
+        self.connection
+            .read(move |db| Box::pin(async move { CatalogKey::read(db, &id).await }))
             .await
     }
 

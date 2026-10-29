@@ -34,6 +34,8 @@ pub struct StoredSessionConfiguration {
     pub compaction_prompt: Option<String>,
     pub title: String,
     pub title_is_manual: bool,
+    #[serde(default)]
+    pub pinned: bool,
     pub labels: Vec<String>,
     pub workspace: BindingRef,
     pub permissions: WorkspacePermissions,
@@ -57,6 +59,8 @@ pub struct ResolvedConfiguration {
     pub compaction_prompt: Option<String>,
     pub title: String,
     pub title_is_manual: bool,
+    #[serde(default)]
+    pub pinned: bool,
     pub labels: Vec<String>,
     pub workspace: Workspace,
     pub binding: BindingStamp,
@@ -81,6 +85,7 @@ impl StoredSessionConfiguration {
             compaction_prompt: self.compaction_prompt,
             title: self.title,
             title_is_manual: self.title_is_manual,
+            pinned: self.pinned,
             labels: self.labels,
             workspace,
             binding: stamp,
@@ -108,6 +113,7 @@ impl ResolvedConfiguration {
             compaction_prompt: self.compaction_prompt,
             title: self.title,
             title_is_manual: self.title_is_manual,
+            pinned: self.pinned,
             labels: self.labels,
             workspace,
             permissions: self.permissions,

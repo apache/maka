@@ -52,6 +52,7 @@ pub(crate) struct Foreground {
     projection: Projection,
     capabilities: acp::ClientCapabilities,
     after: u64,
+    history_through: u64,
     parts: HashMap<(String, String), (String, ContentKind)>,
     user: Vec<HistoryChunk>,
 }
@@ -250,6 +251,8 @@ impl Foreground {
                 self.refresh().await?;
             }
             let mut catchup = false;
+            let mut refresh_tools = HashSet::new();
+            let mut ended_steps = HashSet::new();
             for event in events {
                 if self
                     .execution
@@ -296,11 +299,17 @@ impl Foreground {
                     DeliveryFact::StepEnded { step_id, .. } => {
                         self.projection
                             .commit_preview(&event.invocation_id, &step_id, None);
+                        ended_steps.insert(step_id);
+                        catchup = true;
+                    }
+                    DeliveryFact::ToolDispatched { tool_use_id, .. } => {
+                        if let Some(position) = self.projection.tool_position(&tool_use_id) {
+                            refresh_tools.insert(position);
+                        }
                         catchup = true;
                     }
                     DeliveryFact::TranscriptChanged
                     | DeliveryFact::ToolInputReady { .. }
-                    | DeliveryFact::ToolDispatched { .. }
                     | DeliveryFact::ToolRejected { .. }
                     | DeliveryFact::ToolSettled { .. }
                     | DeliveryFact::ProviderToolResult { .. }
@@ -313,7 +322,8 @@ impl Foreground {
                 }
             }
             if catchup {
-                self.catchup(Some(next_after)).await?;
+                self.catchup(next_after, refresh_tools, Some(&ended_steps))
+                    .await?;
                 self.refresh().await?;
             }
         } else {
@@ -321,10 +331,24 @@ impl Foreground {
         }
         Ok(())
     }
-    async fn catchup(&mut self, through: Option<u64>) -> Result<(), Error> {
-        for chunk in
-            history::read(&self.client, &self.session.id, through, Some(self.after)).await?
-        {
+    async fn catchup(
+        &mut self,
+        through: u64,
+        refresh_tools: HashSet<maka_agent_ports::session::history::RowPosition>,
+        ended_steps: Option<&HashSet<String>>,
+    ) -> Result<(), Error> {
+        let snapshot = history::since(
+            &self.client,
+            &self.session.id,
+            through,
+            self.history_through,
+        )
+        .await?;
+        let mut chunks = snapshot.chunks;
+        for position in refresh_tools {
+            chunks.extend(history::row(&self.client, &self.session.id, through, position).await?);
+        }
+        for chunk in chunks {
             if self
                 .execution
                 .as_ref()
@@ -334,10 +358,27 @@ impl Foreground {
                 self.publish(updates).await?;
             }
         }
+        for (position, field) in self.projection.pending_model_positions(ended_steps) {
+            let metadata =
+                history::model_metadata(&self.client, &self.session.id, through, position, field)
+                    .await?;
+            if let Some(update) = self.projection.prepare_model_metadata(&metadata)? {
+                self.publish(vec![update.update.clone()]).await?;
+                self.projection.commit_model_metadata(update);
+            }
+        }
+        self.projection.acknowledge_models(ended_steps);
+        self.history_through = snapshot.through;
         Ok(())
     }
     async fn finish(&mut self) -> Result<acp::StopReason, Error> {
-        self.catchup(None).await?;
+        let observation: Observation = self
+            .client
+            .query("agent", "observe", json!({"sessionId":self.session.id}))
+            .await?;
+        let refresh_tools = self.projection.unsettled_tool_positions().collect();
+        self.catchup(observation.through, refresh_tools, None)
+            .await?;
         if self.cancelled {
             return Ok(acp::StopReason::Cancelled);
         }

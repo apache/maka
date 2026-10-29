@@ -880,6 +880,7 @@ mod tests {
                 tools: Some(vec!["cua_repl".into()]),
                 title: "Clipboard authority fixture".into(),
                 title_is_manual: false,
+                pinned: false,
                 labels: vec![],
                 workspace: reference,
                 permissions: WorkspacePermissions {
