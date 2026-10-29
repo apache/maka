@@ -183,6 +183,8 @@ pub(crate) enum RawTool {
     #[cfg(target_os = "windows")]
     Drag,
     #[cfg(target_os = "windows")]
+    Scroll,
+    #[cfg(target_os = "windows")]
     PressKey,
     #[cfg(target_os = "windows")]
     TypeText,
@@ -218,6 +220,8 @@ impl RawTool {
             Self::Click => "click",
             #[cfg(target_os = "windows")]
             Self::Drag => "drag",
+            #[cfg(target_os = "windows")]
+            Self::Scroll => "scroll",
             #[cfg(target_os = "windows")]
             Self::PressKey => "press_key",
             #[cfg(target_os = "windows")]

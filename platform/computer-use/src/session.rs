@@ -1669,7 +1669,6 @@ impl Session {
                 handle,
                 action.cursor_target(),
                 &window,
-                session,
                 cancellation,
                 language,
             )
@@ -1971,12 +1970,11 @@ impl Session {
         handle: &str,
         position: Option<Position>,
         window: &WindowInfo,
-        session: &str,
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<[f64; 2], ToolError> {
         #[cfg(not(target_os = "windows"))]
-        let _ = (session, cancellation);
+        let _ = cancellation;
         let target = self
             .targets
             .get(handle)
