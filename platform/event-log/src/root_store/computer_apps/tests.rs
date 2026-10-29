@@ -528,8 +528,8 @@ async fn app_stop_between_completed_calls_preserves_consent_and_new_turn_recover
         )
         .await
         .unwrap();
-    assert!(store.append(&ordinary_prefix).await.unwrap() < sequence);
-    assert_eq!(store.append(&event).await.unwrap(), sequence);
+    assert!(store.append(&ordinary_prefix).await.unwrap() < sequence.last_sequence);
+    assert_eq!(store.append(&event).await.unwrap(), sequence.last_sequence);
     settle_native(&store, &invocation, "ordinary-prefix").await;
     settle_native(&store, &invocation, "first-native").await;
     let observed = store.computer_apps(store.id()).await.unwrap();

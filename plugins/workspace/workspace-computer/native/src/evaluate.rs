@@ -1162,6 +1162,7 @@ mod tests {
                             },
                             "cua_operation".into(),
                             input,
+                            None,
                             cancellation,
                             PreparedEffect::new(move |_| {
                                 Box::pin(async move {

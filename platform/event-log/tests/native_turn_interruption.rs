@@ -188,27 +188,31 @@ struct NativeJournal {
 }
 impl EventSink for NativeJournal {
     fn commit(self: Arc<Self>, event: EventWrite) -> CommitFuture {
-        self.commit_with_prefix(&[], event)
+        Box::pin(async move {
+            self.commit_with_prefix(&[], event)
+                .await
+                .map(|receipt| receipt.last_sequence)
+        })
     }
 
     fn commit_with_prefix(
         self: Arc<Self>,
         prefix: &[EventWrite],
         event: EventWrite,
-    ) -> CommitFuture {
-        let mut events = prefix.to_vec();
-        events.push(event);
+    ) -> maka_agent_facts::event::PrefixCommitFuture {
+        let prefix = prefix.to_vec();
         Box::pin(async move {
-            let (event, prefix) = events.split_last().expect("last event is present");
             if matches!(event.event().fact, Fact::ToolDispatched { .. }) {
                 self.log
-                    .append_native_computer_dispatch(prefix, event, &[target()], &self.basis)
+                    .append_native_computer_dispatch(&prefix, &event, &[target()], &self.basis)
                     .await
             } else {
+                let mut events = prefix;
+                events.push(event);
                 self.log
                     .append_batch(&events)
                     .await
-                    .map(|sequences| *sequences.last().expect("last event has a sequence"))
+                    .map(maka_agent_facts::event::PrefixReceipt::from_sequences)
             }
         })
     }

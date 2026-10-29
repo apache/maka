@@ -394,7 +394,7 @@ impl SessionStore {
         event: &EventWrite,
         targets: &[maka_agent_facts::interaction::GrantTarget],
         basis: &maka_agent_facts::workspace::PermissionBasis,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         self.check_session(&event.event().invocation.session_id)
             .map_err(commit_error)?;
         self.scoped()
@@ -410,7 +410,7 @@ impl SessionStore {
         event: &EventWrite,
         targets: &[maka_agent_facts::interaction::GrantTarget],
         basis: &maka_agent_facts::workspace::PermissionBasis,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         for write in prefix.iter().chain(std::iter::once(event)) {
             self.check_session(&write.event().invocation.session_id)
                 .map_err(commit_error)?;
@@ -992,13 +992,13 @@ impl EventSink for SessionStore {
         self: std::sync::Arc<Self>,
         prefix: &[EventWrite],
         last: EventWrite,
-    ) -> CommitFuture {
+    ) -> maka_agent_facts::event::PrefixCommitFuture {
         let mut events = prefix.to_vec();
         events.push(last);
         Box::pin(async move {
             self.append_batch(&events)
                 .await
-                .map(|sequences| *sequences.last().expect("last event has a sequence"))
+                .map(maka_agent_facts::event::PrefixReceipt::from_sequences)
         })
     }
 

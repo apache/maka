@@ -26,14 +26,33 @@ use tokio::sync::watch;
 
 pub(crate) type Reader = watch::Receiver<Option<Arc<AttemptCut>>>;
 
-struct State {
-    latest: Arc<AttemptCut>,
-    publication: Option<EventWrite>,
+enum State {
+    Receiving(Arc<AttemptCut>),
+    PublishingPrefix {
+        latest: Arc<AttemptCut>,
+        writes: Arc<[EventWrite]>,
+    },
+    Terminal {
+        latest: Arc<AttemptCut>,
+        publication: EventWrite,
+        receipt: Option<u64>,
+    },
+}
+
+impl State {
+    fn latest(&self) -> &Arc<AttemptCut> {
+        match self {
+            Self::Receiving(latest)
+            | Self::PublishingPrefix { latest, .. }
+            | Self::Terminal { latest, .. } => latest,
+        }
+    }
 }
 
 pub(crate) enum PublicationSelection {
     New(EventWrite),
     Existing(EventWrite),
+    PrefixPending,
 }
 
 pub(crate) struct Finalizer {
@@ -46,26 +65,101 @@ impl Finalizer {
         self.state
             .lock()
             .expect("attempt state lock poisoned")
-            .latest
+            .latest()
             .clone()
     }
 
     pub(crate) fn publication(&self) -> Option<EventWrite> {
-        self.state
-            .lock()
-            .expect("attempt state lock poisoned")
-            .publication
-            .clone()
+        match &*self.state.lock().expect("attempt state lock poisoned") {
+            State::Terminal { publication, .. } => Some(publication.clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn has_publication(&self) -> bool {
+        !matches!(
+            &*self.state.lock().expect("attempt state lock poisoned"),
+            State::Receiving(_)
+        )
+    }
+
+    pub(crate) fn terminal_confirmed(&self) -> bool {
+        matches!(
+            &*self.state.lock().expect("attempt state lock poisoned"),
+            State::Terminal {
+                receipt: Some(_),
+                ..
+            }
+        )
+    }
+
+    pub(crate) fn receipt_terminal(&self, write: &EventWrite, sequence: u64) {
+        let mut state = self.state.lock().expect("attempt state lock poisoned");
+        if let State::Terminal {
+            publication,
+            receipt,
+            ..
+        } = &mut *state
+        {
+            assert_eq!(
+                publication.event().id,
+                write.event().id,
+                "terminal receipt identity changed"
+            );
+            *receipt = Some(sequence);
+        }
+    }
+
+    pub(crate) fn freeze_prefix(&self, latest: Arc<AttemptCut>, writes: Arc<[EventWrite]>) {
+        let mut state = self.state.lock().expect("attempt state lock poisoned");
+        assert!(
+            matches!(&*state, State::Receiving(_)),
+            "attempt already publishing"
+        );
+        *state = State::PublishingPrefix { latest, writes };
+    }
+
+    pub(crate) fn prefix(&self) -> Option<(Arc<AttemptCut>, Arc<[EventWrite]>)> {
+        match &*self.state.lock().expect("attempt state lock poisoned") {
+            State::PublishingPrefix { latest, writes } => Some((latest.clone(), writes.clone())),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn receipt_prefix(&self, writes: &[EventWrite], latest: Arc<AttemptCut>) {
+        let mut state = self.state.lock().expect("attempt state lock poisoned");
+        if let State::PublishingPrefix {
+            writes: original, ..
+        } = &*state
+        {
+            assert!(
+                original
+                    .iter()
+                    .map(|write| &write.event().id)
+                    .eq(writes.iter().map(|write| &write.event().id)),
+                "prefix receipt identity changed"
+            );
+            *state = State::Receiving(latest);
+        }
     }
 
     /// A concurrent cleanup observer must retain the original publication identity.
     pub(crate) fn prepare(&self, publication: EventWrite) -> PublicationSelection {
         let mut state = self.state.lock().expect("attempt state lock poisoned");
-        if let Some(original) = &state.publication {
-            PublicationSelection::Existing(original.clone())
-        } else {
-            state.publication = Some(publication.clone());
-            PublicationSelection::New(publication)
+        match &*state {
+            State::Terminal {
+                publication: original,
+                ..
+            } => PublicationSelection::Existing(original.clone()),
+            State::PublishingPrefix { .. } => PublicationSelection::PrefixPending,
+            State::Receiving(latest) => {
+                *state = State::Terminal {
+                    latest: latest.clone(),
+                    publication: publication.clone(),
+                    receipt: None,
+                };
+                PublicationSelection::New(publication)
+            }
         }
     }
 }
@@ -93,10 +187,7 @@ impl Attempts {
     pub(crate) fn register(&self, cut: Arc<AttemptCut>, item_acceptance: bool) -> Arc<Finalizer> {
         let finalizer = Arc::new(Finalizer {
             item_acceptance,
-            state: Mutex::new(State {
-                latest: cut.clone(),
-                publication: None,
-            }),
+            state: Mutex::new(State::Receiving(cut.clone())),
         });
         let previous = self
             .active
@@ -111,10 +202,10 @@ impl Attempts {
     pub(crate) fn publish(&self, finalizer: &Finalizer, cut: Arc<AttemptCut>) {
         let previous = {
             let mut state = finalizer.state.lock().expect("attempt state lock poisoned");
-            if state.publication.is_some() {
+            let State::Receiving(latest) = &mut *state else {
                 return;
-            }
-            let previous = std::mem::replace(&mut state.latest, cut.clone());
+            };
+            let previous = std::mem::replace(latest, cut.clone());
             let preview = if cut.binding.purpose == ModelPurpose::Main {
                 self.current.send_replace(Some(cut))
             } else {

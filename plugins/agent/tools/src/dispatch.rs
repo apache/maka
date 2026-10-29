@@ -263,29 +263,16 @@ impl<'a> StepTools<'a> {
         self.request.finished()
     }
 
-    pub async fn invoke(
-        &mut self,
-        call: &ModelToolCall,
-        prior: Option<EventWrite>,
-        cancellation: CancellationToken,
-    ) -> Result<Value, ToolError> {
-        self.dispatch(call.clone(), prior, cancellation).await
-    }
-
-    /// Admission happens in arrival order before any concurrent future runs.
-    /// The caller retains a prior completion owner through drain and flushes it
-    /// before returning fatal errors, including preparation panics.
-    pub fn dispatch(
+    /// Admit synchronously in call arrival order; preparation can then run concurrently.
+    pub fn prepare(
         &mut self,
         call: ModelToolCall,
-        prior: Option<EventWrite>,
         cancellation: CancellationToken,
-    ) -> BoxFuture<'a, Result<Value, ToolError>> {
+    ) -> BoxFuture<'a, Result<PreparedCall<'a>, ToolError>> {
         let request = self.request.clone();
         let run = request.run;
         let operation_id = format!("{}:{}", self.step_id, call.id);
         let identity = ToolCallIdentity::provider(self.step_id.clone(), call.id.clone());
-        let finished = request.finished.clone();
         let catalog = if run.mode == ToolMode::CodeMode {
             &request.direct
         } else {
@@ -369,39 +356,94 @@ impl<'a> StepTools<'a> {
                 Ok((effect, input.clone()))
             }
             .await;
-            let (effect, input) = match preparation {
-                Ok(effect) => effect,
-                Err(reason) => {
-                    return run
-                        .journal
-                        .reject(
+            Ok(PreparedCall {
+                request,
+                operation_id,
+                identity,
+                call,
+                cancellation,
+                preparation,
+            })
+        })
+    }
+}
+
+/// A prepared call owns no model prefix; the original writer chooses publication.
+pub struct PreparedCall<'a> {
+    request: RequestTools<'a>,
+    operation_id: String,
+    identity: ToolCallIdentity,
+    call: ModelToolCall,
+    cancellation: CancellationToken,
+    preparation: Result<(PreparedEffect, Value), ToolRejection>,
+}
+
+/// The writer installs the prefix receipt before polling the one-shot completion.
+pub struct PublishedCall<'a> {
+    pub prefix_sequences: Vec<u64>,
+    pub completion: BoxFuture<'a, Result<Value, ToolError>>,
+}
+
+impl<'a> PreparedCall<'a> {
+    pub fn publish(
+        self,
+        prefix: &[EventWrite],
+    ) -> BoxFuture<'a, Result<PublishedCall<'a>, ToolError>> {
+        let prefix = prefix.to_vec();
+        Box::pin(async move {
+            let Self {
+                request,
+                operation_id,
+                identity,
+                call,
+                cancellation,
+                preparation,
+            } = self;
+            let journal = &request.run.journal;
+            let published = match preparation {
+                Ok((effect, input)) => {
+                    journal
+                        .publish_prepared_call(
                             operation_id,
                             identity,
                             call.name.clone(),
-                            call.input.clone(),
-                            prior,
+                            input,
+                            prefix,
+                            cancellation,
+                            effect,
+                        )
+                        .await?
+                }
+                Err(reason) => {
+                    journal
+                        .publish_rejection(
+                            operation_id,
+                            identity,
+                            call.name.clone(),
+                            call.input,
+                            prefix,
                             reason,
                         )
-                        .await;
+                        .await?
                 }
             };
-            let result = run
-                .journal
-                .invoke_prepared_call(
-                    operation_id,
-                    identity,
-                    call.name.clone(),
-                    input,
-                    prior,
-                    cancellation,
-                    effect,
-                )
-                .await?;
-            if catalog.semantics(&call.name) == Ok(ToolSemantics::FinishTurn) {
-                finished.store(true, Ordering::Release);
-            }
-            request.availability.settled(&call.name, &result)?;
-            Ok(result)
+            let completion = Box::pin(async move {
+                let result = published.completion.await?;
+                let catalog = if request.run.mode == ToolMode::CodeMode {
+                    &request.direct
+                } else {
+                    &request.catalog
+                };
+                if catalog.semantics(&call.name) == Ok(ToolSemantics::FinishTurn) {
+                    request.finished.store(true, Ordering::Release);
+                }
+                request.availability.settled(&call.name, &result)?;
+                Ok(result)
+            });
+            Ok(PublishedCall {
+                prefix_sequences: published.prefix_sequences,
+                completion,
+            })
         })
     }
 }

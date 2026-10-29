@@ -405,14 +405,18 @@ pub(super) struct Journal {
 }
 impl EventSink for Journal {
     fn commit(self: Arc<Self>, event: EventWrite) -> CommitFuture {
-        self.commit_with_prefix(&[], event)
+        Box::pin(async move {
+            self.commit_with_prefix(&[], event)
+                .await
+                .map(|receipt| receipt.last_sequence)
+        })
     }
 
     fn commit_with_prefix(
         self: Arc<Self>,
         prefix: &[EventWrite],
         event: EventWrite,
-    ) -> CommitFuture {
+    ) -> maka_agent_facts::event::PrefixCommitFuture {
         let mut events = prefix.to_vec();
         events.push(event);
         Box::pin(async move {
@@ -432,7 +436,12 @@ impl EventSink for Journal {
                             .await
                     } else {
                         self.store
-                            .append_native_computer_dispatch(prefix, event, &self.targets, &self.basis)
+                            .append_native_computer_dispatch(
+                                prefix,
+                                event,
+                                &self.targets,
+                                &self.basis,
+                            )
                             .await
                     }
                 } else if let Some((app, display)) = &self.app {
@@ -455,7 +464,7 @@ impl EventSink for Journal {
                 self.store
                     .append_batch(&events)
                     .await
-                    .map(|sequences| *sequences.last().expect("last event has a sequence"))
+                    .map(maka_agent_facts::event::PrefixReceipt::from_sequences)
             }
         })
     }

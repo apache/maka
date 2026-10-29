@@ -490,27 +490,33 @@ pub(super) async fn execute_once(
     )
     .await;
     let result = match result {
-        Err(error) if finalizer.publication().is_none() => {
+        Err(error) if !finalizer.has_publication() => {
             Err(seal_finalizer(inner, &finalizer, error).await)
         }
         other => other,
     };
-    inner.attempts.remove(&step_id);
+    if finalizer.terminal_confirmed() {
+        inner.attempts.remove(&step_id);
+    }
     result
 }
 
 async fn preserve_completion(
     inner: &Arc<RunContext>,
     completion: &maka_agent_facts::event::EventWrite,
+    finalizer: &crate::preview::Finalizer,
     error: RunError,
 ) -> RunError {
-    if let Err(flush) = inner.log.append(completion).await {
-        let message = format!("{error}; model completion could not be persisted: {flush}");
-        return if error.is_cleanup_unconfirmed() {
-            maka_agent_facts::tools::ToolError::CleanupUnconfirmed(message).into()
-        } else {
-            maka_agent_facts::tools::ToolError::Persistence(message).into()
-        };
+    match inner.log.append(completion).await {
+        Ok(sequence) => finalizer.receipt_terminal(completion, sequence),
+        Err(flush) => {
+            let message = format!("{error}; model completion could not be persisted: {flush}");
+            return if error.is_cleanup_unconfirmed() {
+                maka_agent_facts::tools::ToolError::CleanupUnconfirmed(message).into()
+            } else {
+                maka_agent_facts::tools::ToolError::Persistence(message).into()
+            };
+        }
     }
     error
 }
@@ -615,9 +621,9 @@ async fn receive(
     retry: &mut Option<PreparedPrompt>,
 ) -> Result<(), RunError> {
     use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
-    use maka_agent_facts::tools::ToolError;
     let tool_cancellation = cancellation.child_token();
     let mut running = FuturesUnordered::new();
+    let mut preparing = FuturesUnordered::new();
     let mut retired_prompt = None;
     let binding = finalizer.snapshot().binding.clone();
     let result: Result<_, RunError> = async {
@@ -625,6 +631,11 @@ async fn receive(
             tokio::select! {
                 biased;
                 result = running.next(), if !running.is_empty() => { tool_result(result.unwrap())?; }
+                prepared = preparing.next(), if !preparing.is_empty() => {
+                    let prepared: maka_tools::PreparedCall<'_> = prepared.expect("nonempty preparation set")?;
+                    let published = catch_tool(prepared.publish(&[])).await?;
+                    running.push(catch_tool(published.completion).boxed());
+                }
                 event = stream.next() => {
                     let Some(event) = event else { break; };
                     let observations = ready_observations(writer, event, || {
@@ -636,41 +647,50 @@ async fn receive(
                             step_id: binding.step_id.clone(), event: event.clone(),
                         }))
                     }).collect::<Result<Vec<_>, _>>()?;
+                    let writes: Arc<[EventWrite]> = writes.into();
+                    let latest = writer.snapshot();
+                    inner.attempts.publish(finalizer, latest.clone());
                     if !writes.is_empty() {
-                        let sequences = inner.log.append_batch(&writes).await?;
-                        for (write, sequence) in writes.iter().zip(sequences) {
-                            if let Fact::ModelObserved { event: ModelObservation::Part(part), .. } = &write.event().fact {
-                                writer.recorded(PartReceipt {
-                                    part: RecordedPartRef { event_id: write.event().id.clone(), ordinal: part.ordinal },
-                                    sequence,
-                                });
-                            } else {
-                                writer.fenced(sequence);
-                            }
-                        }
+                        finalizer.freeze_prefix(latest, writes.clone());
                     }
-                    // The worker consumed ingress and any canonical writes physically settled.
-                    drop(observations.reservations);
-                    inner.attempts.publish(finalizer, writer.snapshot());
-                    let accepted_item = observations.events.iter().any(|event| matches!(event, ModelObservation::Part(_)));
-                    if tools.is_some() && accepted_item {
-                        *progressed = true;
-                        if retired_prompt.is_none() {
-                            retired_prompt = retry.take();
-                        }
-                    }
-                    // Complete items have their real canonical receipt before local dispatch.
-                    for event in observations.events {
+                    // Admit the complete batch in arrival order before polling preparation.
+                    for event in &observations.events {
                         if let ModelObservation::Part(record) = event
                             && let ModelPart::ToolCall { call } = record.part.as_ref()
                             && !call.provider_executed
                             && let Some(tools) = tools.as_mut()
                         {
-                            let future = tools.dispatch(call.clone(), None, tool_cancellation.clone());
-                            running.push(async move {
-                                std::panic::AssertUnwindSafe(future).catch_unwind().await
-                                    .unwrap_or_else(|_| Err(ToolError::CleanupUnconfirmed("tool panicked".into())))
-                            });
+                            preparing.push(catch_tool(tools.prepare(call.clone(), tool_cancellation.clone())).boxed());
+                        }
+                    }
+                    // One natural poll: a pending preparation never holds back model facts.
+                    let prepared = if preparing.is_empty() {
+                        None
+                    } else {
+                        preparing.next().now_or_never().flatten()
+                    };
+                    if let Some(prepared) = prepared {
+                        let prepared = prepared?;
+                        let published = catch_tool(prepared.publish(&writes)).await?;
+                        record_prefix(writer, &writes, &published.prefix_sequences);
+                        if !writes.is_empty() {
+                            finalizer.receipt_prefix(&writes, writer.snapshot());
+                        }
+                        inner.attempts.publish(finalizer, writer.snapshot());
+                        // The receipt authorizes completion even when the ready model tail failed.
+                        running.push(catch_tool(published.completion).boxed());
+                    } else if !writes.is_empty() {
+                        let sequences = inner.log.append_batch(&writes).await?;
+                        record_prefix(writer, &writes, &sequences);
+                        finalizer.receipt_prefix(&writes, writer.snapshot());
+                        inner.attempts.publish(finalizer, writer.snapshot());
+                    }
+                    drop(observations.reservations);
+                    let accepted_item = observations.events.iter().any(|event| matches!(event, ModelObservation::Part(_)));
+                    if tools.is_some() && accepted_item {
+                        *progressed = true;
+                        if retired_prompt.is_none() {
+                            retired_prompt = retry.take();
                         }
                     }
                     if let Some(error) = observations.error {
@@ -687,11 +707,34 @@ async fn receive(
         tool_cancellation.cancel();
     }
     let mut cleanup = Ok(());
-    while let Some(result) = running.next().await {
-        if let Err(error) = tool_result(result) {
-            tool_cancellation.cancel();
-            if cleanup.is_ok() {
-                cleanup = Err(error);
+    if finalizer.prefix().is_some()
+        || matches!(&result, Err(error) if !matches!(error, RunError::Model(_)))
+    {
+        // An uncertain publication must never be repeated as another T1.
+        preparing.clear();
+    }
+    while !preparing.is_empty() || !running.is_empty() {
+        tokio::select! {
+            prepared = preparing.next(), if !preparing.is_empty() => {
+                let published = match prepared.expect("nonempty preparation set") {
+                    Ok(prepared) => catch_tool(prepared.publish(&[])).await,
+                    Err(error) => Err(error),
+                };
+                match published {
+                    Ok(published) => running.push(catch_tool(published.completion).boxed()),
+                    Err(error) => {
+                        tool_cancellation.cancel();
+                        preparing.clear();
+                        if cleanup.is_ok() { cleanup = Err(error.into()); }
+                    }
+                }
+            }
+            result = running.next(), if !running.is_empty() => {
+                if let Err(error) = tool_result(result.expect("nonempty completion set")) {
+                    tool_cancellation.cancel();
+                    preparing.clear();
+                    if cleanup.is_ok() { cleanup = Err(error); }
+                }
             }
         }
     }
@@ -706,6 +749,44 @@ async fn receive(
         result = additional_failure(result, error);
     }
     result
+}
+
+async fn catch_tool<T>(
+    future: impl std::future::Future<Output = Result<T, maka_agent_facts::tools::ToolError>>,
+) -> Result<T, maka_agent_facts::tools::ToolError> {
+    use futures_util::FutureExt;
+    std::panic::AssertUnwindSafe(future)
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|_| {
+            Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(
+                "tool panicked".into(),
+            ))
+        })
+}
+
+fn record_prefix(
+    writer: &mut AttemptWriter,
+    writes: &[maka_agent_facts::event::EventWrite],
+    sequences: &[u64],
+) {
+    for (write, &sequence) in writes.iter().zip(sequences) {
+        if let Fact::ModelObserved {
+            event: ModelObservation::Part(part),
+            ..
+        } = &write.event().fact
+        {
+            writer.recorded(PartReceipt {
+                part: RecordedPartRef {
+                    event_id: write.event().id.clone(),
+                    ordinal: part.ordinal,
+                },
+                sequence,
+            });
+        } else {
+            writer.fenced(sequence);
+        }
+    }
 }
 
 pub(super) fn additional_failure<T>(
@@ -808,15 +889,7 @@ async fn finish(
             let cut = writer.snapshot();
             drop(writer);
             inner.attempts.publish(finalizer, cut.clone());
-            let publication = interruption(&cut, &error, finalizer.item_acceptance)?;
-            let publication = match finalizer.prepare(publication) {
-                crate::preview::PublicationSelection::New(publication)
-                | crate::preview::PublicationSelection::Existing(publication) => publication,
-            };
-            return Err(match inner.log.append(&publication).await {
-                Ok(_) => error,
-                Err(seal) => seal_failure(error, seal),
-            });
+            return Err(seal_finalizer(inner, finalizer, error).await);
         }
     };
     drop(writer);
@@ -836,8 +909,9 @@ async fn finish(
                 else {
                     return Err(crate::cleanup::unconfirmed());
                 };
-                if let Err(seal) = inner.log.append(&publication).await {
-                    return Err(seal_failure(error, seal));
+                match inner.log.append(&publication).await {
+                    Ok(sequence) => finalizer.receipt_terminal(&publication, sequence),
+                    Err(seal) => return Err(seal_failure(error, seal)),
                 }
                 if cancellation.is_cancelled() {
                     return Err(RunError::Cancelled);
@@ -898,14 +972,16 @@ async fn finish(
         }
     }
     if !defer_completion {
-        inner.log.append_batch(&writes).await?;
+        let sequences = inner.log.append_batch(&writes).await?;
+        finalizer.receipt_terminal(&completion, sequences[0]);
     }
     if incomplete {
         return Err(RunError::ModelIncomplete);
     }
     if cancellation.is_cancelled() {
         if defer_completion {
-            inner.log.append_batch(&writes).await?;
+            let sequences = inner.log.append_batch(&writes).await?;
+            finalizer.receipt_terminal(&completion, sequences[0]);
         }
         return Err(RunError::Cancelled);
     }
@@ -922,9 +998,9 @@ async fn finish(
     };
     if let Some(tools) = completion_tools {
         if let Err(error) = close_retry(retry).await {
-            return Err(preserve_completion(inner, &completion, error).await);
+            return Err(preserve_completion(inner, &completion, finalizer, error).await);
         }
-        use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
+        use futures_util::{StreamExt, stream::FuturesUnordered};
         let mut step = tools.clone().into_step(step_id);
         let tool_cancellation = cancellation.child_token();
         let mut running = FuturesUnordered::new();
@@ -932,20 +1008,14 @@ async fn finish(
             if let ModelPart::ToolCall { call } = record.part.as_ref()
                 && !call.provider_executed
             {
-                let future = step.dispatch(
-                    call.clone(),
-                    Some(completion.clone()),
-                    tool_cancellation.clone(),
-                );
+                let future = step.prepare(call.clone(), tool_cancellation.clone());
+                let completion = completion.clone();
                 running.push(async move {
-                    std::panic::AssertUnwindSafe(future)
-                        .catch_unwind()
-                        .await
-                        .unwrap_or_else(|_| {
-                            Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(
-                                "tool panicked".into(),
-                            ))
-                        })
+                    let prepared = catch_tool(future).await?;
+                    let published =
+                        catch_tool(prepared.publish(std::slice::from_ref(&completion))).await?;
+                    finalizer.receipt_terminal(&completion, published.prefix_sequences[0]);
+                    catch_tool(published.completion).await
                 });
             }
         }
@@ -960,7 +1030,7 @@ async fn finish(
             }
         }
         if let Err(error) = cleanup {
-            return Err(preserve_completion(inner, &completion, error).await);
+            return Err(preserve_completion(inner, &completion, finalizer, error).await);
         }
     } else {
         drop(output);
@@ -1016,11 +1086,57 @@ fn seal_failure(error: RunError, seal: impl std::fmt::Display) -> RunError {
     }
 }
 
+async fn confirm_prefix<F, Fut>(
+    finalizer: &crate::preview::Finalizer,
+    append: F,
+) -> Result<
+    Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>,
+    maka_agent_facts::event::CommitError,
+>
+where
+    F: FnOnce(Arc<[maka_agent_facts::event::EventWrite]>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u64>, maka_agent_facts::event::CommitError>>,
+{
+    let Some((cut, writes)) = finalizer.prefix() else {
+        return Ok(None);
+    };
+    let sequences = append(writes.clone()).await?;
+    let cut = Arc::new(cut.with_prefix_receipts(&writes, &sequences));
+    finalizer.receipt_prefix(&writes, cut.clone());
+    Ok(Some(cut))
+}
+
 async fn seal_finalizer(
     inner: &RunContext,
     finalizer: &crate::preview::Finalizer,
     error: RunError,
 ) -> RunError {
+    seal_finalizer_with(inner, finalizer, error, |writes| async move {
+        inner.log.append_batch(&writes).await
+    })
+    .await
+}
+
+async fn seal_finalizer_with<F, Fut>(
+    inner: &RunContext,
+    finalizer: &crate::preview::Finalizer,
+    error: RunError,
+    append: F,
+) -> RunError
+where
+    F: FnOnce(Arc<[maka_agent_facts::event::EventWrite]>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u64>, maka_agent_facts::event::CommitError>>,
+{
+    match confirm_prefix(finalizer, append).await {
+        Ok(Some(cut)) => inner.attempts.publish(finalizer, cut),
+        Ok(None) => {}
+        Err(seal) => {
+            return maka_agent_facts::tools::ToolError::CleanupUnconfirmed(format!(
+                "{error}; model prefix could not be confirmed: {seal}"
+            ))
+            .into();
+        }
+    }
     let cut = finalizer.snapshot();
     let publication = match finalizer.publication() {
         Some(publication) => Ok(publication),
@@ -1031,9 +1147,15 @@ async fn seal_finalizer(
             let publication = match finalizer.prepare(publication) {
                 crate::preview::PublicationSelection::New(publication)
                 | crate::preview::PublicationSelection::Existing(publication) => publication,
+                crate::preview::PublicationSelection::PrefixPending => {
+                    return crate::cleanup::unconfirmed();
+                }
             };
             match inner.log.append(&publication).await {
-                Ok(_) => error,
+                Ok(sequence) => {
+                    finalizer.receipt_terminal(&publication, sequence);
+                    error
+                }
                 Err(seal) => seal_failure(error, seal),
             }
         }
@@ -1055,7 +1177,9 @@ pub(super) async fn seal_unfinished_attempts<T>(
     for finalizer in unfinished {
         let cut = finalizer.snapshot();
         error = seal_finalizer(inner, &finalizer, error).await;
-        inner.attempts.remove(&cut.binding.step_id);
+        if finalizer.terminal_confirmed() {
+            inner.attempts.remove(&cut.binding.step_id);
+        }
     }
     Err(error)
 }
@@ -1249,3 +1373,6 @@ mod tests {
         assert_eq!(ready.next(), Some(started("must-not-be-read")));
     }
 }
+
+#[cfg(test)]
+mod publication_tests;

@@ -144,6 +144,70 @@ impl std::fmt::Debug for AttemptCut {
     }
 }
 impl AttemptCut {
+    /// Apply actual canonical receipts without copying immutable part bodies.
+    pub fn with_prefix_receipts(
+        &self,
+        writes: &[crate::event::EventWrite],
+        sequences: &[u64],
+    ) -> Self {
+        let mut cut = self.clone();
+        let mut receipts = HashMap::new();
+        let mut tool_ids = std::collections::HashSet::new();
+        for (write, &sequence) in writes.iter().zip(sequences) {
+            cut.depends_on = cut.depends_on.max(sequence);
+            let crate::event::Fact::ModelObserved {
+                event: ModelObservation::Part(part),
+                ..
+            } = &write.event().fact
+            else {
+                continue;
+            };
+            receipts.insert(
+                part.ordinal,
+                PartReceipt {
+                    part: RecordedPartRef {
+                        event_id: write.event().id.clone(),
+                        ordinal: part.ordinal,
+                    },
+                    sequence,
+                },
+            );
+            if let ModelPart::ToolCall { call } = part.part.as_ref() {
+                tool_ids.insert(call.id.as_str());
+            }
+        }
+        let mut parts = cut.parts.into_vec();
+        parts.retain_mut(|preview| match preview {
+            PreviewPart::Text {
+                ordinal, recorded, ..
+            } => {
+                if let Some(receipt) = receipts.get(ordinal) {
+                    *recorded = Some(receipt.clone());
+                }
+                true
+            }
+            PreviewPart::ToolInput(input) => !tool_ids.contains(input.id.as_str()),
+        });
+        cut.parts = parts.into_boxed_slice();
+        if let Some(partial) = &mut cut.partial {
+            for partial_part in &mut partial.parts {
+                if let PartialText::Frozen(CompletionPart::Own(record)) = partial_part
+                    && let Some(receipt) = receipts.get(&record.ordinal)
+                {
+                    *partial_part = PartialText::Frozen(CompletionPart::Ref(receipt.part.clone()));
+                }
+            }
+            partial
+                .tool_inputs
+                .retain(|input| !tool_ids.contains(input.id.as_str()));
+        }
+        cut.revision = cut
+            .revision
+            .checked_add(1)
+            .expect("model attempt revision overflow");
+        cut
+    }
+
     /// Only failure sealing materializes private options; ordinary preview does not.
     pub fn partial(&self) -> Option<ModelPartial> {
         self.partial.as_ref().map(PartialSnapshot::materialize)
@@ -361,7 +425,10 @@ impl AttemptWriter {
         }
         if let Some(metadata) = metadata
             && (self.binding.purpose == ModelPurpose::Main
-                || matches!(metadata, ModelObservation::ResponseMetadata { .. } | ModelObservation::Finished { .. }))
+                || matches!(
+                    metadata,
+                    ModelObservation::ResponseMetadata { .. } | ModelObservation::Finished { .. }
+                ))
         {
             observations.push(metadata);
         }

@@ -17,13 +17,13 @@
  * under the License.
  */
 
-use maka_agent_facts::event::InvocationOutcome;
+use maka_agent_facts::event::{Fact, InvocationOutcome};
 use maka_agent_facts::model::{ModelEvent, TextKind};
 use maka_event_log::recovery::recover_invocations as recover;
 use maka_event_log::{EventLog, StoreError};
 
 use crate::support::recovery;
-use recovery::{invocation, opening};
+use recovery::{append, invocation, opening, request};
 
 #[tokio::test]
 async fn recovery_excludes_large_stream_history_and_validates_execution_identity() {
@@ -100,7 +100,7 @@ async fn recovery_excludes_large_stream_history_and_validates_execution_identity
 
 #[tokio::test]
 async fn recovery_reads_all_pending_calls_and_large_original_arguments() {
-    use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelStep, ModelToolCall};
+    use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelToolCall};
     let directory = tempfile::tempdir().unwrap();
     let log = EventLog::open(&directory.path().join("events.sqlite"))
         .await
@@ -120,15 +120,12 @@ async fn recovery_reads_all_pending_calls_and_large_original_arguments() {
         &log,
         Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
+            output: crate::support::model_records::completion(
+                invocation(),
+                "step",
                 parts,
-                finish_reason: ModelFinishReason::ToolCalls,
-                usage: Default::default(),
-                provider_options: None,
-                response_id: None,
-                model: None,
-                timestamp: None,
-            },
+                ModelFinishReason::ToolCalls,
+            ),
         },
     )
     .await;

@@ -22,9 +22,7 @@ use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelFinishReason;
-use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
+use maka_agent_facts::model::recorded::{CompletionPart, ModelObservation, RecordedPartRef};
 use maka_agent_facts::tool_call::ToolOrigin;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
@@ -76,6 +74,22 @@ async fn invoke_result(
     input: Value,
 ) -> Result<Value, maka_agent_facts::tools::ToolError> {
     let call = fixture::call(step, name, input);
+    let mut output = fixture::completion(invocation, step, std::slice::from_ref(&call));
+    let CompletionPart::Own(part) = &output.parts[0] else {
+        panic!("unpublished fixture part must own its body");
+    };
+    let observation = EventWrite::plain(RuntimeEvent::new(
+        invocation.clone(),
+        Fact::ModelObserved {
+            step_id: step.into(),
+            event: ModelObservation::Part(part.clone()),
+        },
+    ))
+    .unwrap();
+    output.parts[0] = CompletionPart::Ref(RecordedPartRef {
+        event_id: observation.event().id.clone(),
+        ordinal: part.ordinal,
+    });
     log.append_batch(&[
         EventWrite::plain(RuntimeEvent::new(
             invocation.clone(),
@@ -96,27 +110,12 @@ async fn invoke_result(
             },
         ))
         .unwrap(),
-        EventWrite::plain(RuntimeEvent::new(
-            invocation.clone(),
-            Fact::ModelObserved {
-                step_id: step.into(),
-                event: maka_agent_facts::model::ModelEvent::ToolCall(call.clone()),
-            },
-        ))
-        .unwrap(),
+        observation,
         EventWrite::plain(RuntimeEvent::new(
             invocation.clone(),
             Fact::ModelCompleted {
                 step_id: step.into(),
-                output: ModelStep {
-                    parts: vec![ModelPart::ToolCall { call: call.clone() }],
-                    finish_reason: ModelFinishReason::ToolCalls,
-                    usage: Default::default(),
-                    provider_options: None,
-                    response_id: None,
-                    model: None,
-                    timestamp: None,
-                },
+                output,
             },
         ))
         .unwrap(),
@@ -127,7 +126,11 @@ async fn invoke_result(
         .await
         .unwrap()
         .into_step(step)
-        .invoke(&call, None, CancellationToken::new())
+        .prepare(call, CancellationToken::new())
+        .await?
+        .publish(&[])
+        .await?
+        .completion
         .await
 }
 

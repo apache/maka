@@ -239,12 +239,25 @@ async fn discovery_loads_complete_schemas_without_running_effects() {
         );
         let mut step = request.into_step(&invocation.invocation_id);
         assert!(
-            step.invoke(&invalid, None, CancellationToken::new())
-                .await
-                .is_err()
+            async {
+                step.prepare(invalid.clone(), CancellationToken::new())
+                    .await?
+                    .publish(&[])
+                    .await?
+                    .completion
+                    .await
+            }
+            .await
+            .is_err()
         );
         let result = step
-            .invoke(&search, None, CancellationToken::new())
+            .prepare(search.clone(), CancellationToken::new())
+            .await
+            .unwrap()
+            .publish(&[])
+            .await
+            .unwrap()
+            .completion
             .await
             .unwrap();
         assert_eq!(result["activated"], json!(["direct", "echo"]));
@@ -374,13 +387,17 @@ async fn discovery_state_failure_after_successful_t2_is_fatal() {
     }
     impl EventSink for RetireAfterSettlement {
         fn commit(self: Arc<Self>, write: EventWrite) -> CommitFuture {
-            self.commit_with_prefix(&[], write)
+            Box::pin(async move {
+                self.commit_with_prefix(&[], write)
+                    .await
+                    .map(|receipt| receipt.last_sequence)
+            })
         }
         fn commit_with_prefix(
             self: Arc<Self>,
             prefix: &[EventWrite],
             write: EventWrite,
-        ) -> CommitFuture {
+        ) -> maka_agent_facts::event::PrefixCommitFuture {
             let prefix = prefix.to_vec();
             Box::pin(async move {
                 let settled = matches!(write.event().fact, Fact::ToolSettled { .. });
@@ -433,7 +450,15 @@ async fn discovery_state_failure_after_successful_t2_is_fatal() {
         .unwrap()
         .into_step(&invocation.invocation_id);
     assert!(matches!(
-        step.invoke(&search, None, CancellationToken::new()).await,
+        async {
+            step.prepare(search.clone(), CancellationToken::new())
+                .await?
+                .publish(&[])
+                .await?
+                .completion
+                .await
+        }
+        .await,
         Err(ToolError::Persistence(_))
     ));
     assert_eq!(sink.settlements.load(Ordering::SeqCst), 1);
