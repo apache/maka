@@ -21,57 +21,6 @@ use super::*;
 use maka_app_client::Client;
 use maka_capabilities::call::Attachments;
 
-async fn activate(view: &mut AppView, label: &str) {
-    tab_to_label(view, label).await;
-    view.handle_event(Event::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
-}
-
-async fn fill(view: &mut AppView, label: &str, value: &str) {
-    tab_to_label(view, label).await;
-    shortcut(view, 'a');
-    view.handle_event(Event::Paste(value.into()));
-    let (done, committed) = tokio::sync::oneshot::channel();
-    view.control()
-        .unwrap()
-        .advance_clock(Duration::ZERO, move || {
-            let _ = done.send(());
-        });
-    tokio::time::timeout(Duration::from_secs(20), committed)
-        .await
-        .unwrap()
-        .unwrap();
-}
-
-async fn wait_plugin_input_focus(view: &mut AppView, label: &str) {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            support::tick(view);
-            if view.surface().input_context().is_some_and(|input| {
-                view.accessibility_snapshot()
-                    .iter()
-                    .any(|node| node.id == input.node && node.focused && node.label == label)
-            }) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| {
-        panic!(
-            "plugin Input {label:?} did not receive focus; app error: {:?}; focused: {:?}; input: {:?}; AX: {:#?}\n{}",
-            view.last_error(),
-            view.surface().focused(),
-            view.surface().input_context(),
-            view.accessibility_snapshot(),
-            view.snapshot(),
-        )
-    });
-}
-
 async fn mutate(client: &Client, method: &str, input: Value) -> Value {
     let mutation = client
         .settings_mutation(
@@ -187,7 +136,7 @@ async fn wheel_until(view: &mut AppView, label: &str, direction: MouseEventKind,
 async fn plugin_settings_use_real_host_inventory_cas_configuration_and_enablement_without_mixing_the_draft()
  {
     tokio::time::timeout(Duration::from_secs(90), async {
-        let fixture = Fixture::plugin_settings().await;
+        let fixture = Fixture::configured(support::Options { plugins: true, ..Default::default() }).await;
         let client = fixture.client().await;
         client.save_draft("agent", &fixture.session, EDITOR, None, "PLUGIN_SETTINGS_ORIGINAL_DRAFT".into()).await.unwrap();
         let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
@@ -239,7 +188,7 @@ async fn plugin_settings_use_real_host_inventory_cas_configuration_and_enablemen
         assert_eq!(target(&client).await.0, roots_source, "leaving the enum editor must not save its selection");
 
         activate(&mut view, "Edit plugin setting locale").await;
-        wait_plugin_input_focus(&mut view, "Plugin value locale").await;
+        wait_focused_input(&mut view, "Plugin value locale").await;
         fill(&mut view, "Plugin value locale", "zh-CN").await;
         let (source, original) = target(&client).await;
         let external = mutate(&client, "configure", json!({
@@ -254,7 +203,7 @@ async fn plugin_settings_use_real_host_inventory_cas_configuration_and_enablemen
         support::click_button(&mut view, "Refresh plugin configuration").await;
         wheel_until(&mut view, "Edit plugin setting locale", MouseEventKind::ScrollDown, true).await;
         activate(&mut view, "Edit plugin setting locale").await;
-        wait_plugin_input_focus(&mut view, "Plugin value locale").await;
+        wait_focused_input(&mut view, "Plugin value locale").await;
         fill(&mut view, "Plugin value locale", "zh-CN").await;
         activate(&mut view, "Save Host plugin setting").await;
         wait_enabled_node(&mut view, "Enable Host plugin").await;

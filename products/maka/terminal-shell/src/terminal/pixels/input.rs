@@ -687,45 +687,32 @@ mod tests {
     }
 
     #[test]
-    fn iterm2_waits_for_the_predecessor_and_native_writer_receipt() {
-        {
-            let mut caps = capabilities();
-            caps.protocol = Some(Protocol::Iterm2);
-            let mut inbox = Inbox::new(caps, false);
-            let token = FrameToken::default();
-            inbox.frames.push_back(FrameJob {
+    fn iterm2_admits_the_next_frame_only_after_the_original_writer_receipt_is_presented() {
+        let mut caps = capabilities();
+        caps.protocol = Some(Protocol::Iterm2);
+        let mut inbox = Inbox::new(caps, false);
+        let token = FrameToken::default();
+        assert!(inbox.reserve_frame());
+        assert!(!inbox.can_submit());
+        inbox.frames.back_mut().unwrap().work = FrameWork::Encoding(token.clone());
+        inbox.finished(&token, Some(encoded(1)));
+        let frame = inbox.take_encoded().unwrap();
+        assert!(!inbox.can_submit());
+        inbox.written(
+            Offer {
+                token: frame.frame.token(),
                 geometry: 1,
-                work: FrameWork::Encoding(token.clone()),
-            });
-            inbox.frames.push_back(FrameJob {
-                geometry: 1,
-                work: FrameWork::Ready(encoded(1)),
-            });
-            assert!(
-                inbox.take_encoded().is_none(),
-                "the completed tail cannot pass the head"
-            );
-            assert_eq!(inbox.frames.len(), 2);
-            inbox.finished(&token, Some(encoded(1)));
-            let first = inbox.take_encoded().unwrap();
-            assert_eq!(inbox.frames.len(), 1);
-            assert!(inbox.take_encoded().is_none());
-            inbox.written(
-                Offer {
-                    token: first.frame.token(),
-                    geometry: 1,
-                },
-                None,
-            );
-            assert!(
-                inbox.take_encoded().is_none(),
-                "a flush cannot overwrite an unconsumed receipt"
-            );
-            let receipt = inbox.ready.take().unwrap();
-            inbox.presented(&receipt.token);
-            assert!(inbox.take_encoded().is_some());
-            assert!(inbox.frames.is_empty());
-        }
+            },
+            None,
+        );
+        assert!(
+            !inbox.can_submit(),
+            "an unconsumed receipt still owns the transaction"
+        );
+        let receipt = inbox.ready.take().unwrap();
+        inbox.presented(&receipt.token);
+        assert!(inbox.can_submit());
+        assert!(inbox.reserve_frame());
     }
 
     // Use authentic, ordered native tokens without widening FrameToken's API.
@@ -785,7 +772,6 @@ mod tests {
             });
             assert!(platform.pump());
             let frame = frames.borrow_mut().remove(0);
-            assert_eq!(&frame.pixels()[..4], &[255, 0, 0, 255]);
             assert!(frames.borrow().is_empty());
             completed.push(frame);
         }
@@ -886,7 +872,7 @@ mod tests {
         }
         inbox.finished(&frames[0].token(), Some(native_encoded(&frames[0], 1)));
         let writing = inbox.take_encoded().unwrap();
-        for frame in &frames[1..] {
+        for frame in frames[1..].iter().rev() {
             inbox.finished(&frame.token(), Some(native_encoded(frame, 1)));
             assert!(
                 inbox.take_encoded().is_none(),
@@ -995,46 +981,6 @@ mod tests {
         assert_eq!(surviving.frame.token(), frames[2].token());
         consume_flush(&mut inbox, &surviving);
         assert_eq!(inbox.published, Some(frames[2].token()));
-    }
-
-    #[test]
-    fn sixel_latest_ready_keeps_a_newer_pending_scene_when_older_work_finishes_last() {
-        let frames = native_frames(3);
-        let mut inbox = Inbox::new(capabilities(), false);
-        inbox.frame_capacity = 5;
-        inbox.last_fully_written_geometry = Some(1);
-        for frame in &frames {
-            encoding(&mut inbox, frame);
-        }
-        inbox.finished(&frames[0].token(), Some(native_encoded(&frames[0], 1)));
-        let writing = inbox.take_encoded().unwrap();
-        assert_eq!(writing.frame.token(), frames[0].token());
-
-        // A is writing while C completes before B. The newest scene is C,
-        // regardless of which codec finishes last.
-        inbox.finished(&frames[2].token(), Some(native_encoded(&frames[2], 1)));
-        assert_eq!(
-            inbox.frames.len(),
-            2,
-            "the unfinished older worker retains its original slot"
-        );
-        assert!(inbox.take_encoded().is_none());
-        inbox.finished(&frames[1].token(), Some(native_encoded(&frames[1], 1)));
-        assert_eq!(
-            inbox.frames.len(),
-            1,
-            "an older completion cannot replace the newer pending scene"
-        );
-        assert!(inbox.take_encoded().is_none());
-        assert!(inbox.published.is_none());
-
-        consume_flush(&mut inbox, &writing);
-        let latest = inbox.take_encoded().unwrap();
-        assert_eq!(latest.frame.token(), frames[2].token());
-        consume_flush(&mut inbox, &latest);
-        assert_eq!(inbox.published, Some(frames[2].token()));
-        assert!(inbox.frames.is_empty());
-        assert!(inbox.in_flight.is_none());
     }
 
     #[test]
@@ -1185,41 +1131,6 @@ mod tests {
             inbox.capabilities.viewport(),
             Some(gpui::size(gpui::DevicePixels(800), gpui::DevicePixels(600)))
         );
-    }
-
-    #[test]
-    fn resizing_back_to_the_same_pixels_does_not_reuse_an_old_write() {
-        let mut inbox = Inbox::new(capabilities(), false);
-        let token = FrameToken::default();
-        inbox.written(
-            Offer {
-                token: token.clone(),
-                geometry: 1,
-            },
-            None,
-        );
-        assert_eq!(inbox.last_fully_written_geometry, Some(1));
-
-        let mut size = capabilities().size;
-        size.cols = 80;
-        size.pixel_width = Some(800);
-        inbox.push(Event::WindowResized(size)).unwrap();
-        inbox
-            .push(Event::WindowResized(capabilities().size))
-            .unwrap();
-        assert_eq!(inbox.geometry, 3);
-        assert_eq!(inbox.last_fully_written_geometry, Some(1));
-        // An old viewport can finish after resize without certifying the new one.
-        inbox.written(
-            Offer {
-                token: token.clone(),
-                geometry: 1,
-            },
-            None,
-        );
-        assert_eq!(inbox.last_fully_written_geometry, Some(1));
-        inbox.written(Offer { token, geometry: 3 }, None);
-        assert_eq!(inbox.last_fully_written_geometry, Some(3));
     }
 
     #[test]

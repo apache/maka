@@ -258,7 +258,7 @@ pub fn prepare(request: Request<'_>, config: &Config) -> Result<Prepared> {
 
 /// Native streaming path: the prepass contains metadata/cache decisions only.
 /// `body.prompt` is an empty framing placeholder; the caller streams its system
-/// and message arrays with `prompt::streaming::Encoder` and the captured context.
+/// and message arrays with `prompt::prepared::Replay` and `prompt::prepared::Overlay`.
 pub fn prepare_streaming(
     request: Request<'_>,
     config: &Config,

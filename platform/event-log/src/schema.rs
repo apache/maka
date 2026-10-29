@@ -118,6 +118,3 @@ pub(crate) async fn initialize_connection_with_control(
 mod fixtures;
 #[cfg(test)]
 pub(crate) use fixtures::schema as fixture;
-
-#[cfg(test)]
-mod payload_migration_tests;

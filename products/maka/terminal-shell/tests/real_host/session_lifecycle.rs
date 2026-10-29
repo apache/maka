@@ -19,28 +19,11 @@
 
 use super::*;
 
-async fn activate(view: &mut AppView, label: &str) {
-    tab_to_label(view, label).await;
-    view.handle_event(Event::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
-}
-
 async fn fill_title(view: &mut AppView, title: &str) {
     wait_focused_input(view, "Conversation title").await;
     shortcut(view, 'a');
     view.handle_event(Event::Paste(title.into()));
-    let (done, committed) = tokio::sync::oneshot::channel();
-    view.control()
-        .unwrap()
-        .advance_clock(Duration::ZERO, move || {
-            let _ = done.send(());
-        });
-    tokio::time::timeout(Duration::from_secs(20), committed)
-        .await
-        .unwrap()
-        .unwrap();
+    commit_native_events(view).await;
 }
 
 async fn actions(view: &mut AppView, title: &str) {

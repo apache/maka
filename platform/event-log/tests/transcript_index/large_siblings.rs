@@ -20,6 +20,7 @@
 use super::*;
 use maka_agent_facts::model::{ModelFinishReason, ModelToolCall};
 use maka_agent_ports::session::history::{SourceField, SourcePosition};
+use maka_event_log::transcript::{TranscriptDirection, TranscriptRead};
 use serde_json::json;
 
 const SESSION: &str = "large-siblings";
@@ -92,16 +93,16 @@ fn fingerprints(db: &Connection) -> Vec<(i64, i64, String, i64)> {
 }
 
 #[tokio::test]
-async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_and_rebuild() {
+async fn completion_fanout_keeps_large_original_sources_usage_and_exact_positions_after_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("large-siblings.sqlite");
     let log = EventLog::open(&path).await.unwrap();
     log.create_session(SESSION, "create", &json!({}), 1)
         .await
         .unwrap();
-    log.append(&event(SESSION, opening())).await.unwrap();
+    let opening = log.append(&event(SESSION, opening())).await.unwrap();
     log.append(&event(SESSION, request(SESSION))).await.unwrap();
-    let calls: Vec<_> = (0..128)
+    let calls: Vec<_> = (0..256)
         .map(|index| ModelToolCall {
             id: format!("call-{index}"),
             name: if index < 2 { "wait" } else { "Read" }.into(),
@@ -110,14 +111,16 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
             provider_executed: false,
         })
         .collect();
-    for call in &calls {
-        log.append(&event(
-            SESSION,
-            observe(SESSION, ModelEvent::ToolCall(call.clone())),
-        ))
-        .await
-        .unwrap();
-    }
+    let observed = calls
+        .iter()
+        .map(|call| {
+            event(
+                SESSION,
+                observe(SESSION, ModelEvent::ToolCall(call.clone())),
+            )
+        })
+        .collect::<Vec<_>>();
+    let old_fence = *log.append_batch(&observed).await.unwrap().last().unwrap();
     let completion = log
         .append(&event(
             SESSION,
@@ -143,12 +146,10 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
         ))
         .await
         .unwrap();
-    // This completed canonical step is valid even though its siblings together
-    // exceed the old whole-step evidence and retained-presentation budgets.
     crate::transcript_cache::materialize_all_rows(&log, SESSION, completion)
         .await
         .unwrap();
-    for index in [0, 127] {
+    for index in [0, 255] {
         source(
             &log,
             completion,
@@ -162,23 +163,25 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
         )
         .await;
     }
-    let operation = format!("step-{SESSION}:call-127");
-    log.append(&event(
-        SESSION,
-        Fact::ToolDispatched {
-            presentation: None,
-            title: None,
-            operation_id: operation.clone(),
-            call: maka_agent_facts::tool_call::ToolCallIdentity::provider(
-                format!("step-{SESSION}"),
-                "call-127".into(),
-            ),
-            name: "Read".into(),
-            input: input(127),
-        },
-    ))
-    .await
-    .unwrap();
+    let operation = format!("step-{SESSION}:call-255");
+    let neighboring = log
+        .append(&event(
+            SESSION,
+            Fact::ToolDispatched {
+                presentation: None,
+                title: None,
+                operation_id: operation.clone(),
+                call: maka_agent_facts::tool_call::ToolCallIdentity::provider(
+                    format!("step-{SESSION}"),
+                    "call-255".into(),
+                ),
+                name: "Read".into(),
+                input: input(255),
+            },
+        ))
+        .await
+        .unwrap();
+    assert_eq!(neighboring, completion + 1);
     let template = event(
         SESSION,
         Fact::InvocationEnded {
@@ -205,13 +208,168 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
             .iter()
             .filter(|row| row.0 == i64::try_from(completion).unwrap())
             .count(),
-        129
+        257
     );
-    let check = async |log: &EventLog| {
+    let usage = crate::test_store::inspect_cache(&log, move |db| {
+        let payload: Vec<u8> = db.query_row(
+            "SELECT payload FROM temp.transcript_rows WHERE session_id=? AND source_sequence=? AND item_index=256",
+            (SESSION, completion), |row| row.get(0),
+        ).unwrap();
+        serde_json::from_slice::<Value>(&payload).unwrap()
+    }).await;
+    assert_eq!(usage["type"], "token_usage");
+    assert_eq!(usage["input"], 7);
+    assert_eq!(usage["output"], 11);
+    assert!(
+        original
+            .iter()
+            .any(|row| row.0 == i64::try_from(neighboring).unwrap() && row.1 == 0)
+    );
+    let old = log
+        .transcript_headers(
+            SESSION,
+            &TranscriptRead {
+                through: old_fence,
+                position: None,
+                direction: TranscriptDirection::Newer,
+                limit: 256,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(old.len(), 2);
+    assert!(
+        old.iter()
+            .all(|row| row.position.source_sequence <= old_fence)
+    );
+    let anchor = RowPosition {
+        source_sequence: completion,
+        item_index: 255,
+    };
+    for (fence, expected) in [
+        (
+            through,
+            [
+                anchor,
+                RowPosition {
+                    item_index: 254,
+                    ..anchor
+                },
+            ],
+        ),
+        (
+            old_fence,
+            [
+                RowPosition {
+                    source_sequence: opening,
+                    item_index: 1,
+                },
+                RowPosition {
+                    source_sequence: opening,
+                    item_index: 0,
+                },
+            ],
+        ),
+    ] {
+        let headers = log
+            .transcript_headers(
+                SESSION,
+                &TranscriptRead {
+                    through: fence,
+                    position: Some(anchor),
+                    direction: TranscriptDirection::Older,
+                    limit: 2,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            headers
+                .iter()
+                .map(|header| header.position)
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+    let page = log
+        .transcript_headers(
+            SESSION,
+            &TranscriptRead {
+                through,
+                position: Some(RowPosition {
+                    source_sequence: completion,
+                    item_index: 0,
+                }),
+                direction: TranscriptDirection::Newer,
+                limit: 256,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.len(), 256);
+    assert_eq!(page.last().unwrap().position, anchor);
+    let next = log
+        .transcript_headers(
+            SESSION,
+            &TranscriptRead {
+                through,
+                position: Some(RowPosition {
+                    item_index: 256,
+                    ..anchor
+                }),
+                direction: TranscriptDirection::Newer,
+                limit: 2,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        next.iter()
+            .map(|header| header.position)
+            .collect::<Vec<_>>(),
+        [
+            RowPosition {
+                item_index: 256,
+                ..anchor
+            },
+            RowPosition {
+                source_sequence: neighboring,
+                item_index: 0
+            },
+        ]
+    );
+    let search = log
+        .search_transcript(
+            SESSION,
+            maka_event_log::transcript::search::TranscriptSearch {
+                through,
+                after: Some(RowPosition {
+                    item_index: 257,
+                    ..anchor
+                }),
+                query: "literal".into(),
+                case_sensitive: true,
+                whole_word: false,
+                include_internal: false,
+                max_matches: 16,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(search.matches.len(), 1);
+    assert_eq!(
+        search.matches[0].position,
+        RowPosition {
+            source_sequence: result,
+            item_index: 0
+        }
+    );
+    {
+        let log = &log;
         use maka_agent_ports::session::history::{HistoryField, HistoryView, Page, Position};
         // These are real siblings from one completed canonical ModelStep. Event
-        // navigation would choose item zero instead of the requested item127.
-        for index in [0, 127] {
+        // navigation would choose item zero instead of the requested item255.
+        for index in [0, 255] {
             let position = RowPosition {
                 source_sequence: completion,
                 item_index: index,
@@ -352,7 +510,7 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
                 .is_err()
             );
         }
-        for index in [0, 127] {
+        for index in [0, 255] {
             let position = RowPosition {
                 source_sequence: completion,
                 item_index: index as u64,
@@ -373,7 +531,7 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
                 position,
                 SourceField::Arguments,
                 &expected,
-                index == 127,
+                index == 255,
             )
             .await;
         }
@@ -415,11 +573,10 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
             .unwrap(),
             RowPosition {
                 source_sequence: completion,
-                item_index: 127
+                item_index: 255
             }
         );
-    };
-    check(&log).await;
+    }
     crate::test_store::inspect_cache(&log, |db| {
         for table in ["temp.transcript_text", "temp.transcript_rows"] {
             db.execute(&format!("DELETE FROM {table}"), []).unwrap();
@@ -435,6 +592,14 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
         crate::test_store::inspect_cache(&reopened, fingerprints).await,
         original
     );
-    check(&reopened).await;
+    source(
+        &reopened,
+        through,
+        anchor,
+        SourceField::Arguments,
+        &serde_json::to_string(&input(255)).unwrap(),
+        true,
+    )
+    .await;
     reopened.close().await.unwrap();
 }

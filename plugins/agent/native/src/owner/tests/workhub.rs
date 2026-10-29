@@ -33,25 +33,69 @@ pub(super) async fn activate_workers(
 ) {
     activate_worker_mode(fixture, install, workers, granted, WorkerBehavior::Returned).await;
 }
-async fn activate_worker_mode(
-    fixture: &mut Fixture,
-    install: bool,
-    workers: bool,
-    granted: bool,
-    behavior: WorkerBehavior,
-) -> Arc<Owner> {
-    let external = matches!(behavior, WorkerBehavior::External);
-    let denied_query = match &behavior {
-        WorkerBehavior::DeniedQuery(method) => Some(*method),
-        _ => None,
-    };
-    let source = fixture.app.source().unwrap().clone();
-    fixture.app.shutdown().await.unwrap();
-    if install {
-        let (mut composition, mut packages) = input(&fixture.owner.settings);
-        if fixture
-            .owner
-            .settings
+pub(super) enum Setup {
+    Coordinator,
+    Worker {
+        behavior: WorkerBehavior,
+        granted: bool,
+    },
+}
+impl Setup {
+    pub(super) fn workers() -> Self {
+        Self::worker(WorkerBehavior::Returned)
+    }
+    fn worker(behavior: WorkerBehavior) -> Self {
+        Self::Worker {
+            behavior,
+            granted: true,
+        }
+    }
+    fn state(&self) -> (bool, bool, WorkerBehavior) {
+        match self {
+            Self::Coordinator => (false, false, WorkerBehavior::Returned),
+            Self::Worker { behavior, granted } => (true, *granted, behavior.clone()),
+        }
+    }
+    pub(super) fn composition(&self, settings: &Configuration) -> (Input, Vec<Package>) {
+        let (workers, _, behavior) = self.state();
+        let external = matches!(behavior, WorkerBehavior::External);
+        let mut provider = entry(true);
+        provider.configuration = hub::configuration_schema().into();
+        provider.implementation = Implementation::Native {
+            implementation: hub::IMPLEMENTATION.into(),
+        };
+        provider.exports.insert(
+            hub::EXPORT.into(),
+            Export {
+                contract: hub::contract(),
+                availability: Availability::Required,
+            },
+        );
+        let mut consumer = entry(false);
+        consumer.imports.insert(
+            hub::EXPORT.into(),
+            Import {
+                contract: hub::contract(),
+                cardinality: Cardinality::One,
+            },
+        );
+        if workers {
+            for entry in [&mut provider, &mut consumer] {
+                entry.imports.insert(
+                    "worker".into(),
+                    Import {
+                        contract: contract(),
+                        cardinality: Cardinality::One,
+                    },
+                );
+            }
+        }
+        let (mut composition, mut packages) = application_input(
+            settings,
+            application_package("agent", provider),
+            application_package("consumer", consumer),
+        );
+        if settings
             .tools
             .iter()
             .any(|tool| tool.import == "service" && tool.method == "execute")
@@ -69,14 +113,11 @@ async fn activate_worker_mode(
                 .values
                 .insert("sessionKind".into(), json!("workhub"));
         }
-        let worker_package = if workers {
-            let base = package(true);
-            let mut manifest = base.manifest().clone();
-            let mut manifest_application =
-                manifest.application.as_ref().unwrap().declaration().clone();
-            manifest.id = "worker".into();
+
+        if workers {
+            let mut entry = entry(true);
             if external {
-                manifest_application.host.as_mut().unwrap().imports.insert(
+                entry.imports.insert(
                     "executor".into(),
                     Import {
                         contract: maka_agent_api::executor::contract(),
@@ -90,25 +131,11 @@ async fn activate_worker_mode(
                     | WorkerBehavior::DeniedQuery(_)
                     | WorkerBehavior::External
             ) {
-                manifest_application.host.as_mut().unwrap().implementation =
-                    Implementation::Native {
-                        implementation: "fixture.lost-agent".into(),
-                    };
+                entry.implementation = Implementation::Native {
+                    implementation: "fixture.lost-agent".into(),
+                };
             }
-            Some(
-                Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
-                    manifest.application = Some(
-                        maka_plugin_core::package::CheckedDeclaration::new(manifest_application)
-                            .unwrap(),
-                    );
-                    serde_json::to_vec(&manifest).unwrap()
-                })]))
-                .unwrap(),
-            )
-        } else {
-            None
-        };
-        if let Some(worker) = &worker_package {
+            let worker = application_package("worker", entry);
             let mut node = composition.instances["provider"].clone();
             node.key = Uuid::from_u128(21);
             node.package = worker.application_ref().into();
@@ -126,137 +153,89 @@ async fn activate_worker_mode(
                 );
             }
             composition.instances.insert("worker".into(), node);
-        }
-        for package in &mut packages {
-            let previous = package.application_ref();
-            let mut manifest = package.manifest().clone();
-            let mut manifest_application =
-                manifest.application.as_ref().unwrap().declaration().clone();
-            let entry = manifest_application.host.as_mut().unwrap();
-            if manifest.id == "agent" {
-                entry.configuration = hub::configuration_schema().into();
-                entry.implementation = Implementation::Native {
-                    implementation: hub::IMPLEMENTATION.into(),
-                };
-                entry.exports.insert(
-                    hub::EXPORT.into(),
-                    Export {
-                        contract: hub::contract(),
-                        availability: Availability::Required,
-                    },
-                );
-            } else if manifest.id == "consumer" {
-                entry.imports.insert(
-                    hub::EXPORT.into(),
-                    Import {
-                        contract: hub::contract(),
-                        cardinality: Cardinality::One,
-                    },
-                );
-            } else {
-                continue;
-            }
-            if workers {
-                entry.imports.insert(
-                    "worker".into(),
-                    Import {
-                        contract: contract(),
-                        cardinality: Cardinality::One,
-                    },
-                );
-            }
-            let mut files = package.files().clone();
-            files.insert(MANIFEST_FILE.into(), {
-                manifest.application = Some(
-                    maka_plugin_core::package::CheckedDeclaration::new(manifest_application)
-                        .unwrap(),
-                );
-                serde_json::to_vec(&manifest).unwrap()
-            });
-            *package = Package::new(files).unwrap();
-            for node in composition
-                .instances
-                .values_mut()
-                .filter(|node| node.package == previous.clone().into())
-            {
-                node.package = package.application_ref().into();
-                if manifest.id == "agent" {
-                    node.configuration = NodeConfiguration {
-                        values: BTreeMap::from([
-                            (
-                                "agent".into(),
-                                serde_json::to_value(&fixture.owner.settings).unwrap(),
-                            ),
-                            (
-                                "workers".into(),
-                                if workers {
-                                    json!(["worker"])
-                                } else {
-                                    json!([])
-                                },
-                            ),
-                        ]),
-                        parameters: BTreeMap::new(),
-                    };
-                }
-                if workers {
-                    node.bindings.insert(
+            packages.push(worker);
+            for name in ["provider", "a", "b"] {
+                composition
+                    .instances
+                    .get_mut(name)
+                    .unwrap()
+                    .bindings
+                    .insert(
                         "worker".into(),
                         vec![Target::Instance {
                             path: vec!["worker".into()],
                             export: EXPORT.into(),
                         }],
                     );
-                }
-                if manifest.id == "consumer" {
-                    node.bindings.insert(
-                        hub::EXPORT.into(),
-                        vec![Target::Instance {
-                            path: vec!["provider".into()],
-                            export: hub::EXPORT.into(),
-                        }],
-                    );
-                }
             }
         }
-        if let Some(worker) = worker_package {
-            packages.push(worker);
+        composition
+            .instances
+            .get_mut("provider")
+            .unwrap()
+            .configuration = NodeConfiguration {
+            values: BTreeMap::from([
+                ("agent".into(), serde_json::to_value(settings).unwrap()),
+                (
+                    "workers".into(),
+                    if workers {
+                        json!(["worker"])
+                    } else {
+                        json!([])
+                    },
+                ),
+            ]),
+            parameters: BTreeMap::new(),
+        };
+        for name in ["a", "b"] {
+            composition
+                .instances
+                .get_mut(name)
+                .unwrap()
+                .bindings
+                .insert(
+                    hub::EXPORT.into(),
+                    vec![Target::Instance {
+                        path: vec!["provider".into()],
+                        export: hub::EXPORT.into(),
+                    }],
+                );
         }
         if external {
             let package=Package::new(BTreeMap::from([
-                (MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"fixture-executor","application":{"host":{
-                    "implementation":{"kind":"javascript","module":"executor.mjs","realm":"shared"},"configuration":{"type":"object","additionalProperties":false},"imports":{},
-                    "exports":{"executor":{"contract":maka_agent_api::executor::contract(),"availability":"required"}}
-                }}})).unwrap()),
-                ("executor.mjs".into(),format!(r#"export function activate(){{return {{executor:{{contract:{},service:['backend']}}}};}} export const backend={{async execute(input,observation,context){{
-                    let suffix='';
-                    if(input.message.includes('original upload')) {{
-                        const descriptor=await context.invoke({{operation:'metadata',slot:'attachments'}});
-                        const files=descriptor.metadata;
-                        if(!Array.isArray(files)) throw new Error('attachment manifest required');
-                        let offset=0;
-                        const texts=[];
-                        for(const file of files) {{
-                            const end=offset+file.bytes;
-                            if(!Number.isSafeInteger(end)||end<offset) throw new Error('invalid attachment length');
-                            const decoder=new TextDecoder();
-                            let text='';
-                            for(let start=offset;start<end;start+=65536) {{
-                                const chunkEnd=Math.min(start+65536,end);
-                                const bytes=await context.invoke({{operation:'read',slot:'attachments',start,end:chunkEnd}});
-                                if(bytes.length!==chunkEnd-start) throw new Error('incomplete original attachment');
-                                text+=decoder.decode(new Uint8Array(bytes),{{stream:true}});
-                            }}
-                            text+=decoder.decode();
-                            texts.push(text);
-                            offset=end;
+            (MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"fixture-executor","application":{"host":{
+                "implementation":{"kind":"javascript","module":"executor.mjs","realm":"shared"},"configuration":{"type":"object","additionalProperties":false},"imports":{},
+                "exports":{"executor":{"contract":maka_agent_api::executor::contract(),"availability":"required"}}
+            }}})).unwrap()),
+            ("executor.mjs".into(),format!(r#"export function activate(){{return {{executor:{{contract:{},service:['backend']}}}};}} export const backend={{async execute(input,observation,context){{
+                let suffix='';
+                if(input.message.includes('original upload')) {{
+                    const descriptor=await context.invoke({{operation:'metadata',slot:'attachments'}});
+                    const files=descriptor.metadata;
+                    if(!Array.isArray(files)) throw new Error('attachment manifest required');
+                    let offset=0;
+                    const texts=[];
+                    for(const file of files) {{
+                        const end=offset+file.bytes;
+                        if(!Number.isSafeInteger(end)||end<offset) throw new Error('invalid attachment length');
+                        const decoder=new TextDecoder();
+                        let text='';
+                        for(let start=offset;start<end;start+=65536) {{
+                            const chunkEnd=Math.min(start+65536,end);
+                            const bytes=await context.invoke({{operation:'read',slot:'attachments',start,end:chunkEnd}});
+                            if(bytes.length!==chunkEnd-start) throw new Error('incomplete original attachment');
+                            text+=decoder.decode(new Uint8Array(bytes),{{stream:true}});
                         }}
-                        if(offset!==descriptor.bytes) throw new Error('attachment manifest does not cover original bundle');
-                        suffix=' / attachment: '+texts.join(' | ');
+                        text+=decoder.decode();
+                        texts.push(text);
+                        offset=end;
                     }}
-                    return {{status:'completed',text:input.message+' / '+input.settings.model+suffix}};
-                }}}};"#,serde_json::to_string(&maka_agent_api::executor::contract()).unwrap()).into_bytes())
-            ])).unwrap();
+                    if(offset!==descriptor.bytes) throw new Error('attachment manifest does not cover original bundle');
+                    suffix=' / attachment: '+texts.join(' | ');
+                }}
+                return {{status:'completed',text:input.message+' / '+input.settings.model+suffix}};
+            }}}};"#,serde_json::to_string(&maka_agent_api::executor::contract()).unwrap()).into_bytes())
+        ])).unwrap();
             composition.instances.insert(
                 "executor".into(),
                 Node {
@@ -272,6 +251,132 @@ async fn activate_worker_mode(
             );
             packages.push(package);
         }
+        (composition, packages)
+    }
+    pub(super) fn provide(&self, native: &mut NativeRegistry, capture: FixtureCapture) {
+        let (_, _, behavior) = self.state();
+        crate::owner::tests::provide_without_workhub(native).unwrap();
+        crate::workhub::provide_captured(
+            native,
+            bundled_catalog(),
+            Arc::new(move |owner| {
+                *capture.lock().unwrap() = Some((owner.clone(), owner.recall.services.clone()));
+            }),
+        )
+        .unwrap();
+        if !matches!(
+            behavior,
+            WorkerBehavior::Returned | WorkerBehavior::DeniedQuery(_) | WorkerBehavior::External
+        ) {
+            native
+                .insert(
+                    "fixture.lost-agent".into(),
+                    Arc::new(move |context, settings| {
+                        let behavior = behavior.clone();
+                        Box::pin(async move {
+                            let owner = Arc::new(Worker(
+                                Agent(
+                                    Owner::open(
+                                        context,
+                                        settings,
+                                        crate::owner::tests::bundled_catalog(),
+                                    )
+                                    .await
+                                    .unwrap(),
+                                ),
+                                behavior,
+                            ));
+                            NativeActivation {
+                                owner: owner.clone(),
+                                exports: Ok(BTreeMap::from([(
+                                    EXPORT.into(),
+                                    maka_plugin_core::runtime::Published {
+                                        contract: contract(),
+                                        value: owner as Arc<dyn Handler>,
+                                    },
+                                )])),
+                            }
+                        })
+                    }),
+                )
+                .unwrap();
+        }
+    }
+    pub(super) fn policy(&self) -> Arc<maka_transport::transport::PeerPolicy> {
+        let (_, granted, behavior) = self.state();
+        let external = matches!(behavior, WorkerBehavior::External);
+        let denied_query = match behavior {
+            WorkerBehavior::DeniedQuery(method) => Some(method),
+            _ => None,
+        };
+        Arc::new(
+            maka_transport::transport::PeerPolicy::with_native_grants(if granted {
+                let mut grants = vec![maka_transport::transport::NativeGrant {
+                    origin: id(1),
+                    consumer: id(1),
+                    provider: id(21),
+                    export: EXPORT.into(),
+                    methods: [
+                        "list",
+                        "directories",
+                        "create",
+                        "uploadAttachment",
+                        "send",
+                        "execution",
+                        "execute",
+                        "executors",
+                        "tools",
+                        "snapshotPatch",
+                        "readPatch",
+                        "work",
+                        "observe",
+                        "watch",
+                        "stop",
+                        "resume",
+                        "queue",
+                        "editQueue",
+                    ]
+                    .into_iter()
+                    .filter(|method| Some(*method) != denied_query)
+                    .map(str::to_owned)
+                    .collect(),
+                    recovery: true,
+                }];
+                if external {
+                    grants.push(maka_transport::transport::NativeGrant {
+                        origin: id(21),
+                        consumer: id(21),
+                        provider: id(22),
+                        export: "executor".into(),
+                        methods: ["execute".into()].into_iter().collect(),
+                        recovery: true,
+                    });
+                }
+                grants
+            } else {
+                vec![]
+            })
+            .unwrap(),
+        )
+    }
+}
+
+async fn activate_worker_mode(
+    fixture: &mut Fixture,
+    install: bool,
+    workers: bool,
+    granted: bool,
+    behavior: WorkerBehavior,
+) -> Arc<Owner> {
+    let setup = if workers {
+        Setup::Worker { behavior, granted }
+    } else {
+        Setup::Coordinator
+    };
+    let source = fixture.app.source().unwrap().clone();
+    fixture.app.shutdown().await.unwrap();
+    if install {
+        let (composition, packages) = setup.composition(&fixture.owner.settings);
         fixture
             .store
             .commit_application(
@@ -285,122 +390,28 @@ async fn activate_worker_mode(
             .unwrap();
     }
     let mut native = NativeRegistry::default();
-    crate::owner::tests::provide_without_workhub(&mut native).unwrap();
-    let captured = Arc::new(std::sync::Mutex::new(None));
-    let capture = captured.clone();
-    crate::workhub::provide_captured(
-        &mut native,
-        bundled_catalog(),
-        Arc::new(move |owner| {
-            *capture.lock().unwrap() = Some(owner);
-        }),
-    )
-    .unwrap();
-    if !matches!(
-        behavior,
-        WorkerBehavior::Returned | WorkerBehavior::DeniedQuery(_) | WorkerBehavior::External
-    ) {
-        native
-            .insert(
-                "fixture.lost-agent".into(),
-                Arc::new(move |context, settings| {
-                    let behavior = behavior.clone();
-                    Box::pin(async move {
-                        let owner = Arc::new(Worker(
-                            Agent(
-                                Owner::open(
-                                    context,
-                                    settings,
-                                    crate::owner::tests::bundled_catalog(),
-                                )
-                                .await
-                                .unwrap(),
-                            ),
-                            behavior,
-                        ));
-                        NativeActivation {
-                            owner: owner.clone(),
-                            exports: Ok(BTreeMap::from([(
-                                EXPORT.into(),
-                                maka_plugin_core::runtime::Published {
-                                    contract: contract(),
-                                    value: owner as Arc<dyn Handler>,
-                                },
-                            )])),
-                        }
-                    })
-                }),
-            )
-            .unwrap();
-    }
-    maka_settings_native::provide(&mut native, crate::owner::tests::bundled_catalog()).unwrap();
+    let captured = Arc::new(StdMutex::new(None));
+    setup.provide(&mut native, captured.clone());
+    maka_settings_native::provide(&mut native, bundled_catalog()).unwrap();
     fixture.app = Application::start_from_store(
         fixture.store.clone(),
         source.deployment,
         native,
         fixture.issuer.clone(),
-        Arc::new(Grant(
-            fixture.issuer.clone(),
-            Some(Arc::new(
-                maka_transport::transport::PeerPolicy::with_native_grants(if granted {
-                    let mut grants = vec![maka_transport::transport::NativeGrant {
-                        origin: id(1),
-                        consumer: id(1),
-                        provider: id(21),
-                        export: EXPORT.into(),
-                        methods: [
-                            "list",
-                            "directories",
-                            "create",
-                            "uploadAttachment",
-                            "send",
-                            "execution",
-                            "execute",
-                            "executors",
-                            "tools",
-                            "snapshotPatch",
-                            "readPatch",
-                            "work",
-                            "observe",
-                            "watch",
-                            "stop",
-                            "resume",
-                            "queue",
-                            "editQueue",
-                        ]
-                        .into_iter()
-                        .filter(|method| Some(*method) != denied_query)
-                        .map(str::to_owned)
-                        .collect(),
-                        recovery: true,
-                    }];
-                    if external {
-                        grants.push(maka_transport::transport::NativeGrant {
-                            origin: id(21),
-                            consumer: id(21),
-                            provider: id(22),
-                            export: "executor".into(),
-                            methods: ["execute".into()].into_iter().collect(),
-                            recovery: true,
-                        });
-                    }
-                    grants
-                } else {
-                    vec![]
-                })
-                .unwrap(),
-            )),
-        )),
+        Arc::new(Grant(fixture.issuer.clone(), Some(setup.policy()))),
         Some(maka_host_js::factory(Default::default())),
     )
     .await
     .unwrap();
     fixture.app.ready().await.unwrap();
-    captured
+    let (owner, services) = captured
         .lock()
         .unwrap()
         .take()
-        .expect("actual coordinator Owner")
+        .expect("actual coordinator Owner");
+    fixture.owner = owner.clone();
+    fixture.services = services;
+    owner
 }
 async fn binding(fixture: &Fixture) -> Binding {
     let client = fixture.app.client();
@@ -526,8 +537,7 @@ async fn workhub_concurrent_resolution_reactivation_and_old_agent_namespace() {
 #[tokio::test]
 async fn workhub_invalid_directory_does_not_freeze_an_intent() {
     tokio::time::timeout(Duration::from_secs(45), async {
-        let mut fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
-        activate(&mut fixture, true).await;
+        let fixture = Fixture::workhub("http://127.0.0.1:1/v1", Setup::Coordinator).await;
         let selected = selection(&fixture).await;
         let mut invalid = selected.clone();
         invalid["rootId"] = json!("unknown");
@@ -550,8 +560,7 @@ async fn workhub_invalid_directory_does_not_freeze_an_intent() {
 #[tokio::test]
 async fn workhub_persisted_intent_recovers_original_identity_before_session_creation() {
     tokio::time::timeout(Duration::from_secs(45), async {
-        let mut fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
-        activate(&mut fixture, true).await;
+        let mut fixture = Fixture::workhub("http://127.0.0.1:1/v1", Setup::Coordinator).await;
         let selected = selection(&fixture).await;
         let prepared = prepare(&fixture, selected.clone(), Uuid::new_v4()).await;
         let reference = prepared.reference().clone();
@@ -603,12 +612,11 @@ async fn workhub_persisted_intent_recovers_original_identity_before_session_crea
 async fn workhub_uses_original_agent_engine_and_freezes_coordinator_prompt() {
     tokio::time::timeout(Duration::from_secs(45), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture = Fixture::new(
+        let fixture = Fixture::workhub(
             &format!("http://{}/v1", listener.local_addr().unwrap()),
-            None,
+            Setup::Coordinator,
         )
         .await;
-        activate(&mut fixture, true).await;
         let ready = resolve(&fixture, selection(&fixture).await, Uuid::new_v4()).await;
         let session = ready["session"]["id"].as_str().unwrap();
         let sent = fixture.send(session).await.unwrap();
@@ -674,8 +682,7 @@ async fn workhub_uses_original_agent_engine_and_freezes_coordinator_prompt() {
 async fn workhub_queued_message_keeps_original_behavior_across_activation() {
     tokio::time::timeout(Duration::from_secs(45), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture = Fixture::new(&format!("http://{}/v1", listener.local_addr().unwrap()), None).await;
-        activate(&mut fixture, true).await;
+        let mut fixture = Fixture::workhub(&format!("http://{}/v1", listener.local_addr().unwrap()), Setup::Coordinator).await;
         let ready = resolve(&fixture, selection(&fixture).await, Uuid::new_v4()).await;
         let session = ready["session"]["id"].as_str().unwrap().to_owned();
         let sent = fixture.send(&session).await.unwrap();
@@ -808,8 +815,7 @@ async fn idle(fixture: &Fixture, import: &str, session: &str) {
 async fn workhub_real_model_routes_original_input_and_recovers_child_receipt_without_redispatch() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
-        activate_workers(&mut fixture,true,true,true).await;
+        let mut fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::workers()).await;
         let worker=worker_session(&fixture).await;
         let ready=resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
         let coordinator=ready["session"]["id"].as_str().unwrap().to_owned();
@@ -976,8 +982,7 @@ async fn workhub_real_model_routes_original_input_and_recovers_child_receipt_wit
 async fn workhub_routing_to_busy_worker_follows_exact_queued_message_after_later_work() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
-        activate_workers(&mut fixture,true,true,true).await;
+        let mut fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::workers()).await;
         let worker=worker_session(&fixture).await;
         let busy=worker_mutation(&fixture,"send",json!({"sessionId":worker,"message":"Unrelated running work","model":fixture.selection().await})).await;
         let (mut running,_)=listener.accept().await.unwrap();request(&mut running).await;
@@ -1019,8 +1024,7 @@ async fn workhub_routing_to_busy_worker_follows_exact_queued_message_after_later
 async fn workhub_selected_worker_requires_independent_native_dispatch_grant() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
-        activate_workers(&mut fixture,true,true,false).await;
+        let mut fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::Worker { behavior: WorkerBehavior::Returned, granted: false }).await;
         let worker=worker_session(&fixture).await;
         let ready=resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
         let coordinator=ready["session"]["id"].as_str().unwrap().to_owned();
@@ -1053,7 +1057,7 @@ async fn workhub_selected_worker_requires_independent_native_dispatch_grant() {
 }
 
 #[derive(Clone)]
-enum WorkerBehavior {
+pub(super) enum WorkerBehavior {
     Returned,
     External,
     OneSessionPage,
@@ -1063,7 +1067,7 @@ enum WorkerBehavior {
     Watched(Arc<tokio::sync::Semaphore>),
     Blocked(Arc<Blocked>),
 }
-struct Blocked {
+pub(super) struct Blocked {
     method: &'static str,
     entered: tokio::sync::Semaphore,
     cancelled: tokio::sync::Semaphore,
@@ -1141,8 +1145,7 @@ async fn workhub_unknown_worker_admission_keeps_original_receipt_across_source_u
 {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
-        activate_worker_mode(&mut fixture,true,true,true,WorkerBehavior::Lost("send")).await;
+        let mut fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::worker(WorkerBehavior::Lost("send"))).await;
         let worker=worker_session(&fixture).await;
         let ready=resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
         let coordinator=ready["session"]["id"].as_str().unwrap().to_owned();
@@ -1187,9 +1190,9 @@ async fn workhub_cancelled_worker_queries_and_mutations_reach_cleanup_budget() {
     for method in ["list", "send", "uploadAttachment"] {
         tokio::time::timeout(Duration::from_secs(30), async {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let mut fixture = Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
             let blocked = Arc::new(Blocked { method, entered: tokio::sync::Semaphore::new(0), cancelled: tokio::sync::Semaphore::new(0), release: tokio::sync::Semaphore::new(0) });
-            let coordinator_owner = activate_worker_mode(&mut fixture,true,true,true,WorkerBehavior::Blocked(blocked.clone())).await;
+            let fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::worker(WorkerBehavior::Blocked(blocked.clone()))).await;
+            let coordinator_owner = fixture.owner.clone();
             let worker = worker_session(&fixture).await;
             let ready = resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
             let coordinator = ready["session"]["id"].as_str().unwrap().to_owned();
@@ -1223,8 +1226,7 @@ async fn workhub_cancelled_worker_queries_and_mutations_reach_cleanup_budget() {
 async fn workhub_queued_input_cannot_adopt_reactivated_worker_bindings() {
     tokio::time::timeout(Duration::from_secs(45), async {
         let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
-        activate_workers(&mut fixture,true,true,true).await;
+        let mut fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::workers()).await;
         let ready=resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
         let session=ready["session"]["id"].as_str().unwrap().to_owned();
         fixture.send(&session).await.unwrap();
@@ -1341,8 +1343,7 @@ async fn workhub_control_preserves_stop_resume_and_unknown_originals_without_ret
     for lost in [false, true] {
         tokio::time::timeout(Duration::from_secs(60), async {
             let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let mut fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
-            activate_worker_mode(&mut fixture,true,true,true,if lost {WorkerBehavior::Lost("resume")} else {WorkerBehavior::Returned}).await;
+            let mut fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::worker(if lost {WorkerBehavior::Lost("resume")} else {WorkerBehavior::Returned})).await;
             let worker=worker_session(&fixture).await;
             let (coordinator,task_id,running)=active_task(&fixture,&listener,&worker).await;
             let original=query_import(&fixture,hub::EXPORT,"task",json!({"taskId":task_id})).await;
@@ -1400,8 +1401,7 @@ async fn workhub_control_preserves_stop_resume_and_unknown_originals_without_ret
 async fn workhub_stop_retracts_only_its_pending_message_and_preserves_unrelated_running_work() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
-        activate_workers(&mut fixture,true,true,true).await;
+        let fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::workers()).await;
         let worker=worker_session(&fixture).await;
         let busy=worker_mutation(&fixture,"send",json!({"sessionId":worker,"message":"Unrelated current work","model":fixture.selection().await})).await;
         let (mut running,_)=listener.accept().await.unwrap();request(&mut running).await;
@@ -1438,8 +1438,7 @@ async fn workhub_stop_retracts_only_its_pending_message_and_preserves_unrelated_
 async fn workhub_shared_delivery_never_authorizes_stop_of_the_original_worker_run() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
-        activate_workers(&mut fixture,true,true,true).await;
+        let fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::workers()).await;
         let worker=worker_session(&fixture).await;
         let busy=worker_mutation(&fixture,"send",json!({"sessionId":worker,"message":"Original worker owner","model":fixture.selection().await})).await;
         let (mut running,_)=listener.accept().await.unwrap();request(&mut running).await;
@@ -1468,12 +1467,11 @@ async fn workhub_session_tool_browses_live_catalog_across_coordinator_turns() {
     tokio::time::timeout(Duration::from_secs(60), async {
         for behavior in [WorkerBehavior::Returned, WorkerBehavior::OneSessionPage] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let mut fixture = Fixture::new(
+            let fixture = Fixture::workhub(
                 &format!("http://{}/v1", listener.local_addr().unwrap()),
-                None,
+                Setup::worker(behavior),
             )
             .await;
-            activate_worker_mode(&mut fixture, true, true, true, behavior).await;
             let mut expected = std::collections::BTreeSet::new();
             for _ in 0..6 {
                 expected.insert(worker_session(&fixture).await);
@@ -1525,9 +1523,8 @@ async fn workhub_wait_returns_worker_answer_in_the_routing_turn_and_cancels_only
     tokio::time::timeout(Duration::from_secs(60), async {
         for cancel in [false, true] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let mut fixture = Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
             let entered = Arc::new(tokio::sync::Semaphore::new(0));
-            activate_worker_mode(&mut fixture,true,true,true,WorkerBehavior::Watched(entered.clone())).await;
+            let fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::worker(WorkerBehavior::Watched(entered.clone()))).await;
             let worker = worker_session(&fixture).await;
             let ready = resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
             let coordinator = ready["session"]["id"].as_str().unwrap();
@@ -1580,8 +1577,7 @@ async fn workhub_wait_returns_worker_answer_in_the_routing_turn_and_cancels_only
 async fn workhub_creates_selected_worker_and_transfers_original_attachment_bytes_before_send() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
-        activate_workers(&mut fixture,true,true,true).await;
+        let mut fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::workers()).await;
         let ready=resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
         let coordinator=ready["session"]["id"].as_str().unwrap().to_owned();
         let directories=control_turn(&fixture,&listener,&coordinator,json!({"operation":"directories","worker":"worker","location":{"kind":"roots"}})).await;
@@ -1668,8 +1664,7 @@ async fn workhub_unknown_preparation_never_recreates_or_reuploads_on_advance() {
     for method in ["create", "uploadAttachment"] {
         tokio::time::timeout(Duration::from_secs(60), async {
             let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let mut fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
-            activate_worker_mode(&mut fixture,true,true,true,WorkerBehavior::Lost(method)).await;
+            let mut fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::worker(WorkerBehavior::Lost(method))).await;
             let ready=resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
             let coordinator=ready["session"]["id"].as_str().unwrap().to_owned();
             let roots=query_import(&fixture,"worker","directories",json!({"kind":"roots"})).await;
@@ -1706,10 +1701,9 @@ async fn workhub_unknown_preparation_never_recreates_or_reuploads_on_advance() {
 async fn workhub_directory_pages_preserve_choices_and_stale_choice_cannot_create() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
+        let fixture=Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()),Setup::workers()).await;
         let names=(0..9).map(|n|format!("project-{n}-{}","长目录".repeat(15))).collect::<Vec<_>>();
         for name in &names { std::fs::create_dir(fixture.workspace.join(name)).unwrap(); }
-        activate_workers(&mut fixture,true,true,true).await;
         let ready=resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
         let coordinator=ready["session"]["id"].as_str().unwrap().to_owned();
         let roots=control_turn(&fixture,&listener,&coordinator,json!({"operation":"directories","worker":"worker","location":{"kind":"roots"}})).await;
@@ -1737,8 +1731,7 @@ async fn workhub_directory_pages_preserve_choices_and_stale_choice_cannot_create
 async fn workhub_unrecorded_upload_requires_original_capture_after_sql_recovery() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
-        activate_workers(&mut fixture,true,true,true).await;
+        let fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::workers()).await;
         let worker=worker_session(&fixture).await;
         let ready=resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
         let coordinator=ready["session"]["id"].as_str().unwrap().to_owned();
@@ -1768,8 +1761,7 @@ async fn workhub_unrecorded_upload_requires_original_capture_after_sql_recovery(
 async fn workhub_routes_external_executor_through_original_worker_and_recovers_answer() {
     tokio::time::timeout(Duration::from_secs(60),async {
         let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
-        activate_worker_mode(&mut fixture,true,true,true,WorkerBehavior::External).await;
+        let mut fixture = Fixture::workhub(&format!("http://{}/v1",listener.local_addr().unwrap()), Setup::worker(WorkerBehavior::External)).await;
         let worker=worker_session(&fixture).await;
         let ready=resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
         let coordinator=ready["session"]["id"].as_str().unwrap().to_owned();
@@ -1805,14 +1797,13 @@ async fn workhub_routes_external_executor_through_original_worker_and_recovers_a
 async fn workhub_presets_freeze_selected_worker_tools_and_recover_after_restart() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture=Fixture::configured(&format!("http://{}/v1",listener.local_addr().unwrap()),None,None,None,|settings| settings.isolated_workspaces=true).await;
+        let mut fixture=Fixture::workhub_configured(&format!("http://{}/v1",listener.local_addr().unwrap()),Setup::workers(),|settings| settings.isolated_workspaces=true).await;
         worktrees::git(&fixture.workspace,&["init","--quiet"]);
         worktrees::git(&fixture.workspace,&["config","user.email","test@example.invalid"]);
         worktrees::git(&fixture.workspace,&["config","user.name","Fixture"]);
         std::fs::write(fixture.workspace.join("tracked.txt"),"base\n").unwrap();
         worktrees::git(&fixture.workspace,&["add","tracked.txt"]);
         worktrees::git(&fixture.workspace,&["commit","--quiet","-m","base"]);
-        activate_workers(&mut fixture,true,true,true).await;
         let ready=resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
         let coordinator=ready["session"]["id"].as_str().unwrap().to_owned();
         let directory=query_import(&fixture,"worker","directories",json!({"kind":"roots"})).await["roots"][0]["selection"].clone();
@@ -1932,12 +1923,11 @@ async fn workhub_presets_freeze_selected_worker_tools_and_recover_after_restart(
 async fn workhub_dependencies_wait_cancel_and_dispatch_once_with_complete_original_answers() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture = Fixture::new(
+        let mut fixture = Fixture::workhub(
             &format!("http://{}/v1", listener.local_addr().unwrap()),
-            None,
+            Setup::workers(),
         )
         .await;
-        activate_workers(&mut fixture, true, true, true).await;
         let worker = worker_session(&fixture).await;
         let (coordinator, parent, mut running) = active_task(&fixture, &listener, &worker).await;
         let directory = query_import(&fixture, "worker", "directories", json!({"kind":"roots"}))
@@ -2081,40 +2071,10 @@ async fn workhub_dependencies_wait_cancel_and_dispatch_once_with_complete_origin
 mod graph_tests;
 
 #[tokio::test]
-async fn coordinator_http_fixture_accepts_empty_disconnect_but_rejects_partial_headers() {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let receiving = tokio::spawn(async move { coordinator_request(&listener).await.1 });
-        drop(TcpStream::connect(address).await.unwrap());
-        let expected = json!({"messages":[{"role":"system","content":"WorkHub coordinator"}]});
-        let body = serde_json::to_vec(&expected).unwrap();
-        let mut client = TcpStream::connect(address).await.unwrap();
-        client.write_all(format!("POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer private-fixture-key\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes()).await.unwrap();
-        client.write_all(&body).await.unwrap();
-        assert_eq!(receiving.await.unwrap(), expected);
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let receiving = tokio::spawn(async move { coordinator_request(&listener).await.1 });
-        let mut client = TcpStream::connect(address).await.unwrap();
-        client.write_all(b"POST /v1/chat/completions HTTP/1.1\r\n").await.unwrap();
-        client.shutdown().await.unwrap();
-        let failure = receiving.await.unwrap_err();
-        assert!(failure.is_panic());
-        let panic = failure.into_panic();
-        let text = panic.downcast_ref::<String>().map(String::as_str)
-            .or_else(|| panic.downcast_ref::<&str>().copied()).unwrap();
-        assert!(text.contains("EOF before complete HTTP headers: buffered_bytes=36"), "{text}");
-    }).await.unwrap();
-}
-
-#[tokio::test]
 async fn workhub_complete_dependency_capture_above_one_mib() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture = Fixture::new(&format!("http://{}/v1", listener.local_addr().unwrap()), None).await;
-        activate_workers(&mut fixture, true, true, true).await;
+        let mut fixture = Fixture::workhub(&format!("http://{}/v1", listener.local_addr().unwrap()), Setup::workers()).await;
         let worker = worker_session(&fixture).await;
         let (coordinator, parent, mut running) = active_task(&fixture, &listener, &worker).await;
         let directory = query_import(&fixture, "worker", "directories", json!({"kind":"roots"}))

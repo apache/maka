@@ -77,8 +77,6 @@ struct Counter {
     entered: Arc<Semaphore>,
     cancelled: Arc<Semaphore>,
     release: Arc<Semaphore>,
-    #[cfg(unix)]
-    first_effect: std::sync::OnceLock<std::time::Instant>,
 }
 impl Counter {
     fn new(behavior: Behavior) -> Arc<Self> {
@@ -88,8 +86,6 @@ impl Counter {
             entered: Arc::new(Semaphore::new(0)),
             cancelled: Arc::new(Semaphore::new(0)),
             release: Arc::new(Semaphore::new(0)),
-            #[cfg(unix)]
-            first_effect: std::sync::OnceLock::new(),
         })
     }
 }
@@ -110,10 +106,6 @@ impl Handler for Counter {
                 + 1
         };
         let behavior = self.behavior;
-        #[cfg(unix)]
-        if matches!(behavior, Behavior::Echo) && method != "read" {
-            let _ = self.first_effect.set(std::time::Instant::now());
-        }
         let entered = self.entered.clone();
         let cancelled = self.cancelled.clone();
         let release = self.release.clone();
@@ -153,800 +145,10 @@ impl NativeOwner for Counter {
         Box::pin(async { Ok(()) })
     }
 }
-pub(super) struct Setup {
-    tool_name: Option<&'static str>,
-    title: Option<maka_agent_facts::display::Text>,
-    counter: Option<Arc<Counter>>,
-    echo: bool,
-    granted: bool,
-    pub(super) nestable: bool,
-    query: bool,
-    questions: bool,
-    forms: bool,
-    files: Option<&'static str>,
-    all_file_editors: bool,
-    processes: bool,
-    health: bool,
-    isolated_workspaces: bool,
-    web: bool,
-    computer: bool,
-    jev: bool,
-    protocol: bool,
-    skills: Option<std::path::PathBuf>,
-    bundled_skills: bool,
-    standard_sources: bool,
-    prepare_skills: bool,
-    skill_tools: bool,
-    preparation: Option<(Arc<dyn Handler>, Arc<dyn NativeOwner>)>,
-    capture: Option<Arc<dyn Handler>>,
-    images: Option<images::Source>,
-    confirmation: contract::ToolConfirmation,
-}
-impl Setup {
-    pub(super) fn named(mut self, name: &'static str) -> Self {
-        self.tool_name = Some(name);
-        self
-    }
-    pub(super) fn titled(mut self, title: maka_agent_facts::display::Text) -> Self {
-        self.title = Some(title);
-        self
-    }
-    fn javascript() -> Self {
-        Self {
-            tool_name: None,
-            title: None,
-            counter: None,
-            echo: false,
-            granted: true,
-            query: false,
-            questions: false,
-            forms: false,
-            files: None,
-            all_file_editors: false,
-            processes: false,
-            health: false,
-            isolated_workspaces: false,
-            web: false,
-            computer: false,
-            jev: false,
-            protocol: false,
-            skills: None,
-            bundled_skills: false,
-            standard_sources: false,
-            prepare_skills: false,
-            skill_tools: true,
-            preparation: None,
-            capture: None,
-            images: None,
-            confirmation: contract::ToolConfirmation::Preapproved,
-            nestable: false,
-        }
-    }
-    fn native(counter: Arc<Counter>, granted: bool) -> Self {
-        Self {
-            tool_name: None,
-            title: None,
-            counter: Some(counter),
-            echo: false,
-            granted,
-            query: false,
-            questions: false,
-            forms: false,
-            files: None,
-            all_file_editors: false,
-            processes: false,
-            health: false,
-            isolated_workspaces: false,
-            web: false,
-            computer: false,
-            jev: false,
-            protocol: false,
-            skills: None,
-            bundled_skills: false,
-            standard_sources: false,
-            prepare_skills: false,
-            skill_tools: true,
-            preparation: None,
-            capture: None,
-            images: None,
-            confirmation: contract::ToolConfirmation::Preapproved,
-            nestable: false,
-        }
-    }
-    pub(super) fn forms() -> Self {
-        Self {
-            forms: true,
-            ..Self::javascript()
-        }
-    }
-    pub(super) fn questions() -> Self {
-        Self {
-            tool_name: None,
-            title: None,
-            counter: None,
-            echo: false,
-            granted: true,
-            query: false,
-            questions: true,
-            forms: false,
-            files: None,
-            all_file_editors: false,
-            processes: false,
-            health: false,
-            isolated_workspaces: false,
-            web: false,
-            computer: false,
-            jev: false,
-            protocol: false,
-            skills: None,
-            bundled_skills: false,
-            standard_sources: false,
-            prepare_skills: false,
-            skill_tools: true,
-            preparation: None,
-            capture: None,
-            images: None,
-            confirmation: contract::ToolConfirmation::Preapproved,
-            nestable: false,
-        }
-    }
-    pub(super) fn files(method: &'static str) -> Self {
-        Self {
-            files: Some(method),
-            ..Self::javascript()
-        }
-    }
-    pub(super) fn skills(path: std::path::PathBuf) -> Self {
-        Self {
-            skills: Some(path),
-            ..Self::javascript()
-        }
-    }
-    pub(super) fn with_standard_sources(mut self) -> Self {
-        self.standard_sources = true;
-        self
-    }
-    pub(super) fn with_bundled_skills(mut self) -> Self {
-        self.bundled_skills = true;
-        self
-    }
-    pub(super) fn skill_preparation(path: std::path::PathBuf, tools: bool) -> Self {
-        Self {
-            skills: Some(path),
-            prepare_skills: true,
-            skill_tools: tools,
-            ..Self::javascript()
-        }
-    }
-    pub(super) fn skill_import(&self) -> Option<String> {
-        self.prepare_skills.then(|| "service".into())
-    }
-    #[cfg(target_os = "macos")]
-    pub(super) fn protocol() -> Self {
-        Self {
-            protocol: true,
-            ..Self::javascript()
-        }
-    }
-    pub(super) fn jev() -> Self {
-        Self {
-            jev: true,
-            ..Self::javascript()
-        }
-    }
-    pub(super) fn web() -> Self {
-        Self {
-            web: true,
-            ..Self::javascript()
-        }
-    }
-    #[cfg(target_os = "macos")]
-    pub(super) fn isolated_processes() -> Self {
-        Self {
-            isolated_workspaces: true,
-            ..Self::processes()
-        }
-    }
-    pub(super) fn processes() -> Self {
-        Self {
-            processes: true,
-            ..Self::javascript()
-        }
-    }
-    #[cfg(target_os = "macos")]
-    pub(super) fn health() -> Self {
-        Self {
-            health: true,
-            nestable: true,
-            ..Self::processes()
-        }
-    }
-    pub(super) fn images(source: images::Source) -> Self {
-        Self {
-            images: Some(source),
-            ..Self::javascript()
-        }
-    }
-    pub(super) fn without_grant(mut self) -> Self {
-        self.granted = false;
-        self
-    }
-    pub(super) fn computer(handler: Arc<dyn Handler>) -> Self {
-        Self {
-            computer: true,
-            capture: Some(handler),
-            ..Self::javascript()
-        }
-    }
-    pub(super) fn captured(mut self, handler: Arc<dyn Handler>) -> Self {
-        self.capture = Some(handler);
-        self
-    }
-    pub(super) fn selections(&self) -> Vec<contract::ServiceTool> {
-        let mut selections = self.primary_selections();
-        if self.capture.is_some() {
-            selections.extend(self.primary_selections().into_iter().map(|mut tool| {
-                tool.import = "other_service".into();
-                tool.name.push_str("Other");
-                tool
-            }));
-        }
-        selections
-    }
-    fn primary_selections(&self) -> Vec<contract::ServiceTool> {
-        if self.protocol || (self.skills.is_some() && !self.skill_tools) {
-            return vec![];
-        }
-        if self.all_file_editors {
-            return [
-                ("readText", "InspectDocument"),
-                ("write", "ReplaceDocument"),
-                ("edit", "AdjustDocument"),
-                ("applyPatch", "PatchDocument"),
-            ]
-            .into_iter()
-            .map(|(method, name)| contract::ServiceTool {
-                method: method.into(),
-                name: name.into(),
-                presentation: None,
-                ..self.selection()
-            })
-            .collect();
-        }
-        if self.computer {
-            return [("evaluate", "cua_repl"), ("reset", "cua_reset")]
-                .into_iter()
-                .map(|(method, name)| contract::ServiceTool {
-                    method: method.into(),
-                    name: name.into(),
-                    result: contract::ToolResult::Computer,
-                    ..self.selection()
-                })
-                .collect();
-        }
-        if self.web {
-            return [("fetch", "WebFetch"), ("search", "WebSearch")]
-                .into_iter()
-                .map(|(method, name)| contract::ServiceTool {
-                    method: method.into(),
-                    name: name.into(),
-                    ..self.selection()
-                })
-                .collect();
-        }
-        if self.skills.is_some() {
-            if self.prepare_skills {
-                [("search", "FindGuide"), ("load", "LoadGuide")]
-            } else {
-                [("search", "SkillSearch"), ("load", "Skill")]
-            }
-            .into_iter()
-            .map(|(method, name)| contract::ServiceTool {
-                input: contract::ToolInput::Skill,
-                name: name.into(),
-                method: method.into(),
-                ..self.selection()
-            })
-            .collect()
-        } else if self.processes {
-            let mut methods = vec![
-                ("execute", "Execute"),
-                ("read", "ReadProcess"),
-                ("writeStdin", "WriteStdin"),
-                ("stop", "StopProcess"),
-            ];
-            if self.health {
-                methods.push(("health", "BackgroundTaskHealth"));
-            }
-            methods
-                .into_iter()
-                .map(|(method, name)| contract::ServiceTool {
-                    input: if method == "execute" {
-                        contract::ToolInput::Shell
-                    } else {
-                        contract::ToolInput::Json
-                    },
-                    title: None,
-                    name: name.into(),
-                    method: method.into(),
-                    presentation: (method != "health")
-                        .then(|| format!("maka.workspace.Processes@1/{method}")),
-                    ..self.selection()
-                })
-                .collect()
-        } else {
-            vec![self.selection()]
-        }
-    }
-    fn contract(&self) -> Contract {
-        if self.computer {
-            return maka_workspace_api::computer::contract();
-        }
-        if self.jev {
-            return maka_workspace_api::jev::contract();
-        }
-        if self.web {
-            return maka_web_api::contract();
-        }
-        if self.skills.is_some() {
-            maka_skills_api::contract()
-        } else if let Some(source) = &self.images {
-            source.contract()
-        } else if self.protocol {
-            maka_workspace_api::protocol::contract()
-        } else if self.processes {
-            maka_workspace_api::processes::contract()
-        } else if self.files.is_some() {
-            maka_workspace_api::files::contract()
-        } else if self.forms {
-            maka_interactions_api::forms::contract()
-        } else if self.questions {
-            maka_interactions_api::questions::contract()
-        } else {
-            counter_contract()
-        }
-    }
-    fn export(&self) -> &str {
-        if self.computer {
-            return maka_workspace_api::computer::EXPORT;
-        }
-        if self.jev {
-            return maka_workspace_api::jev::EXPORT;
-        }
-        if self.web {
-            return maka_web_api::EXPORT;
-        }
-        if self.skills.is_some() {
-            maka_skills_api::EXPORT
-        } else if self.images.is_some() {
-            "Images"
-        } else if self.protocol {
-            maka_workspace_api::protocol::EXPORT
-        } else if self.processes {
-            maka_workspace_api::processes::EXPORT
-        } else if self.files.is_some() {
-            maka_workspace_api::files::EXPORT
-        } else if self.forms {
-            maka_interactions_api::forms::EXPORT
-        } else if self.questions {
-            maka_interactions_api::questions::EXPORT
-        } else {
-            "Counter"
-        }
-    }
-    pub(super) fn method(&self) -> &str {
-        if self.computer {
-            return "evaluate";
-        }
-        if self.jev {
-            return "evaluate";
-        }
-        if self.web {
-            return "fetch";
-        }
-        if self.skills.is_some() {
-            "search"
-        } else if self.images.is_some() {
-            "produce"
-        } else if self.processes {
-            "execute"
-        } else if let Some(method) = self.files {
-            method
-        } else if self.questions || self.forms {
-            "ask"
-        } else if self.query {
-            "read"
-        } else {
-            "write"
-        }
-    }
-    pub(super) fn selection(&self) -> contract::ServiceTool {
-        contract::ServiceTool {
-            nestable: self.nestable,
-            input: if self.web {
-                contract::ToolInput::Web
-            } else {
-                contract::ToolInput::Json
-            },
-            presentation: self
-                .files
-                .filter(|method| {
-                    matches!(
-                        *method,
-                        "readText" | "glob" | "grep" | "write" | "edit" | "applyPatch"
-                    )
-                })
-                .map(|method| format!("maka.workspace.Files@1/{method}")),
-            title: self.title.clone(),
-            confirmation: self.confirmation,
-            result: if self.files == Some("readImage")
-                || self.images.as_ref().is_some_and(|source| source.is_image())
-            {
-                contract::ToolResult::Image
-            } else {
-                contract::ToolResult::Json
-            },
-            name: if let Some(name) = self.tool_name {
-                name
-            } else if self.web {
-                "WebFetch"
-            } else if self.files.is_some() || self.images.is_some() {
-                "WorkspaceFile"
-            } else if self.forms {
-                "AskUserForm"
-            } else if self.questions {
-                "AskUserQuestion"
-            } else {
-                "Counter"
-            }
-            .into(),
-            description: if self.files.is_some() {
-                "Use the selected workspace files."
-            } else if self.questions {
-                "Ask required bounded questions."
-            } else {
-                "Increment the explicitly selected counter."
-            }
-            .into(),
-            import: "service".into(),
-            method: self.method().into(),
-        }
-    }
-    pub(super) fn install(&self, input: &mut Input, packages: &mut Vec<Package>) {
-        let project_roots =
-            input.instances["provider"].configuration.values["workspaceRoots"].clone();
-        let mut manifest = packages[0].manifest().clone();
-        let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-        manifest_application.host.as_mut().unwrap().imports.insert(
-            "service".into(),
-            Import {
-                contract: self.contract(),
-                cardinality: Cardinality::One,
-            },
-        );
-        if self.capture.is_some() {
-            let imports = &mut manifest_application.host.as_mut().unwrap().imports;
-            imports.insert("other_service".into(), imports["service"].clone());
-        }
-        let provider = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
-            manifest.application = Some(
-                maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap(),
-            );
-            serde_json::to_vec(&manifest).unwrap()
-        })]))
-        .unwrap();
-        input.instances.get_mut("provider").unwrap().package = provider.application_ref().into();
-        input
-            .instances
-            .get_mut("provider")
-            .unwrap()
-            .bindings
-            .insert(
-                "service".into(),
-                vec![Target::Instance {
-                    path: vec!["service".into()],
-                    export: self.export().into(),
-                }],
-            );
-        if self.capture.is_some() {
-            let bindings = &mut input.instances.get_mut("provider").unwrap().bindings;
-            bindings.insert("other_service".into(), bindings["service"].clone());
-        }
-        packages[0] = provider;
-        let implementation = if self.computer {
-            json!({"kind":"native","implementation":maka_workspace_api::computer::IMPLEMENTATION})
-        } else if self.jev {
-            json!({"kind":"native","implementation":maka_workspace_api::jev::IMPLEMENTATION})
-        } else if self.web {
-            json!({"kind":"native","implementation":maka_web_api::IMPLEMENTATION})
-        } else if self.skills.is_some() {
-            json!({"kind":"native","implementation":maka_skills_api::IMPLEMENTATION})
-        } else if let Some(source) = &self.images {
-            source.implementation()
-        } else if self.protocol {
-            json!({"kind":"native","implementation":maka_workspace_api::protocol::IMPLEMENTATION})
-        } else if self.processes {
-            json!({"kind":"native","implementation":maka_workspace_api::processes::IMPLEMENTATION})
-        } else if self.files.is_some() {
-            json!({"kind":"native","implementation":maka_workspace_api::files::IMPLEMENTATION})
-        } else if self.forms {
-            json!({"kind":"native","implementation":maka_interactions_api::forms::IMPLEMENTATION})
-        } else if self.questions {
-            json!({"kind":"native","implementation":maka_interactions_api::questions::IMPLEMENTATION})
-        } else if self.counter.is_some() {
-            json!({"kind":"native","implementation":"fixture.counter"})
-        } else {
-            json!({"kind":"javascript","module":"counter.mjs","realm":"shared"})
-        };
-        let mut files = BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({"schemaVersion":1,"id":"fixture.counter","application":{"host":{
-            "implementation":implementation,"configuration":if self.computer { maka_workspace_api::computer::configuration_schema() } else if self.jev { maka_workspace_api::jev::configuration_schema() } else if self.web { maka_web_api::configuration_schema() } else if self.skills.is_some() { maka_skills_api::configuration_schema() } else if self.processes || self.protocol { maka_workspace_api::processes::configuration_schema() } else { json!({"type":"object","additionalProperties":false}) },"imports":{},
-            "exports":if self.processes {
-                json!({(self.export()):{"contract":self.contract(),"availability":"required"},
-                    "terminal":{"contract":maka_workspace_api::terminal::contract(),"availability":"required"}})
-            } else { json!({(self.export()):{"contract":self.contract(),"availability":"required"}}) }
-        }}})).unwrap())]);
-        if let Some(source) = &self.images {
-            if let Some(code) = source.javascript() {
-                files.insert("images.mjs".into(), code.into_bytes());
-            }
-        } else if !self.computer
-            && !self.web
-            && !self.jev
-            && self.counter.is_none()
-            && !self.forms
-            && !self.questions
-            && self.files.is_none()
-            && !self.processes
-            && !self.protocol
-            && self.skills.is_none()
-        {
-            let methods = if self.echo {
-                "write({amount,note=''}){return {effects:effects+=amount,payload:note};},read({note=''}){return {effects,payload:note};}"
-            } else {
-                "write({amount}){return {effects:effects+=amount};},read(){return {effects};}"
-            };
-            files.insert("counter.mjs".into(), format!(r#"let effects=0; export function activate(){{return {{Counter:{{contract:{},service:['counter']}}}};}} export const counter={{{methods}}};"#, serde_json::to_string(&counter_contract()).unwrap()).into_bytes());
-        }
-        let package = Package::new(files).unwrap();
-        input.instances.insert(
-            "service".into(),
-            Node {
-                key: Uuid::from_u128(21),
-                package: package.application_ref().into(),
-                use_package: PackageUse::Host,
-                configuration: if self.computer { NodeConfiguration { values: serde_json::from_value(json!({"desktop":"local"})).unwrap(), parameters: BTreeMap::new() } } else if self.web || self.jev { NodeConfiguration { values: serde_json::from_value(json!({"network":"allowed"})).unwrap(), parameters: BTreeMap::new() } } else if let Some(path) = &self.skills {
-                    NodeConfiguration { values: serde_json::from_value(json!({
-                        "bundled":self.bundled_skills,
-                        "home":self.standard_sources.then_some(path),
-                        "projectRoots":if self.standard_sources {project_roots.clone()} else {json!([])},
-                        "sources":if self.standard_sources {json!([])} else {json!([{"id":"fixture","label":"Fixture","path":path}])}, "manage":false, "preferences":false
-                    })).unwrap(), parameters: BTreeMap::new() }
-                } else if self.processes || self.protocol {
-                    NodeConfiguration { values: serde_json::from_value(json!({
-                        "filesystem":{"default":"write","rules":[],"denyGlobs":[]}, "network":"allowed", "helper":null, "sessionOwner":id(1), "isolatedWorkspaces":self.isolated_workspaces
-                    })).unwrap(), parameters: BTreeMap::new() }
-                } else { Default::default() },
-                parameters: Default::default(),
-                disabled: false,
-                overrides: vec![],
-                bindings: BTreeMap::new(),
-            },
-        );
-        packages.push(package);
-        if self.health {
-            super::health::install(input, packages);
-        }
-        if self.processes || self.protocol {
-            let consumer = &packages[1];
-            let mut files = consumer.files().clone();
-            let mut manifest = consumer.manifest().clone();
-            let mut manifest_application =
-                manifest.application.as_ref().unwrap().declaration().clone();
-            manifest_application.host.as_mut().unwrap().imports.insert(
-                if self.protocol {
-                    "protocol"
-                } else {
-                    "terminal"
-                }
-                .into(),
-                Import {
-                    contract: if self.protocol {
-                        maka_workspace_api::protocol::contract()
-                    } else {
-                        maka_workspace_api::terminal::contract()
-                    },
-                    cardinality: Cardinality::One,
-                },
-            );
-            files.insert(MANIFEST_FILE.into(), {
-                manifest.application = Some(
-                    maka_plugin_core::package::CheckedDeclaration::new(manifest_application)
-                        .unwrap(),
-                );
-                serde_json::to_vec(&manifest).unwrap()
-            });
-            let consumer = Package::new(files).unwrap();
-            for name in ["a", "b"] {
-                let node = input.instances.get_mut(name).unwrap();
-                node.package = consumer.application_ref().into();
-                node.bindings.insert(
-                    if self.protocol {
-                        "protocol"
-                    } else {
-                        "terminal"
-                    }
-                    .into(),
-                    vec![Target::Instance {
-                        path: vec!["service".into()],
-                        export: if self.protocol {
-                            "protocol"
-                        } else {
-                            "terminal"
-                        }
-                        .into(),
-                    }],
-                );
-            }
-            packages[1] = consumer;
-        }
-    }
-    pub(super) fn provide(&self, registry: &mut NativeRegistry) {
-        if let Some(handler) = &self.capture {
-            let handler = handler.clone();
-            let contract = self.contract();
-            let export = self.export().to_owned();
-            let implementation = if self.computer {
-                maka_workspace_api::computer::IMPLEMENTATION
-            } else {
-                maka_web_api::IMPLEMENTATION
-            };
-            registry
-                .insert(
-                    implementation.into(),
-                    Arc::new(move |_, _| {
-                        let handler = handler.clone();
-                        let contract = contract.clone();
-                        let export = export.clone();
-                        Box::pin(async move {
-                            NativeActivation {
-                                exports: Ok(BTreeMap::from([(
-                                    export,
-                                    Published {
-                                        contract,
-                                        value: handler,
-                                    },
-                                )])),
-                                owner: Arc::new(()),
-                            }
-                        })
-                    }),
-                )
-                .unwrap();
-        }
-        if self.jev {
-            maka_jev_native::provide(registry).unwrap();
-        }
-        if (self.web && self.capture.is_none()) || self.health {
-            maka_web::provide(registry).unwrap();
-        }
-        if let Some((handler, owner)) = &self.preparation {
-            let handler = handler.clone();
-            let owner = owner.clone();
-            registry
-                .insert(
-                    maka_skills_api::IMPLEMENTATION.into(),
-                    Arc::new(move |_, _| {
-                        let handler = handler.clone();
-                        let owner = owner.clone();
-                        Box::pin(async move {
-                            NativeActivation {
-                                exports: Ok(BTreeMap::from([(
-                                    maka_skills_api::EXPORT.into(),
-                                    Published {
-                                        contract: maka_skills_api::contract(),
-                                        value: handler,
-                                    },
-                                )])),
-                                owner,
-                            }
-                        })
-                    }),
-                )
-                .unwrap();
-        } else if self.skills.is_some() {
-            maka_skills_native::provide(registry).unwrap();
-        }
-        if let Some(source) = &self.images {
-            source.provide(registry);
-        }
-        if self.processes || self.protocol {
-            maka_processes_native::provide(registry).unwrap();
-        }
-        if self.files.is_some() {
-            maka_files_native::provide(registry).unwrap();
-        }
-        if self.forms {
-            maka_interactions_native::forms::provide(registry).unwrap();
-        }
-        if self.questions {
-            maka_interactions_native::questions::provide(registry).unwrap();
-        }
-        if let Some(counter) = &self.counter {
-            let counter = counter.clone();
-            registry
-                .insert(
-                    "fixture.counter".into(),
-                    Arc::new(move |_, _| {
-                        let counter = counter.clone();
-                        Box::pin(async move {
-                            NativeActivation {
-                                exports: Ok(BTreeMap::from([(
-                                    "Counter".into(),
-                                    Published {
-                                        contract: counter_contract(),
-                                        value: counter.clone() as Arc<dyn Handler>,
-                                    },
-                                )])),
-                                owner: counter,
-                            }
-                        })
-                    }),
-                )
-                .unwrap();
-        }
-    }
-    pub(super) fn policy(&self) -> Arc<maka_transport::transport::PeerPolicy> {
-        Arc::new(
-            maka_transport::transport::PeerPolicy::with_native_grants(self.native_grants())
-                .unwrap(),
-        )
-    }
+#[path = "service_tools/setup.rs"]
+mod setup;
+pub(super) use setup::Setup;
 
-    fn native_grants(&self) -> Vec<maka_transport::transport::NativeGrant> {
-        use maka_transport::transport::NativeGrant;
-        if self.granted {
-            let mut grants = vec![NativeGrant {
-                origin: id(1),
-                consumer: id(1),
-                provider: id(21),
-                export: self.export().into(),
-                methods: self
-                    .selections()
-                    .into_iter()
-                    .map(|tool| tool.method)
-                    .chain(
-                        self.prepare_skills
-                            .then_some(["prepare".into(), "search".into()])
-                            .into_iter()
-                            .flatten(),
-                    )
-                    .chain(self.web.then(|| "capture".into()))
-                    .chain(self.computer.then(|| "state".into()))
-                    .chain(
-                        self.protocol
-                            .then_some(["run".to_owned(), "input".to_owned()])
-                            .into_iter()
-                            .flatten(),
-                    )
-                    .collect(),
-                recovery: true,
-            }];
-            if self.health {
-                grants.push(NativeGrant {
-                    origin: id(1),
-                    consumer: id(21),
-                    provider: id(22),
-                    export: maka_web_api::EXPORT.into(),
-                    methods: ["probe".into()].into_iter().collect(),
-                    recovery: true,
-                });
-            }
-            grants
-        } else {
-            vec![]
-        }
-    }
-}
 async fn tool_response(socket: &mut TcpStream) {
     tool_response_input(socket, json!({"amount":1})).await;
 }
@@ -972,17 +174,21 @@ pub(super) async fn stored_facts(
     fixture: &Fixture,
     session: &str,
 ) -> Vec<maka_agent_facts::event::StoredEvent> {
-    fixture
-        .session(session)
-        .await
-        .scoped_prefix(
-            maka_agent_facts::event::LogScope::Session { id: session.into() },
-            256,
-            4 * 1024 * 1024,
-        )
-        .await
-        .unwrap()
-        .events
+    let store = fixture.session(session).await;
+    let through = *store.subscribe_commits().unwrap().borrow();
+    let mut after = 0;
+    let mut events = Vec::new();
+    loop {
+        let page = store
+            .session_events(session, after, through, 256, 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        events.extend(page.events);
+        match page.next_after {
+            Some(next) => after = next,
+            None => return events,
+        }
+    }
 }
 
 async fn pending_approval(
@@ -1189,7 +395,7 @@ async fn service_confirmation_reviews_exact_large_arguments_and_never_replaces_g
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let counter = Counter::new(Behavior::Returned);
             let mut setup = Setup::native(counter.clone(), granted).titled(maka_agent_facts::display::Text::localized("Review counter", "审核计数器", "審核計數器"));
-            setup.query = query;
+            setup = setup.with_query(query);
             setup.confirmation = contract::ToolConfirmation::Required;
             let fixture = Fixture::with_services(&format!("http://{}/v1", listener.local_addr().unwrap()), None, None, Some(setup)).await;
             let session = fixture.create("Review exact service call").await;
@@ -1921,7 +1127,7 @@ async fn query_tool_uses_original_query_gate_and_projects_plain_business_json() 
         });
         let counter = Counter::new(Behavior::Returned);
         let mut setup = Setup::native(counter.clone(), true);
-        setup.query = true;
+        setup = setup.with_query(true);
         let fixture = Fixture::with_services(&base, None, None, Some(setup)).await;
         let session = fixture.create("Actual query tool").await;
         fixture.send(&session).await.unwrap();
@@ -2186,7 +1392,7 @@ async fn skill_preparation_parent_scope_owns_work_after_observer_loss_and_cleanu
                 cleanup_failed: failed,
             });
             let mut setup = Setup::skill_preparation(dir.path().into(), false);
-            setup.preparation = Some((probe.clone(), probe.clone()));
+            setup = setup.with_preparation(probe.clone(), probe.clone());
             let f = Fixture::with_services("http://127.0.0.1:9/v1", None, None, Some(setup)).await;
             let parent = scope(&f.issuer, true);
             let owner = f.owner.clone();
@@ -2560,8 +1766,7 @@ async fn code_mode_discovery_preserves_session_store_and_nested_callability_betw
 }
 
 fn file_editors(nestable: bool) -> Setup {
-    let mut setup = Setup::files("readText");
-    setup.all_file_editors = true;
+    let mut setup = Setup::file_editors();
     setup.nestable = nestable;
     setup
 }
@@ -2962,7 +2167,7 @@ async fn independent_session_admits_while_preparation_is_blocked_and_same_sessio
             messages: Arc::new(StdMutex::new(Vec::new())),
         });
         let mut setup = Setup::skill_preparation(dir.path().into(), false);
-        setup.preparation = Some((probe.clone(), probe.clone()));
+        setup = setup.with_preparation(probe.clone(), probe.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = Fixture::with_services(
             &format!("http://{}/v1", listener.local_addr().unwrap()),

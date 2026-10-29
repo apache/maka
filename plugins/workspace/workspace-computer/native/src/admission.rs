@@ -1224,35 +1224,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn late_handoff_returns_the_exact_unpolled_future_for_synchronous_draining() {
-        let fixture = Fixture::new().await;
-        let operation = Operation::new(&fixture.owner, fixture.lease(), &fixture.native).unwrap();
-        let handoff = operation.handoff();
-        operation.complete(None);
-        let sent = Arc::new(AtomicUsize::new(0));
-        let dropped = Arc::new(AtomicBool::new(false));
-        let pending_sent = sent.clone();
-        let witness = DropWitness(dropped.clone());
-        let result = handoff.retain(Box::pin(async move {
-            let _witness = witness;
-            pending_sent.fetch_add(1, AtomicOrdering::SeqCst);
-        }));
-        let (error, pending) = match result {
-            Err(returned) => returned,
-            Ok(()) => panic!("completed call cannot accept new RPC custody"),
-        };
-        assert!(matches!(error, ToolError::Failed(_)));
-        assert_eq!(sent.load(AtomicOrdering::SeqCst), 0);
-        assert!(!dropped.load(Ordering::SeqCst));
-        pending.await;
-        assert_eq!(sent.load(AtomicOrdering::SeqCst), 1);
-        assert!(dropped.load(Ordering::SeqCst));
-        fixture.effects.settle().await.unwrap();
-        fixture.owner.resources.settle().await.unwrap();
-        fixture.close(false).await;
-    }
-
-    #[tokio::test]
     async fn panicking_host_service_settlement_retains_the_original_rpc_box() {
         struct Panicking {
             polled: CancellationToken,

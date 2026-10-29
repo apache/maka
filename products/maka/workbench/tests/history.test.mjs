@@ -20,50 +20,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  updateToolActivity,
-  latestToolActivity,
-  toolActivitySummary,
-} from '../../products/maka/workbench/app/toolActivity.ts';
-
-import {
   canRegenerateFromText,
   mergeChunks,
+  openingUserMessage,
   replayStartCursor,
   updateHistoryMetadata,
-} from '../../products/maka/workbench/app/history.ts';
-import { thinkingSummary } from '../../products/maka/workbench/app/thinkingSummary.ts';
+} from '../app/history.ts';
 
-test('tool summaries use UI-rendered labels while retaining the tool source details', () => {
-  const tool = {
-    phase: 'preparing',
-    name: '搜索源代码',
-    title: { fallback: 'Opaque fallback' },
-    detail: ' 搜索\n  原文😀 ',
-  };
-  assert.equal(
-    toolActivitySummary(tool, '正在准备工具', '查找定义'),
-    '正在准备工具 · 搜索源代码 · 查找定义 · 搜索 原文😀',
-  );
-  assert.equal(
-    toolActivitySummary({ ...tool, phase: 'running' }, 'Running tool'),
-    'Running tool · 搜索源代码 · 搜索 原文😀',
-  );
-});
-
-test('thinking summary retains the last nonempty paragraph and its Unicode text', () => {
-  for (const [source, expected] of [
-    ['', ''],
-    [' \r\n\t\u2003', ''],
-    ['**first**\nline', 'first line'],
-    ['old\n\n**最新**\n 行\r\n \t', '最新 行'],
-    ['old\r\n\t \r\n**最新**\r\n\t\r\n \t', '最新'],
-    ['old\n\n**\n\n', ''],
-    ['old\n\r \nnew', 'old new'],
-    ['earlier\n\n\n **tail**\n\n\n', 'tail'],
-    ['earlier\n\n'.repeat(20000) + '**尾 e\u0301**\nline', '尾 e\u0301 line'],
-  ]) {
-    assert.equal(thinkingSummary(source), expected);
-  }
+const user = (text, turnId, sequence) => ({
+  key: String(sequence),
+  messageId: String(sequence),
+  role: 'user',
+  field: 'body',
+  text,
+  turnId,
+  position: { sourceSequence: sequence, itemIndex: 0 },
 });
 
 test('unchanged history pages retain rows while fragments and fenced metadata still advance', () => {
@@ -155,60 +126,6 @@ test('unchanged history pages retain rows while fragments and fenced metadata st
   assert.equal(advanced[0].text, '界🙂');
 });
 
-test('complete active tool identities survive 129 starts, updates and exact terminal removal', () => {
-  let active = [];
-  const event = (index, fact, invocationId = 'invocation') => ({
-    invocationId,
-    turnId: 'turn',
-    sequence: index + 1,
-    fact,
-  });
-  const id = (index) => 'tool_' + index.toString(16).padStart(64, '0');
-  for (let index = 0; index < 129; index++) {
-    active = updateToolActivity(
-      active,
-      event(index, {
-        kind: 'executor_tool_start',
-        toolUseId: id(index),
-        name: 'echo',
-      }),
-    );
-  }
-  assert.deepEqual(
-    active.map((tool) => tool.toolUseId),
-    Array.from({ length: 129 }, (_, index) => id(index)),
-  );
-  assert.equal(latestToolActivity(active, 'invocation', 'turn').toolUseId, id(128));
-  active = updateToolActivity(
-    active,
-    event(130, {
-      kind: 'executor_tool_progress',
-      toolUseId: id(128),
-      text: 'original progress',
-    }),
-  );
-  assert.equal(active.length, 129);
-  assert.equal(active[128].detail, 'original progress');
-  assert.equal(active[128].startSequence, 129);
-  active = updateToolActivity(
-    active,
-    event(131, { kind: 'executor_tool_start', toolUseId: id(0), name: 'independent' }, 'other'),
-  );
-  assert.equal(active.length, 130);
-  active = updateToolActivity(
-    active,
-    event(132, { kind: 'executor_tool_result', toolUseId: id(128) }),
-  );
-  assert.equal(active.length, 129);
-  assert.equal(latestToolActivity(active, 'invocation', 'turn').toolUseId, id(127));
-  assert.equal(latestToolActivity(active, 'other', 'turn').name, 'independent');
-  active = updateToolActivity(active, event(133, { kind: 'ended' }));
-  assert.deepEqual(
-    active.map((tool) => [tool.invocationId, tool.toolUseId, tool.name]),
-    [['other', id(0), 'independent']],
-  );
-});
-
 test('replay cursor preserves the earliest complete part and tool seed without argument limits', () => {
   assert.equal(replayStartCursor(9, [], []), 9);
   assert.equal(replayStartCursor(2, [{ startSequence: 8 }], [{ startSequence: 7 }]), 2);
@@ -230,4 +147,44 @@ test('replay cursor preserves the earliest complete part and tool seed without a
   assert.equal(replayStartCursor(900000, parts, tools), 2);
   tools[tools.length - 1] = { startSequence: 1 };
   assert.equal(replayStartCursor(900000, parts, tools), 0);
+});
+test('turn actions require a proven opening message across history windows', () => {
+  const earlier = user('Previous request', 'earlier', 1);
+  const opening = user('Build the application', 'current', 2);
+  const followup = user('Keep the public API unchanged', 'current', 3);
+  const before = { field: 'body', position: earlier.position, offset: 0 };
+  assert.equal(openingUserMessage([followup], 'current', before), null);
+  assert.equal(openingUserMessage([opening, followup], 'current', before), null);
+  assert.equal(
+    openingUserMessage([opening, followup], 'current', null)?.text,
+    'Build the application',
+  );
+  assert.equal(
+    openingUserMessage([earlier, opening, followup], 'current', before)?.text,
+    'Build the application',
+  );
+});
+
+test('regeneration waits for original metadata and retains reference exclusions across fragments', () => {
+  const first = {
+    ...user('Original request', 'current', 2),
+    offset: 0,
+    totalBytes: 20,
+    attachments: [],
+  };
+  const later = { ...first, text: 'tail', offset: 16 };
+  const [tail] = mergeChunks([], [later], false, 10);
+  assert.equal(canRegenerateFromText(tail), false);
+  const [plain] = updateHistoryMetadata([tail], [{ ...first, hasReferences: false }], 10);
+  assert.equal(canRegenerateFromText(plain), true);
+  const [referenced] = updateHistoryMetadata([tail], [{ ...first, hasReferences: true }], 10);
+  assert.equal(canRegenerateFromText(referenced), false);
+  const [continued] = mergeChunks([referenced], [later], false, 11);
+  assert.equal(canRegenerateFromText(continued), false);
+  const [attached] = updateHistoryMetadata(
+    [tail],
+    [{ ...first, attachments: [{ name: 'image.png' }] }],
+    10,
+  );
+  assert.equal(canRegenerateFromText(attached), false);
 });

@@ -8748,7 +8748,6 @@ dependencies = [
 name = "maka-workspace-api"
 version = "0.2.0"
 dependencies = [
- "jsonschema 0.60.1",
  "maka-agent-api",
  "maka-agent-facts",
  "maka-capabilities",

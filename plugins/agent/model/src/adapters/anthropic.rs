@@ -229,14 +229,11 @@ impl WireCursor for DirectCursor {
     }
 }
 
-pub(super) async fn metadata(
-    wire: &PreparedWire,
-    options: StreamOptions,
-) -> Result<Metadata, ModelError> {
+pub(super) async fn metadata(wire: &PreparedWire) -> Result<Metadata, ModelError> {
     let mut cursor = wire.source.open_metadata(0).ok_or_else(|| {
         ModelError::Adapter("Anthropic prepared metadata cursor is missing".into())
     })?;
-    let mut prepass = MetadataPrepass::new(options);
+    let mut prepass = MetadataPrepass::default();
     let mut next_index = 0;
     let mut index = 0;
     while let Some(record) = cursor.next().await? {

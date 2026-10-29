@@ -217,6 +217,36 @@ fn consumer() -> Package {
         Some("export function activate() { return {}; }".into()),
     )
 }
+fn observer(name: &str, imports: BTreeMap<String, Import>) -> Package {
+    package(
+        name,
+        EntryDeclaration {
+            implementation: Implementation::Native {
+                implementation: "fixture.observer".into(),
+            },
+            configuration: json!({"type":"object"}).into(),
+            imports,
+            exports: BTreeMap::new(),
+        },
+        None,
+    )
+}
+fn observer_registry(mut registry: NativeRegistry) -> NativeRegistry {
+    registry
+        .insert(
+            "fixture.observer".into(),
+            Arc::new(|_, _| {
+                Box::pin(async {
+                    NativeActivation {
+                        exports: Ok(BTreeMap::new()),
+                        owner: Arc::new(()),
+                    }
+                })
+            }),
+        )
+        .unwrap();
+    registry
+}
 fn large_json_text() -> String {
     "original界🙂\"\\\n\t".repeat(64 * 1024)
 }
@@ -338,7 +368,7 @@ fn registry(query: Arc<dyn Handler>) -> NativeRegistry {
     registry_contract(query, contract(MethodMode::Query))
 }
 fn registry_contract(query: Arc<dyn Handler>, contract: Contract) -> NativeRegistry {
-    let mut registry = NativeRegistry::default();
+    let mut registry = observer_registry(NativeRegistry::default());
     registry
         .insert(
             "native.echo".into(),

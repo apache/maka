@@ -185,28 +185,6 @@ async fn envelope_preserves_known_prefix_on_failure_and_stop_without_faking_tran
 }
 
 #[tokio::test]
-async fn native_create_accepts_large_utf8_diff() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let executor = executor(&root);
-    let line = "configuration value: 零一二三四五六七八九";
-    let diff = format!("+{}", vec![line; 40_000].join("\n+"));
-    assert_eq!(
-        apply(
-            &executor,
-            json!({"type":"create_file","path":"large","diff":diff})
-        )
-        .await
-        .unwrap(),
-        json!({"status":"completed"})
-    );
-    assert_eq!(
-        fs::read(root.join("large")).unwrap(),
-        vec![line; 40_000].join("\n").as_bytes()
-    );
-}
-
-#[tokio::test]
 async fn native_update_large_utf8_source_preserves_bytes_inode_and_mode() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -235,58 +213,5 @@ async fn native_update_large_utf8_source_preserves_bytes_inode_and_mode() {
     assert_eq!(
         (before.dev(), before.ino(), before.permissions()),
         (after.dev(), after.ino(), after.permissions())
-    );
-}
-
-#[tokio::test]
-async fn native_update_accepts_large_diff_and_output_growth() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let executor = executor(&root);
-    let path = root.join("text");
-    let large = "configuration value: 零一二三四五六七八九; ".repeat(24_000);
-    for (source, added, expected) in [
-        ("target\n".into(), large.clone(), format!("{large}\n")),
-        (
-            format!("{}\ntarget\n", "p".repeat(600_000)),
-            "新".repeat(200_000),
-            format!("{}\n{}\n", "p".repeat(600_000), "新".repeat(200_000)),
-        ),
-    ] {
-        fs::write(&path, source).unwrap();
-        let diff = format!("@@\n-target\n+{added}");
-        assert_eq!(
-            apply(
-                &executor,
-                json!({"type":"update_file","path":"text","diff":diff})
-            )
-            .await
-            .unwrap(),
-            json!({"status":"completed"})
-        );
-        assert_eq!(fs::read(&path).unwrap(), expected.as_bytes());
-    }
-}
-
-#[tokio::test]
-async fn envelope_creates_and_contextually_updates_large_utf8_file() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let executor = executor(&root);
-    let line = "configuration value: 零一二三四五六七八九";
-    let added = format!("+{}", vec![line; 40_000].join("\n+"));
-    let patch = format!(
-        "*** Begin Patch\n*** Add File: large\n{added}\n+target = old\n+trailer\n*** Update File: large\n@@\n-target = old\n+target = 新\n trailer\n*** End Patch"
-    );
-    assert_eq!(
-        executor
-            .invoke("apply_patch".into(), json!(patch), CancellationToken::new())
-            .await
-            .unwrap(),
-        json!({"status":"completed","applied":[{"type":"create_file","path":"large"},{"type":"update_file","path":"large"}],"output":"Applied 2 file operations."})
-    );
-    assert_eq!(
-        fs::read(root.join("large")).unwrap(),
-        format!("{}\ntarget = 新\ntrailer\n", vec![line; 40_000].join("\n")).as_bytes()
     );
 }

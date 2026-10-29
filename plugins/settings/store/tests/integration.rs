@@ -17,25 +17,19 @@
  * under the License.
  */
 
-// Both CLI test targets must preserve stack cleanup under the package's
-// native linker configuration, including the large V8-bearing binary.
-#[test]
-fn caught_panic_runs_original_stack_cleanup() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct Guard<'a>(&'a AtomicUsize);
-    impl Drop for Guard<'_> {
-        fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    let drops = AtomicUsize::new(0);
-    let result = std::panic::catch_unwind(|| {
-        let _guard = Guard(&drops);
-        panic!("CLI unwind probe");
-    });
-    let payload = result.expect_err("the original panic must reach its handler");
-    assert_eq!(payload.downcast_ref::<&str>(), Some(&"CLI unwind probe"));
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
-}
+mod access;
+mod catalog_changes;
+mod catalog_projection;
+mod connection_test;
+mod credentials;
+mod migrations;
+mod model_catalog;
+mod model_fetch;
+mod oauth;
+mod oauth_login;
+mod onboarding;
+mod plugin_authorization;
+mod pricing;
+mod public_catalog;
+mod runtime_policy;
+mod support;

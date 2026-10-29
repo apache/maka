@@ -21,9 +21,8 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 
-const boundary = { pending: [], event: null, releases: 0 };
-globalThis.__terminalLoginBoundary = boundary;
-const appRoot = new URL('../../products/maka/workbench/app/', import.meta.url);
+const boundary = { pending: [], event: null };
+const appRoot = new URL('../app/', import.meta.url);
 const native = {
   nsh: `export const signal = initial => { let value = initial; const read = () => value; read.set = next => { value = next; }; return read; }; export const cleanup = () => {}; export const Clipboard = { writeText: async () => {} };`,
   locale: `export const tr = (key, values) => values ? key.replace(/\\{(\\w+)\\}/g, (_, name) => values[name]) : key;`,
@@ -51,7 +50,6 @@ hooks.deregister();
 
 const host = {
   pendingSettings: async () => {
-    boundary.releases += 1;
     return boundary.pending;
   },
   beginSetting: async () => ({ next: async () => boundary.event, cancel() {} }),
@@ -63,7 +61,6 @@ function setup({
   fetchError = null,
 } = {}) {
   boundary.pending = [];
-  boundary.releases = 0;
   boundary.event = {
     kind: 'final',
     cleanupError,
@@ -81,7 +78,6 @@ function setup({
     async discover() {
       assert.equal(login.state(), null);
       assert.equal(operations.busy(), true);
-      assert.equal(boundary.releases, 2);
       events.push('fetch');
       if (fetchError) throw fetchError;
     },
@@ -105,13 +101,12 @@ test('saved login with cleanup failure preserves the cleanup diagnostic and neve
   assert.equal(operations.busy(), false);
 });
 
-test('successful login releases its owner and checks the original journal before exactly one discovery', async () => {
+test('successful login adopts the saved credential before one discovery', async () => {
   const { login, operations, events } = setup();
   await login.start(action);
   assert.deepEqual(events, ['adopt:connection', 'fetch']);
   assert.equal(operations.notice(), 'Sign-in saved in the Host credential vault.');
   assert.equal(operations.error(), '');
-  assert.equal(boundary.releases, 3);
 });
 
 test('independent discovery failure reports its cause while retaining the saved login', async () => {

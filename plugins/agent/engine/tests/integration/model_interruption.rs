@@ -28,14 +28,13 @@ use std::time::Duration;
 use crate::support::store::SessionFixture;
 use maka_agent_engine::{Engine, RunError, RunInput};
 use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::ModelInterruption;
 use maka_agent_facts::event::TerminalStatus;
 use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::error::ModelFailureCause;
 use maka_code_runtime::CellLimits;
-use maka_model::{ModelError, ModelExecutor, ProviderConfig, ProviderKind};
+use maka_model::{ModelError, ModelExecutor, ProviderKind};
 use maka_tools::CodeExecutor;
 use maka_tools::ToolMode;
 use serde_json::json;
@@ -46,40 +45,18 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 fn input(base: &str, suffix: &str) -> RunInput {
-    RunInput {
-        model_source: None,
-        model_revision: None,
-        provider_id: "fixture".into(),
-        main_output_limit: None,
-        context: None,
-        invocation: Invocation {
-            session_id: "session".into(),
-            turn_id: format!("turn-{suffix}"),
-            run_id: format!("run-{suffix}"),
-            invocation_id: format!("invocation-{suffix}"),
-        },
-        request_fingerprint: None,
-        provider: ProviderConfig {
-            adapter: None,
-            capabilities: Default::default(),
-            kind: ProviderKind::OpenaiChatCompletions,
-            model: "test".into(),
-            base_url: base.into(),
-            auth: maka_model::ProviderAuth::ApiKey("test-key".into()),
-            headers: BTreeMap::new(),
-            network: Default::default(),
-            body_overlay: None,
-        },
-        provider_options: json!({}),
-        supports_vision: false,
-        configuration: invocation::configuration(ToolMode::Direct),
-        work: maka_agent_engine::RunWork::Message {
+    let mut input = invocation::input(
+        base,
+        suffix,
+        maka_agent_engine::RunWork::Message {
             allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: format!("question {suffix}").into(),
             tools: Default::default(),
         },
-    }
+    );
+    input.provider.auth = maka_model::ProviderAuth::ApiKey("test-key".into());
+    input
 }
 
 use crate::support::http;

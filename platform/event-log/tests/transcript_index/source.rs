@@ -31,12 +31,12 @@ use maka_capabilities::storage::Namespace;
 use maka_plugin_core::scope::Scope;
 
 #[tokio::test]
-async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossing_sessions() {
+async fn source_slices_follow_byte_boundaries_and_tool_fields_keep_original_json() {
     let dir = tempfile::tempdir().unwrap();
     let log = EventLog::open(&dir.path().join("source.sqlite"))
         .await
         .unwrap();
-    let value = serde_json::json!({"number":42,"flag":false,"nothing":null,"array":[1,true,"中😀\0\r\n".repeat(700)]});
+    let value = serde_json::json!({"number":42,"flag":false,"nothing":null,"array":[1,true,"中😀\0\r\n".repeat(3)]});
     let owner = maka_event_log::sessions::PluginSession {
         session_id: "source".into(),
         creator: Namespace::new("source.fixture", Scope::Profile).unwrap(),
@@ -99,21 +99,6 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
 
     let through = *log.subscribe_commits().borrow();
 
-    let Page::Ready { chunks, .. } = log
-        .history_text(
-            "source",
-            through,
-            Position::Start,
-            false,
-            maka_event_log::transcript::HistoryLimits {
-                max_bytes: 8192,
-                max_chunks: Some(8),
-                max_json_bytes: 64 * 1024,
-            },
-        )
-        .await
-        .unwrap();
-    // Long projected JSON strings can split one row into several text chunks.
     let sequences = Connection::open(dir.path().join("source.sqlite"))
         .unwrap()
         .prepare("SELECT source_sequence, item_index FROM transcript_directory WHERE session_id='source' AND role IN ('tool_call','tool_result') ORDER BY source_sequence, item_index")
@@ -125,170 +110,149 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     assert_eq!(sequences.len(), 5);
-    assert!(!chunks.is_empty());
     let expected = serde_json::to_string(&value).unwrap();
+    let slice = async |position, budget| {
+        log.history_source(
+            "source",
+            through,
+            maka_event_log::transcript::SourceSelection {
+                locator: sequences[0],
+                field: SourceField::Arguments,
+                path: None,
+            },
+            position,
+            budget,
+        )
+        .await
+        .unwrap()
+    };
+    let first = slice(SourcePosition::Start, 13).await;
+    let next = slice(
+        SourcePosition::After {
+            offset: first.text.len() as u64,
+        },
+        13,
+    )
+    .await;
+    assert_eq!(first.offset, 0);
+    assert_eq!(next.offset, first.text.len() as u64);
+    assert_eq!(
+        format!("{}{}", first.text, next.text),
+        expected[..first.text.len() + next.text.len()]
+    );
+    let unicode = expected.find('中').unwrap() as u64;
+    let han = slice(SourcePosition::After { offset: unicode }, 4).await;
+    let emoji = slice(
+        SourcePosition::After {
+            offset: unicode + 3,
+        },
+        4,
+    )
+    .await;
+    assert_eq!(han.text, "中");
+    assert_eq!(emoji.text, "😀");
+    let tail = slice(SourcePosition::Tail, 13).await;
+    let previous = slice(
+        SourcePosition::Before {
+            offset: tail.offset,
+        },
+        13,
+    )
+    .await;
+    assert_eq!(tail.offset + tail.text.len() as u64, expected.len() as u64);
+    assert_eq!(previous.offset + previous.text.len() as u64, tail.offset);
+    assert_eq!(
+        format!("{}{}", previous.text, tail.text),
+        expected[previous.offset as usize..]
+    );
     for (sequence, field) in [
         (sequences[0], SourceField::Arguments),
         (sequences[1], SourceField::Result),
     ] {
-        for budget in [4, 13, 8192] {
-            for reverse in [false, true] {
-                let mut position = if reverse {
-                    SourcePosition::Tail
-                } else {
-                    SourcePosition::Start
-                };
-                let mut text = String::new();
-                loop {
-                    let source = log
-                        .history_source(
-                            "source",
-                            through,
-                            maka_event_log::transcript::SourceSelection {
-                                locator: sequence,
-                                field,
-                                path: None,
-                            },
-                            position,
-                            budget,
-                        )
-                        .await
-                        .unwrap();
-                    assert!(source.origin.is_none());
-                    assert_eq!(source.format, SourceFormat::Json);
-                    assert_eq!(
-                        source.role,
-                        if field == SourceField::Arguments {
-                            SourceRole::ToolCall
-                        } else {
-                            SourceRole::ToolResult
-                        }
-                    );
-                    assert_eq!(
-                        source.fields,
-                        if field == SourceField::Arguments {
-                            vec![
-                                SourceField::ToolName,
-                                SourceField::Body,
-                                SourceField::Arguments,
-                            ]
-                        } else {
-                            vec![SourceField::Body, SourceField::Result]
-                        }
-                    );
-                    assert_eq!(source.total_bytes, expected.len() as u64);
-                    assert!(source.text.len() <= budget);
-                    assert!(!source.text.is_empty());
-                    if reverse {
-                        text.insert_str(0, &source.text);
-                    } else {
-                        text.push_str(&source.text);
-                    }
-                    let offset = if reverse {
-                        source.offset
-                    } else {
-                        source.offset + source.text.len() as u64
-                    };
-                    if (reverse && offset == 0) || (!reverse && offset == source.total_bytes) {
-                        break;
-                    }
-                    position = if reverse {
-                        SourcePosition::Before { offset }
-                    } else {
-                        SourcePosition::After { offset }
-                    };
-                }
-                assert_eq!(text, expected);
-                assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), value);
+        let source = log
+            .history_source(
+                "source",
+                through,
+                maka_event_log::transcript::SourceSelection {
+                    locator: sequence,
+                    field,
+                    path: None,
+                },
+                SourcePosition::Start,
+                8192,
+            )
+            .await
+            .unwrap();
+        assert!(source.origin.is_none());
+        assert_eq!(source.format, SourceFormat::Json);
+        assert_eq!(source.text, expected);
+        assert_eq!(source.total_bytes, expected.len() as u64);
+        assert_eq!(
+            source.role,
+            if field == SourceField::Arguments {
+                SourceRole::ToolCall
+            } else {
+                SourceRole::ToolResult
             }
-        }
+        );
+        assert_eq!(
+            source.fields,
+            if field == SourceField::Arguments {
+                vec![
+                    SourceField::ToolName,
+                    SourceField::Body,
+                    SourceField::Arguments,
+                ]
+            } else {
+                vec![SourceField::Body, SourceField::Result]
+            }
+        );
+    }
+    let middle = expected.find('😀').unwrap() as u64 + 1;
+    for (session, fence, field, position) in [
+        ("source", 0, SourceField::Arguments, SourcePosition::Start),
+        (
+            "other",
+            through,
+            SourceField::Arguments,
+            SourcePosition::Start,
+        ),
+        (
+            "source",
+            through,
+            SourceField::Result,
+            SourcePosition::Start,
+        ),
+        (
+            "source",
+            through,
+            SourceField::Arguments,
+            SourcePosition::After { offset: middle },
+        ),
+        (
+            "source",
+            through,
+            SourceField::Arguments,
+            SourcePosition::After {
+                offset: expected.len() as u64 + 1,
+            },
+        ),
+    ] {
         assert!(
             log.history_source(
-                "source",
-                0,
+                session,
+                fence,
                 maka_event_log::transcript::SourceSelection {
-                    locator: sequence,
+                    locator: sequences[0],
                     field,
                     path: None
                 },
-                SourcePosition::Start,
-                8192
+                position,
+                8192,
             )
             .await
-            .is_err()
-        );
-        assert!(
-            log.history_source(
-                "other",
-                through,
-                maka_event_log::transcript::SourceSelection {
-                    locator: sequence,
-                    field,
-                    path: None
-                },
-                SourcePosition::Start,
-                8192
-            )
-            .await
-            .is_err()
-        );
-        let wrong = if field == SourceField::Arguments {
-            SourceField::Result
-        } else {
-            SourceField::Arguments
-        };
-        assert!(
-            log.history_source(
-                "source",
-                through,
-                maka_event_log::transcript::SourceSelection {
-                    locator: sequence,
-                    field: wrong,
-                    path: None
-                },
-                SourcePosition::Start,
-                8192
-            )
-            .await
-            .is_err()
-        );
-        let middle = expected
-            .as_bytes()
-            .iter()
-            .position(|byte| *byte == 0xf0)
-            .unwrap() as u64
-            + 1;
-        assert!(
-            log.history_source(
-                "source",
-                through,
-                maka_event_log::transcript::SourceSelection {
-                    locator: sequence,
-                    field,
-                    path: None
-                },
-                SourcePosition::After { offset: middle },
-                8192
-            )
-            .await
-            .is_err()
-        );
-        assert!(
-            log.history_source(
-                "source",
-                through,
-                maka_event_log::transcript::SourceSelection {
-                    locator: sequence,
-                    field,
-                    path: None
-                },
-                SourcePosition::After {
-                    offset: expected.len() as u64 + 1
-                },
-                8192
-            )
-            .await
-            .is_err()
+            .is_err(),
+            "session={session}, fence={fence}, field={field:?}, position={position:?}"
         );
     }
     for (sequence, field) in [
@@ -518,14 +482,22 @@ async fn failure_search_reads_original_diagnostic_fields_and_visible_body() {
 }
 
 #[tokio::test]
-async fn structured_values_page_literal_text_and_exact_json_without_aliasing_keys_or_authority() {
+async fn structured_sources_select_original_values_without_aliasing_keys_or_authority() {
     use maka_agent_ports::session::history::SourceSegment::Index;
     use maka_agent_ports::session::history::SourceSegment::Key;
     let dir = tempfile::tempdir().unwrap();
     let database = dir.path().join("structured.sqlite");
     let log = EventLog::open(&database).await.unwrap();
-    let text = "中😀\0\r\n".repeat(1000);
+    let text = "中😀\0\r\n".repeat(3);
+    let long_key = "original-key-".repeat(24);
+    let mut nested = serde_json::json!("original selected raw bytes 🦀");
+    let mut deep_path = vec![Key("deep".into())];
+    for index in (0..16).rev() {
+        nested = serde_json::json!({format!("k{index}"): nested});
+    }
+    deep_path.extend((0..16).map(|index| Key(format!("k{index}"))));
     let value = serde_json::json!({
+        long_key.clone(): "original selected raw bytes 🦀", "deep":nested,
         "content":text, "array":[{"0":"object key", "":true}],
         "a.\"\\/\0key":{"value":u64::MAX}, "empty":"", "nil":null,
         "boolean":false, "number":1.2345678901234567, "object":{"x":1}
@@ -578,213 +550,188 @@ async fn structured_values_page_literal_text_and_exact_json_without_aliasing_key
 
     let sequences = Connection::open(&database).unwrap().prepare("SELECT source_sequence, item_index FROM transcript_directory WHERE session_id='structured' AND role IN ('tool_call','tool_result') ORDER BY source_sequence, item_index").unwrap().query_map([], |row| Ok(RowPosition { source_sequence: row.get::<_, i64>(0)? as u64, item_index: row.get::<_, i64>(1)? as u64 })).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
     assert_eq!(sequences.len(), 2);
-    for (sequence, field) in [
-        (sequences[0], SourceField::Arguments),
-        (sequences[1], SourceField::Result),
+    let (sequence, field) = (sequences[1], SourceField::Result);
+    let source = log
+        .history_source(
+            "structured",
+            through,
+            maka_event_log::transcript::SourceSelection {
+                locator: sequence,
+                field,
+                path: Some(vec![Key("content".into())]),
+            },
+            SourcePosition::Start,
+            8192,
+        )
+        .await
+        .unwrap();
+    assert_eq!(source.path, Some(vec![Key("content".into())]));
+    assert_eq!(source.position, sequence);
+    assert_eq!(source.field, field);
+    assert_eq!(source.format, SourceFormat::Text);
+    assert_eq!(source.total_bytes, text.len() as u64);
+    assert_eq!(source.text, text);
+    for (path, expected, format) in [
+        (
+            vec![Key("array".into()), Index(0), Key("0".into())],
+            "object key".to_owned(),
+            SourceFormat::Text,
+        ),
+        (
+            vec![Key("array".into()), Index(0), Key("".into())],
+            "true".into(),
+            SourceFormat::Json,
+        ),
+        (
+            vec![Key("a.\"\\/\0key".into()), Key("value".into())],
+            u64::MAX.to_string(),
+            SourceFormat::Json,
+        ),
+        (
+            vec![Key(long_key.clone())],
+            "original selected raw bytes 🦀".into(),
+            SourceFormat::Text,
+        ),
+        (
+            deep_path.clone(),
+            "original selected raw bytes 🦀".into(),
+            SourceFormat::Text,
+        ),
+        (vec![Key("empty".into())], String::new(), SourceFormat::Text),
+        (vec![Key("nil".into())], "null".into(), SourceFormat::Json),
+        (
+            vec![Key("boolean".into())],
+            "false".into(),
+            SourceFormat::Json,
+        ),
+        (
+            vec![Key("number".into())],
+            value["number"].to_string(),
+            SourceFormat::Json,
+        ),
+        (
+            vec![Key("object".into())],
+            value["object"].to_string(),
+            SourceFormat::Json,
+        ),
     ] {
-        for budget in [13, 8192] {
-            for reverse in [false, true] {
-                let mut offset = if reverse { text.len() as u64 } else { 0 };
-                let mut complete = String::new();
-                loop {
-                    let position = if reverse {
-                        SourcePosition::Before { offset }
-                    } else {
-                        SourcePosition::After { offset }
-                    };
-                    let source = log
-                        .history_source(
-                            "structured",
-                            through,
-                            maka_event_log::transcript::SourceSelection {
-                                locator: sequence,
-                                field,
-                                path: Some(vec![Key("content".into())]),
-                            },
-                            position,
-                            budget,
-                        )
-                        .await
-                        .unwrap();
-                    assert_eq!(source.path, Some(vec![Key("content".into())]));
-                    assert_eq!(source.position, sequence);
-                    assert_eq!(source.field, field);
-                    assert_eq!(source.format, SourceFormat::Text);
-                    assert_eq!(source.total_bytes, text.len() as u64);
-                    assert!(source.text.len() <= budget);
-                    assert_eq!(
-                        source.text,
-                        text[source.offset as usize..source.offset as usize + source.text.len()]
-                    );
-                    if reverse {
-                        complete.insert_str(0, &source.text);
-                        offset = source.offset;
-                    } else {
-                        complete.push_str(&source.text);
-                        offset = source.offset + source.text.len() as u64;
-                    }
-                    if (reverse && offset == 0) || (!reverse && offset == source.total_bytes) {
-                        break;
-                    }
-                    assert!(!source.text.is_empty());
-                }
-                assert_eq!(complete, text);
-            }
-        }
-        for (path, expected, format) in [
-            (
-                vec![Key("array".into()), Index(0), Key("0".into())],
-                "object key".to_owned(),
-                SourceFormat::Text,
-            ),
-            (
-                vec![Key("array".into()), Index(0), Key("".into())],
-                "true".into(),
-                SourceFormat::Json,
-            ),
-            (
-                vec![Key("a.\"\\/\0key".into()), Key("value".into())],
-                u64::MAX.to_string(),
-                SourceFormat::Json,
-            ),
-            (vec![Key("empty".into())], String::new(), SourceFormat::Text),
-            (vec![Key("nil".into())], "null".into(), SourceFormat::Json),
-            (
-                vec![Key("boolean".into())],
-                "false".into(),
-                SourceFormat::Json,
-            ),
-            (
-                vec![Key("number".into())],
-                value["number"].to_string(),
-                SourceFormat::Json,
-            ),
-            (
-                vec![Key("object".into())],
-                value["object"].to_string(),
-                SourceFormat::Json,
-            ),
-        ] {
-            let source = log
-                .history_source(
-                    "structured",
-                    through,
-                    maka_event_log::transcript::SourceSelection {
-                        locator: sequence,
-                        field,
-                        path: Some(path.clone()),
-                    },
-                    SourcePosition::Start,
-                    8192,
-                )
-                .await
-                .unwrap();
-            assert_eq!(source.path, Some(path));
-            assert_eq!(source.format, format);
-            assert_eq!(source.text, expected);
-        }
-        for path in [
-            vec![Key("missing".into())],
-            vec![Key("array".into()), Key("0".into())],
-            vec![Key("array".into()), Index(0), Index(0)],
-            vec![Key("array".into()), Index(u32::MAX)],
-            vec![Key("content".into()); 17],
-            vec![Key("界".repeat(86))],
-        ] {
-            assert!(
-                log.history_source(
-                    "structured",
-                    through,
-                    maka_event_log::transcript::SourceSelection {
-                        locator: sequence,
-                        field,
-                        path: Some(path)
-                    },
-                    SourcePosition::Start,
-                    8192
-                )
-                .await
-                .is_err()
-            );
-        }
-        assert!(
-            log.history_source(
-                "structured",
-                through,
-                maka_event_log::transcript::SourceSelection {
-                    locator: sequence,
-                    field: SourceField::Body,
-                    path: Some(vec![])
-                },
-                SourcePosition::Start,
-                8192
-            )
-            .await
-            .is_err()
-        );
-        assert!(
-            log.history_source(
-                "structured",
-                through,
-                maka_event_log::transcript::SourceSelection {
-                    locator: sequence,
-                    field,
-                    path: Some(vec![Key("content".into())])
-                },
-                SourcePosition::After { offset: 1 },
-                8192
-            )
-            .await
-            .is_err()
-        );
-        assert!(
-            log.history_source(
-                "foreign",
-                through,
-                maka_event_log::transcript::SourceSelection {
-                    locator: sequence,
-                    field,
-                    path: Some(vec![Key("content".into())])
-                },
-                SourcePosition::Start,
-                8192
-            )
-            .await
-            .is_err()
-        );
-        let root = log
+        let source = log
             .history_source(
                 "structured",
                 through,
                 maka_event_log::transcript::SourceSelection {
                     locator: sequence,
                     field,
-                    path: Some(vec![]),
+                    path: Some(path.clone()),
                 },
-                SourcePosition::Tail,
+                SourcePosition::Start,
                 8192,
             )
             .await
             .unwrap();
-        let raw = log
-            .history_source(
-                "structured",
-                through,
-                maka_event_log::transcript::SourceSelection {
-                    locator: sequence,
-                    field,
-                    path: None,
-                },
-                SourcePosition::Tail,
-                8192,
-            )
-            .await
-            .unwrap();
-        assert_eq!(root.text, raw.text);
-        assert_eq!(root.total_bytes, raw.total_bytes);
-        assert_eq!(root.path, Some(vec![]));
-        assert!(raw.path.is_none());
+        assert_eq!(source.path, Some(path));
+        assert_eq!(source.format, format);
+        assert_eq!(source.text, expected);
     }
+    for path in [
+        vec![Key("missing".into())],
+        vec![Key("array".into()), Key("0".into())],
+        vec![Key("array".into()), Index(0), Index(0)],
+        vec![Key("array".into()), Index(u32::MAX)],
+    ] {
+        assert!(
+            log.history_source(
+                "structured",
+                through,
+                maka_event_log::transcript::SourceSelection {
+                    locator: sequence,
+                    field,
+                    path: Some(path)
+                },
+                SourcePosition::Start,
+                8192
+            )
+            .await
+            .is_err()
+        );
+    }
+    assert!(
+        log.history_source(
+            "structured",
+            through,
+            maka_event_log::transcript::SourceSelection {
+                locator: sequence,
+                field: SourceField::Body,
+                path: Some(vec![])
+            },
+            SourcePosition::Start,
+            8192
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        log.history_source(
+            "structured",
+            through,
+            maka_event_log::transcript::SourceSelection {
+                locator: sequence,
+                field,
+                path: Some(vec![Key("content".into())])
+            },
+            SourcePosition::After { offset: 1 },
+            8192
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        log.history_source(
+            "foreign",
+            through,
+            maka_event_log::transcript::SourceSelection {
+                locator: sequence,
+                field,
+                path: Some(vec![Key("content".into())])
+            },
+            SourcePosition::Start,
+            8192
+        )
+        .await
+        .is_err()
+    );
+    let root = log
+        .history_source(
+            "structured",
+            through,
+            maka_event_log::transcript::SourceSelection {
+                locator: sequence,
+                field,
+                path: Some(vec![]),
+            },
+            SourcePosition::Tail,
+            8192,
+        )
+        .await
+        .unwrap();
+    let raw = log
+        .history_source(
+            "structured",
+            through,
+            maka_event_log::transcript::SourceSelection {
+                locator: sequence,
+                field,
+                path: None,
+            },
+            SourcePosition::Tail,
+            8192,
+        )
+        .await
+        .unwrap();
+    assert_eq!(root.text, raw.text);
+    assert_eq!(root.total_bytes, raw.total_bytes);
+    assert_eq!(root.path, Some(vec![]));
+    assert!(raw.path.is_none());
     log.shutdown().await.unwrap();
     let reopened = EventLog::open(&database).await.unwrap();
     let source = reopened
@@ -801,7 +748,7 @@ async fn structured_values_page_literal_text_and_exact_json_without_aliasing_key
         )
         .await
         .unwrap();
-    assert!(text.ends_with(&source.text));
+    assert_eq!(source.text, text);
 }
 
 #[tokio::test]

@@ -17,13 +17,16 @@
  * under the License.
  */
 
-UPDATE context_obligations
-SET sealed_unknown = 1
-WHERE kind = 'tool' AND sealed_unknown = 0
-  AND EXISTS (
-    SELECT 1 FROM event_log terminal
-    WHERE terminal.invocation_id = context_obligations.invocation_id
-      AND terminal.kind = 'invocation_ended'
-      AND json_extract(COALESCE(terminal.event_json, terminal.retained_json), '$.fact.outcome.kind')
-        IN ('failed', 'cancelled')
-  );
+mod directory_authorization;
+mod edit;
+mod glob;
+mod grep;
+mod grep_scope;
+mod patch;
+mod policy;
+mod published_directory;
+mod read;
+mod windows_read;
+mod workspace_identity;
+mod worktree;
+mod write;

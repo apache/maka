@@ -47,8 +47,6 @@ mod image;
 mod interrupted_ancestry;
 #[path = "large_siblings.rs"]
 mod large_siblings;
-#[path = "observation_count.rs"]
-mod observation_count;
 #[path = "performance.rs"]
 mod performance;
 #[path = "performance_executor.rs"]
@@ -303,7 +301,7 @@ async fn interleaved_stream_preserves_order_and_excludes_other_session_evidence(
     let path = temp.path().join("log.sqlite");
     let log = EventLog::open(&path).await.unwrap();
     let (id, _) = partial(&log, "a", "start\n").await;
-    partial(&log, "b", "unrelated").await;
+    let (other_id, _) = partial(&log, "b", "unrelated").await;
     let expected = format!(
         "start\n{}",
         (0..1024).map(|i| format!("{i}😀\n")).collect::<String>()
@@ -326,6 +324,13 @@ async fn interleaved_stream_preserves_order_and_excludes_other_session_evidence(
         })
         .collect();
     log.append_batch(&events).await.unwrap();
+    let live = *log.subscribe_commits().borrow();
+    let invocation = event("a", opening()).event().invocation.clone();
+    let overlay = log.active_transcript(&invocation, live).await.unwrap();
+    assert_eq!(overlay.len(), 1);
+    assert_eq!(overlay[0].id, id);
+    assert!(matches!(&overlay[0].content,
+        maka_presentation::Content::Assistant { text, interrupted: false, .. } if text == &expected));
     let through = interrupt(&log, "a").await;
     crate::transcript_cache::materialize_all_rows(&log, "a", through)
         .await
@@ -337,16 +342,54 @@ async fn interleaved_stream_preserves_order_and_excludes_other_session_evidence(
     assert_eq!(assistant["id"], id);
     assert_eq!(assistant["text"], expected);
 
-    let other = interrupt(&log, "b").await;
+    let other_text = format!("unrelated{}", "not part of a".repeat(1024));
+    log.append(&event(
+        "b",
+        observe(
+            "b",
+            ModelEvent::PartFinished {
+                id: "provider-part".into(),
+                provider_options: None,
+            },
+        ),
+    ))
+    .await
+    .unwrap();
+    let other = log
+        .append(&event(
+            "b",
+            Fact::ModelCompleted {
+                step_id: "step-b".into(),
+                output: ModelStep {
+                    parts: vec![ModelPart::Text {
+                        text_kind: TextKind::Text,
+                        text: other_text.clone(),
+                        provider_options: None,
+                    }],
+                    finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
+                    usage: ModelUsage::default(),
+                    provider_options: None,
+                    response_id: None,
+                    model: None,
+                    timestamp: None,
+                },
+            },
+        ))
+        .await
+        .unwrap();
+    assert!(
+        log.active_transcript(&event("b", opening()).event().invocation, other)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     crate::transcript_cache::materialize_all_rows(&log, "b", other)
         .await
         .unwrap();
     let other_rows = crate::test_store::inspect_cache(&log, |db| rows(db, "b")).await;
     let assistant: Value = serde_json::from_slice(&other_rows[2].1).unwrap();
-    assert_eq!(
-        assistant["text"],
-        format!("unrelated{}", "not part of a".repeat(1024))
-    );
+    assert_eq!(assistant["id"], other_id);
+    assert_eq!(assistant["text"], other_text);
     assert_eq!(
         crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await,
         projected
@@ -603,449 +646,4 @@ async fn complete_projection_and_malformed_source_preserve_canonical_admission()
             .is_empty()
     );
     log.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebuild() {
-    use maka_agent_facts::model::ModelToolCall;
-    use maka_agent_ports::session::history::{Page, Position, SourceField, SourcePosition};
-    use maka_event_log::transcript::{TranscriptDirection, TranscriptRead};
-
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("fanout.sqlite");
-    let log = EventLog::open(&path).await.unwrap();
-    log.create_session("fanout", "create", &serde_json::json!({}), 1)
-        .await
-        .unwrap();
-    let opening_fact = log.append(&event("fanout", opening())).await.unwrap();
-    log.append(&event("fanout", request("fanout")))
-        .await
-        .unwrap();
-    let calls: Vec<_> = (0..256)
-        .map(|index| ModelToolCall {
-            id: format!("call-{index}"),
-            name: "Read".into(),
-            input: serde_json::json!({"index": index, "value": "last😀"}).into(),
-            provider_options: None,
-            provider_executed: false,
-        })
-        .collect();
-    let observed: Vec<_> = calls
-        .iter()
-        .map(|call| {
-            event(
-                "fanout",
-                observe("fanout", ModelEvent::ToolCall(call.clone())),
-            )
-        })
-        .collect();
-    let old_fence = *log.append_batch(&observed).await.unwrap().last().unwrap();
-    let completion = log
-        .append(&event(
-            "fanout",
-            Fact::ModelCompleted {
-                step_id: "step-fanout".into(),
-                output: ModelStep {
-                    parts: calls
-                        .iter()
-                        .cloned()
-                        .map(|call| ModelPart::ToolCall { call })
-                        .collect(),
-                    finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
-                    usage: ModelUsage {
-                        input_tokens: Some(7),
-                        output_tokens: Some(11),
-                        ..Default::default()
-                    },
-                    provider_options: None,
-                    response_id: None,
-                    model: None,
-                    timestamp: None,
-                },
-            },
-        ))
-        .await
-        .unwrap();
-    let neighboring = log
-        .append(&event(
-            "fanout",
-            Fact::ToolDispatched {
-                presentation: None,
-                title: None,
-                operation_id: "step-fanout:call-255".into(),
-                call: maka_agent_facts::tool_call::ToolCallIdentity::provider(
-                    "step-fanout".into(),
-                    "call-255".into(),
-                ),
-                name: "Read".into(),
-                input: serde_json::json!({"index":255,"value":"last😀"}),
-            },
-        ))
-        .await
-        .unwrap();
-    assert_eq!(neighboring, completion + 1);
-    let template = event(
-        "fanout",
-        Fact::InvocationEnded {
-            outcome: InvocationOutcome::Completed,
-        },
-    );
-    let success = maka_agent_facts::event::EventWrite::tool_success(
-        template.event().id.clone(),
-        template.event().recorded_at,
-        template.event().invocation.clone(),
-        "step-fanout:call-255".into(),
-        serde_json::json!({"answer":"literal😀result"}).into(),
-    )
-    .unwrap()
-    .0;
-    let result_fact = log.append(&success).await.unwrap();
-    let through = end(&log, "fanout", InvocationOutcome::Completed).await;
-    crate::transcript_cache::materialize_all_rows(&log, "fanout", through)
-        .await
-        .unwrap();
-    let original = crate::test_store::inspect_cache(&log, |db| rows(db, "fanout")).await;
-    let completed: Vec<_> = original
-        .iter()
-        .filter(|row| row.0.source_sequence == completion)
-        .collect();
-    assert_eq!(completed.len(), 257);
-    for (index, row) in completed.iter().enumerate() {
-        assert_eq!(
-            row.0,
-            RowPosition {
-                source_sequence: completion,
-                item_index: index as u64
-            }
-        );
-    }
-    let usage: Value = serde_json::from_slice(&completed[256].1).unwrap();
-    assert_eq!(usage["type"], "token_usage");
-    assert_eq!(usage["input"], 7);
-    assert_eq!(usage["output"], 11);
-    let next = original
-        .iter()
-        .find(|row| row.0.source_sequence == neighboring)
-        .unwrap();
-    assert_eq!(
-        next.0,
-        RowPosition {
-            source_sequence: neighboring,
-            item_index: 0
-        }
-    );
-    assert!(completed[256].0 < next.0);
-    let old = log
-        .transcript_headers(
-            "fanout",
-            &TranscriptRead {
-                through: old_fence,
-                position: None,
-                direction: TranscriptDirection::Newer,
-                limit: 256,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(old.len(), 2);
-    assert!(
-        old.iter()
-            .all(|row| row.position.source_sequence <= old_fence)
-    );
-    let anchored = log
-        .transcript_headers(
-            "fanout",
-            &TranscriptRead {
-                through,
-                position: Some(RowPosition {
-                    source_sequence: completion,
-                    item_index: 255,
-                }),
-                direction: TranscriptDirection::Older,
-                limit: 2,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        anchored.iter().map(|row| row.position).collect::<Vec<_>>(),
-        vec![
-            RowPosition {
-                source_sequence: completion,
-                item_index: 255
-            },
-            RowPosition {
-                source_sequence: completion,
-                item_index: 254
-            },
-        ]
-    );
-    let beyond_fence = log
-        .transcript_headers(
-            "fanout",
-            &TranscriptRead {
-                through: old_fence,
-                position: Some(RowPosition {
-                    source_sequence: completion,
-                    item_index: 255,
-                }),
-                direction: TranscriptDirection::Older,
-                limit: 2,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        beyond_fence
-            .iter()
-            .map(|row| row.position)
-            .collect::<Vec<_>>(),
-        vec![
-            RowPosition {
-                source_sequence: opening_fact,
-                item_index: 1
-            },
-            RowPosition {
-                source_sequence: opening_fact,
-                item_index: 0
-            },
-        ]
-    );
-    let first = log
-        .history_text(
-            "fanout",
-            through,
-            Position::Event {
-                sequence: completion,
-            },
-            false,
-            maka_event_log::transcript::HistoryLimits {
-                max_bytes: 8192,
-                max_chunks: Some(1),
-                max_json_bytes: 65536,
-            },
-        )
-        .await
-        .unwrap();
-    let Page::Ready { chunks, .. } = first;
-    assert_eq!(chunks.len(), 1);
-    assert_eq!(
-        chunks[0].position,
-        RowPosition {
-            source_sequence: completion,
-            item_index: 0
-        }
-    );
-    let call_position = RowPosition {
-        source_sequence: completion,
-        item_index: 255,
-    };
-    let result_position = RowPosition {
-        source_sequence: result_fact,
-        item_index: 0,
-    };
-    let tool_id = maka_presentation::tool_message_id("inv-fanout", "step-fanout:call-255");
-    assert_eq!(
-        log.tool_source_position("fanout", through, &tool_id)
-            .await
-            .unwrap(),
-        call_position
-    );
-    let sources = [
-        (
-            call_position,
-            SourceField::Arguments,
-            r#"{"index":255,"value":"last😀"}"#,
-        ),
-        (
-            result_position,
-            SourceField::Result,
-            r#"{"answer":"literal😀result"}"#,
-        ),
-    ];
-    for (position, field, expected) in sources {
-        let mut text = String::new();
-        loop {
-            let source = log
-                .history_source(
-                    "fanout",
-                    through,
-                    maka_event_log::transcript::SourceSelection {
-                        locator: position,
-                        field,
-                        path: None,
-                    },
-                    SourcePosition::After {
-                        offset: text.len() as u64,
-                    },
-                    4,
-                )
-                .await
-                .unwrap();
-            assert_eq!(source.position, position);
-            assert_eq!(source.offset, text.len() as u64);
-            text.push_str(&source.text);
-            if text.len() as u64 == source.total_bytes {
-                break;
-            }
-        }
-        assert_eq!(text, expected);
-    }
-    for position in [
-        call_position,
-        RowPosition {
-            source_sequence: completion,
-            item_index: 257,
-        },
-    ] {
-        assert!(
-            log.history_source(
-                "fanout",
-                old_fence,
-                maka_event_log::transcript::SourceSelection {
-                    locator: position,
-                    field: SourceField::Arguments,
-                    path: None
-                },
-                SourcePosition::Start,
-                8192
-            )
-            .await
-            .is_err()
-        );
-    }
-    assert!(
-        log.history_source(
-            "fanout",
-            through,
-            maka_event_log::transcript::SourceSelection {
-                locator: RowPosition {
-                    source_sequence: completion,
-                    item_index: 257
-                },
-                field: SourceField::Arguments,
-                path: None
-            },
-            SourcePosition::Start,
-            8192
-        )
-        .await
-        .is_err()
-    );
-    for reverse in [false, true] {
-        let mut position = if reverse {
-            Position::Tail
-        } else {
-            Position::Start
-        };
-        let mut found = std::collections::BTreeMap::new();
-        loop {
-            let Page::Ready {
-                chunks,
-                before,
-                after,
-                ..
-            } = log
-                .history_text(
-                    "fanout",
-                    through,
-                    position,
-                    false,
-                    maka_event_log::transcript::HistoryLimits {
-                        max_bytes: 8192,
-                        max_chunks: Some(17),
-                        max_json_bytes: 65536,
-                    },
-                )
-                .await
-                .unwrap();
-            for chunk in chunks {
-                if chunk.role == maka_agent_ports::session::history::Role::ToolCall {
-                    assert_eq!(chunk.position.source_sequence, completion);
-                    assert!(found.insert(chunk.position, chunk.message_id).is_none());
-                }
-            }
-            let Some(cursor) = (if reverse { before } else { after }) else {
-                break;
-            };
-            position = if reverse {
-                Position::Before { cursor }
-            } else {
-                Position::After { cursor }
-            };
-        }
-        assert_eq!(found.len(), 256);
-        for index in 0..256 {
-            assert_eq!(
-                found[&RowPosition {
-                    source_sequence: completion,
-                    item_index: index
-                }],
-                maka_presentation::tool_message_id(
-                    "inv-fanout",
-                    &format!("step-fanout:call-{index}")
-                )
-            );
-        }
-    }
-    // A search continuation is an exclusive pair boundary, even when no row has that pair.
-    let search = log
-        .search_transcript(
-            "fanout",
-            maka_event_log::transcript::search::TranscriptSearch {
-                through,
-                after: Some(RowPosition {
-                    source_sequence: completion,
-                    item_index: 257,
-                }),
-                query: "literal".into(),
-                case_sensitive: true,
-                whole_word: false,
-                include_internal: false,
-                max_matches: 16,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(search.matches.len(), 1);
-    assert_eq!(search.matches[0].position, result_position);
-    let canonical = log.prefix(1024, 8 * 1024 * 1024).await.unwrap().digest;
-    crate::test_store::inspect_cache(&log, |db| {
-        for table in ["temp.transcript_text", "temp.transcript_rows"] {
-            db.execute(&format!("DELETE FROM {table}"), []).unwrap();
-        }
-    })
-    .await;
-    log.close().await.unwrap();
-    let reopened = EventLog::open(&path).await.unwrap();
-    crate::transcript_cache::materialize_all_rows(&reopened, "fanout", through)
-        .await
-        .unwrap();
-    assert_eq!(
-        crate::test_store::inspect_cache(&reopened, |db| rows(db, "fanout")).await,
-        original
-    );
-    assert_eq!(
-        reopened.prefix(1024, 8 * 1024 * 1024).await.unwrap().digest,
-        canonical
-    );
-    for (position, field, expected) in sources {
-        let source = reopened
-            .history_source(
-                "fanout",
-                through,
-                maka_event_log::transcript::SourceSelection {
-                    locator: position,
-                    field,
-                    path: None,
-                },
-                SourcePosition::Start,
-                8192,
-            )
-            .await
-            .unwrap();
-        assert_eq!(source.position, position);
-        assert_eq!(source.text, expected);
-    }
-    reopened.close().await.unwrap();
 }

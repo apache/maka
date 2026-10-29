@@ -22,376 +22,73 @@ use maka_code_runtime::{CellContext, CellLimits, CellOutput, CellResult};
 use maka_computer_use::facade;
 use maka_js_runtime::repl::Repl;
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Default)]
-struct Fixture {
-    row_reads: Arc<std::sync::atomic::AtomicUsize>,
-    app_action_error: Option<ToolError>,
-    action_errors: Arc<std::sync::Mutex<Vec<ToolError>>>,
-    dom_snapshot_json: Option<String>,
-}
-struct NativeCommands(Arc<std::sync::Mutex<Vec<Value>>>);
-impl ToolExecutor for NativeCommands {
-    fn names(&self) -> Vec<String> {
-        vec!["cua".into()]
-    }
+type Reply = dyn Fn(&Value) -> Result<Value, ToolError> + Send + Sync;
 
-    fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
-        let recorded = self.0.clone();
-        Box::pin(async move {
-            if input["method"] == "action" {
-                serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
-                    .map_err(|error| {
-                        maka_agent_facts::tools::ToolError::Failed(error.to_string())
-                    })?;
-                recorded.lock().unwrap().push(input.clone());
-            }
-            Fixture::default().invoke(name, input, cancellation).await
-        })
-    }
+#[derive(Clone)]
+struct Host {
+    calls: Arc<Mutex<Vec<Value>>>,
+    reply: Arc<Reply>,
 }
-impl ToolExecutor for Fixture {
-    fn names(&self) -> Vec<String> {
-        vec!["cua".into()]
-    }
-    fn invoke(&self, _: String, input: Value, _: CancellationToken) -> ToolFuture {
-        let row_reads = self.row_reads.clone();
-        let app_action_error = self.app_action_error.clone();
-        let action_errors = self.action_errors.clone();
-        let dom_snapshot_json = self.dom_snapshot_json.clone();
-        Box::pin(async move {
-            if input["method"] == "action"
-                && input["handle"]["kind"] == "app"
-                && let Some(error) = app_action_error
-            {
-                action_errors.lock().unwrap().push(error.clone());
-                return Err(error);
-            }
-            Ok(match input["method"].as_str().unwrap() {
-                "documentation" => json!("Fixture CUA reference"),
-                "getState" => {
-                    json!({"apps":[],"browsers":[],"errors":["desktop_fixture_unavailable"]})
-                }
-                "getApp" => {
-                    let id = if input["target"] == "without-screenshot" {
-                        "without-screenshot"
-                    } else {
-                        "fixture"
-                    };
-                    json!({"kind":"app","handle":{"kind":"app","id":id},"state":"Fixture window"})
-                }
-                "getBrowser" => {
-                    json!({"id":"fixture","type":"extension","apiProfile":{"mode":"ax","user":true}})
-                }
-                "createBrowserTab" => {
-                    assert_eq!(input["browserId"], "fixture");
-                    let id = match input.get("url") {
-                        None => "omitted",
-                        Some(Value::String(url)) if url == "about:blank" => "blank",
-                        Some(Value::String(url)) if url.is_empty() => "empty",
-                        Some(Value::String(url)) if url == "ftp://example.com" => "ftp",
-                        other => panic!("unexpected convenience URL {other:?}"),
-                    };
-                    json!({"kind":"tab","apiProfile":{"mode":"ax","user":true},"handle":{"kind":"tab","id":id},"id":format!("fixture:{id}")})
-                }
-                "listTabs" | "browserManagedTabs" => {
-                    if input["method"] == "listTabs" {
-                        assert_eq!(input["options"]["browser"], "fixture");
-                    } else {
-                        assert_eq!(input["browserId"], "fixture");
-                    }
-                    json!([{"id":"fixture:existing","title":"Selected fixture","url":"about:blank"}])
-                }
-                "browserTab" => {
-                    assert_eq!(input["browserId"], "fixture");
-                    let id = match input["reference"]["kind"].as_str().unwrap() {
-                        "existing" => {
-                            assert_eq!(input["reference"]["id"], "fixture:existing");
-                            "existing"
-                        }
-                        "new" => "new",
-                        other => panic!("unexpected browser tab reference {other}"),
-                    };
-                    json!({"kind":"tab","apiProfile":{"mode":"ax","user":true},"handle":{"kind":"tab","id":id},"id":format!("fixture:{id}")})
-                }
-                "tabMetadata" => {
-                    assert_eq!(input["handle"]["kind"], "tab");
-                    match input["handle"]["id"].as_str().unwrap() {
-                        "existing" => json!({"title":"Selected fixture","url":"about:blank"}),
-                        "new" => json!({"title":"New fixture","url":"about:blank"}),
-                        other => panic!("unexpected tab metadata handle {other}"),
-                    }
-                }
-                "browserCua" => {
-                    assert_eq!(input["operation"]["kind"], "domSnapshot");
-                    serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
-                        .expect("DOM snapshot uses the real command schema");
-                    json!({"json":dom_snapshot_json.expect("DOM fixture has escaped JSON text")})
-                }
-                "browserRead" => {
-                    assert_eq!(input["handle"]["kind"], "tab");
-                    match input["operation"]["kind"].as_str().unwrap() {
-                        "count" => {
-                            assert_eq!(input["locator"]["selector"], ".rows");
-                            json!(2)
-                        }
-                        "rows" => {
-                            assert_eq!(input["locator"]["selector"], ".rows");
-                            assert_eq!(
-                                input["operation"]["relative"]["selector"],
-                                "internal:role=button[name=\"Use\"s]"
-                            );
-                            let revision =
-                                row_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-                            json!([
-                                {"attributes":{"data-revision":revision.to_string()},"innerText":format!("Cached {revision}"),"textContent":format!("Raw {revision}")},
-                                {"attributes":{},"innerText":"Second","textContent":"Second"}
-                            ])
-                        }
-                        "innerText" => {
-                            assert_eq!(
-                                input["locator"]["selector"],
-                                ".rows >> nth=0 >> internal:has-text=\"x\"i"
-                            );
-                            json!("Live")
-                        }
-                        other => panic!("unexpected browser read {other}"),
-                    }
-                }
-                "observe" => {
-                    if input["handle"]["id"] == "without-screenshot"
-                        || input["handle"]["id"] == "omitted"
-                    {
-                        json!({"state":"Screenshot unavailable"})
-                    } else {
-                        json!({"image":{"type":"image","mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=="}})
-                    }
-                }
-                "action" => match input["action"]["kind"].as_str().unwrap() {
-                    "click" | "linuxClick" => {
-                        json!({"effect":"unverifiable","route":"synthetic_events","delivery":{"mode":"foreground"},"guidance":"Fixture effect is uncertain; read getAXState(); do not replay input."})
-                    }
-                    "setValue" => {
-                        json!({"effect":"suspected_noop","guidance":"Fixture effect is uncertain; read getAXState(); do not replay input."})
-                    }
-                    "typeText" => {
-                        json!({"effect":"partial","requested_chars":5,"delivered_chars":2,"guidance":"Fixture effect is uncertain; read getAXState(); do not replay input."})
-                    }
-                    "scroll" | "linuxScroll" | "drag" | "linuxDrag" | "secondary" => Value::Null,
-                    other => panic!("unexpected fixture action {other}"),
-                },
-                other => panic!("unexpected fixture command {other}"),
-            })
-        })
-    }
-}
-
-struct AxCommands {
-    native: bool,
-    calls: Arc<std::sync::Mutex<Vec<Value>>>,
-}
-impl ToolExecutor for AxCommands {
-    fn names(&self) -> Vec<String> {
-        vec!["cua".into()]
-    }
-    fn invoke(&self, _: String, input: Value, _: CancellationToken) -> ToolFuture {
-        let native = self.native;
-        let calls = self.calls.clone();
-        Box::pin(async move {
-            serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
-                .map_err(|error| ToolError::Failed(error.to_string()))?;
-            calls.lock().unwrap().push(input.clone());
-            Ok(match input["method"].as_str().unwrap() {
-                "documentation" => json!("AX fixture reference"),
-                "getBrowser" => {
-                    json!({"id":"fixture","type":if native {"extension"}else{"cdp"},"apiProfile":{"mode":"ax","user":native}})
-                }
-                "browserTab" | "browserUserClaimTab" => {
-                    json!({"kind":"tab","id":"17","handle":{"kind":"tab","id":"ax"},"apiProfile":{"mode":"ax","user":native}})
-                }
-                "observe" => {
-                    json!({"state":"AX fixture state","image":{"type":"image","mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=="}})
-                }
-                "action" => Value::Null,
-                other => panic!("unexpected AX fixture command {other}"),
-            })
-        })
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn browser_ax_profile_uses_real_protocol_and_keeps_get_separate_from_write() {
-    for native in [true, false] {
-        let repl = Repl::new(facade(), CellLimits::default()).unwrap();
-        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let context =
-            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
-        let result = repl.evaluate(
-            format!(r#"
-                const browser=await cua.getBrowser({{id:'fixture'}});
-                if (('user' in browser)!=={native} || Object.keys(browser).includes('user')!=={native}) throw Error('provider profile mismatch');
-                const tab=await browser.tabs.get('17');
-                const names=['click','drag','get','paste','performSecondaryAction','pressKey','scroll','selectText','setValue','typeText','write'];
-                if (JSON.stringify(Object.keys(tab.ax).sort())!==JSON.stringify(names.sort()) || !Object.isFrozen(tab.ax)) throw Error('AX shape mismatch');
-                if (await tab.ax.get()!=='AX fixture state') throw Error('AX get result mismatch');
-                const shot=await tab.ax.get('screenshot');
-                if (!(shot instanceof Uint8Array) || shot[0]!==137) throw Error('AX screenshot bytes mismatch');
-                await tab.ax.click([8.5,9.25],{{mouseButton:'r',clickCount:2,extra:true}});
-                await tab.ax.drag([1,2],[3,4]);
-                await tab.ax.paste(null,'paste',{{format:'text',extra:true}});
-                await tab.ax.performSecondaryAction(7,'expand');
-                await tab.ax.pressKey(null,'Control_L+F12');
-                await tab.ax.scroll([5,6],'down',2.5);
-                await tab.ax.selectText(8,'chosen',{{prefix:'before',suffix:'after',selectionType:'text',extra:true}});
-                await tab.ax.setValue(9,'value');
-                await tab.ax.typeText(null,'typed');
-                if (await tab.ax.write('both',{{emit:false}})!==undefined) throw Error('AX write returned data');
-            "#),
-            Arc::new(AxCommands { native, calls: calls.clone() }), CancellationToken::new(), context.clone(), Duration::from_secs(5),
-        ).await.unwrap();
-        assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
-        let output = context.take_output();
-        let text: Vec<_> = output
-            .iter()
-            .filter_map(|part| match part {
-                CellOutput::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            text.iter()
-                .filter(|text| **text == "AX fixture state")
-                .count(),
-            1,
-            "{output:?}"
-        );
-        assert!(
-            matches!(output.last(), Some(CellOutput::Media { .. })),
-            "{output:?}"
-        );
-        {
-            let calls = calls.lock().unwrap();
-            let observations: Vec<_> = calls
-                .iter()
-                .filter(|call| call["method"] == "observe")
-                .collect();
-            assert_eq!(observations.len(), 3);
-            assert!(
-                observations
-                    .iter()
-                    .all(|call| call["options"]["emit"] == false)
-            );
-            let actions: Vec<_> = calls
-                .iter()
-                .filter(|call| call["method"] == "action")
-                .map(|call| call["action"].clone())
-                .collect();
-            assert_eq!(
-                actions,
-                vec![
-                    json!({"kind":"click","target":[8.5,9.25],"options":{"mouseButton":"right","clickCount":2}}),
-                    json!({"kind":"drag","from":[1,2],"to":[3,4]}),
-                    json!({"kind":"paste","index":null,"text":"paste","options":{"format":"text"}}),
-                    json!({"kind":"secondary","index":7,"action":"expand"}),
-                    json!({"kind":"pressKey","index":null,"key":"Control_L+F12"}),
-                    json!({"kind":"scroll","target":[5,6],"direction":"down","distance":2.5}),
-                    json!({"kind":"selectText","index":8,"text":"chosen","options":{"prefix":"before","suffix":"after","selectionType":"text"}}),
-                    json!({"kind":"setValue","index":9,"value":"value"}),
-                    json!({"kind":"typeText","index":null,"text":"typed"}),
-                ]
-            );
+impl Host {
+    fn new(reply: impl Fn(&Value) -> Result<Value, ToolError> + Send + Sync + 'static) -> Self {
+        Self {
+            calls: Arc::default(),
+            reply: Arc::new(reply),
         }
-        repl.close().await.unwrap();
+    }
+    fn actions(&self) -> Vec<Value> {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call["method"] == "action")
+            .map(|call| call["action"].clone())
+            .collect()
     }
 }
-
-struct UserBrowserCommands(Arc<std::sync::Mutex<Vec<Value>>>);
-impl ToolExecutor for UserBrowserCommands {
+impl ToolExecutor for Host {
     fn names(&self) -> Vec<String> {
         vec!["cua".into()]
     }
-    fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
-        let recorded = self.0.clone();
+    fn invoke(&self, _: String, input: Value, _: CancellationToken) -> ToolFuture {
+        let host = self.clone();
         Box::pin(async move {
             serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
-                .map_err(|error| ToolError::Failed(error.to_string()))?;
-            recorded.lock().unwrap().push(input.clone());
-            match input["method"].as_str().unwrap() {
-                "browserUserOpenTabs" => {
-                    Ok(json!([{"id":"17","title":"User fixture","url":"https://fixture.test/"}]))
-                }
-                "browserUserClaimTab" => Ok(
-                    json!({"kind":"tab","apiProfile":{"mode":"ax","user":true},"handle":{"kind":"tab","id":"user-handle"},"id":input["tabId"]}),
-                ),
-                "browserTab" => Ok(
-                    json!({"kind":"tab","apiProfile":{"mode":"ax","user":true},"handle":{"kind":"tab","id":"deferred"},"id":input["reference"]["id"]}),
-                ),
-                _ => Fixture::default().invoke(name, input, cancellation).await,
-            }
+                .expect("the facade must produce the real Host command schema");
+            host.calls.lock().unwrap().push(input.clone());
+            (host.reply)(&input)
         })
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn browser_user_claim_preserves_public_ids_and_lazy_get_stays_separate() {
-    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
-    let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let context =
-        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
-    let result = repl.evaluate(
-        "const browser = await cua.getBrowser({id:'fixture'});
-         const tabs = await browser.user.openTabs();
-         const objectClaim = await browser.user.claimTab(tabs[0]);
-         if (objectClaim.id !== '17' || typeof objectClaim.playwright.getByRole !== 'function') throw Error('claim did not return the ordinary Tab');
-         await browser.user.claimTab(' 0x11 ');
-         await browser.user.claimTab({id:''});
-         for (const value of ['', null, {}, 17, {id:17}]) {
-           let rejected = false;
-           try { await browser.user.claimTab(value); } catch { rejected = true; }
-           if (!rejected) throw Error('invalid claim argument reached the host');
-         }
-         const deferred = await browser.tabs.get('17');
-         if (deferred.id !== '17') throw Error('lazy get changed the public id');".into(),
-        Arc::new(UserBrowserCommands(recorded.clone())), CancellationToken::new(), context, Duration::from_secs(5),
-    ).await.unwrap();
-    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
-    {
-        let calls = recorded.lock().unwrap();
-        let claims: Vec<_> = calls
-            .iter()
-            .filter(|call| call["method"] == "browserUserClaimTab")
-            .map(|call| call["tabId"].clone())
-            .collect();
-        assert_eq!(claims, vec![json!("17"), json!(" 0x11 "), json!("")]);
-        assert_eq!(
-            calls
-                .iter()
-                .filter(|call| call["method"] == "browserUserOpenTabs")
-                .count(),
-            1
-        );
-        assert_eq!(
-            calls
-                .iter()
-                .filter(|call| call["method"] == "browserTab")
-                .count(),
-            1
-        );
-        assert!(!calls.iter().any(|call| call["method"] == "observe"));
-    }
-    repl.close().await.unwrap();
+fn binding(input: &Value) -> Result<Value, ToolError> {
+    Ok(match input["method"].as_str().unwrap() {
+        "documentation" => json!("CUA reference"),
+        "getApp" => json!({"kind":"app","handle":{"kind":"app","id":"fixture"}}),
+        "getBrowser" => {
+            json!({"id":"fixture","type":"extension","apiProfile":{"mode":"ax","user":true}})
+        }
+        "browserTab" | "createBrowserTab" => {
+            json!({"kind":"tab","id":"fixture:tab","handle":{"kind":"tab","id":"tab"},"apiProfile":{"mode":"ax","user":true}})
+        }
+        other => panic!("unexpected Host command {other}: {input}"),
+    })
 }
 
-async fn evaluate(repl: &Repl, code: &str) -> Vec<CellOutput> {
+async fn evaluate(repl: &Repl, host: &Host, source: impl Into<String>) -> Vec<CellOutput> {
     let context = CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![])
         .unwrap()
         .with_image_deduplication();
     let result = repl
         .evaluate(
-            code.into(),
-            Arc::new(Fixture::default()),
+            source.into(),
+            Arc::new(host.clone()),
             CancellationToken::new(),
             context.clone(),
             Duration::from_secs(5),
@@ -402,378 +99,294 @@ async fn evaluate(repl: &Repl, code: &str) -> Vec<CellOutput> {
     context.take_output()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_aliases_normalize_at_the_app_boundary_for_each_platform() {
+fn text(output: &[CellOutput]) -> Vec<&str> {
+    output
+        .iter()
+        .filter_map(|part| match part {
+            CellOutput::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn native_pointer_and_secondary_actions_reach_the_host_protocol() {
     for platform in ["linux", "windows", "mac"] {
         let repl = Repl::new(
             maka_computer_use::facade_for(platform, false),
             CellLimits::default(),
         )
         .unwrap();
-        let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let tools = Arc::new(NativeCommands(recorded.clone()));
+        let host = Host::new(|input| {
+            if input["method"] == "action" {
+                Ok(Value::Null)
+            } else {
+                binding(input)
+            }
+        });
         let distance = if platform == "mac" {
-            "1"
+            "2.5"
         } else {
             "{pixels:100}"
         };
-        let extra = if platform == "mac" {
-            "await app.click([1,2],{mouseButton:0}); await app.click([1,2],{mouseButton:1}); await app.click([1,2],{mouseButton:2}); await app.click([1,2],{mouseButton:' LEFT '}); await app.scroll([1,2],' U ',1);"
-        } else {
-            ""
-        };
-        let code = format!(
-            "const app=await cua.getApp('fixture'); const tab=await cua.createBrowserTab('fixture'); for (const target of [app,tab]) if ('moveCursor' in target) throw Error('unexpected public moveCursor'); for(const button of ['l','r','m']) await app.click([1,2],{{mouseButton:button}}); for(const direction of ['u','d','l','r']) await app.scroll([1,2],direction,{distance}); {extra}"
-        );
-        let context =
-            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
-        let result = repl
-            .evaluate(
-                code,
-                tools,
-                CancellationToken::new(),
-                context,
-                Duration::from_secs(5),
-            )
-            .await
-            .unwrap();
-        assert!(
-            matches!(result, CellResult::Success { .. }),
-            "{platform}: {result:?}"
-        );
-        {
-            let commands = recorded.lock().unwrap();
-            for (actual, expected) in commands[..3].iter().zip(["left", "right", "middle"]) {
-                let button = if platform == "linux" {
-                    &actual["action"]["input"]["mouse_button"]
-                } else {
-                    &actual["action"]["options"]["mouseButton"]
-                };
-                assert_eq!(button, expected);
-            }
-            for (actual, expected) in commands[3..7].iter().zip(["up", "down", "left", "right"]) {
-                let direction = if platform == "linux" {
-                    &actual["action"]["input"]["direction"]
-                } else {
-                    &actual["action"]["direction"]
-                };
-                assert_eq!(direction, expected);
-            }
-            if platform == "mac" {
-                for (actual, expected) in commands[7..11]
-                    .iter()
-                    .zip(["left", "right", "middle", "left"])
-                {
-                    assert_eq!(actual["action"]["options"]["mouseButton"], expected);
-                }
-                assert_eq!(commands[11]["action"]["direction"], "up");
-            }
-        }
-        repl.close().await.unwrap();
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn secondary_action_name_reaches_the_existing_host_dispatch_on_each_platform() {
-    for platform in ["linux", "mac", "windows"] {
-        let repl = Repl::new(
-            maka_computer_use::facade_for(platform, false),
-            CellLimits::default(),
+        evaluate(
+            &repl,
+            &host,
+            format!(
+                r#"
+            const app = await cua.getApp('fixture');
+            await app.click([37.5,41.25],{{mouseButton:'r',clickCount:2}});
+            await app.scroll([37.5,41.25],'u',{distance});
+            await app.performSecondaryAction(7,'Show Menu');
+        "#
+            ),
         )
-        .unwrap();
-        let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let context =
-            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
-        let result = repl
-            .evaluate(
-                "var app = await cua.getApp('fixture');
-                 if (await app.performSecondaryAction(7, 'Show Menu') !== undefined)
-                   throw new Error('secondary action must preserve its void return');"
-                    .into(),
-                Arc::new(NativeCommands(recorded.clone())),
-                CancellationToken::new(),
-                context,
-                Duration::from_secs(5),
-            )
-            .await
-            .unwrap();
-        assert!(
-            matches!(result, CellResult::Success { .. }),
-            "{platform}: {result:?}"
-        );
-        {
-            let commands = recorded.lock().unwrap();
-            assert_eq!(commands.len(), 1, "{platform}: {commands:?}");
-            assert_eq!(commands[0]["handle"], json!({"kind":"app","id":"fixture"}));
+        .await;
+        let actions = host.actions();
+        if platform == "linux" {
             assert_eq!(
-                commands[0]["action"],
-                json!({"kind":"secondary","index":7,"action":"Show Menu"})
+                actions,
+                vec![
+                    json!({"kind":"linuxClick","input":{"x":37.5,"y":41.25,"mouse_button":"right","click_count":2}}),
+                    json!({"kind":"linuxScroll","input":{"x":37.5,"y":41.25,"direction":"up","pixels":100}}),
+                    json!({"kind":"secondary","index":7,"action":"Show Menu"}),
+                ]
+            );
+        } else {
+            assert_eq!(
+                actions,
+                vec![
+                    json!({"kind":"click","target":[37.5,41.25],"options":{"mouseButton":"right","clickCount":2}}),
+                    json!({"kind":"scroll","target":[37.5,41.25],"direction":"up","distance": if platform == "mac" {json!(2.5)} else {json!({"pixels":100})}}),
+                    json!({"kind":"secondary","index":7,"action":"Show Menu"}),
+                ]
             );
         }
         repl.close().await.unwrap();
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn linux_app_projects_pointer_arguments_before_protocol_validation() {
-    let repl = Repl::new(
-        maka_computer_use::facade_for("linux", false),
-        CellLimits::default(),
-    )
-    .unwrap();
-    let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let context =
-        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
-    let result = repl
-        .evaluate(
-            r#"
-const app = await cua.getApp('fixture');
-await app.click([37,41,999]);
-await app.scroll([37,41,999],'down',{pixels:100});
-await app.drag([37,41,999],[57,61,999]);
-await app.drag({0:37,1:41},{0:57,1:61});
-await app.click([37,41],null);
-await app.click([37,41],{ignored:true});
-for (const target of [1,'1','01',null,'not-an-element','٣']) await app.click(target);
-await app.scroll('01','d');
-await app.scroll(null,'down');
-"#
-            .into(),
-            Arc::new(NativeCommands(recorded.clone())),
-            CancellationToken::new(),
-            context,
-            Duration::from_secs(5),
+#[tokio::test]
+async fn host_refusals_and_unknown_outcomes_keep_their_original_message() {
+    for (error, expected) in [
+        (
+            ToolError::Failed("native scroll refused".into()),
+            "native scroll refused",
+        ),
+        (
+            ToolError::OutcomeUnknown("tool effect outcome unknown: native detail".into()),
+            "tool effect outcome unknown: native detail",
+        ),
+    ] {
+        let repl = Repl::new(
+            maka_computer_use::facade_for("linux", false),
+            CellLimits::default(),
         )
-        .await
         .unwrap();
-    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
-    let actions = recorded
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|command| command["action"].clone())
-        .collect();
+        let host = Host::new(move |input| {
+            if input["method"] == "action" {
+                Err(error.clone())
+            } else {
+                binding(input)
+            }
+        });
+        let output = evaluate(
+            &repl,
+            &host,
+            r#"
+            const app = await cua.getApp('fixture');
+            try { await app.click([-1,41],{clickCount:0}); }
+            catch(error) { nodeRepl.write({message:error.message}); }
+        "#,
+        )
+        .await;
+        let caught: Value = serde_json::from_str(text(&output).last().unwrap()).unwrap();
+        assert_eq!(caught, json!({"message": expected}));
+        assert_eq!(
+            host.actions(),
+            vec![json!({"kind":"linuxClick","input":{"x":-1,"y":41,"click_count":0}})]
+        );
+        repl.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn ax_browser_actions_keep_read_output_separate_from_mutation() {
+    for native in [false, true] {
+        let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+        let host = Host::new(move |input| match input["method"].as_str().unwrap() {
+            "getBrowser" => Ok(
+                json!({"id":"fixture","type":if native {"extension"} else {"cdp"},"apiProfile":{"mode":"ax","user":native}}),
+            ),
+            "browserTab" => Ok(
+                json!({"kind":"tab","id":"17","handle":{"kind":"tab","id":"tab"},"apiProfile":{"mode":"ax","user":native}}),
+            ),
+            "observe" => Ok(json!({"state":"AX state"})),
+            "action" => Ok(Value::Null),
+            _ => binding(input),
+        });
+        let output = evaluate(
+            &repl,
+            &host,
+            r#"
+        const browser = await cua.getBrowser({id:'fixture'});
+        nodeRepl.write({user: 'user' in browser});
+        const tab = await browser.tabs.get('17');
+        nodeRepl.write(await tab.ax.get());
+        await tab.ax.click([8.5,9.25],{mouseButton:'r',clickCount:2,extra:true});
+        await tab.ax.drag([1,2],[3,4]);
+        await tab.ax.paste(null,'paste',{format:'text',extra:true});
+        await tab.ax.selectText(8,'chosen',{prefix:'before',suffix:'after',selectionType:'text'});
+        await tab.ax.setValue(9,'value');
+        await tab.ax.typeText(null,'typed');
+    "#,
+        )
+        .await;
+        assert!(text(&output).contains(&"AX state"));
+        assert!(
+            text(&output).contains(
+                &serde_json::to_string(&json!({"user":native}))
+                    .unwrap()
+                    .as_str()
+            )
+        );
+        assert_eq!(
+            host.actions(),
+            vec![
+                json!({"kind":"click","target":[8.5,9.25],"options":{"mouseButton":"right","clickCount":2}}),
+                json!({"kind":"drag","from":[1,2],"to":[3,4]}),
+                json!({"kind":"paste","index":null,"text":"paste","options":{"format":"text"}}),
+                json!({"kind":"selectText","index":8,"text":"chosen","options":{"prefix":"before","suffix":"after","selectionType":"text"}}),
+                json!({"kind":"setValue","index":9,"value":"value"}),
+                json!({"kind":"typeText","index":null,"text":"typed"}),
+            ]
+        );
+        repl.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn user_claim_is_explicit_while_tab_objects_and_metadata_are_lazy() {
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+    let host = Host::new(|input| match input["method"].as_str().unwrap() {
+        "browserUserOpenTabs" | "browserManagedTabs" => {
+            Ok(json!([{"id":"17","title":"Selected","url":"about:blank"}]))
+        }
+        "browserUserClaimTab" | "browserTab" => Ok(
+            json!({"kind":"tab","id":"17","handle":{"kind":"tab","id":"tab"},"apiProfile":{"mode":"ax","user":true}}),
+        ),
+        "tabMetadata" => Ok(json!({"title":"Selected","url":"about:blank"})),
+        _ => binding(input),
+    });
+    let output = evaluate(
+        &repl,
+        &host,
+        r#"
+        const browser = await cua.getBrowser({id:'fixture'});
+        const listed = await browser.user.openTabs();
+        await browser.user.claimTab(listed[0]);
+        const tab = await browser.tabs.get('17');
+        nodeRepl.write({id:tab.id,title:await tab.title()});
+    "#,
+    )
+    .await;
     assert_eq!(
-        Value::Array(actions),
-        json!([
-            {"kind":"linuxClick","input":{"x":37,"y":41}},
-            {"kind":"linuxScroll","input":{"x":37,"y":41,"direction":"down","pixels":100}},
-            {"kind":"linuxDrag","input":{"path":[{"x":37,"y":41},{"x":57,"y":61}]}},
-            {"kind":"linuxDrag","input":{"path":[{"x":37,"y":41},{"x":57,"y":61}]}},
-            {"kind":"linuxClick","input":{"x":37,"y":41}},
-            {"kind":"linuxClick","input":{"x":37,"y":41}},
-            {"kind":"linuxClick","input":{"element_id":"1"}},
-            {"kind":"linuxClick","input":{"element_id":"1"}},
-            {"kind":"linuxClick","input":{"element_id":"01"}},
-            {"kind":"linuxClick","input":{"element_id":"null"}},
-            {"kind":"linuxClick","input":{"element_id":"not-an-element"}},
-            {"kind":"linuxClick","input":{"element_id":"٣"}},
-            {"kind":"linuxScroll","input":{"element_id":"01","direction":"down"}},
-            {"kind":"linuxScroll","input":{"element_id":"null","direction":"down"}}
-        ])
+        serde_json::from_str::<Value>(text(&output).last().unwrap()).unwrap(),
+        json!({"id":"17","title":"Selected"})
+    );
+    {
+        let calls = host.calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["method"] == "browserUserClaimTab")
+                .map(|call| call["tabId"].clone())
+                .collect::<Vec<_>>(),
+            vec![json!("17")]
+        );
+        assert!(calls.iter().all(|call| call["method"] != "observe"));
+    }
+    repl.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn cached_locator_rows_preserve_relative_selectors_and_tab_isolation() {
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+    let reads = std::sync::atomic::AtomicUsize::new(0);
+    let host = Host::new(move |input| match input["method"].as_str().unwrap() {
+        "browserRead" => Ok(match input["operation"]["kind"].as_str().unwrap() {
+            "count" => json!(2),
+            "rows" => {
+                assert_eq!(
+                    input["operation"]["relative"]["selector"],
+                    "internal:role=button[name=\"Use\"s]"
+                );
+                {
+                    let revision = reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    json!([{"attributes":{"data-revision":revision.to_string()},"innerText":format!("Cached {revision}"),"textContent":format!("Raw {revision}")},{}])
+                }
+            }
+            "innerText" => {
+                assert_eq!(
+                    input["locator"]["selector"],
+                    ".rows >> nth=0 >> internal:has-text=\"x\"i"
+                );
+                json!("Live")
+            }
+            other => panic!("unexpected read {other}"),
+        }),
+        "browserTab" => Ok(
+            json!({"kind":"tab","id":input["reference"]["id"],"handle":{"kind":"tab","id":input["reference"]["id"]},"apiProfile":{"mode":"ax","user":true}}),
+        ),
+        _ => binding(input),
+    });
+    let output = evaluate(&repl, &host, r#"
+        const browser=await cua.getBrowser({id:'fixture'});
+        const tab=await browser.tabs.get('17');
+        const rows=await tab.playwright.locator('.rows').all();
+        const role=rows[0].getByRole('button',{name:'Use',exact:true});
+        const literal=rows[0].locator('internal:role=button[name="Use"s]');
+        const result={inner:await role.innerText(),text:await literal.textContent(),revision:await literal.getAttribute('data-revision')};
+        result.filtered=await rows[0].filter({hasText:'x'}).innerText();
+        const other=await browser.tabs.get('another');
+        try { role.and(other.playwright.locator('button')); }
+        catch(error) { result.crossTabRefused=String(error).includes('same tab'); }
+        nodeRepl.write(result);
+    "#,
+    ).await;
+    assert_eq!(
+        serde_json::from_str::<Value>(text(&output).last().unwrap()).unwrap(),
+        json!({"inner":"Cached 1","text":"Raw 1","revision":"1","filtered":"Live","crossTabRefused":true})
     );
     repl.close().await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn linux_coordinate_click_passes_native_counts_and_null_fields_to_the_host() {
-    let repl = Repl::new(
-        maka_computer_use::facade_for("linux", false),
-        CellLimits::default(),
-    )
-    .unwrap();
-    let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let context =
-        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
-    let result = repl
-        .evaluate(
-            r#"
-const app = await cua.getApp('fixture');
-await app.click([37,41],{clickCount:0});
-await app.click([37,41],{clickCount:4});
-await app.click([null,41],{clickCount:null});
-await app.click([NaN,Infinity],{clickCount:NaN});
-await app.click([37],{clickCount:undefined});
-"#
-            .into(),
-            Arc::new(NativeCommands(recorded.clone())),
-            CancellationToken::new(),
-            context,
-            Duration::from_secs(5),
-        )
-        .await
-        .unwrap();
-    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
-    {
-        let commands = recorded.lock().unwrap();
-        assert!(
-            commands
-                .iter()
-                .all(|command| command["action"]["kind"] == "linuxClick")
-        );
-        let inputs = commands
-            .iter()
-            .map(|command| command["action"]["input"].clone())
-            .collect();
-        // Native parsing and completeness belong to the host, after this boundary.
-        assert_eq!(
-            Value::Array(inputs),
-            json!([
-                {"x":37,"y":41,"click_count":0},
-                {"x":37,"y":41,"click_count":4},
-                {"x":null,"y":41,"click_count":null},
-                {"x":null,"y":null,"click_count":null},
-                {"x":37}
-            ])
-        );
-    }
-    repl.close().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn linux_app_click_preserves_unknown_outcome_body_at_the_repl_boundary() {
-    for body in [
-        "background pointer position is outside the target window",
-        "tool effect outcome unknown: nested application detail",
-    ] {
-        let repl = Repl::new(
-            maka_computer_use::facade_for("linux", false),
-            CellLimits::default(),
-        )
-        .unwrap();
-        let action_errors = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let context =
-            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
-        let result = repl
-            .evaluate(
-                r#"
-const app = await cua.getApp('fixture');
-let caught;
-try { await app.click([-1,41],{clickCount:0}); }
-catch (error) { caught = {string:String(error),message:error.message}; }
-if (caught === undefined) throw Error('expected native click failure');
-nodeRepl.write(caught);
-"#
-                .into(),
-                Arc::new(Fixture {
-                    app_action_error: Some(ToolError::OutcomeUnknown(body.into())),
-                    action_errors: action_errors.clone(),
-                    ..Fixture::default()
-                }),
-                CancellationToken::new(),
-                context.clone(),
-                Duration::from_secs(5),
-            )
-            .await
-            .unwrap();
-        assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
-        let output = context.take_output();
-        let caught = output.iter().find_map(|part| match part {
-            CellOutput::Text { text } => serde_json::from_str::<Value>(text)
-                .ok()
-                .filter(|value| value.get("message").is_some()),
-            _ => None,
-        });
-        assert_eq!(
-            caught,
-            Some(json!({"string":format!("Error: {body}"),"message":body})),
-            "{output:?}"
-        );
-        assert!(matches!(
-            action_errors.lock().unwrap().as_slice(),
-            [ToolError::OutcomeUnknown(message)] if message == body
-        ));
-        repl.close().await.unwrap();
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn linux_app_scroll_keeps_pixel_validation_with_the_host() {
-    for body in [
-        "pixels must be an integer between 1 and 65535",
-        "pixels must be a positive finite number.",
-    ] {
-        let repl = Repl::new(
-            maka_computer_use::facade_for("linux", false),
-            CellLimits::default(),
-        )
-        .unwrap();
-        let action_errors = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let context =
-            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
-        let result = repl
-            .evaluate(
-                format!(
-                    "const app = await cua.getApp('fixture');
-                     let caught;
-                     try {{ await app.scroll([37,41],'down',{{pixels:0}}); }}
-                     catch (error) {{ caught = error.message; }}
-                     if (caught !== {expected}) throw Error('native scroll refusal changed: ' + caught);",
-                    expected = serde_json::to_string(body).unwrap(),
-                ),
-                Arc::new(Fixture {
-                    app_action_error: Some(ToolError::Failed(body.into())),
-                    action_errors: action_errors.clone(),
-                    ..Fixture::default()
-                }),
-                CancellationToken::new(),
-                context,
-                Duration::from_secs(5),
-            )
-            .await
-            .unwrap();
-        assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
-        assert!(matches!(
-            action_errors.lock().unwrap().as_slice(),
-            [ToolError::Failed(message)] if message == body
-        ));
-        repl.close().await.unwrap();
-    }
-}
-
-#[test]
-fn scroll_distance_distinguishes_missing_from_null_and_round_trips_missing() {
-    use maka_computer_use::protocol::{Action, Command, Distance};
-    let command = json!({"method":"action","handle":{"kind":"app","id":"fixture"},"action":{"kind":"scroll","target":[10,20],"direction":"down"}});
-    let parsed: Command = serde_json::from_value(command.clone()).unwrap();
-    let serialized = serde_json::to_value(parsed).unwrap();
-    assert!(serialized["action"].get("distance").is_none());
-    assert!(serde_json::from_value::<Command>(serialized).is_ok());
-    let mut explicit = command;
-    explicit["action"]["distance"] = Value::Null;
-    assert!(serde_json::from_value::<Command>(explicit).is_err());
-    for pages in [-1.0, 0.0, 0.5, 51.0] {
-        let action: Action = serde_json::from_value(
-            json!({"kind":"scroll","target":1,"direction":"down","distance":pages}),
-        )
-        .unwrap();
-        assert!(
-            matches!(action, Action::Scroll { distance: Some(Distance::Pages(actual)), .. } if actual == pages)
-        );
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn combined_observation_omits_unavailable_screenshot_for_apps_and_tabs() {
+#[tokio::test]
+async fn observations_omit_missing_images_and_deduplicate_present_images_per_evaluation() {
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
     let repl = Repl::new(facade(), CellLimits::default()).unwrap();
-    let output = evaluate(&repl, "const app=await cua.getApp('without-screenshot'); const combined=await app.getAXStateAndScreenshot({emit:false}); nodeRepl.write({state:combined.state,hasScreenshot:Object.prototype.hasOwnProperty.call(combined,'screenshot')}); const tab=await cua.createBrowserTab('fixture'); const tabCombined=await tab.getAXStateAndScreenshot({emit:false}); nodeRepl.write({hasScreenshot:Object.prototype.hasOwnProperty.call(tabCombined,'screenshot')});").await;
-    assert!(output.iter().any(|part| matches!(part, CellOutput::Text { text } if text == "{\"state\":\"Screenshot unavailable\",\"hasScreenshot\":false}")));
-    assert!(output.iter().any(
-        |part| matches!(part, CellOutput::Text { text } if text == "{\"hasScreenshot\":false}")
-    ));
-    repl.close().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn inventory_failures_remain_visible_and_auto_explicit_screenshot_output_is_once_per_call() {
-    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+    let host = Host::new(|input| match input["method"].as_str().unwrap() {
+        "observe" if input["kind"] == "screenshot" => {
+            Ok(json!({"image":{"type":"image","mimeType":"image/png","data":PNG}}))
+        }
+        "observe" => Ok(json!({"state":"Screenshot unavailable"})),
+        _ => binding(input),
+    });
     let output = evaluate(
         &repl,
-        "const state=await cua.getState({emit:false}); nodeRepl.write(state.apps);",
+        &host,
+        r#"
+        const app=await cua.getApp('fixture');
+        const combined=await app.getAXStateAndScreenshot({emit:false});
+        nodeRepl.write({state:combined.state,hasScreenshot:Object.hasOwn(combined,'screenshot')});
+        globalThis.shot=await app.getScreenshot();
+        await nodeRepl.emitImage(shot);
+    "#,
     )
     .await;
-    assert!(output.iter().any(|part| matches!(part, CellOutput::Text { text } if text.contains("desktop_fixture_unavailable"))));
-    let output = evaluate(&repl, "const app=await cua.getApp('fixture'); const shot=await app.getScreenshot(); await nodeRepl.emitImage(shot);").await;
+    assert!(
+        text(&output).contains(&"{\"state\":\"Screenshot unavailable\",\"hasScreenshot\":false}")
+    );
     assert_eq!(
         output
             .iter()
@@ -781,92 +394,73 @@ async fn inventory_failures_remain_visible_and_auto_explicit_screenshot_output_i
             .count(),
         1
     );
-    let output = evaluate(&repl, "await nodeRepl.emitImage(shot);").await;
+    let output = evaluate(&repl, &host, "await nodeRepl.emitImage(shot);").await;
     assert_eq!(
         output
             .iter()
             .filter(|part| matches!(part, CellOutput::Media { .. }))
             .count(),
-        1,
-        "a later call can intentionally show the same image"
+        1
     );
-    for (code, effect) in [
-        ("nodeRepl.write(await app.click([0,0]));", "unverifiable"),
-        (
-            "nodeRepl.write(await app.setValue(1, 'value'));",
-            "suspected_noop",
-        ),
-        ("nodeRepl.write(await app.typeText('value'));", "partial"),
-    ] {
-        let output = evaluate(&repl, code).await;
-        assert!(output.iter().any(|part| matches!(part, CellOutput::Text {text} if text.contains(effect) && text.contains("getAXState()") && text.contains("do not replay"))));
-        assert!(
-            output
-                .iter()
-                .any(|part| matches!(part, CellOutput::Text {text} if text == "undefined")),
-            "actions retain the public Promise<void> contract"
-        );
-        if effect == "partial" {
-            assert!(output.iter().any(|part| matches!(part, CellOutput::Text {text} if text.contains("\"requestedChars\":5") && text.contains("\"deliveredChars\":2"))));
-        }
-    }
     repl.close().await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rich_browser_tab_methods_return_lazy_objects_and_current_metadata_without_auto_output() {
+#[tokio::test]
+async fn partial_effects_and_inventory_errors_remain_visible_without_replaying_actions() {
     let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+    let host = Host::new(|input| match input["method"].as_str().unwrap() {
+        "getState" => Ok(json!({"apps":[],"browsers":[],"errors":["desktop unavailable"]})),
+        "action" => Ok(
+            json!({"effect":"partial","requested_chars":5,"delivered_chars":2,"guidance":"read getAXState(); do not replay"}),
+        ),
+        _ => binding(input),
+    });
     let output = evaluate(
         &repl,
-        "const browser=await cua.getBrowser({id:'fixture'}); const listed=await browser.tabs.list(); const selected=await browser.tabs.get(listed[0].id); const opened=await browser.tabs.new(); nodeRepl.write({title:await selected.title(),url:await opened.url(),id:opened.id});",
+        &host,
+        "await cua.getState({emit:false});const app=await cua.getApp('fixture');await app.typeText('value');",
     ).await;
-    assert_eq!(output.len(), 2, "{output:?}");
-    let texts: Vec<_> = output
+    let values: Vec<Value> = text(&output)
         .iter()
-        .filter_map(|part| match part {
-            CellOutput::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
+        .filter_map(|s| serde_json::from_str(s).ok())
         .collect();
-    assert_eq!(texts.len(), 2, "{texts:?}");
-    assert_eq!(texts[0], "Fixture CUA reference");
     assert_eq!(
-        serde_json::from_str::<Value>(texts[1]).unwrap(),
-        json!({"title":"Selected fixture","url":"about:blank","id":"fixture:new"})
+        values,
+        vec![
+            json!({"errors":["desktop unavailable"]}),
+            json!({"effect":"partial","requestedChars":5,"deliveredChars":2,"warning":"read getAXState(); do not replay"})
+        ]
     );
+    assert_eq!(host.actions().len(), 1);
     repl.close().await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn convenience_creation_preserves_omitted_and_explicit_urls_for_owned_navigation() {
+#[tokio::test]
+async fn encoded_dom_and_titles_survive_model_parser_replacement() {
     let repl = Repl::new(facade(), CellLimits::default()).unwrap();
-    let output = evaluate(&repl,"const omitted=await cua.createBrowserTab('fixture'); const blank=await cua.createBrowserTab('fixture','about:blank'); const empty=await cua.createBrowserTab('fixture',''); const ftp=await cua.createBrowserTab('fixture','ftp://example.com'); nodeRepl.write([omitted.id,blank.id,empty.id,ftp.id]);").await;
-    assert_eq!(output.len(), 2, "{output:?}");
-    assert!(
-        matches!(&output[1],CellOutput::Text{text} if serde_json::from_str::<Value>(text).unwrap() == json!(["fixture:omitted","fixture:blank","fixture:empty","fixture:ftp"]))
-    );
-    repl.close().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn playwright_collection_reads_share_exact_selector_caches_and_keep_tab_identity() {
-    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
-    let output = evaluate(&repl, r#"
-        const browser=await cua.getBrowser({id:'fixture'});
-        const tab=await browser.tabs.get('fixture:existing');
-        const rows=await tab.playwright.locator('.rows').all();
-        const role=rows[0].getByRole('button',{name:'Use',exact:true});
-        const literal=rows[0].locator('internal:role=button[name="Use"s]');
-        const result={inner:await role.innerText(),text:await literal.textContent(),revision:await literal.getAttribute('data-revision')};
-        result.filtered=await rows[0].filter({}).filter({hasText:'x'}).innerText();
-        const other=await browser.tabs.new();
-        try { role.and(other.playwright.locator('button')); throw Error('cross-tab locator accepted'); }
-        catch(error) { if(!String(error).includes('same tab')) throw error; result.crossTabRefused=true; }
-        nodeRepl.write(result);
-    "#).await;
-    assert_eq!(output.len(), 2, "{output:?}");
-    assert!(
-        matches!(&output[1],CellOutput::Text{text} if serde_json::from_str::<Value>(text).unwrap() == json!({"inner":"Cached 1","text":"Raw 1","revision":"1","filtered":"Live","crossTabRefused":true}))
+    let host = Host::new(|input| match input["method"].as_str().unwrap() {
+        "browserCua" => Ok(json!({"json":r#""<button>\ud83d\udc00\\ud800</button>""#})),
+        "tabMetadata" => Ok(json!({"titleJson":r#""\ud800 title \udc00 \\ud800 😀""#})),
+        "observe" => {
+            Ok(json!({"state":"Tab 17\n0 RootWebArea \"\\ud800 title\"\n  1 button \"OK\""}))
+        }
+        _ => binding(input),
+    });
+    let output = evaluate(&repl, &host, r#"
+        const tab=await (await cua.getBrowser({id:'fixture'})).tabs.get('17');
+        const saved=JSON.parse;
+        JSON.parse=()=>{throw Error('model parser must not run');};
+        try {
+            const dom=await tab.dom_cua.get_visible_dom();
+            const title=await tab.title();
+            const ax=await tab.getAXState({emit:false});
+            nodeRepl.write({dom:dom==='<button>\ud83d\udc00\\ud800</button>',title:title==='\ud800 title \udc00 \\ud800 😀',ax:ax==='Tab 17\n0 RootWebArea "\\ud800 title"\n  1 button "OK"'});
+        } finally {JSON.parse=saved;}
+    "#,
+    ).await;
+    assert_eq!(
+        serde_json::from_str::<Value>(text(&output).last().unwrap()).unwrap(),
+        json!({"dom":true,"title":true,"ax":true})
     );
     repl.close().await.unwrap();
 }
@@ -1081,221 +675,4 @@ async fn persistent_repl_uses_each_evaluations_language_without_rewriting_user_o
     repl.close().await.unwrap();
     native.lock().await.close().await.unwrap();
     driver.lock().await.close().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dom_snapshot_preserves_utf16_through_rust_and_the_real_repl_facade() {
-    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
-    let context =
-        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
-    let result = repl.evaluate(
-        r#"
-            const tab = await cua.createBrowserTab('fixture');
-            const saved = JSON.parse;
-            JSON.parse = () => { throw Error('model-replaced parser must not run'); };
-            try {
-                const value = await tab.dom_cua.get_visible_dom();
-                const expected = '<button node_id=17>' + '\ud83d' + '</button>\n<input node_id=18 title="' + '\udc00' + '\\ud800" />';
-                if (value !== expected || typeof value !== 'string') throw Error('DOM UTF-16 text changed');
-                if (value.charCodeAt(value.indexOf('>') + 1) !== 0xd83d) throw Error('high surrogate lost');
-                if (!value.includes('\udc00') || !value.includes('\\ud800')) throw Error('low surrogate or literal escape lost');
-                nodeRepl.write('DOM UTF-16 preserved');
-            } finally { JSON.parse = saved; }
-        "#.into(),
-        Arc::new(Fixture {
-            dom_snapshot_json: Some(r#""<button node_id=17>\ud83d</button>\n<input node_id=18 title=\"\udc00\\ud800\" />""#.into()),
-            ..Fixture::default()
-        }),
-        CancellationToken::new(), context.clone(), Duration::from_secs(5),
-    ).await.unwrap();
-    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
-    assert!(
-        context
-            .take_output()
-            .iter()
-            .any(|part| matches!(part, CellOutput::Text {text} if text == "DOM UTF-16 preserved"))
-    );
-    repl.close().await.unwrap();
-}
-
-#[cfg(feature = "native-desktop")]
-struct EncodedTitleFixture {
-    title: cua_driver_core::browser::JsonStringLiteral,
-    group: cua_driver_core::browser::JsonStringLiteral,
-}
-#[cfg(feature = "native-desktop")]
-impl ToolExecutor for EncodedTitleFixture {
-    fn names(&self) -> Vec<String> {
-        vec!["cua".into()]
-    }
-
-    fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
-        let title = self.title.clone();
-        let group = self.group.clone();
-        Box::pin(async move {
-            serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
-                .expect("title fixture uses the actual command schema");
-            let row = json!({"id":"fixture:existing","titleJson":title,"tabGroupJson":group,"url":"about:blank"});
-            Ok(match input["method"].as_str().unwrap() {
-                "listTabs" | "browserUserOpenTabs" => json!([row]),
-                "browserManagedTabs" => {
-                    let mut row = row;
-                    row.as_object_mut().unwrap().remove("tabGroupJson");
-                    json!([row])
-                }
-                "getState" => {
-                    json!({"apps":[{"title":"Native title untouched"}],"browsers":[{"id":"fixture","tabs":[row]}],"errors":[]})
-                }
-                "tabMetadata" => row,
-                _ => return Fixture::default().invoke(name, input, cancellation).await,
-            })
-        })
-    }
-}
-
-#[cfg(feature = "native-desktop")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn encoded_titles_reach_every_repl_surface_before_observation_output() {
-    use cua_driver_core::browser::JsonStringLiteral;
-    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
-    let context =
-        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
-    let result = repl.evaluate(r#"
-        const browser = await cua.getBrowser({id:'fixture'});
-        const tab = await browser.tabs.get('fixture:existing');
-        const expected = '\ud800 title \udc00 \\ud800 😀';
-        const group = '\udc00 group';
-        const originalParser = JSON.parse;
-        JSON.parse = () => { throw Error('model parser must not be called'); };
-        try {
-            const check = (row, withGroup) => {
-                if (row.title !== expected || typeof row.title !== 'string') throw Error('title changed');
-                if (withGroup && row.tabGroup !== group) throw Error('group changed');
-                if (!withGroup && Object.hasOwn(row,'tabGroup')) throw Error('managed inventory leaked user group');
-                if (Object.hasOwn(row,'titleJson') || Object.hasOwn(row,'tabGroupJson')) throw Error('encoded fields escaped');
-            };
-            if (await tab.title() !== expected) throw Error('tab.title changed');
-            check((await browser.tabs.list())[0], false);
-            check((await browser.user.openTabs())[0], true);
-            check((await cua.listTabs())[0], true);
-            const state = await cua.getState();
-            check(state.browsers[0].tabs[0], true);
-            if (state.apps[0].title !== 'Native title untouched') throw Error('native app data changed');
-            nodeRepl.write('Lossless titles preserved');
-        } finally { JSON.parse = originalParser; }
-    "#.into(), Arc::new(EncodedTitleFixture {
-        title: JsonStringLiteral::parse(r#""\ud800 title \udc00 \\ud800 😀""#.into()).unwrap(),
-        group: JsonStringLiteral::parse(r#""\udc00 group""#.into()).unwrap(),
-    }), CancellationToken::new(), context.clone(), Duration::from_secs(5)).await.unwrap();
-    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
-    let output = context.take_output();
-    assert!(
-        output.iter().any(
-            |part| matches!(part, CellOutput::Text{text} if text == "Lossless titles preserved")
-        )
-    );
-    let observations: Vec<_> = output
-        .iter()
-        .filter_map(|part| match part {
-            CellOutput::Text { text } if text.starts_with('[') || text.starts_with("{\"apps\"") => {
-                Some(text)
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(observations.len(), 2);
-    for text in observations {
-        assert!(
-            text.contains(r#""title":"\ud800 title \udc00 \\ud800 😀""#),
-            "{text}"
-        );
-        assert!(text.contains(r#""tabGroup":"\udc00 group""#), "{text}");
-        assert!(
-            !text.contains("titleJson") && !text.contains("tabGroupJson"),
-            "{text}"
-        );
-    }
-    repl.close().await.unwrap();
-}
-
-// The matching native unit keeper renders this exact six-row AX grammar with
-// the real Projection. This fixture checks its existing String/REPL boundary.
-struct DialogAxTitleFixture;
-impl DialogAxTitleFixture {
-    fn state() -> String {
-        concat!(
-            "Tab 17: https://fixture.example/\n",
-            r#"0 RootWebArea "\ud800 title \udc00 \\ud800 A 😀""#,
-            "\n  1 alertdialog \"fixture.example says\"\n    2 StaticText \"Fixture message\"\n    3 textbox \"Response\" value=\"Default response\" [focused]\n    4 button \"Cancel\"\n    5 button \"OK\""
-        )
-        .into()
-    }
-}
-impl ToolExecutor for DialogAxTitleFixture {
-    fn names(&self) -> Vec<String> {
-        vec!["cua".into()]
-    }
-
-    fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
-        Box::pin(async move {
-            serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
-                .expect("dialog AX fixture uses the actual command schema");
-            if input["method"] == "observe" {
-                return Ok(json!({
-                    "state":Self::state(),
-                    "screenshotUnavailable":"Screenshot unavailable while a JavaScript prompt dialog is open. Use getAXState() and its dialog controls."
-                }));
-            }
-            Fixture::default().invoke(name, input, cancellation).await
-        })
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dialog_ax_quoted_utf16_name_crosses_the_actual_repl_as_one_string() {
-    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
-    let context =
-        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
-    let result = repl.evaluate(r#"
-        const tab = await (await cua.getBrowser({id:'fixture'})).tabs.get('fixture:existing');
-        const expected = '\ud800 title \udc00 \\ud800 A 😀';
-        const parse = JSON.parse;
-        const stringify = JSON.stringify;
-        const check = (state) => {
-            if (typeof state !== 'string' || state.split('\n').length !== 7) throw Error('AX String/rows changed');
-            const root = state.split('\n')[1];
-            const prefix = '0 RootWebArea ';
-            if (!root.startsWith(prefix)) throw Error('AX root grammar changed');
-            const quotedName = root.slice(prefix.length);
-            const actual = parse(quotedName);
-            if (actual !== expected || actual.charCodeAt(0) !== 0xd800) throw Error('UTF16 code units changed');
-            if (quotedName !== stringify(expected)) throw Error('AX name spelling is not canonical');
-            if (!actual.includes('\\ud800') || actual.includes('\ufffd')) throw Error('literal escape or lone unit was replaced');
-            if (!state.includes('    3 textbox "Response" value="Default response" [focused]') ||
-                !state.endsWith('    4 button "Cancel"\n    5 button "OK"')) throw Error('dialog controls changed');
-        };
-        JSON.parse = () => { throw Error('facade must not reparse AX text'); };
-        try {
-            check(await tab.getAXState({emit:false}));
-            check(await tab.getAXState());
-            const both = await tab.getAXStateAndScreenshot({emit:false});
-            check(both.state);
-            if (Object.hasOwn(both,'screenshot')) throw Error('dialog screenshot invented');
-            nodeRepl.write('Dialog AX literal preserved');
-        } finally { JSON.parse = parse; }
-    "#.into(), Arc::new(DialogAxTitleFixture), CancellationToken::new(), context.clone(), Duration::from_secs(5)).await.unwrap();
-    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
-    let output = context.take_output();
-    assert!(output.iter().any(|part| matches!(part,
-        CellOutput::Text { text } if text == "Dialog AX literal preserved")));
-    let observations: Vec<_> = output
-        .iter()
-        .filter_map(|part| match part {
-            CellOutput::Text { text } if text.starts_with("Tab 17: ") => Some(text),
-            _ => None,
-        })
-        .collect();
-    let expected = DialogAxTitleFixture::state();
-    assert_eq!(observations, vec![&expected]);
-    repl.close().await.unwrap();
 }

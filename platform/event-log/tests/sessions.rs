@@ -30,8 +30,9 @@ async fn create_replay_conflict_reopen_and_anchored_catalog_pages() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.sqlite");
     let log = EventLog::open(&path).await.unwrap();
+    let configuration = json!({"name":"A", "instructions":"directive".repeat(8193)});
     let original = log
-        .create_session("a", "request-a", &json!({"name": "A"}), 10)
+        .create_session("a", "request-a", &configuration, 10)
         .await
         .unwrap();
     assert_eq!(
@@ -89,6 +90,22 @@ async fn create_replay_conflict_reopen_and_anchored_catalog_pages() {
             .collect::<Vec<_>>(),
         ["b", "c"]
     );
+    assert_eq!(
+        log.workspace_fence("/chosen")
+            .await
+            .unwrap()
+            .0
+            .iter()
+            .map(|entry| entry.session_id.as_str())
+            .collect::<Vec<_>>(),
+        ["b", "c"]
+    );
+    assert!(
+        log.workspace_has_other_session("/chosen", "b")
+            .await
+            .unwrap()
+    );
+    assert_eq!(original.configuration, configuration);
     let page = log.list_sessions::<Value>(None, None, 2).await.unwrap();
     assert_eq!(
         page.sessions

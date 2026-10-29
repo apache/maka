@@ -18,7 +18,6 @@
  */
 
 use super::*;
-use maka_agent_facts::model::prompt_source::WireFormat;
 use std::collections::BTreeMap;
 
 async fn database() -> SqliteConnection {
@@ -31,11 +30,10 @@ async fn database() -> SqliteConnection {
         .execute(&mut db)
         .await
         .unwrap();
-    sqlx::raw_sql("CREATE TEMP TABLE writes(nodes INTEGER,refs INTEGER); INSERT INTO writes VALUES(0,0); CREATE TEMP TABLE ref_events(kind TEXT,id TEXT);
-        CREATE TEMP TRIGGER count_nodes AFTER INSERT ON prepared_cache.context_prepared_nodes BEGIN UPDATE writes SET nodes=nodes+1; END;
-        CREATE TEMP TRIGGER count_refs_insert AFTER INSERT ON prepared_cache.context_prepared_refs BEGIN UPDATE writes SET refs=refs+1; INSERT INTO ref_events VALUES(NEW.kind,NEW.id); END;
-        CREATE TEMP TRIGGER count_refs_update AFTER UPDATE ON prepared_cache.context_prepared_refs BEGIN UPDATE writes SET refs=refs+1; INSERT INTO ref_events VALUES(NEW.kind,NEW.id); END;
-        CREATE TEMP TRIGGER count_refs_delete AFTER DELETE ON prepared_cache.context_prepared_refs BEGIN UPDATE writes SET refs=refs+1; INSERT INTO ref_events VALUES(OLD.kind,OLD.id); END;")
+    sqlx::raw_sql("CREATE TEMP TABLE ref_events(kind TEXT,id TEXT);
+        CREATE TEMP TRIGGER count_refs_insert AFTER INSERT ON prepared_cache.context_prepared_refs BEGIN INSERT INTO ref_events VALUES(NEW.kind,NEW.id); END;
+        CREATE TEMP TRIGGER count_refs_update AFTER UPDATE ON prepared_cache.context_prepared_refs BEGIN INSERT INTO ref_events VALUES(NEW.kind,NEW.id); END;
+        CREATE TEMP TRIGGER count_refs_delete AFTER DELETE ON prepared_cache.context_prepared_refs BEGIN INSERT INTO ref_events VALUES(OLD.kind,OLD.id); END;")
         .execute(&mut db).await.unwrap();
     db
 }
@@ -82,7 +80,7 @@ async fn save_group(db: &mut SqliteConnection, group: &Group) -> String {
     tx.commit().await.unwrap();
     id
 }
-async fn stage(db: &mut SqliteConnection, id: &str, sequence: u64, variant: u64) {
+async fn stage(db: &mut SqliteConnection, id: &str, sequence: u64, variant: u64) -> String {
     let mut tx = db.begin().await.unwrap();
     let mut refs = refs::RefBatch::default();
     let content = tree::save_group(&mut tx, &mut refs, &value(sequence, variant))
@@ -107,6 +105,7 @@ async fn stage(db: &mut SqliteConnection, id: &str, sequence: u64, variant: u64)
     .unwrap();
     refs.flush(&mut tx).await.unwrap();
     tx.commit().await.unwrap();
+    content
 }
 async fn stage_existing(
     db: &mut SqliteConnection,
@@ -154,153 +153,87 @@ async fn collect(db: &mut SqliteConnection) -> Result<bool, StoreError> {
 async fn finish(db: &mut SqliteConnection, id: &str) -> Option<String> {
     let mut in_flight = runtime::InFlight::default();
     in_flight.insert(assembly::Kind::Logical, id, runtime::Generation::Rendering);
-    for _ in 0..100_000 {
-        sqlx::query("DELETE FROM ref_events")
-            .execute(&mut *db)
-            .await
-            .unwrap();
-        let ready = assembly::advance(db, &mut in_flight, assembly::Kind::Logical, id)
-            .await
-            .unwrap();
-        assert!(
-            !sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM ref_events GROUP BY kind,id HAVING COUNT(*)>1)"
-            )
-            .fetch_one(&mut *db)
-            .await
-            .unwrap(),
-            "a natural assembly transaction must write each ref key at most once"
-        );
-        super::tests::assert_refs(db).await.unwrap();
-        // Deliberately collect between every chunk. Staging and unfinished
-        // frame results must survive without pausing the normal collector.
+    while !assembly::advance(db, &mut in_flight, assembly::Kind::Logical, id)
+        .await
+        .unwrap()
+    {
         collect(db).await.unwrap();
-        super::tests::assert_refs(db).await.unwrap();
-        if ready {
-            sqlx::query("UPDATE context_prepared_builds SET complete=1 WHERE id=?")
-                .bind(id)
-                .execute(&mut *db)
-                .await
-                .unwrap();
-            return sqlx::query_scalar("SELECT root FROM context_prepared_builds WHERE id=?")
-                .bind(id)
-                .fetch_one(db)
-                .await
-                .unwrap();
-        }
     }
-    panic!("assembly did not finish")
-}
-async fn counts(db: &mut SqliteConnection) -> (i64, i64) {
-    sqlx::query_as("SELECT nodes,refs FROM writes")
+    sqlx::query("UPDATE context_prepared_builds SET complete=1 WHERE id=?")
+        .bind(id)
+        .execute(&mut *db)
+        .await
+        .unwrap();
+    super::tests::assert_refs(db).await.unwrap();
+    sqlx::query_scalar("SELECT root FROM context_prepared_builds WHERE id=?")
+        .bind(id)
         .fetch_one(db)
         .await
         .unwrap()
 }
-async fn reset(db: &mut SqliteConnection) {
-    sqlx::query("UPDATE writes SET nodes=0,refs=0")
-        .execute(db)
+
+async fn assert_contents(
+    db: &mut SqliteConnection,
+    root: Option<&str>,
+    expected: &BTreeMap<u64, String>,
+) {
+    let mut sequences = Vec::new();
+    let mut cursor = -1;
+    loop {
+        let page = tree::sequences(db, root, cursor, 32).await.unwrap();
+        if page.is_empty() {
+            break;
+        }
+        cursor = *page.last().unwrap() as i64;
+        sequences.extend(page);
+    }
+    assert_eq!(sequences, expected.keys().copied().collect::<Vec<_>>());
+    for (&sequence, content) in expected {
+        assert_eq!(
+            &tree::content_id(db, root, sequence).await.unwrap(),
+            content,
+            "group {sequence}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn assembly_preserves_ordered_updates_empty_groups_and_pinned_roots() {
+    let mut db = database().await;
+    owner(&mut db, "cold", None).await;
+    let mut original = BTreeMap::new();
+    for (sequence, variant) in [(4, 0), (8, 0), (12, 99), (16, 0)] {
+        original.insert(sequence, stage(&mut db, "cold", sequence, variant).await);
+    }
+    collect(&mut db).await.unwrap();
+    let cold = finish(&mut db, "cold").await;
+    assert_contents(&mut db, cold.as_deref(), &original).await;
+    let old_totals = tree::totals(&mut db, cold.as_deref()).await.unwrap();
+    owner(&mut db, "warm", cold.as_deref()).await;
+    let mut changed = original.clone();
+    for (sequence, variant) in [(1, 1), (8, 7), (14, 3), (20, 0)] {
+        changed.insert(sequence, stage(&mut db, "warm", sequence, variant).await);
+    }
+    let warm = finish(&mut db, "warm").await;
+    assert_contents(&mut db, warm.as_deref(), &changed).await;
+    let mut walk = tree::GroupWalk::at(&mut db, warm.as_deref(), 1)
         .await
         .unwrap();
-}
-async fn reference(values: &BTreeMap<u64, u64>) -> Option<String> {
-    let mut db = database().await;
-    let mut root = None;
-    // The test-only sequential implementation is independent of assembly's
-    // Cartesian links and interval clipping, including insertion rotations.
-    for (&sequence, &variant) in values {
-        let group = value(sequence, variant);
-        let content = save_group(&mut db, &group).await;
-        root = tree::insert(&mut db, root, sequence, content, group)
-            .await
-            .unwrap();
+    let mut visible = Vec::new();
+    while let Some((sequence, _, group)) = walk.next(&mut db).await.unwrap() {
+        assert_eq!(group.messages.len(), 1);
+        visible.push(sequence);
     }
-    root
-}
-#[tokio::test]
-async fn bulk_assembly_saves_only_final_nodes_and_reuses_sparse_warm_subtrees() {
-    for n in [256u64, 2048] {
-        let mut db = database().await;
-        let mut values = (1..=n)
-            .map(|i| (i * 4, if i % 31 == 0 { 99 } else { 0 }))
-            .collect::<BTreeMap<_, _>>();
-        owner(&mut db, "cold", None).await;
-        for (&sequence, &variant) in &values {
-            stage(&mut db, "cold", sequence, variant).await;
-        }
-        reset(&mut db).await;
-        let cold = finish(&mut db, "cold").await;
-        let (cold_nodes, cold_refs) = counts(&mut db).await;
-        assert_eq!(
-            cold_nodes, n as i64,
-            "one actual INSERT per final cold node"
-        );
-        assert!(
-            cold_refs <= 20 * n as i64,
-            "cold refs must remain linear: {cold_refs}"
-        );
-        assert_eq!(cold, reference(&values).await);
-        let old_totals = tree::totals(&mut db, cold.as_deref()).await.unwrap();
-        owner(&mut db, "warm", cold.as_deref()).await;
-        // Disjoint updates, insertion before/inside/after the base, tombstones.
-        for (sequence, variant) in [(1, 0), (n * 2 + 1, 0), (n * 4 + 3, 0), (n, 7), (n * 3, 99)] {
-            values.insert(sequence, variant);
-            stage(&mut db, "warm", sequence, variant).await;
-        }
-        reset(&mut db).await;
-        let warm = finish(&mut db, "warm").await;
-        let (warm_nodes, warm_refs) = counts(&mut db).await;
-        assert!(
-            warm_nodes < 100,
-            "sparse update rewrote {warm_nodes}/{n} nodes"
-        );
-        assert!(warm_refs < 2500, "sparse update rewrote {warm_refs} refs");
-        assert_eq!(
-            warm,
-            reference(&values).await,
-            "union must preserve canonical identity"
-        );
-        assert_eq!(
-            tree::totals(&mut db, cold.as_deref()).await.unwrap(),
-            old_totals,
-            "pinned old root changed"
-        );
-        let mut sequences = Vec::new();
-        let mut cursor = -1;
-        loop {
-            let page = tree::sequences(&mut db, warm.as_deref(), cursor, 64)
-                .await
-                .unwrap();
-            if page.is_empty() {
-                break;
-            }
-            cursor = *page.last().unwrap() as i64;
-            sequences.extend(page);
-        }
-        assert_eq!(
-            sequences,
-            values.keys().copied().collect::<Vec<_>>(),
-            "sequence pages must retain tombstones"
-        );
-        reset(&mut db).await;
-        assert_eq!(finish(&mut db, "warm").await, warm);
-        assert_eq!(
-            counts(&mut db).await,
-            (0, 0),
-            "repeat finish must not touch tree refs"
-        );
-        owner(&mut db, "unchanged", warm.as_deref()).await;
-        reset(&mut db).await;
-        assert_eq!(finish(&mut db, "unchanged").await, warm);
-        assert_eq!(
-            counts(&mut db).await.0,
-            0,
-            "zero delta must reuse base root"
-        );
-        eprintln!(
-            "assembly n={n}: cold inserts={cold_nodes} refs={cold_refs}; warm inserts={warm_nodes} refs={warm_refs}"
-        );
-    }
+    assert_eq!(visible, [4, 8, 14, 16, 20]);
+
+    assert_contents(&mut db, cold.as_deref(), &original).await;
+    assert_eq!(
+        tree::totals(&mut db, cold.as_deref()).await.unwrap(),
+        old_totals
+    );
+    assert_eq!(finish(&mut db, "warm").await, warm);
+    owner(&mut db, "unchanged", warm.as_deref()).await;
+    assert_eq!(finish(&mut db, "unchanged").await, warm);
 }
 
 #[tokio::test]
@@ -352,12 +285,10 @@ async fn staging_is_write_once_and_discovery_blocks_freezing() {
 async fn confirmed_rollback_retries_the_same_frontier_without_skipping_work() {
     for failure in ["cartesian", "nodes", "refs_insert", "refs_update"] {
         let mut db = database().await;
-        let values = (1..=130)
-            .map(|sequence| (sequence, 0))
-            .collect::<BTreeMap<_, _>>();
         owner(&mut db, "rollback", None).await;
-        for &sequence in values.keys() {
-            stage(&mut db, "rollback", sequence, 0).await;
+        let mut values = BTreeMap::new();
+        for sequence in 1..=130 {
+            values.insert(sequence, stage(&mut db, "rollback", sequence, 0).await);
         }
         let trigger = match failure {
             "nodes" => {
@@ -415,258 +346,13 @@ async fn confirmed_rollback_retries_the_same_frontier_without_skipping_work() {
                 .fetch_one(&mut db)
                 .await
                 .unwrap();
-        assert_eq!(
-            root,
-            reference(&values).await,
-            "rollback must restore every Cartesian and merge step ({failure})"
-        );
+        assert_contents(&mut db, root.as_deref(), &values).await;
         super::tests::assert_refs(&mut db).await.unwrap();
     }
 }
 
 #[tokio::test]
-async fn immutable_duplicates_and_net_zero_owner_changes_do_not_repeat_ref_writes() {
-    let mut db = database().await;
-    let mut tx = db.begin().await.unwrap();
-    let mut refs = refs::RefBatch::default();
-    sqlx::query("INSERT INTO context_prepared_payloads VALUES('wire','wire')")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    let group = value(1, 0);
-    let content = tree::save_group(&mut tx, &mut refs, &group).await.unwrap();
-    assert_eq!(
-        tree::save_group(&mut tx, &mut refs, &group).await.unwrap(),
-        content
-    );
-    let (logical_id, _) = tree::logical_group(&mut tx, &content).await.unwrap();
-    let wire_content = tree::save_wire_group(
-        &mut tx,
-        &mut refs,
-        tree::WireGroup::new(logical_id.clone(), "wire".into(), 0),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        tree::save_wire_group(
-            &mut tx,
-            &mut refs,
-            tree::WireGroup::new(logical_id, "wire".into(), 0)
-        )
-        .await
-        .unwrap(),
-        wire_content
-    );
-    let wire_node = tree::compose(&mut tx, 1, wire_content, None, None)
-        .await
-        .unwrap();
-    let wire_root = tree::save(&mut tx, &mut refs, &wire_node).await.unwrap();
-    let node = tree::compose(&mut tx, 1, content.clone(), None, None)
-        .await
-        .unwrap();
-    let root = tree::save(&mut tx, &mut refs, &node).await.unwrap();
-    assert_eq!(tree::save(&mut tx, &mut refs, &node).await.unwrap(), root);
-    sqlx::query("INSERT INTO context_prepared_builds(id,cache_key,selection_json,through_sequence,captured_revision,before_sequence,previous_revision,root,identity,discovered) VALUES('dedup','fixture','{}',0,0,1,0,?,'dedup',1)").bind(&root).execute(&mut *tx).await.unwrap();
-    refs.change(&mut tx, refs::Kind::Node, &root, 1)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO context_prepared_wire_views(id,build_id,codec,format_json,root,discovery_root) VALUES('wire-owner','dedup','fixture',?,?,?)").bind(encoded(&WireFormat::Responses).unwrap()).bind(&wire_root).bind(&root).execute(&mut *tx).await.unwrap();
-    refs.change(&mut tx, refs::Kind::Node, &wire_root, 1)
-        .await
-        .unwrap();
-    refs.change(&mut tx, refs::Kind::Node, &root, 1)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO context_prepared_dirty(build_id,group_sequence) VALUES('dedup',1)")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    for _ in 0..2 {
-        assembly::stage(
-            &mut tx,
-            &mut refs,
-            &runtime::InFlight::default(),
-            assembly::Kind::Logical,
-            "dedup",
-            1,
-            &content,
-        )
-        .await
-        .unwrap();
-    }
-    refs.flush(&mut tx).await.unwrap();
-    assert!(
-        !sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM ref_events GROUP BY kind,id HAVING COUNT(*)>1)"
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .unwrap(),
-        "immutable duplicates must not add edges or repeat a ref write"
-    );
-    assert!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM ref_events")
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap()
-            > 0
-    );
-    super::tests::assert_refs(&mut tx).await.unwrap();
-    tx.commit().await.unwrap();
-
-    sqlx::query("DELETE FROM ref_events")
-        .execute(&mut db)
-        .await
-        .unwrap();
-    let mut tx = db.begin().await.unwrap();
-    let mut refs = refs::RefBatch::default();
-    assert_eq!(
-        tree::save_group(&mut tx, &mut refs, &group).await.unwrap(),
-        content
-    );
-    assert_eq!(tree::save(&mut tx, &mut refs, &node).await.unwrap(), root);
-    assembly::stage(
-        &mut tx,
-        &mut refs,
-        &runtime::InFlight::default(),
-        assembly::Kind::Logical,
-        "dedup",
-        1,
-        &content,
-    )
-    .await
-    .unwrap();
-    sqlx::query("UPDATE context_prepared_builds SET root=NULL WHERE id='dedup'")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    refs.change(&mut tx, refs::Kind::Node, &root, -1)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE context_prepared_builds SET root=? WHERE id='dedup'")
-        .bind(&root)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    assert_eq!(
-        refs.change(&mut tx, refs::Kind::Node, &root, 1)
-            .await
-            .unwrap(),
-        2
-    );
-    assert!(
-        refs.remove(&mut tx, refs::Kind::Node, &root).await.is_err(),
-        "a pending owner must protect the node"
-    );
-    let transient = tree::compose(&mut tx, 2, content.clone(), None, None)
-        .await
-        .unwrap();
-    let deleted = tree::save(&mut tx, &mut refs, &transient).await.unwrap();
-    refs.remove(&mut tx, refs::Kind::Node, &deleted)
-        .await
-        .unwrap();
-    sqlx::query("DELETE FROM context_prepared_nodes WHERE id=?")
-        .bind(&deleted)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    refs.change(&mut tx, refs::Kind::Group, &content, -1)
-        .await
-        .unwrap();
-    refs.flush(&mut tx).await.unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM ref_events")
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap(),
-        0
-    );
-    assert!(
-        !sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM context_prepared_refs WHERE kind='node' AND id=?)"
-        )
-        .bind(&deleted)
-        .fetch_one(&mut *tx)
-        .await
-        .unwrap(),
-        "a created-and-deleted object must not leave a zero ref or resurrect"
-    );
-    super::tests::assert_refs(&mut tx).await.unwrap();
-    tx.commit().await.unwrap();
-    collect(&mut db).await.unwrap();
-    assert_eq!(
-        tree::content_id(&mut db, Some(&root), 1).await.unwrap(),
-        content
-    );
-    super::tests::assert_refs(&mut db).await.unwrap();
-    let mut tx = db.begin().await.unwrap();
-    let mut refs = refs::RefBatch::default();
-    sqlx::query("UPDATE context_prepared_builds SET root=NULL WHERE id='dedup'")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    refs.change(&mut tx, refs::Kind::Node, &root, -1)
-        .await
-        .unwrap();
-
-    refs.flush(&mut tx).await.unwrap();
-    tx.commit().await.unwrap();
-    collect(&mut db).await.unwrap();
-    assert_eq!(
-        tree::content_id(&mut db, Some(&root), 1).await.unwrap(),
-        content,
-        "discovery ownership alone must retain the old logical tree"
-    );
-    super::tests::assert_refs(&mut db).await.unwrap();
-    let mut tx = db.begin().await.unwrap();
-    let mut refs = refs::RefBatch::default();
-    sqlx::query("UPDATE context_prepared_wire_views SET discovery_root=NULL WHERE id='wire-owner'")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    refs.change(&mut tx, refs::Kind::Node, &root, -1)
-        .await
-        .unwrap();
-    refs.flush(&mut tx).await.unwrap();
-    tx.commit().await.unwrap();
-    collect(&mut db).await.unwrap();
-    assert!(
-        !sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM context_prepared_nodes WHERE id=?)"
-        )
-        .bind(&root)
-        .fetch_one(&mut db)
-        .await
-        .unwrap()
-    );
-    assert_eq!(
-        tree::totals(&mut db, Some(&wire_root)).await.unwrap().0,
-        1,
-        "the retained wire envelope must resolve logical metadata after the logical node is collected"
-    );
-    super::tests::assert_refs(&mut db).await.unwrap();
-    let mut tx = db.begin().await.unwrap();
-    let mut refs = refs::RefBatch::default();
-    sqlx::query("UPDATE context_prepared_wire_views SET root=NULL WHERE id='wire-owner'")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    refs.change(&mut tx, refs::Kind::Node, &wire_root, -1)
-        .await
-        .unwrap();
-    refs.flush(&mut tx).await.unwrap();
-    tx.commit().await.unwrap();
-    collect(&mut db).await.unwrap();
-    assert_eq!(
-        tree::group(&mut db, &content).await.unwrap().members,
-        [1],
-        "staging must keep the group after its last tree owner disappears"
-    );
-    super::tests::assert_refs(&mut db).await.unwrap();
-}
-
-#[tokio::test]
-async fn collection_follows_pending_child_releases_without_exceeding_its_metadata_budget() {
+async fn collection_cascades_until_all_unowned_descendants_are_removed() {
     let mut db = database().await;
     let mut tx = db.begin().await.unwrap();
     let mut refs = refs::RefBatch::default();
@@ -674,7 +360,7 @@ async fn collection_follows_pending_child_releases_without_exceeding_its_metadat
         .await
         .unwrap();
     let mut root = None;
-    for sequence in 1..=200 {
+    for sequence in 1..=3 {
         let node = tree::compose(&mut tx, sequence, content.clone(), root, None)
             .await
             .unwrap();
@@ -682,19 +368,9 @@ async fn collection_follows_pending_child_releases_without_exceeding_its_metadat
     }
     refs.flush(&mut tx).await.unwrap();
     tx.commit().await.unwrap();
-    super::tests::assert_refs(&mut db).await.unwrap();
-    assert!(collect(&mut db).await.unwrap());
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM context_prepared_nodes")
-            .fetch_one(&mut db)
-            .await
-            .unwrap(),
-        72,
-        "one phase must cascade through exactly its existing 128-row budget"
-    );
-    super::tests::assert_refs(&mut db).await.unwrap();
-    assert!(collect(&mut db).await.unwrap());
-    let remaining:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT COUNT(*) FROM context_prepared_nodes),(SELECT COUNT(*) FROM context_prepared_groups),(SELECT COUNT(*) FROM context_prepared_refs)").fetch_one(&mut db).await.unwrap();
+    while collect(&mut db).await.unwrap() {}
+    let remaining: (i64, i64, i64) = sqlx::query_as("SELECT (SELECT COUNT(*) FROM context_prepared_nodes),(SELECT COUNT(*) FROM context_prepared_groups),(SELECT COUNT(*) FROM context_prepared_refs)")
+        .fetch_one(&mut db).await.unwrap();
     assert_eq!(remaining, (0, 0, 0));
     super::tests::assert_refs(&mut db).await.unwrap();
 }

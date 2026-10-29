@@ -284,3 +284,84 @@ impl StepBuilder {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::TextKind;
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn interleaved_parts_preserve_metadata_and_require_complete_streams() {
+        let events = [
+            ModelEvent::PartStarted {
+                id: "r".into(),
+                text_kind: TextKind::Thinking,
+                provider_options: Some(json!({"anthropic":{"signature":"initial","other":1}})),
+            },
+            ModelEvent::PartStarted {
+                id: "t".into(),
+                text_kind: TextKind::Text,
+                provider_options: None,
+            },
+            ModelEvent::PartDelta {
+                id: "r".into(),
+                text: "think".into(),
+                provider_options: None,
+            },
+            ModelEvent::PartDelta {
+                id: "t".into(),
+                text: "answer".into(),
+                provider_options: None,
+            },
+            ModelEvent::PartFinished {
+                id: "r".into(),
+                provider_options: Some(json!({"anthropic":{"signature":"signed"}})),
+            },
+            ModelEvent::PartFinished {
+                id: "t".into(),
+                provider_options: Some(json!({"openai":{"itemId":"item"}})),
+            },
+            ModelEvent::Finished {
+                reason: ModelFinishReason::Stop,
+                usage: ModelUsage {
+                    input_tokens: Some(3),
+                    output_tokens: Some(4),
+                    reasoning_tokens: Some(2),
+                    ..Default::default()
+                },
+                provider_options: None,
+            },
+        ];
+        for length in [4, 6, 7] {
+            let mut builder = StepBuilder::default();
+            for event in &events[..length] {
+                builder.push(event.clone()).unwrap();
+            }
+            let result = builder.finish();
+            assert_eq!(result.is_ok(), length == 7);
+            if let Ok(step) = result {
+                assert_eq!(
+                    step.parts,
+                    vec![
+                        ModelPart::Text {
+                            text_kind: TextKind::Thinking,
+                            text: "think".into(),
+                            provider_options: Some(
+                                json!({"anthropic":{"signature":"signed","other":1}})
+                            )
+                        },
+                        ModelPart::Text {
+                            text_kind: TextKind::Text,
+                            text: "answer".into(),
+                            provider_options: Some(json!({"openai":{"itemId":"item"}}))
+                        },
+                    ]
+                );
+                assert_eq!(step.finish_reason, ModelFinishReason::Stop);
+                assert_eq!(step.usage.output_tokens, Some(4));
+                assert_eq!(step.usage.reasoning_tokens, Some(2));
+            }
+        }
+    }
+}

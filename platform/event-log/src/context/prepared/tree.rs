@@ -355,78 +355,6 @@ pub(super) async fn save(
     }
     Ok(id)
 }
-#[cfg(test)]
-fn replace<'a>(
-    connection: &'a mut SqliteConnection,
-    refs: &'a mut refs::RefBatch,
-    root: Option<String>,
-    sequence: u64,
-    content: String,
-) -> Work<'a, String> {
-    Box::pin(async move {
-        let Some(root) = root else {
-            let n = compose(connection, sequence, content, None, None).await?;
-            return save(connection, refs, &n).await;
-        };
-        let mut n = node(connection, &root).await?;
-        if sequence == n.sequence {
-            n.content = content;
-        } else if sequence < n.sequence {
-            n.left = Some(replace(connection, refs, n.left, sequence, content).await?);
-            let mut child = node(connection, n.left.as_deref().expect("inserted child")).await?;
-            if (priority(child.sequence), child.sequence) < (priority(n.sequence), n.sequence) {
-                n.left = child.right.take();
-                n = compose(connection, n.sequence, n.content, n.left, n.right).await?;
-                child.right = Some(save(connection, refs, &n).await?);
-                let child = compose(
-                    connection,
-                    child.sequence,
-                    child.content,
-                    child.left,
-                    child.right,
-                )
-                .await?;
-                return save(connection, refs, &child).await;
-            }
-        } else {
-            n.right = Some(replace(connection, refs, n.right, sequence, content).await?);
-            let mut child = node(connection, n.right.as_deref().expect("inserted child")).await?;
-            if (priority(child.sequence), child.sequence) < (priority(n.sequence), n.sequence) {
-                n.right = child.left.take();
-                n = compose(connection, n.sequence, n.content, n.left, n.right).await?;
-                child.left = Some(save(connection, refs, &n).await?);
-                let child = compose(
-                    connection,
-                    child.sequence,
-                    child.content,
-                    child.left,
-                    child.right,
-                )
-                .await?;
-                return save(connection, refs, &child).await;
-            }
-        }
-        let n = compose(connection, n.sequence, n.content, n.left, n.right).await?;
-        save(connection, refs, &n).await
-    })
-}
-// Sequential insertion exists only as an independent test oracle. Production
-// construction always uses the frozen bulk assembly.
-#[cfg(test)]
-pub(super) async fn insert(
-    connection: &mut SqliteConnection,
-    root: Option<String>,
-    sequence: u64,
-    content: String,
-    _group: Group,
-) -> Result<Option<String>, StoreError> {
-    // Empty groups are retained as zero-width tombstones: old roots remain
-    // valid and pagination/counts skip them without payload work.
-    let mut refs = refs::RefBatch::default();
-    let root = replace(connection, &mut refs, root, sequence, content).await?;
-    refs.flush(connection).await?;
-    Ok(Some(root))
-}
 // Return the canonical treap identity of the exact prefix. A partial node is
 // hashed in memory; full subtrees reuse their persisted identities unchanged.
 pub(super) fn prefix<'a>(
@@ -552,8 +480,6 @@ struct WalkNode {
 /// once, rather than re-seeking from the root (and decoding all ancestor groups).
 pub(super) struct GroupWalk {
     stack: Vec<(WalkNode, usize)>,
-    #[cfg(test)]
-    pub nodes_read: usize,
 }
 impl GroupWalk {
     pub async fn at<C>(
@@ -564,15 +490,11 @@ impl GroupWalk {
     where
         for<'c> &'c mut C: sqlx::Executor<'c, Database = sqlx::Sqlite>,
     {
-        let mut walk = Self {
-            stack: Vec::new(),
-            #[cfg(test)]
-            nodes_read: 0,
-        };
+        let mut walk = Self { stack: Vec::new() };
         let mut current = root.map(str::to_owned);
         let mut base = 0;
         while let Some(id) = current {
-            let n = walk.load(connection, &id).await?;
+            let n = Self::load(connection, &id).await?;
             if offset >= base + n.count {
                 break;
             }
@@ -590,14 +512,10 @@ impl GroupWalk {
         }
         Ok(walk)
     }
-    async fn load<C>(&mut self, connection: &mut C, id: &str) -> Result<WalkNode, StoreError>
+    async fn load<C>(connection: &mut C, id: &str) -> Result<WalkNode, StoreError>
     where
         for<'c> &'c mut C: sqlx::Executor<'c, Database = sqlx::Sqlite>,
     {
-        #[cfg(test)]
-        {
-            self.nodes_read += 1;
-        }
         let json: String =
             sqlx::query_scalar("SELECT node_json FROM context_prepared_nodes WHERE id=?")
                 .bind(id)
@@ -617,7 +535,7 @@ impl GroupWalk {
             let mut current = n.right.clone();
             let right_base = group_base + n.group_count;
             while let Some(id) = current {
-                let child = self.load(connection, &id).await?;
+                let child = Self::load(connection, &id).await?;
                 if child.count == 0 {
                     break;
                 }

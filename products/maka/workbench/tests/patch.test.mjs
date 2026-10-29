@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parsePatch } from '../../products/maka/workbench/app/patch.ts';
+import { parsePatch } from '../app/patch.ts';
 
 /** A row as `[kind, text]` for meta and hunk rows, else `[kind, old, new, text]`. */
 const shape = (rows) =>

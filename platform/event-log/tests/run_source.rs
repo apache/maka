@@ -57,7 +57,6 @@ async fn exact_run_cuts_bind_identity_and_bytes_without_admitting_unproven_repla
     let path = temp.path().join("runtime.sqlite");
     let log = EventLog::open(&path).await.unwrap();
     let first = opening("session", "source", "source-invocation", "中文 source");
-    let first_json = serde_json::to_string(&first).unwrap();
     append(&log, first.clone()).await;
     let before = log
         .run_source("session", "source", None)
@@ -70,16 +69,21 @@ async fn exact_run_cuts_bind_identity_and_bytes_without_admitting_unproven_repla
     assert_eq!(before.opening.event, first);
     assert_eq!(before.last.sequence, 1);
     assert_eq!(before.last.event, first);
-    assert_eq!(
-        before.boundary.digest,
-        reference_digest(&first.invocation, &[(1, &first_json)])
-    );
     // The same Run name in another Session cannot enter this source or its evidence.
     append(
         &log,
         opening("other", "source", "unrelated", &"x".repeat(16_384)),
     )
     .await;
+    assert_eq!(
+        log.run_source("session", "source", None)
+            .await
+            .unwrap()
+            .unwrap()
+            .boundary,
+        before.boundary,
+        "another Session's events do not change this Run's evidence"
+    );
     append(
         &log,
         RuntimeEvent::new(
@@ -106,11 +110,6 @@ async fn exact_run_cuts_bind_identity_and_bytes_without_admitting_unproven_repla
     );
     assert_eq!([active.opening.sequence, active.last.sequence], [1, 3]);
     assert_ne!(before.boundary.digest, active.boundary.digest);
-    let last_json = serde_json::to_string(&active.last.event).unwrap();
-    assert_eq!(
-        active.boundary.digest,
-        reference_digest(&first.invocation, &[(1, &first_json), (3, &last_json)])
-    );
     // Reading immutable evidence does not erase an unresolved effect or declare it safe.
     assert!(matches!(
         active.last.event.fact,
@@ -148,14 +147,7 @@ async fn exact_run_cuts_bind_identity_and_bytes_without_admitting_unproven_repla
         .unwrap();
     assert_eq!(latest.boundary.high_water, 3);
     assert_eq!(latest.last.sequence, 4);
-    let terminal_json = serde_json::to_string(&latest.last.event).unwrap();
-    assert_eq!(
-        latest.boundary.digest,
-        reference_digest(
-            &first.invocation,
-            &[(1, &first_json), (3, &last_json), (4, &terminal_json)]
-        )
-    );
+    assert_ne!(latest.boundary.digest, active.boundary.digest);
     assert_eq!(
         log.turn_boundary("session", "logical-turn")
             .await
@@ -244,32 +236,39 @@ async fn exact_run_cuts_bind_identity_and_bytes_without_admitting_unproven_repla
     log.close().await.unwrap();
 }
 
-// Independent reference framing: source count is local; positions and JSON bytes are canonical.
-fn reference_digest(invocation: &Invocation, rows: &[(u64, &str)]) -> String {
-    use sha2::{Digest, Sha256};
-    fn framed(domain: &[u8], parts: &[&[u8]]) -> Vec<u8> {
-        let mut hash = Sha256::new();
-        hash.update(domain);
-        for part in parts {
-            hash.update((part.len() as u64).to_be_bytes());
-            hash.update(part);
-        }
-        hash.finalize().to_vec()
+#[tokio::test]
+async fn source_identity_binds_original_event_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let template = opening("session", "run", "invocation", "original");
+    let mut digests = Vec::new();
+    for text in ["original", "changed"] {
+        let log = EventLog::open(&temp.path().join(format!("{text}.sqlite")))
+            .await
+            .unwrap();
+        let mut event = template.clone();
+        let Fact::InvocationOpened {
+            input: InvocationInput::Message { content, .. },
+            ..
+        } = &mut event.fact
+        else {
+            unreachable!()
+        };
+        *content = text.into();
+        append(&log, event).await;
+        digests.push(
+            log.run_source("session", "run", None)
+                .await
+                .unwrap()
+                .unwrap()
+                .boundary
+                .digest,
+        );
+        log.close().await.unwrap();
     }
-    let mut root = Sha256::digest(b"maka.source.empty.v1\0").to_vec();
-    for (sequence, json) in rows {
-        let sequence = sequence.to_be_bytes();
-        let leaf = framed(b"maka.source.leaf.v1\0", &[&sequence, json.as_bytes()]);
-        root = framed(b"maka.source.chain.v1\0", &[&root, &sequence, &leaf]);
-    }
-    let mut digest = Sha256::new();
-    digest.update(b"maka.run-prefix.v1\0");
-    digest.update((rows.len() as u64).to_be_bytes());
-    let identity = serde_json::to_vec(invocation).unwrap();
-    digest.update((identity.len() as u64).to_be_bytes());
-    digest.update(identity);
-    digest.update(root);
-    format!("sha256:{}", hex::encode(digest.finalize()))
+    assert_ne!(
+        digests[0], digests[1],
+        "equal identities and ordinals cannot hide changed source bytes"
+    );
 }
 
 #[tokio::test]

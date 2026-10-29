@@ -7703,51 +7703,30 @@ mod preparation_effect_tests {
     use super::*;
 
     #[test]
-    fn old_scope_cleanup_does_not_release_new_scope_or_header_liability() {
+    fn cleanup_and_refused_retries_preserve_other_scopes_and_header_liability() {
         let old = ExtensionWireContext::new("fixture-session", "old-turn").unwrap();
         let current = ExtensionWireContext::new("fixture-session", "current-turn").unwrap();
         let mut effects = PreparationEffects::default();
         effects.begin(&old, true);
         effects.begin(&current, true);
+        let retry = effects.begin(&current, true);
+        effects.refused(&current, retry);
+        assert_eq!(effects.scopes, [old.clone(), current.clone()]);
         effects.fixed_cleanup(&old, true);
         assert_eq!(effects.scopes.as_slice(), std::slice::from_ref(&current));
-        assert!(
-            !effects.settled(),
-            "old logical cleanup cannot clear current preparation"
-        );
+        assert!(!effects.settled());
         effects.fixed_cleanup(&current, true);
+        assert!(effects.scopes.is_empty());
         assert!(
             !effects.settled(),
-            "fixed hooks are separate from scoped headers"
+            "fixed cleanup does not acknowledge headers"
         );
         effects.headers_may_exist = false;
         assert!(effects.settled());
     }
 
     #[test]
-    fn known_undispatched_refusal_preserves_prior_scope_and_creates_no_new_debt() {
-        let wire = ExtensionWireContext::new("fixture-session", "current-turn").unwrap();
-        let mut effects = PreparationEffects::default();
-        let first = effects.begin(&wire, true);
-        effects.refused(&wire, first);
-        assert!(
-            effects.settled(),
-            "an undispatched attempt created no fixed or header effect"
-        );
-        effects.begin(&wire, true);
-        let next = effects.begin(&wire, true);
-        effects.refused(&wire, next);
-        assert_eq!(effects.scopes, [wire]);
-        assert!(
-            !effects.settled(),
-            "no-dispatch for a new attempt is not cleanup of prior effects"
-        );
-    }
-
-    #[test]
     fn preparation_refusal_keeps_unknown_and_only_current_no_dispatch_refunds() {
-        // State-fold projection only. The broker/provider keepers establish the
-        // trusted phase separately; these inputs are not native/authority proof.
         fn pending() -> (ClaimState, ExtensionHostOperation) {
             let operation = context_operation("projection-turn");
             let wire = ExtensionWireContext::new("projection-session", "projection-turn").unwrap();

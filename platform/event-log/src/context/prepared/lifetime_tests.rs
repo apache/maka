@@ -258,9 +258,14 @@ async fn empty_groups_and_large_manifests_have_nonzero_cache_weight() {
         },
     };
     let content = store_group_fixture(&mut db, &group).await;
-    let root = tree::insert(&mut db, None, 1, content, group)
+    let mut tx = db.begin().await.unwrap();
+    let mut refs = refs::RefBatch::default();
+    let node = tree::compose(&mut tx, 1, content, None, None)
         .await
         .unwrap();
+    let root = Some(tree::save(&mut tx, &mut refs, &node).await.unwrap());
+    refs.flush(&mut tx).await.unwrap();
+    tx.commit().await.unwrap();
     assert_eq!(tree::totals(&mut db, root.as_deref()).await.unwrap().0, 0);
     assert!(tree::weight(&mut db, root.as_deref()).await.unwrap() > 64 * 1024);
 }

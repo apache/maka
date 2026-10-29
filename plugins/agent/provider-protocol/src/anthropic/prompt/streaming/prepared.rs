@@ -331,8 +331,7 @@ impl PreparedEncoder {
                     // inspect already records diagnostics; actual encode helpers can
                     // repeat a warning, so retain only the metadata pass diagnostics.
                     let warnings = builder.prompt.warnings.len();
-                    let block =
-                        encode_assistant(&mut builder, part, placeholder, false, &self.mcp_ids)?;
+                    let block = encode_assistant(&mut builder, part, placeholder, &self.mcp_ids)?;
                     builder.prompt.warnings.truncate(warnings);
                     block
                 } else {
@@ -594,15 +593,11 @@ fn text_trim(value: &Value) -> Option<TextTrim> {
 /// relationships, citation documents and diagnostics grow with their counts.
 /// The wire body is bounded/streamed; this is not a constant-memory claim for
 /// arbitrarily reference-rich histories or an O(delta) preparation guarantee.
+#[derive(Default)]
 pub struct MetadataPrepass {
     inner: Prepass,
 }
 impl MetadataPrepass {
-    pub fn new(options: StreamOptions) -> Self {
-        Self {
-            inner: Prepass::new(options),
-        }
-    }
     pub fn push(&mut self, message_index: usize, part: &PartMetadata) -> Result<()> {
         let state = &mut self.inner;
         if part.part_index == 0 {

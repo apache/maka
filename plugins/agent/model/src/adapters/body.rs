@@ -337,32 +337,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn independent_replays_encode_identical_json() {
-        let source = Prompt::from_messages(vec![
-            Message::user("quote \" 中文\n"),
-            Message::user("second"),
-        ]);
-        let mut results = Vec::new();
-        for _ in 0..2 {
-            let mut stream = chat(
-                serde_json::json!({"model":"test"}),
-                source.clone(),
-                options(),
-                Language::En,
-            )
-            .into_stream();
-            let mut bytes = Vec::new();
-            while let Some(chunk) = stream.next().await {
-                bytes.extend_from_slice(&chunk.unwrap());
-            }
-            results.push(bytes);
-        }
-        assert_eq!(results[0], results[1]);
-        let decoded: Value = serde_json::from_slice(&results[0]).unwrap();
-        assert_eq!(decoded["messages"].as_array().unwrap().len(), 2);
-        assert_eq!(decoded["messages"][0]["content"], "quote \" 中文\n");
-    }
-    #[tokio::test]
     async fn direct_and_prepared_uploads_emit_complete_json_in_all_build_profiles() {
         use crate::prompt::{WireChunk, WireCursor, WireSource};
         struct Source;

@@ -30,8 +30,7 @@ use std::sync::Arc;
 mod header_cases;
 #[path = "connection_test/network.rs"]
 mod network_cases;
-#[path = "support/provider.rs"]
-mod provider_support;
+use crate::support::provider as provider_support;
 
 fn failed(error_class: ConnectionEffectFailureClass) -> ConnectionTestProjection {
     ConnectionTestProjection::Failed {

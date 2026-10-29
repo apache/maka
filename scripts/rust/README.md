@@ -162,15 +162,11 @@ MAKA_TOOL_STORM_CALLS=64 MAKA_TOOL_STORM_PAYLOAD_BYTES=128 \
 This case executes sequential mutations. Use `real_service_query_fanout` in the
 same module for read-only calls in one model step, or backend `javascript` for
 the actual JavaScript service. Fanout count does not imply simultaneous handlers.
-The `MAKA_AGENT_TOOL_STORM` JSON records actual calls, exact result checks,
-requests, latency/CPU, process peak RSS and cleanup. Timings include the controlled
-HTTP responder; they exclude external inference, IPC and rendering. Large
-payloads can trigger real automatic compaction. The responder supplies Summary
-text and verifies the resulting checkpoint and its adoption by the next Main,
-while history checks retain every original tool result. Summary requests and
-checkpoints are reported separately from tool work. This proves the controlled
-protocol and lifecycle, not a real model's context capacity or summary quality.
-Only completed, fully verified work counts as a successful case.
+The `MAKA_AGENT_TOOL_STORM` JSON records `calls`, `payload_bytes`, `query`,
+`backend`, `summary_requests` and `wall_ms`. Each run checks exact tool results,
+complete public history, checkpoint/summary consistency and completed cleanup. Wall time
+includes the controlled HTTP responder; inference and rendering are outside this
+probe.
 
 For real image uploads on Unix, use the same release native test executable:
 

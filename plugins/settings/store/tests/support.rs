@@ -16,12 +16,19 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import assert from 'node:assert/strict';
-import { glob } from 'node:fs/promises';
-let input = '';
-for await (const chunk of process.stdin) input += chunk;
-for (const test of JSON.parse(input)) {
-  const files = [];
-  for await (const file of glob(test.pattern, { cwd: process.argv[2] })) files.push(file);
-  assert.deepEqual([...test.files].sort(), files.sort(), test.pattern);
+
+use maka_event_log::root::{RootNamespaces, RootOwner};
+use std::{path::Path, sync::Arc};
+
+pub(super) mod provider;
+
+pub(super) fn root(path: &Path) -> Arc<RootOwner> {
+    Arc::new(RootOwner::create(&path.join("root"), &namespaces(path)).unwrap())
+}
+
+pub(super) fn namespaces(path: &Path) -> RootNamespaces {
+    RootNamespaces {
+        ownership: path.join("owners"),
+        control: path.join("control"),
+    }
 }

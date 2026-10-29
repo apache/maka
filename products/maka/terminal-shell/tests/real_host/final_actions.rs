@@ -19,37 +19,9 @@
 
 use super::*;
 
-async fn activate(view: &mut AppView, label: &str) {
-    tab_to_label(view, label).await;
-    view.handle_event(Event::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
-}
-
 async fn editable_composer(view: &mut AppView) {
     tab_to_label(view, "Message composer").await;
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            support::tick(view);
-            if view
-                .surface()
-                .input_context()
-                .is_some_and(|context| context.editable)
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|error| {
-        panic!(
-            "the native composer did not become editable: {error}; context={:?}\n{}",
-            view.surface().input_context(),
-            view.snapshot()
-        )
-    });
+    wait_editable_composer(view).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

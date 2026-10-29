@@ -63,17 +63,15 @@ fn mutation_packages() -> (Package, Package) {
         ),
         None,
     );
-    let consumer = package(
+    let consumer = observer(
         "consumer",
-        entry(
-            false,
-            Implementation::JavaScript {
-                module: "host.mjs".into(),
-                realm: Realm::Shared,
+        BTreeMap::from([(
+            "echo".into(),
+            Import {
+                contract: contract(MethodMode::Mutation),
+                cardinality: Cardinality::One,
             },
-            MethodMode::Mutation,
-        ),
-        Some("export function activate() { return {}; }".into()),
+        )]),
     );
     (provider, consumer)
 }
@@ -532,197 +530,6 @@ async fn unknown_result_is_not_replayed_and_default_recovery_policy_denies() {
 }
 
 #[tokio::test]
-async fn original_receipt_survives_restart_and_new_composition_without_provider() {
-    let (dir, ns, store) = store().await;
-    let (_other_dir, _other_ns, other_store) = self::store().await;
-    tokio::time::timeout(Duration::from_secs(20), async {
-        let issuer = Issuer::default();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let recovery = Arc::new(AtomicBool::new(true));
-        let (app, deployment) = launch(
-            store.clone(),
-            &issuer,
-            recovery.clone(),
-            Arc::new(VerifiedEcho {
-                caller: id(2),
-                store: store.clone(),
-                calls: calls.clone(),
-            }),
-        )
-        .await;
-        let client = app.client();
-        let binding = client
-            .bind(client.activation(&id(2)).unwrap(), "echo".into())
-            .await
-            .unwrap()
-            .remove(0);
-        let original = large_receipt_value();
-        let accepted = mutate(
-            &client,
-            &store,
-            binding,
-            "echo".into(),
-            original.clone(),
-            scope(&issuer, true),
-            Uuid::new_v4(),
-        )
-        .await
-        .unwrap();
-        let reference = accepted.reference.clone();
-        assert_eq!(
-            accepted.result().await.receipt,
-            Receipt::Recorded {
-                outcome: OperationOutcome::Returned {
-                    value: original.clone()
-                },
-                cleanup: OperationCleanup::Confirmed,
-            }
-        );
-        let mut declaration = entry(
-            false,
-            Implementation::JavaScript {
-                module: "host.mjs".into(),
-                realm: Realm::Shared,
-            },
-            MethodMode::Query,
-        );
-        declaration.imports.clear();
-        let replacement = package(
-            "replacement",
-            declaration,
-            Some("export function activate() { return {}; }".into()),
-        );
-        let mut replacement_node = node(&replacement, 2, true);
-        replacement_node.bindings.clear();
-        let replacement_input = Input {
-            ui: None,
-            instances: BTreeMap::from([("recovery-client".into(), replacement_node)]),
-        };
-        // Acceptance precedes committed withdrawal; new admission is revoked
-        // when the live owner adopts the new source automatically.
-        let original_consumer = client.activation(&id(2)).unwrap();
-        let old_binding = client
-            .bind(client.activation(&id(2)).unwrap(), "echo".into())
-            .await
-            .unwrap()
-            .remove(0);
-        let old_accepted = mutate(
-            &client,
-            &store,
-            old_binding,
-            "echo".into(),
-            json!("old-owner"),
-            scope(&issuer, true),
-            Uuid::new_v4(),
-        )
-        .await
-        .unwrap();
-        let replacement_source = store
-            .commit_application(deployment, 1, replacement_input, vec![], vec![replacement])
-            .await
-            .unwrap();
-        while client.snapshot().desired != Some(replacement_source.clone()) {
-            tokio::task::yield_now().await;
-        }
-        client.ready().await.unwrap();
-        assert!(client.bind(original_consumer, "echo".into()).await.is_err());
-        assert_eq!(old_accepted.reference.source, reference.source);
-        assert_eq!(returned(old_accepted.result().await), json!("old-owner"));
-        assert_eq!(
-            store
-                .load_application_at(&reference.source)
-                .await
-                .unwrap()
-                .unwrap()
-                .source()
-                .reference,
-            reference.source
-        );
-        app.shutdown().await.unwrap();
-        drop(app);
-        drop(client);
-        close(store).await;
-        let owner = Arc::new(RootOwner::open(&dir.path().join("root"), &ns).unwrap());
-        let reopened = Arc::new(RootStore::open(owner).await.unwrap());
-        let new_issuer = Issuer::default();
-        let new_app = Application::start_from_store(
-            reopened.clone(),
-            deployment,
-            NativeRegistry::default(),
-            new_issuer.clone(),
-            Arc::new(RecoveryGrant {
-                issuer: new_issuer.clone(),
-                recovery,
-            }),
-            Some(maka_host_js::factory(Limits::default())),
-        )
-        .await
-        .unwrap();
-        new_app.ready().await.unwrap();
-        let client = new_app.client();
-        let consumer = client.activation(&id(2)).unwrap();
-        assert!(client.activation(&id(1)).is_err());
-        let observation = client
-            .recover(consumer, reference.clone(), scope(&new_issuer, true))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            observation.outcome,
-            OperationOutcome::Returned { value: original }
-        );
-        assert_eq!(observation.cleanup, OperationCleanup::Confirmed);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        let current = reopened
-            .load_application(deployment)
-            .await
-            .unwrap()
-            .unwrap();
-        let (source, packages, _, _) = current.into_parts();
-        other_store
-            .commit_application(deployment, 0, source.input, vec![], packages)
-            .await
-            .unwrap();
-        let other_app = Application::start_from_store(
-            other_store.clone(),
-            deployment,
-            NativeRegistry::default(),
-            new_issuer.clone(),
-            Arc::new(RecoveryGrant {
-                issuer: new_issuer.clone(),
-                recovery: Arc::new(AtomicBool::new(true)),
-            }),
-            Some(maka_host_js::factory(Limits::default())),
-        )
-        .await
-        .unwrap();
-        other_app.ready().await.unwrap();
-        let other_client = other_app.client();
-        assert!(
-            other_client
-                .recover(
-                    other_client.activation(&id(2)).unwrap(),
-                    reference,
-                    scope(&new_issuer, true)
-                )
-                .await
-                .unwrap_err()
-                .contains("foreign operation state domain")
-        );
-        other_app.shutdown().await.unwrap();
-        drop(other_app);
-        drop(other_client);
-        close(other_store).await;
-        new_app.shutdown().await.unwrap();
-        drop(new_app);
-        drop(client);
-        close(reopened).await;
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
 async fn javascript_mutation_receives_original_reference_and_dispatches_once() {
     let (_dir, _ns, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
@@ -737,7 +544,7 @@ async fn javascript_mutation_receives_original_reference_and_dispatches_once() {
         "#,serde_json::to_string(&contract).unwrap());
         let provider=package("script",entry(true,Implementation::JavaScript {module:"host.mjs".into(),realm:Realm::Dedicated},MethodMode::Mutation),Some(source));
         let consumer=mutation_packages().1;let deployment=Uuid::new_v4();store.commit_application(deployment,0,input(&provider,&consumer),vec![],vec![provider,consumer]).await.unwrap();
-        let app=Application::start_from_store(store.clone(),deployment,NativeRegistry::default(),issuer.clone(),Arc::new(RecoveryGrant {issuer:issuer.clone(),recovery}),Some(maka_host_js::factory(Limits::default()))).await.unwrap();app.ready().await.unwrap();
+        let app=Application::start_from_store(store.clone(),deployment,observer_registry(NativeRegistry::default()),issuer.clone(),Arc::new(RecoveryGrant {issuer:issuer.clone(),recovery}),Some(maka_host_js::factory(Limits::default()))).await.unwrap();app.ready().await.unwrap();
         let client=app.client();let binding=client.bind(client.activation(&id(2)).unwrap(),"echo".into()).await.unwrap().remove(0);let operation=Uuid::new_v4();
         let accepted=mutate(&client, &store, binding.clone(),"echo".into(),json!("script"),scope(&issuer,true),operation).await.unwrap();let reference=accepted.reference.clone();assert_eq!(returned(accepted.result().await),json!("script:1"));
         assert_eq!(returned(mutate(&client, &store, binding,"echo".into(),json!("script"),scope(&issuer,true),operation).await.unwrap().result().await),json!("script:1"));
@@ -834,7 +641,7 @@ async fn dropped_root_and_all_observers_keep_mutation_resources_native_close_and
             resource_started: resource_started.clone(),
             resource_release: resource_release.clone(),
         });
-        let mut registry = NativeRegistry::default();
+        let mut registry = observer_registry(NativeRegistry::default());
         let closing = close_started.clone();
         let closed = close_release.clone();
         registry

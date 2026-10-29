@@ -140,12 +140,9 @@ MAKA_TOOL_STORM_CALLS=64 MAKA_TOOL_STORM_PAYLOAD_BYTES=128 \
 该 case 连续执行 mutation。改用同模块的 `real_service_query_fanout` 可测量
 同一模型 step 中的只读调用；backend `javascript` 使用真实 JavaScript 服务。
 fanout 数量不代表同时执行的 handler 数量。`MAKA_AGENT_TOOL_STORM` JSON 记录
-实际调用、精确结果校验、请求、延迟／CPU、进程峰值 RSS 和清理结果。计时包含
-受控 HTTP responder，不包含外部推理、IPC 或渲染。大 payload 可以触发真实自动
-压缩：responder 返回 Summary 正文，验证生成的 checkpoint 及后续 Main 对它的
-采用，同时通过历史逐一核对原始工具结果。Summary 请求和 checkpoint 与工具工作量
-分别记录。这验证受控协议和生命周期，不证明真实模型的上下文容量或摘要质量。
-只有完整执行且全部校验通过的工作才计为成功 case。
+`calls`、`payload_bytes`、`query`、`backend`、`summary_requests` 和 `wall_ms`。
+每次运行都核对精确工具结果、完整公开历史、checkpoint 与摘要请求的一致性，以及清理完成状态。
+耗时包含受控 HTTP responder；模型推理和界面渲染不在此探针的测量范围内。
 
 要在 Unix 上验证真实图像上传，使用同一个 release native 测试可执行文件：
 

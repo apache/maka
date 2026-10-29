@@ -48,7 +48,11 @@ fn last_tool_result(request: &support::ModelRequest) -> &str {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn default_management_tool_schemas_complete_through_strict_compatible_http() {
     tokio::time::timeout(Duration::from_secs(60), async {
-        let mut fixture = Fixture::management_tools().await;
+        let mut fixture = Fixture::configured(support::Options {
+            services: support::Services::ManagementTools,
+            ..Default::default()
+        })
+        .await;
         let client = fixture.client().await;
         let start = json!({"kind":"start"});
         let expected_start = client

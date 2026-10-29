@@ -384,8 +384,13 @@ async fn existing_workhub_coordinator_captures_each_new_selected_language() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let home = tempfile::tempdir().unwrap();
-        let mut fixture = assistant_fixture(&listener, home.path()).await;
-        workhub::activate(&mut fixture, true).await;
+        let fixture = Fixture::workhub_configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            workhub::Setup::Coordinator,
+            |settings| settings.assistant = Some(contract::AssistantConfiguration {
+                home: Some(home.path().to_str().unwrap().into()),
+            }),
+        ).await;
         let ready = workhub::resolve(&fixture, workhub::selection(&fixture).await, Uuid::new_v4()).await;
         let session = ready["session"]["id"].as_str().unwrap();
         let mut receipts = Vec::new();

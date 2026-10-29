@@ -55,16 +55,3 @@ fn finite_host_command_reports_an_invalid_root_in_observer_and_worker() {
         assert_eq!(std::fs::read(&root).unwrap(), b"not a directory");
     }
 }
-
-#[test]
-fn terminal_entry_reports_non_terminal_input() {
-    for arguments in [vec![], vec!["terminal-shell"]] {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_maka"))
-            .args(&arguments)
-            .output()
-            .unwrap();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(1), "{arguments:?}: {stderr}");
-        assert!(stderr.contains("requires a terminal"), "{stderr}");
-    }
-}

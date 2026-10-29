@@ -56,84 +56,28 @@ fn call(id: &str, name: &str, provider_executed: bool, ext: Value) -> AssistantP
     })
 }
 
-// Collection is confined to the small fixture oracle. Production encoders do
-// not own groups: the native adapter drains its second monotonic cursor at each
-// boundary instead of retaining these local tool blocks.
-fn render(messages: &[Message], context: Arc<Context>) -> Value {
-    let mut encoder = Encoder::new(context.clone());
-    let mut result = json!({"messages":[]});
-    if context.has_system() {
-        result["system"] = json!([]);
-    }
-    let mut active: Option<(usize, Value, Vec<Block>)> = None;
-    fn flush(active: &mut Option<(usize, Value, Vec<Block>)>, result: &mut Value) {
-        let Some((_, mut header, mut blocks)) = active.take() else {
-            return;
-        };
-        if header["role"] == "assistant" {
-            for segment in blocks.split_mut(|block| {
-                matches!(
-                    block,
-                    Block::Thinking { .. }
-                        | Block::RedactedThinking { .. }
-                        | Block::Fallback { .. }
-                )
-            }) {
-                segment.sort_by_key(|block| matches!(block, Block::ToolUse { .. }));
-            }
-            if blocks.is_empty() {
-                return;
-            }
-        }
-        header["content"] = serde_json::to_value(blocks).unwrap();
-        result["messages"].as_array_mut().unwrap().push(header);
-    }
-    for message in messages {
-        let info = encoder.begin(message).unwrap();
-        if active
-            .as_ref()
-            .is_some_and(|(group, _, _)| *group != info.group)
-        {
-            flush(&mut active, &mut result);
-        }
-        if info.emit_message && active.is_none() {
-            active = Some((info.group, info.header, Vec::new()));
-        }
-        for index in 0..info.part_count {
-            let part = encoder.part(message, index, Selection::All).unwrap();
-            if let Some(block) = part.block {
-                if info.top_level_system {
-                    result["system"]
-                        .as_array_mut()
-                        .unwrap()
-                        .push(serde_json::to_value(block).unwrap());
-                } else {
-                    active.as_mut().unwrap().2.push(block);
-                }
-            }
-        }
-    }
-    flush(&mut active, &mut result);
-    result
-}
-fn compare(messages: &[Message]) -> Metadata {
+fn compare(messages: &[Message]) -> (Metadata, Value) {
     let options = stream_options();
     let mut cache = CacheBudget::default();
     let batch = PreparedPrompt::encode(messages, options.borrowed(), &mut cache).unwrap();
-    let mut scan = Prepass::new(options);
-    for message in messages {
-        scan.push(message).unwrap();
-    }
-    let metadata = scan.finish();
-    assert_eq!(
-        render(messages, metadata.context.clone()),
-        serde_json::to_value(&batch).unwrap()
-    );
+    let (metadata, wire) = encode_prepared(messages, options);
     assert_eq!(metadata.features, batch.features);
     assert_eq!(metadata.warnings, batch.warnings);
     assert_eq!(metadata.cache.warnings(), cache.warnings());
-    prepared_equivalence(messages, &batch, &cache);
-    metadata
+    let expected = serde_json::to_value(batch).unwrap();
+    assert_eq!(wire, expected);
+    for (actual, expected) in wire["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(expected["messages"].as_array().unwrap())
+    {
+        assert_eq!(
+            serde_json::to_vec(&actual["content"]).unwrap(),
+            serde_json::to_vec(&expected["content"]).unwrap()
+        );
+    }
+    (metadata, wire)
 }
 
 #[test]
@@ -179,8 +123,7 @@ fn signed_boundaries_mcp_cross_message_ids_and_final_trim_match_exact_wire() {
             extensions: None,
         },
     ];
-    let metadata = compare(&messages);
-    let wire = render(&messages, metadata.context);
+    let (_, wire) = compare(&messages);
     let content = wire["messages"][1]["content"].as_array().unwrap();
     assert_eq!(
         content
@@ -253,11 +196,10 @@ fn system_selection_caller_pruning_and_citation_metadata_match_batch() {
             extensions: None,
         },
     ];
-    let metadata = compare(&messages);
+    let (metadata, wire) = compare(&messages);
     assert_eq!(metadata.context.top_system(), Some(1..3));
     assert_eq!(metadata.documents.len(), 1);
     assert_eq!(metadata.documents[0].title, "source.txt");
-    let wire = render(&messages, metadata.context);
     assert!(wire["messages"][0]["content"][0].get("caller").is_none());
     assert_eq!(
         wire["messages"][0]["content"][1]["caller"]["tool_id"],
@@ -269,7 +211,7 @@ fn system_selection_caller_pruning_and_citation_metadata_match_batch() {
 }
 
 #[test]
-fn independent_lanes_reserve_identical_cache_and_metadata_has_no_payload() {
+fn prepared_cache_reservations_match_batch_across_messages() {
     let cached = || extensions(json!({"cacheControl":{"type":"ephemeral"}}));
     let messages = vec![
         Message::System {
@@ -304,17 +246,7 @@ fn independent_lanes_reserve_identical_cache_and_metadata_has_no_payload() {
             extensions: None,
         },
     ];
-    let metadata = compare(&messages);
-    for selection in [Selection::Normal, Selection::Deferred, Selection::System] {
-        let mut encoder = Encoder::new(metadata.context.clone());
-        for message in &messages {
-            let info = encoder.begin(message).unwrap();
-            for index in 0..info.part_count {
-                encoder.part(message, index, selection).unwrap();
-            }
-        }
-        assert_eq!(encoder.cache.warnings(), metadata.cache.warnings());
-    }
+    let (metadata, _) = compare(&messages);
     assert!(
         metadata
             .cache
@@ -360,9 +292,9 @@ fn initial_effort_only_and_later_controlled_system_groups_keep_headers_and_cache
     ]);
 }
 
-fn prepared_equivalence(messages: &[Message], expected: &PreparedPrompt, cache: &CacheBudget) {
+fn encode_prepared(messages: &[Message], options: StreamOptions) -> (Metadata, Value) {
     use super::prepared::*;
-    let mut dirty = PreparedEncoder::new(stream_options());
+    let mut dirty = PreparedEncoder::new(options);
     let mut rows = Vec::new();
     for (index, message) in messages.iter().enumerate() {
         for part in 0..dirty.begin(message).unwrap() {
@@ -374,14 +306,11 @@ fn prepared_equivalence(messages: &[Message], expected: &PreparedPrompt, cache: 
             rows.push((index, metadata, prepared.chunks.collect::<Vec<_>>()));
         }
     }
-    let mut preflight = MetadataPrepass::new(stream_options());
+    let mut preflight = MetadataPrepass::default();
     for (index, metadata, _) in &rows {
         preflight.push(*index, metadata).unwrap();
     }
     let metadata = preflight.finish();
-    assert_eq!(metadata.features, expected.features);
-    assert_eq!(metadata.warnings, expected.warnings);
-    assert_eq!(metadata.cache.warnings(), cache.warnings());
     let mut replay = Replay::new(metadata.context.clone());
     let mut output = json!({"messages":[]});
     if metadata.context.has_system() {
@@ -447,21 +376,7 @@ fn prepared_equivalence(messages: &[Message], expected: &PreparedPrompt, cache: 
         }
     }
     flush(&mut active, &mut output);
-    let expected = serde_json::to_value(expected).unwrap();
-    assert_eq!(output, expected);
-    // Cache insertion before citations and caller insertion before cache must
-    // also match the original serializer's exact object byte order.
-    for (left, right) in output["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .zip(expected["messages"].as_array().unwrap())
-    {
-        assert_eq!(
-            serde_json::to_vec(&left["content"]).unwrap(),
-            serde_json::to_vec(&right["content"]).unwrap()
-        );
-    }
+    (metadata, output)
 }
 
 #[test]
@@ -480,7 +395,7 @@ fn persisted_fragment_metadata_does_not_retain_giant_text_and_overlay_trims_incr
     dirty.begin(&message).unwrap();
     let part = dirty.part(&message, 0).unwrap();
     assert!(serde_json::to_vec(&part.metadata).unwrap().len() < 2048);
-    let mut preflight = MetadataPrepass::new(stream_options());
+    let mut preflight = MetadataPrepass::default();
     preflight.push(0, &part.metadata).unwrap();
     let mut replay = Replay::new(preflight.finish().context);
     replay.begin(0, &part.metadata.message);
@@ -603,12 +518,8 @@ fn metadata_preparation_preserves_prompt_before_tools_cache_and_request_fields()
     ];
     let config = request::Config::default();
     let batch = request::prepare(input(&messages), &config).unwrap();
-    let mut scan = Prepass::new(StreamOptions::from_request(&input(&[]), &config));
-    for message in &messages {
-        scan.push(message).unwrap();
-    }
-    let metadata = scan.finish();
-    let context = metadata.context.clone();
+    let (metadata, wire) =
+        encode_prepared(&messages, StreamOptions::from_request(&input(&[]), &config));
     let streamed = request::prepare_streaming(input(&[]), &config, metadata).unwrap();
     assert_eq!(
         format!("{:?}", batch.diagnostics),
@@ -616,7 +527,7 @@ fn metadata_preparation_preserves_prompt_before_tools_cache_and_request_fields()
     );
     assert_eq!(batch.betas, streamed.betas);
     let mut actual = serde_json::to_value(&streamed.body).unwrap();
-    for (key, value) in render(&messages, context).as_object().unwrap() {
+    for (key, value) in wire.as_object().unwrap() {
         actual[key] = value.clone();
     }
     assert_eq!(actual, serde_json::to_value(&batch.body).unwrap());

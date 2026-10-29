@@ -517,7 +517,7 @@ async fn standalone_composer_replacement_preserves_the_original_draft_upload_and
             ).unwrap();
             (manifest, module)
         }).await.unwrap();
-        let mut fixture = Fixture::images().await;
+        let mut fixture = Fixture::configured(support::Options { images: true, ..Default::default() }).await;
         let client = fixture.client().await;
         const DRAFT: &str = "ORIGINAL_COMPOSER_DRAFT";
         const EDITED: &str = "ORIGINAL_COMPOSER_DRAFT_SAMPLE_EDIT";
@@ -640,7 +640,7 @@ async fn a_rebound_application_uses_its_agent_for_drafts_files_uploads_and_sends
     use base64::{Engine as _, engine::general_purpose::STANDARD};
 
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::images().await;
+        let mut fixture = Fixture::configured(support::Options { images: true, ..Default::default() }).await;
         let client = fixture.client().await;
         client.save_draft("agent", &fixture.session, EDITOR, None, "GATEWAY_DRAFT".into()).await.unwrap();
         std::fs::write(fixture.directory.path().join("workspace/gateway-only.txt"), "original gateway file").unwrap();
@@ -845,7 +845,7 @@ export function activate(context) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn installed_ui_module_uses_real_host_calls_and_tracks_configuration_and_disable() {
     tokio::time::timeout(Duration::from_secs(90), async {
-        let fixture = Fixture::plugin_settings().await;
+        let fixture = Fixture::configured(support::Options { plugins: true, ..Default::default() }).await;
         let client = fixture.client().await;
         let (mut view, bindings) =
             fixture.view(fixture.client().await, Some(fixture.session.clone()));

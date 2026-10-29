@@ -54,6 +54,8 @@ mod request_metrics;
 mod send_hold;
 #[path = "real_host/session_lifecycle.rs"]
 mod session_lifecycle;
+#[path = "real_host/settings.rs"]
+mod settings;
 mod support;
 #[cfg(unix)]
 #[path = "real_host/terminal_workbench.rs"]
@@ -137,37 +139,6 @@ fn shortcut(view: &mut AppView, key: char) {
     )));
 }
 
-async fn wait_enabled_node(view: &mut AppView, label: &str) {
-    // Model policy loads asynchronously. A visible disabled button accepts
-    // neither keyboard nor pointer activation until its metadata arrives.
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            support::tick(view);
-            if view
-                .accessibility_snapshot()
-                .iter()
-                .any(|node| node.label == label && !node.state.disabled)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| {
-        let matching: Vec<_> = view
-            .accessibility_snapshot()
-            .into_iter()
-            .filter(|node| node.label.contains(label))
-            .collect();
-        panic!(
-            "the native target {label:?} did not become enabled; app error: {:?}; containing AX nodes: {matching:#?}\n{}",
-            view.last_error(),
-            view.snapshot()
-        )
-    });
-}
-
 async fn tab_to_label(view: &mut AppView, label: &str) {
     wait_enabled_node(view, label).await;
     for _ in 0..=view.accessibility_snapshot().len() {
@@ -181,6 +152,81 @@ async fn tab_to_label(view: &mut AppView, label: &str) {
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
     }
     panic!("native Tab did not reach {label:?}");
+}
+
+async fn wait_enabled_node(view: &mut AppView, label: &str) {
+    wait_view_state(view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == label && !node.state.disabled)
+    })
+    .await;
+}
+
+async fn wait_focused_input(view: &mut AppView, label: &str) {
+    wait_view_state(view, |view, _| {
+        view.surface().input_context().is_some_and(|input| {
+            view.accessibility_snapshot()
+                .iter()
+                .any(|node| node.id == input.node && node.focused && node.label == label)
+        })
+    })
+    .await;
+}
+
+async fn editable(view: &mut AppView, label: &str) {
+    wait_view_state(view, |view, _| {
+        view.surface().input_context().is_some_and(|input| {
+            input.editable
+                && view
+                    .accessibility_snapshot()
+                    .iter()
+                    .any(|node| node.id == input.node && node.focused && node.label == label)
+        })
+    })
+    .await;
+}
+
+async fn wait_editable_composer(view: &mut AppView) {
+    editable(view, "Message composer").await;
+}
+
+async fn commit_native_events(view: &mut AppView) {
+    // Native edits precede their JS callbacks; advance past those callbacks
+    // before the next interaction reads or activates the resulting state.
+    let (done, committed) = tokio::sync::oneshot::channel();
+    view.control()
+        .unwrap()
+        .advance_clock(Duration::ZERO, move || {
+            let _ = done.send(());
+        });
+    tokio::time::timeout(Duration::from_secs(20), committed)
+        .await
+        .unwrap()
+        .unwrap();
+    support::tick(view);
+}
+
+async fn activate(view: &mut AppView, label: &str) {
+    tab_to_label(view, label).await;
+    let target = support::wait_enabled_button(view, label).await;
+    assert!(
+        target.focused,
+        "native Tab did not focus the button {label:?}"
+    );
+    view.handle_event(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    commit_native_events(view).await;
+}
+
+async fn fill(view: &mut AppView, label: &str, value: &str) {
+    tab_to_label(view, label).await;
+    editable(view, label).await;
+    shortcut(view, 'a');
+    view.handle_event(Event::Paste(value.into()));
+    commit_native_events(view).await;
 }
 
 fn model_menu_button(view: &AppView, label: &str) -> Option<nsh_platform_tui::AccessibleNode> {
@@ -274,50 +320,6 @@ fn assert_effort_choices(view: &AppView, choice: &Value, selected: Option<&str>)
             "the effective reasoning effort must select {level}",
         );
     }
-}
-
-async fn wait_focused_input(view: &mut AppView, label: &str) {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            support::tick(view);
-            if view.surface().input_context().is_some_and(|input| {
-                view.accessibility_snapshot()
-                    .iter()
-                    .any(|node| node.id == input.node && node.focused && node.label == label)
-            }) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("the native Input {label:?} did not receive focus"));
-}
-
-async fn wait_editable_composer(view: &mut AppView) {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            view.poll().unwrap();
-            support::tick(view);
-            if let Some(input) = view.surface().input_context()
-                && input.editable
-                && view.accessibility_snapshot().iter().any(|node| {
-                    node.id == input.node && node.focused && node.label == "Message composer"
-                })
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| {
-        panic!(
-            "the original native message composer did not become editable and focused:\n{}\n{:#?}",
-            view.snapshot(),
-            view.accessibility_snapshot()
-        )
-    });
 }
 
 fn selected_command<'a>(nodes: &'a [AccessibleNode], title: &str) -> Option<&'a AccessibleNode> {
@@ -454,733 +456,9 @@ async fn browse_workspace_folder(view: &mut AppView, name: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_before_one_send() {
-    async fn editable(view: &mut AppView, label: &str) {
-        tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                support::tick(view);
-                if view
-                    .surface()
-                    .input_context()
-                    .is_some_and(|input| input.editable)
-                    && view
-                        .accessibility_snapshot()
-                        .iter()
-                        .any(|node| node.focused && node.label == label)
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("the native Input {label:?} did not become editable"));
-    }
-    async fn activate(view: &mut AppView, label: &str) {
-        // A keyboard target may be below the scroll viewport. Wait for the
-        // actual Button owner, then let native Tab reveal it before Enter.
-        tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                view.poll().unwrap();
-                support::tick(view);
-                let mut buttons = view.accessibility_snapshot().into_iter().filter(|node| {
-                    node.role == nsh_core::AccessibilityRole::Button && node.label == label
-                });
-                let button = buttons.next();
-                assert!(
-                    buttons.next().is_none(),
-                    "ambiguous native button {label:?}"
-                );
-                if button.is_some_and(|button| !button.state.disabled) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("native keyboard button {label:?} did not become enabled"));
-        tab_to_label(view, label).await;
-        let button = support::wait_enabled_button(view, label).await;
-        assert!(
-            button.focused,
-            "native Tab did not focus the actual button {label:?}"
-        );
-        view.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::NONE,
-        )));
-        commit_native_events(view).await;
-    }
-    async fn commit_native_events(view: &mut AppView) {
-        // Commit native callbacks before the next interaction uses their view.
-        let (done, committed) = tokio::sync::oneshot::channel();
-        view.control()
-            .unwrap()
-            .advance_clock(Duration::ZERO, move || {
-                let _ = done.send(());
-            });
-        tokio::time::timeout(Duration::from_secs(20), committed)
-            .await
-            .unwrap()
-            .unwrap();
-    }
-    async fn fill(view: &mut AppView, label: &str, value: &str) {
-        tab_to_label(view, label).await;
-        editable(view, label).await;
-        shortcut(view, 'a');
-        view.handle_event(Event::Paste(value.into()));
-        commit_native_events(view).await;
-    }
-    async fn assert_input(view: &mut AppView, label: &str, value: &str) {
-        tab_to_label(view, label).await;
-        wait_focused_input(view, label).await;
-        assert_eq!(
-            view.surface().input_context().unwrap().text.as_deref(),
-            Some(value),
-            "the native {label:?} draft changed"
-        );
-    }
-    fn painted_control(view: &AppView, label: &str) -> String {
-        use ratatui::{buffer::CellWidth, layout::Rect};
-        let node = view
-            .accessibility_snapshot()
-            .into_iter()
-            .find(|node| node.focused && node.label == label)
-            .unwrap();
-        let metrics = view.surface().metrics();
-        let viewport = view.surface().viewport();
-        let columns = (viewport.width.0 / metrics.width().0).round() as u16;
-        let rows = (viewport.height.0 / metrics.height().0).round() as u16;
-        let project = |point: f32, cell: f32, limit: u16| {
-            (point / cell - 0.5).ceil().clamp(0.0, f32::from(limit)) as u16
-        };
-        let left = project(node.frame.origin.x.0, metrics.width().0, columns);
-        let right = project(
-            node.frame.origin.x.0 + node.frame.size.width.0,
-            metrics.width().0,
-            columns,
-        );
-        let top = project(node.frame.origin.y.0, metrics.height().0, rows);
-        let bottom = project(
-            node.frame.origin.y.0 + node.frame.size.height.0,
-            metrics.height().0,
-            rows,
-        );
-        let area = Rect::new(0, 0, columns, rows);
-        let mut buffer = ratatui::buffer::Buffer::empty(area);
-        view.render(area, &mut buffer);
-        let mut text = String::new();
-        for y in top..bottom {
-            let mut x = left;
-            while x < right {
-                let cell = &buffer[(x, y)];
-                text.push_str(cell.symbol());
-                x += cell.cell_width().max(1);
-            }
-            text.push('\n');
-        }
-        text
-    }
-    async fn assert_default_input(view: &mut AppView, label: &str, default: &str) {
-        assert_input(view, label, "").await;
-        wait_view_state(view, |view, _| {
-            painted_control(view, label).contains(default)
-        })
-        .await;
-        assert_eq!(
-            view.surface().input_context().unwrap().text.as_deref(),
-            Some(""),
-            "the {label:?} placeholder must not become editable content"
-        );
-    }
-    async fn assert_document_viewport(
-        view: &mut AppView,
-        label: &str,
-        save_label: &str,
-        first_line: &str,
-    ) {
-        wait_focused_input(view, label).await;
-        let input_id = view.surface().focused().unwrap();
-        let save_id = view
-            .accessibility_snapshot()
-            .into_iter()
-            .find(|node| {
-                node.role == nsh_core::AccessibilityRole::Button && node.label == save_label
-            })
-            .unwrap()
-            .id;
-        let node = |view: &AppView, id| {
-            view.accessibility_snapshot()
-                .into_iter()
-                .find(|node| node.id == id)
-                .unwrap()
-        };
-        let input = node(view, input_id).frame;
-        let save = node(view, save_id).frame;
-        assert!(
-            input.size.height.0 > view.surface().viewport().height.0 / 2.0,
-            "the document editor must use the free settings space instead of a small fixed box: input {input:?}, save {save:?}, viewport {:?}",
-            view.surface().viewport()
-        );
-        assert!(save.origin.y.0 >= input.origin.y.0 + input.size.height.0);
-        assert!(
-            save.origin.y.0 + save.size.height.0 <= view.surface().viewport().height.0,
-            "document actions must remain visible while its text scrolls"
-        );
-        view.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Home,
-            KeyModifiers::CONTROL,
-        )));
-        commit_native_events(view).await;
-        wait_view(view, |screen| screen.contains(first_line)).await;
-        view.handle_event(Event::Mouse(MouseEvent {
-            kind: MouseEventKind::ScrollDown,
-            column: ((save.origin.x.0 + save.size.width.0 / 2.0) / 8.0) as u16,
-            row: ((save.origin.y.0 + save.size.height.0 / 2.0) / 16.0) as u16,
-            modifiers: KeyModifiers::NONE,
-        }));
-        commit_native_events(view).await;
-        support::tick(view);
-        assert_eq!(
-            node(view, input_id).frame,
-            input,
-            "an outer wheel moved the editor into blank space"
-        );
-        assert_eq!(
-            node(view, save_id).frame,
-            save,
-            "an outer wheel scrolled away the actions"
-        );
-        assert!(view.snapshot().contains(first_line));
-        support::scroll_text(view, first_line, MouseEventKind::ScrollDown);
-        commit_native_events(view).await;
-        wait_view(view, |screen| !screen.contains(first_line)).await;
-        assert_eq!(node(view, input_id).frame, input);
-        assert_eq!(node(view, save_id).frame, save);
-    }
-    tokio::time::timeout(Duration::from_secs(90), async {
-        #[cfg(unix)]
-        let mut fixture = Fixture::registered_empty_settings().await;
-        #[cfg(not(unix))]
-        let mut fixture = Fixture::empty_settings().await;
-        let instruction_path = fixture.directory.path().join("assistant-home/.maka/AGENTS.md");
-        std::fs::create_dir(instruction_path.parent().unwrap()).unwrap();
-        let initial_instructions = "  INITIAL GLOBAL UTF-8 指令 🦀\r\n\r\n\tKeep user-owned whitespace.  \r\n\r\n";
-        std::fs::write(&instruction_path, initial_instructions).unwrap();
-        let client = fixture.client().await;
-        let empty = client.query("settings", "connections", json!({"kind":"start"})).await.unwrap();
-        assert_eq!(empty["kind"], "ready");
-        assert_eq!(empty["connections"], json!([]));
-        assert_eq!(empty["defaultTarget"], Value::Null);
-        let sessions = client.query("agent", "list", json!({"filter":"all","position":{"kind":"start"}})).await.unwrap();
-        assert_eq!(sessions["sessions"], json!([]));
-        let (mut view, bindings) = fixture.view(client.clone(), None);
-        wait_view(&mut view, |screen| screen.contains("Make something remarkable.")).await;
-        support::click_button(&mut view, "Connections & models").await;
-        wait_view(&mut view, |screen| screen.contains("Add your first connection, then fetch or add a model.")).await;
-        activate(&mut view, "Add connection").await;
-        wait_view(&mut view, |screen| screen.contains("Choose the API provider for this connection.") && !screen.contains("Loading settings…")).await;
-        fill(&mut view, "Search providers", "OPENROUTER").await;
-        wait_view(&mut view, |screen| screen.contains("OpenRouter") && !screen.contains("Loading settings…")).await;
-        assert_input(&mut view, "Search providers", "OPENROUTER").await;
-        support::click_button(&mut view, "Connect OpenRouter").await;
-        wait_view(&mut view, |screen| screen.contains("Connection settings") && screen.contains("Connection name")).await;
-        fill(&mut view, "Connection name", "UI 连接").await;
-        fill(&mut view, "Connection ID", "ui-connection").await;
-        fill(&mut view, "Base URL", &fixture.base_url).await;
-        fill(&mut view, "API key", support::PROVIDER_KEY).await;
-        assert!(!view.snapshot().contains(support::PROVIDER_KEY), "the raw key was painted by the form");
-        fill(&mut view, "Advanced request JSON", r#"{"provider":{"only":["openrouter","deepseek"]},"temperature":0.22}"#).await;
-        activate(&mut view, "Save connection").await;
-        // Saving the key advances the connection revision. The same editor must
-        // discover models automatically using that committed credential basis.
-        wait_view(&mut view, |screen| screen.contains("Connection and API key saved.")).await;
-        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
-        activate(&mut view, "Manage models").await;
-        wait_view(&mut view, |screen| screen.contains("Connection models") && screen.contains("fixture-discovered-model")).await;
-        assert_eq!(fixture.discovery_count.load(Ordering::SeqCst), 1, "saving the connection must automatically perform exactly one real discovery request");
-        let discovered = client.query("settings", "models", json!({"kind":"start","query":"fixture-discovered-model"})).await.unwrap();
-        let discovered_choice = &discovered["choices"][0];
-        assert_eq!(discovered_choice["thinkingLevels"], json!(["max","high","low","off"]));
-        assert_eq!(discovered_choice["defaultThinkingLevel"], "high");
-        let discovered_target = json!({"connectionId":discovered_choice["selection"]["connectionId"],"modelId":"fixture-discovered-model"});
-        let inherited = client.query("settings", "resolveModel", discovered_target.clone()).await.unwrap();
-        assert_eq!(inherited["defaults"], json!({"label":"Discovered UI Model","contextWindow":131072,"inputLimit":131072,"maxOutputTokens":4096,"compactionThreshold":111411,"codeMode":false,"codeModeLanguage":"javascript","applyPatch":false,"thinkingLevels":["max","high","low","off"],"defaultThinkingLevel":"high"}));
-        assert_eq!(inherited["choice"]["limits"]["maxOutputTokens"], 4096,
-            "a known catalog output capacity supplies the default request budget");
-        activate(&mut view, "Edit model fixture-discovered-model").await;
-        for (label, default) in [
-            ("Model display name", "Discovered UI Model"),
-            ("Context window (tokens)", "131072"),
-            ("Input limit (tokens)", "131072"),
-            ("Maximum output (tokens)", "4096"),
-            ("Compaction threshold (tokens)", "111411"),
-        ] {
-            assert_default_input(&mut view, label, default).await;
-        }
-        tab_to_label(&mut view, "Support effort high").await;
-        let node = support::wait_enabled_button(&mut view, "Support effort high").await;
-        assert!(node.state.selected, "provider-discovered efforts must be visible without an override");
-        for label in ["Code Mode: Model default", "Apply Patch: Model default", "Code Mode language: JavaScript"] {
-            tab_to_label(&mut view, label).await;
-            assert!(support::wait_enabled_button(&mut view, label).await.state.selected, "omitted tool overrides must retain model defaults");
-            if label != "Code Mode language: JavaScript" {
-                assert!(painted_control(&view, label).contains("Model default (Disabled)"));
-            }
-        }
-        for label in ["Use provider defaults (max, high, low, off)", "Provider default (high)"] {
-            tab_to_label(&mut view, label).await;
-            assert!(support::wait_enabled_button(&mut view, label).await.state.selected);
-        }
-        fill(&mut view, "Maximum output (tokens)", "0").await;
-        fill(&mut view, "Context window (tokens)", "6000").await;
-        fill(&mut view, "Input limit (tokens)", "4000").await;
-        fill(&mut view, "Maximum output (tokens)", "").await;
-        assert_default_input(&mut view, "Compaction threshold (tokens)", "3400").await;
-        let preview = client.query("settings", "resolveModel", json!({
-            "connectionId":discovered_target["connectionId"],"modelId":"fixture-discovered-model",
-            "overrides":{"contextWindow":6000,"inputLimit":4000}
-        })).await.unwrap();
-        assert_eq!(preview["defaults"]["contextWindow"], 131072);
-        assert_eq!(preview["defaults"]["inputLimit"], 6000);
-        assert_eq!(preview["defaults"]["maxOutputTokens"], 4096);
-        assert_eq!(preview["defaults"]["compactionThreshold"], 3400);
-        assert_eq!(preview["choice"]["limits"]["contextWindow"], 6000);
-        assert_eq!(preview["choice"]["limits"]["inputLimit"], 4000);
-        fill(&mut view, "Context window (tokens)", "").await;
-        fill(&mut view, "Input limit (tokens)", "").await;
-        assert_default_input(&mut view, "Compaction threshold (tokens)", "111411").await;
-        activate(&mut view, "Save model").await;
-        wait_view(&mut view, |screen| screen.contains("Connection models") && screen.contains("Model saved.")).await;
-        activate(&mut view, "Add model manually").await;
-        wait_view(&mut view, |screen| screen.contains("Model settings") && screen.contains("Model ID")).await;
-        fill(&mut view, "Model ID", "manual-ui-agent").await;
-        fill(&mut view, "Model display name", "Manual UI Agent").await;
-        fill(&mut view, "Context window (tokens)", "65536").await;
-        fill(&mut view, "Input limit (tokens)", "32768").await;
-        fill(&mut view, "Maximum output (tokens)", "2048").await;
-        fill(&mut view, "Compaction threshold (tokens)", "18000").await;
-        activate(&mut view, "Code Mode: Enabled").await;
-        activate(&mut view, "Apply Patch: Disabled").await;
-        activate(&mut view, "Code Mode language: Python").await;
-        activate(&mut view, "Support effort high").await;
-        activate(&mut view, "Default effort high").await;
-        activate(&mut view, "Save model").await;
-        wait_view(&mut view, |screen| screen.contains("Connection models") && screen.contains("Model saved.") && screen.contains("Manual UI Agent")).await;
-        fill(&mut view, "Search models", "MANUAL UI").await;
-        wait_view_state(&mut view, |view, screen| screen.contains("Manual UI Agent") && !view.accessibility_snapshot().iter().any(|node| node.label == "Edit model fixture-discovered-model")).await;
-        assert_input(&mut view, "Search models", "MANUAL UI").await;
-        fill(&mut view, "Search models", "fixture-discovered-model").await;
-        wait_view_state(&mut view, |view, screen| screen.contains("fixture-discovered-model") && !view.accessibility_snapshot().iter().any(|node| node.label == "Edit model manual-ui-agent")).await;
-        fill(&mut view, "Search models", "").await;
-        wait_view(&mut view, |screen| screen.contains("Manual UI Agent") && screen.contains("fixture-discovered-model")).await;
-        activate(&mut view, "Set default manual-ui-agent").await;
-        wait_view(&mut view, |screen| screen.contains("Default model saved.")).await;
-        let catalog = client.query("settings", "connections", json!({"kind":"start"})).await.unwrap();
-        assert_eq!(catalog["connections"].as_array().unwrap().len(), 1);
-        assert_eq!(catalog["connections"][0]["name"], "UI 连接");
-        let basis = &catalog["connections"][0]["basis"];
-        let target = json!({"connectionId":basis["connectionId"],"modelId":"manual-ui-agent"});
-        assert_eq!(catalog["defaultTarget"], target);
-        let detail = client.query("settings", "connection", json!({"connectionId":basis["connectionId"],"revision":basis["revision"],"includeEditingFacts":true})).await.unwrap();
-        assert_eq!(detail["target"]["configuration"], json!({"baseUrl":fixture.base_url}));
-        assert_eq!(detail["editing"], json!({"enabledModelIds":["fixture-discovered-model","manual-ui-agent"],"modelOverrides":{"fixture-discovered-model":{},"manual-ui-agent":{"displayName":"Manual UI Agent","codeMode":true,"codeModeLanguage":"python","applyPatch":false,"thinkingLevels":["high"],"defaultThinkingLevel":"high","contextWindow":65536,"inputLimit":32768,"maxOutputTokens":2048,"compactionThreshold":18000}},"requestBodyOverlay":{"provider":{"only":["openrouter","deepseek"]},"temperature":0.22}}), "saving inherited placeholders must not persist them as overrides");
-        let models = client.query("settings", "models", json!({"kind":"start","query":"manual-ui-agent"})).await.unwrap();
-        assert_eq!(models["choices"].as_array().unwrap().len(), 1);
-        assert_eq!(models["choices"][0]["thinkingLevels"], json!(["high"]));
-        assert_eq!(models["choices"][0]["defaultThinkingLevel"], "high");
-        assert_eq!(models["choices"][0]["limits"]["overrides"], json!({"contextWindow":65536,"inputLimit":32768,"maxOutputTokens":2048,"compactionThreshold":18000}));
-        assert_eq!(models["choices"][0]["limits"]["contextWindow"], 65536);
-        assert_eq!(models["choices"][0]["limits"]["inputLimit"], 32768);
-        assert_eq!(models["choices"][0]["limits"]["maxOutputTokens"], Value::Null);
-        assert_eq!(models["defaultModel"]["kind"], "ready");
-        assert_eq!(models["defaultModel"]["choice"]["selection"]["modelId"], "manual-ui-agent");
-        // Put the searched connection beyond the public catalog's first page.
-        // Empty inventories keep these rows out of the real model/send flow.
-        let mut catalog_revision = catalog["revision"].clone();
-        for index in 0..16 {
-            let last = index == 15;
-            let mutation = client.mutation(
-                Uuid::new_v4(), "settings", "create",
-                json!({"expectedCatalogRevision":catalog_revision,"connection":{
-                    "slug":if last { "last-page-connection".to_owned() } else { format!("search-filler-{index}") },
-                    "name":if last { "Later 中文 connection".to_owned() } else { format!("Search filler {index}") },
-                    "provider":detail["target"]["provider"],"configuration":{"baseUrl":fixture.base_url},
-                    "enabled":false,"enabledModelIds":[]
-                }}), Default::default(), None, Value::Null,
-            ).await.unwrap();
-            mutation.prepare().await.unwrap();
-            let reply = mutation.confirm().await.unwrap();
-            let Receipt::Recorded { outcome: OperationOutcome::Returned { value }, .. } = reply.receipt else {
-                panic!("the real settings catalog mutation was not recorded")
-            };
-            assert_eq!(value["kind"], "committed");
-            catalog_revision = value["catalogRevision"].clone();
-        }
-        let first_page = client.query("settings", "connections", json!({"kind":"start"})).await.unwrap();
-        assert_eq!(first_page["connections"].as_array().unwrap().len(), 16);
-        assert_eq!(first_page["next"], 16);
-        assert!(!first_page["connections"].as_array().unwrap().iter().any(|row| row["slug"] == "last-page-connection"));
-        activate(&mut view, "Back from connection settings").await;
-        wait_view(&mut view, |screen| screen.contains("Connection settings") && screen.contains("Connection name")).await;
-        activate(&mut view, "Back from connection settings").await;
-        wait_view_state(&mut view, |view, screen| screen.contains("Connections & models") && screen.contains("Refresh connections") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Close settings" && !node.state.disabled) && !view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Back from connection settings")).await;
-        fill(&mut view, "Search connections", "later 中文 OPENROUTER").await;
-        wait_view_state(&mut view, |view, screen| screen.contains("Later 中文 connection") && !screen.contains("Loading settings…") && !view.accessibility_snapshot().iter().any(|node| node.label == "Edit connection UI 连接")).await;
-        assert_input(&mut view, "Search connections", "later 中文 OPENROUTER").await;
-        activate(&mut view, "Edit connection Later 中文 connection").await;
-        wait_view(&mut view, |screen| screen.contains("Connection settings") && screen.contains("Connection name")).await;
-        assert_input(&mut view, "Connection ID", "last-page-connection").await;
-        activate(&mut view, "Back from connection settings").await;
-        fill(&mut view, "Search connections", "UI-CONNECTION").await;
-        wait_view_state(&mut view, |view, screen| screen.contains("UI 连接") && !screen.contains("Loading settings…") && !view.accessibility_snapshot().iter().any(|node| node.label == "Edit connection Later 中文 connection")).await;
-        activate(&mut view, "Close settings").await;
-        wait_view_state(&mut view, |view, screen| screen.contains("Make something remarkable.") && !view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Close settings")).await;
-        support::click_button(&mut view, "Choose composer workspace").await;
-        wait_view_state(&mut view, |view, screen| screen.contains("Workspace locations") && !screen.contains("Loading folders…") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Browse folder Workspace" && !node.state.disabled)).await;
-        support::click_button(&mut view, "Browse folder Workspace").await;
-        wait_view(&mut view, |screen| screen.contains("Folder · Workspace") && !screen.contains("Loading folders…")).await;
-        wait_enabled_node(&mut view, "Use this workspace folder").await;
-        support::click_button(&mut view, "Use this workspace folder").await;
-        wait_view(&mut view, |screen| screen.contains("Search models…") && !screen.contains("Loading…")).await;
-        select_palette(&mut view, "Search models…", "fixture-discovered-model", "Discovered UI Model").await;
-        wait_view_state(&mut view, |view, screen| screen.contains("Discovered UI Model · high") && model_menu_closed(view)).await;
-        activate(&mut view, "Choose model and effort").await;
-        activate(&mut view, "Choose reasoning effort").await;
-        wait_view_state(&mut view, |view, _| model_menu_ready(view, "Use effort high") && model_menu_ready(view, "Back to model settings")).await;
-        assert_effort_choices(&view, discovered_choice, None);
-        activate(&mut view, "Back to model settings").await;
-        activate(&mut view, "Choose model").await;
-        wait_focused_input(&mut view, "Search models").await;
-        select_palette(&mut view, "Search models…", "manual-ui-agent", "Manual UI Agent").await;
-        wait_view_state(&mut view, |view, screen| screen.contains("Manual UI Agent · high") && model_menu_closed(view)).await;
-        let sessions = client.query("agent", "list", json!({"filter":"all","position":{"kind":"start"}})).await.unwrap();
-        assert_eq!(sessions["sessions"].as_array().unwrap().len(), 1);
-        let session = sessions["sessions"][0]["id"].as_str().unwrap().to_owned();
-        let observed = client.query("agent", "observe", json!({"sessionId":session})).await.unwrap();
-        assert_eq!(observed["session"]["backend"], json!({"kind":"model","connectionId":basis["connectionId"],"modelId":"manual-ui-agent","thinkingLevel":null}));
-        let saved_policy = client.query("settings", "resolveModel", target.clone()).await.unwrap();
-        assert_eq!(saved_policy["choice"]["tools"], json!({"codeMode":true,"codeModeLanguage":"python","applyPatch":false}));
-        assert_eq!(saved_policy["defaults"], json!({"label":"manual-ui-agent","contextWindow":null,"inputLimit":65536,"maxOutputTokens":8000,"compactionThreshold":27852,"codeMode":false,"codeModeLanguage":"javascript","applyPatch":false,"thinkingLevels":[],"defaultThinkingLevel":null}),
-            "saved display, limits, tools, and efforts must not masquerade as inherited defaults");
-        activate(&mut view, "Choose model and effort").await;
-        activate(&mut view, "Edit current model settings").await;
-        wait_view(&mut view, |screen| screen.contains("Model settings") && screen.contains("Model ID") && !screen.contains("Loading settings…")).await;
-        assert_input(&mut view, "Model display name", "Manual UI Agent").await;
-        for (label, value) in [("Context window (tokens)", "65536"), ("Input limit (tokens)", "32768"), ("Maximum output (tokens)", "2048"), ("Compaction threshold (tokens)", "18000")] {
-            assert_input(&mut view, label, value).await;
-        }
-        fill(&mut view, "Maximum output (tokens)", "").await;
-        assert_default_input(&mut view, "Maximum output (tokens)", "8000").await;
-        for label in ["Code Mode: Enabled", "Apply Patch: Disabled", "Code Mode language: Python"] {
-            tab_to_label(&mut view, label).await;
-            assert!(support::wait_enabled_button(&mut view, label).await.state.selected, "current model settings must show the saved tool policy");
-        }
-        activate(&mut view, "Code Mode: Disabled").await;
-        activate(&mut view, "Apply Patch: Enabled").await;
-        activate(&mut view, "Code Mode language: JavaScript").await;
-        activate(&mut view, "Close settings").await;
-        wait_view_state(&mut view, |view, _| !view.accessibility_snapshot().iter().any(|node| node.label == "Close settings")).await;
-        let cancelled_policy = client.query("settings", "resolveModel", target.clone()).await.unwrap();
-        assert_eq!(cancelled_policy["choice"]["selection"], saved_policy["choice"]["selection"], "closing settings must not commit the unsaved tool policy");
-        assert_eq!(cancelled_policy["choice"]["tools"], json!({"codeMode":true,"codeModeLanguage":"python","applyPatch":false}));
-        assert_eq!(cancelled_policy["choice"]["limits"], saved_policy["choice"]["limits"], "closing the editor must retain the saved explicit output budget");
-        tab_to_label(&mut view, "Message composer").await;
-        editable(&mut view, "Message composer").await;
-        view.handle_event(Event::Paste("Use my new connection exactly once".into()));
-        support::wait_draft(&client, &session, "Use my new connection exactly once").await;
-        let composer = view.surface().focused().unwrap();
-        shortcut(&mut view, 'p');
-        select_palette(&mut view, "Search commands…", "Connections & models", "Connections & models").await;
-        activate(&mut view, "Settings section General").await;
-        wait_view(&mut view, |screen| screen.contains("General settings") && !screen.contains("Reading preferences…")).await;
-        let original_preferences = client.query("settings", "assistantPreferences", json!({})).await.unwrap();
-        activate(&mut view, "Edit personalization").await;
-        fill(&mut view, "Display name", "界面草稿用户").await;
-        activate(&mut view, "Settings section Network").await;
-        wait_view(&mut view, |screen| screen.contains("Network settings") && !screen.contains("Loading network settings…")).await;
-        let initial_network = client.query("settings", "network", json!({})).await.unwrap();
-        assert_eq!(initial_network["proxy"]["enabled"], false);
-        assert_eq!(initial_network["proxy"]["authEnabled"], false);
-        assert!(!support::wait_enabled_button(&mut view, "Enable Host proxy").await.state.selected);
-        activate(&mut view, "Proxy protocol http").await;
-        fill(&mut view, "Proxy host", "proxy.invalid").await;
-        fill(&mut view, "Proxy port", "8080").await;
-        activate(&mut view, "Enable proxy authentication").await;
-        fill(&mut view, "Proxy username", "proxy-user").await;
-        activate(&mut view, "Replace proxy password").await;
-        let proxy_secret = "代理密码原值";
-        fill(&mut view, "Proxy password", proxy_secret).await;
-        assert!(!view.snapshot().contains(proxy_secret), "the proxy password was painted by the form");
-        activate(&mut view, "Save network settings").await;
-        wait_view(&mut view, |screen| screen.contains("Network settings saved.") && !screen.contains("Loading network settings…")).await;
-        let saved_network = client.query("settings", "network", json!({})).await.unwrap();
-        let mut expected_proxy = initial_network["proxy"].clone();
-        expected_proxy["protocol"] = json!("http");
-        expected_proxy["host"] = json!("proxy.invalid");
-        expected_proxy["port"] = json!(8080);
-        expected_proxy["authEnabled"] = json!(true);
-        expected_proxy["username"] = json!("proxy-user");
-        assert_eq!(saved_network["proxy"], expected_proxy);
-        assert_eq!(saved_network["credential"]["configured"], true);
-        assert!(!saved_network.to_string().contains(proxy_secret));
-        assert!(saved_network["revision"].as_u64().unwrap() > original_preferences["revision"].as_u64().unwrap());
-        activate(&mut view, "Settings section General").await;
-        wait_view(&mut view, |screen| screen.contains("Personalization") && screen.contains("Display name")).await;
-        assert_input(&mut view, "Display name", "界面草稿用户").await;
-        activate(&mut view, "Save this preference").await;
-        wait_view(&mut view, |screen| screen.contains("Preferences changed elsewhere.") && screen.contains("界面草稿用户")).await;
-        let save = view.accessibility_snapshot().into_iter().find(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Save this preference").expect("the stale preference editor lost its actual Save button");
-        assert!(save.state.disabled, "a stale preference draft must require explicit discard before another save");
-        let conflicted = client.query("settings", "assistantPreferences", json!({})).await.unwrap();
-        assert_eq!(conflicted["revision"], saved_network["revision"]);
-        assert_eq!(conflicted["displayName"], original_preferences["displayName"]);
-        // Cancel explicitly discards this stale draft and reads the Host's
-        // current shared policy before another personalization edit is opened.
-        activate(&mut view, "Cancel").await;
-        activate(&mut view, "Edit personalization").await;
-        fill(&mut view, "Display name", "已保存的中文用户").await;
-        activate(&mut view, "Save this preference").await;
-        wait_view(&mut view, |screen| screen.contains("General settings") && screen.contains("Preferences saved.")).await;
-        let settings_close = support::wait_enabled_button(&mut view, "Close settings").await.id;
-        activate(&mut view, "Language: 简体中文").await;
-        wait_view_state(&mut view, |view, screen| screen.contains("常规设置") && screen.contains("偏好已保存。") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "语言：简体中文" && node.state.selected) && view.accessibility_snapshot().iter().any(|node| node.id == settings_close && node.label == "关闭设置")).await;
-        let saved_preferences = client.query("settings", "assistantPreferences", json!({})).await.unwrap();
-        assert_eq!(saved_preferences["displayName"], "已保存的中文用户");
-        assert_eq!(saved_preferences["language"], "zh-CN", "the interface and assistant must share the committed Host language");
-        activate(&mut view, "语言：繁體中文").await;
-        wait_view_state(&mut view, |view, screen| screen.contains("一般設定") && screen.contains("偏好已儲存。") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "語言：繁體中文" && node.state.selected) && view.accessibility_snapshot().iter().any(|node| node.id == settings_close && node.label == "關閉設定")).await;
-        let traditional_preferences = client.query("settings", "assistantPreferences", json!({})).await.unwrap();
-        assert_eq!(traditional_preferences["language"], "zh-TW");
-        assert!(traditional_preferences["revision"].as_u64().unwrap() > saved_preferences["revision"].as_u64().unwrap());
-        assert_eq!(traditional_preferences["displayName"], saved_preferences["displayName"]);
-        activate(&mut view, "語言：English").await;
-        wait_view_state(&mut view, |view, screen| screen.contains("General settings") && screen.contains("Preferences saved.") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Language: English" && node.state.selected) && view.accessibility_snapshot().iter().any(|node| node.id == settings_close && node.label == "Close settings")).await;
-        let saved_preferences = client.query("settings", "assistantPreferences", json!({})).await.unwrap();
-        assert_eq!(saved_preferences["language"], "en");
-        assert!(saved_preferences["revision"].as_u64().unwrap() > traditional_preferences["revision"].as_u64().unwrap());
-        let final_network = client.query("settings", "network", json!({})).await.unwrap();
-        assert_eq!(final_network["proxy"], saved_network["proxy"]);
-        assert_eq!(final_network["credential"], saved_network["credential"]);
-        assert!(!final_network.to_string().contains(proxy_secret));
-        // This editor writes the Host-selected global AGENTS.md, independently
-        // of the shared runtime-policy revision and without changing its bytes.
-        let initial_global = client.query("agent", "globalInstructions", json!({})).await.unwrap();
-        assert_eq!(initial_global["kind"], "available");
-        assert_eq!(initial_global["source"], "maka");
-        assert_eq!(initial_global["path"], instruction_path.to_str().unwrap());
-        assert_eq!(initial_global["content"], initial_instructions);
-        let original_size = (view.surface().viewport().width.0 / 8.0, view.surface().viewport().height.0 / 16.0);
-        view.resize(120, 50);
-        activate(&mut view, "Edit global instructions").await;
-        // The complete native text remains one label even when a long Host
-        // path wraps across multiple terminal rows.
-        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == instruction_path.to_str().unwrap())).await;
-        assert_input(&mut view, "Global instructions", initial_instructions).await;
-        editable(&mut view, "Global instructions").await;
-        let global_editor = view.surface().focused().unwrap();
-        let save = view.accessibility_snapshot().into_iter().find(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Save global instructions").expect("the unchanged global file lost its Save button");
-        assert!(save.state.disabled, "loading and focusing the CRLF file must not make it dirty");
-        assert_eq!(std::fs::read_to_string(&instruction_path).unwrap(), initial_instructions);
-        // Edit the resident document instead of replacing it: existing CRLF,
-        // tabs and whitespace remain literal; physical Enter uses its first EOL.
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL)));
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Char('改'), KeyModifiers::NONE)));
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        commit_native_events(&mut view).await;
-        let locally_edited = format!("{initial_instructions}改\r\n");
-        assert_input(&mut view, "Global instructions", &locally_edited).await;
-        assert_eq!(view.surface().focused(), Some(global_editor), "local editing replaced the resident global file input");
-        support::wait_enabled_button(&mut view, "Save global instructions").await;
-        assert_eq!(std::fs::read_to_string(&instruction_path).unwrap(), initial_instructions, "local typing must not save the file implicitly");
-        let instruction_draft = "  GLOBAL_DRAFT_PRESERVED\r\n\t未保存的完整草稿 🦀。\n保留独立回车\r末行\r\n\r\n";
-        fill(&mut view, "Global instructions", instruction_draft).await;
-        // A different shell can leave an original saved action unresolved.
-        // Recover its actual receipt without taking ownership of this draft.
-        let remote_instructions = "REMOTE SAVED GLOBAL INSTRUCTIONS\r\n\t另一终端已保存。\r\n\r\n";
-        {
-            let gate = ReplyGate::global_instructions(fixture.directory.path(), fixture.address.clone());
-            let remote = fixture.client_at(&gate.address).await;
-            let remote_id = Uuid::new_v4();
-            let mutation = remote.settings_mutation(remote_id, "agent", "updateGlobalInstructions", json!({
-                "source":initial_global["source"], "revision":initial_global["revision"], "content":remote_instructions
-            }), Default::default()).await.unwrap();
-            let original = mutation.prepare().await.unwrap();
-            gate.arm();
-            let mut confirmation = Box::pin(mutation.confirm());
-            tokio::select! {
-                result = &mut confirmation => panic!("the global save receipt escaped its physical gate: {result:?}"),
-                () = gate.held.notified() => {},
-            }
-            assert_eq!(std::fs::read_to_string(&instruction_path).unwrap(), remote_instructions);
-            drop(confirmation);
-            mutation.disconnect().await;
-            gate.release();
-            remote.close().await.unwrap();
-            let pending = client.pending_settings().await.unwrap();
-            assert_eq!(pending.iter().map(|operation| operation.id).collect::<Vec<_>>(), [remote_id]);
-            assert_eq!(pending[0].reference, original.reference);
-            assert!(pending[0].receipt.is_none());
-            // The local owner discovers the shared journal's unresolved action
-            // when its own attempted Save is refused before dispatch.
-            activate(&mut view, "Save global instructions").await;
-            wait_view(&mut view, |screen| screen.contains("Recover original settings actions")).await;
-            activate(&mut view, "Recover settings actions").await;
-            wait_view(&mut view, |screen| screen.contains("Source changed. Your draft is preserved.") && !screen.contains("Recover original settings actions")).await;
-            assert_input(&mut view, "Global instructions", instruction_draft).await;
-            let save = view.accessibility_snapshot().into_iter().find(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Save global instructions").expect("receipt recovery removed the independent draft's Save button");
-            assert!(save.state.disabled, "recovered other-shell saves must not make this unrelated draft repeatable");
-            assert_eq!(std::fs::read_to_string(&instruction_path).unwrap(), remote_instructions);
-            let settled = client.operation_for_settings(remote_id).await.unwrap();
-            assert_eq!(settled.reference, original.reference);
-            assert!(matches!(settled.receipt, Some(Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. }) if value == &json!({"kind":"saved"})));
-            assert!(client.pending_settings().await.unwrap().is_empty());
-        }
-        activate(&mut view, "Reload (discard edits)").await;
-        wait_view(&mut view, |screen| screen.contains("REMOTE SAVED GLOBAL INSTRUCTIONS") && !screen.contains("Reading global instructions…")).await;
-        assert_input(&mut view, "Global instructions", remote_instructions).await;
-        fill(&mut view, "Global instructions", instruction_draft).await;
-        let external_instructions = "EXTERNAL GLOBAL UPDATE\r\n\t外部编辑不能被覆盖。\r\n\r\n";
-        std::fs::write(&instruction_path, external_instructions).unwrap();
-        activate(&mut view, "Save global instructions").await;
-        wait_view(&mut view, |screen| screen.contains("Source changed. Your draft is preserved.")).await;
-        assert_input(&mut view, "Global instructions", instruction_draft).await;
-        let save = view.accessibility_snapshot().into_iter().find(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Save global instructions").expect("the global instruction draft lost its actual Save button");
-        assert!(save.state.disabled, "a changed file must require explicit reload before another save");
-        assert_eq!(std::fs::read_to_string(&instruction_path).unwrap(), external_instructions);
-        activate(&mut view, "Reload (discard edits)").await;
-        wait_view(&mut view, |screen| screen.contains("EXTERNAL GLOBAL UPDATE") && !screen.contains("Reading global instructions…")).await;
-        assert_input(&mut view, "Global instructions", external_instructions).await;
-        let final_instructions = format!("  GLOBAL_UI_INSTRUCTIONS_UNIQUE\r\n{}\n\tMixed LF line 🦀\rStandalone CR line\r\n\r\n", "\t保留完整 UTF-8 指令，遵循实际用户需求。  \r\n".repeat(40));
-        fill(&mut view, "Global instructions", &final_instructions).await;
-        assert_input(&mut view, "Global instructions", &final_instructions).await;
-        assert_document_viewport(&mut view, "Global instructions", "Save global instructions", "GLOBAL_UI_INSTRUCTIONS_UNIQUE").await;
-        view.resize(80, 24);
-        assert_input(&mut view, "Global instructions", &final_instructions).await;
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)));
-        commit_native_events(&mut view).await;
-        wait_view(&mut view, |screen| screen.contains("GLOBAL_UI_INSTRUCTIONS_UNIQUE")).await;
-        activate(&mut view, "Save global instructions").await;
-        wait_view(&mut view, |screen| screen.contains("Global instructions saved.")).await;
-        let saved_global = client.query("agent", "globalInstructions", json!({})).await.unwrap();
-        assert_eq!(saved_global["source"], initial_global["source"]);
-        assert_eq!(saved_global["path"], initial_global["path"]);
-        assert_eq!(saved_global["content"], final_instructions);
-        assert_eq!(saved_global["exists"], true);
-        assert_ne!(saved_global["revision"], initial_global["revision"]);
-        assert_eq!(std::fs::read_to_string(&instruction_path).unwrap(), final_instructions);
-        assert_eq!(client.query("settings", "assistantPreferences", json!({})).await.unwrap(), saved_preferences, "editing AGENTS.md must not mutate display name, language or the policy revision");
-        // Return from the file editor before continuing the original name and
-        // composer identity checks; saving may retain the fresh file editor.
-        view.resize(120, 50);
-        activate(&mut view, "Back from general settings").await;
-        activate(&mut view, "Edit compaction prompt").await;
-        let compaction_draft = format!("COMPACTION_EDITOR_FIRST_LINE\n{}", "Complete unsaved compaction instructions.\n".repeat(50));
-        fill(&mut view, "Compaction prompt", &compaction_draft).await;
-        assert_document_viewport(&mut view, "Compaction prompt", "Save this preference", "COMPACTION_EDITOR_FIRST_LINE").await;
-        view.resize(80, 24);
-        assert_input(&mut view, "Compaction prompt", &compaction_draft).await;
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)));
-        commit_native_events(&mut view).await;
-        wait_view(&mut view, |screen| screen.contains("COMPACTION_EDITOR_FIRST_LINE")).await;
-        activate(&mut view, "Cancel").await;
-        assert_eq!(client.query("settings", "assistantPreferences", json!({})).await.unwrap(), saved_preferences, "leaving the compaction editor must not save the draft");
-        view.resize(original_size.0 as u16, original_size.1 as u16);
-        activate(&mut view, "Edit personalization").await;
-        assert_input(&mut view, "Display name", "已保存的中文用户").await;
-        support::wait_enabled_button(&mut view, "Back from general settings").await;
-        support::click_button(&mut view, "Close settings").await;
-        editable(&mut view, "Message composer").await;
-        assert_eq!(view.surface().focused(), Some(composer), "settings replaced the resident native composer");
-        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("Use my new connection exactly once"));
-        support::wait_draft(&client, &session, "Use my new connection exactly once").await;
-        support::wait_enabled_button(&mut view, "Send message").await;
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        let mut request = fixture.next_request().await;
-        assert_eq!(request.body["model"], "manual-ui-agent");
-        assert_eq!(request.body["max_tokens"], 2048);
-        assert_eq!(request.body["reasoning_effort"], "high");
-        assert_eq!(request.body["provider"], json!({"only":["openrouter","deepseek"]}));
-        assert_eq!(request.body["temperature"], 0.22);
-        assert!(request.body["tools"].as_array().unwrap().iter().any(|tool| tool["function"]["name"] == "exec"), "the model's saved Code Mode policy must reach the actual provider request");
-        assert!(request.body["messages"].as_array().unwrap().iter().any(|message| message["role"] == "user" && message["content"].to_string().contains("Use my new connection exactly once")));
-        let system_prompt = request.body["messages"].as_array().unwrap().iter()
-            .filter(|message| message["role"] == "system")
-            .filter_map(|message| message["content"].as_str()).collect::<Vec<_>>().join("\n");
-        assert_eq!(system_prompt.matches("GLOBAL_UI_INSTRUCTIONS_UNIQUE").count(), 1, "admission must capture the saved global file once");
-        assert!(system_prompt.contains(final_instructions.trim()), "the provider did not receive the saved full global instructions");
-        assert!(!system_prompt.contains("INITIAL GLOBAL UTF-8"));
-        assert!(!system_prompt.contains("EXTERNAL GLOBAL UPDATE"));
-        assert!(!system_prompt.contains("REMOTE SAVED GLOBAL INSTRUCTIONS"));
-
-        request.thinking("SETTINGS_CONNECTION_REASONING").await;
-        request.delta("SETTINGS_CONNECTION_SINGLE_SEND_DONE").await;
-        request.finish().await;
-        fixture.idle(&client, &session).await;
-        let completed = wait_view(&mut view, |screen| screen.contains("SETTINGS_CONNECTION_SINGLE_SEND_DONE")).await;
-        evidence("settings-empty-to-real-provider", &completed);
-        support::evidence_cells("settings-empty-to-real-provider", &view);
-        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
-        assert_eq!(fixture.discovery_count.load(Ordering::SeqCst), 1);
-        // This copy notice belongs to the still-mounted conversation. Changing
-        // language must translate it without replacing the resident composer.
-        support::click_button(&mut view, "Copy message").await;
-        wait_view(&mut view, |screen| screen.contains("Message copied")).await;
-        shortcut(&mut view, 'p');
-        select_palette(&mut view, "Search commands…", "Connections & models", "Connections & models").await;
-        activate(&mut view, "Settings section General").await;
-        wait_view(&mut view, |screen| screen.contains("General settings") && !screen.contains("Reading preferences…")).await;
-        activate(&mut view, "Language: 简体中文").await;
-        wait_view(&mut view, |screen| screen.contains("常规设置") && screen.contains("偏好已保存。")).await;
-        support::click_button(&mut view, "关闭设置").await;
-        wait_view(&mut view, |screen| screen.contains("消息已复制") && screen.contains("发送消息，或开始一项任务…")).await;
-        // The second Settings dialog was opened from the copy action, so its
-        // native restoration belongs to that action. Explicitly focus the same
-        // resident composer before checking its identity and editing context.
-        tab_to_label(&mut view, "消息输入区").await;
-        editable(&mut view, "消息输入区").await;
-        assert_eq!(view.surface().focused(), Some(composer), "language changes replaced the resident composer");
-        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some(""));
-        let startup_preferences = client.query("settings", "assistantPreferences", json!({})).await.unwrap();
-        assert_eq!(startup_preferences["language"], "zh-CN");
-        assert_eq!(startup_preferences["displayName"], saved_preferences["displayName"]);
-        drop(view);
-        bindings.close().await.unwrap();
-        drop(client);
-        #[cfg(unix)]
-        {
-            let mut terminal = support::pty::Pty::spawn(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), Some(&session));
-            terminal.wait_for("SETTINGS_CONNECTION_SINGLE_SEND_DONE").await;
-            terminal.wait_for("发送消息，或开始一项任务…").await;
-            let restored = terminal.wait_for("Manual UI Agent · high").await;
-            assert!(!restored.contains(support::PROVIDER_KEY));
-            assert!(!restored.contains(proxy_secret));
-            let restarted = fixture.client().await;
-            assert_eq!(restarted.query("settings", "assistantPreferences", json!({})).await.unwrap(), startup_preferences);
-            assert_eq!(restarted.query("agent", "globalInstructions", json!({})).await.unwrap(), saved_global, "the selected file and full content must survive terminal restart");
-            let persisted_network = restarted.query("settings", "network", json!({})).await.unwrap();
-            // Language and network settings share the runtime policy revision.
-            // The final UI language change advances that revision while every
-            // proxy, credential and Root field must remain exactly as saved.
-            let mut expected_network = final_network.clone();
-            expected_network["revision"] = startup_preferences["revision"].clone();
-            assert_eq!(persisted_network, expected_network);
-            assert!(!persisted_network.to_string().contains(proxy_secret));
-            restarted.close().await.unwrap();
-            assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1, "restoring the configured session must not resend");
-            assert_eq!(fixture.discovery_count.load(Ordering::SeqCst), 1, "restoring the configured session must not rediscover models");
-            evidence("settings-real-pty-restores-manual-model", &restored);
-            terminal.send(b"\x11");
-            terminal.finish().await;
-        }
-        fixture.finish().await;
-    }).await.expect("empty settings real Host/PTY flow timed out");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_home_palette_creates_switches_models_and_stops_a_real_session_without_mixing_drafts() {
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::reasoning_models().await;
+        let mut fixture = Fixture::configured(support::Options { catalog: support::Catalog::Reasoning, ..Default::default() }).await;
         let client = fixture.client().await;
         let models = client.query("settings", "models", json!({"kind":"start","query":""})).await.unwrap();
         let choices = models["choices"].as_array().unwrap();
@@ -3219,7 +2497,7 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
     use image::{ExtendedColorType, ImageEncoder, codecs::png};
     use nsh_platform_tui::ServiceOutput;
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::workspace_ui().await;
+        let mut fixture = Fixture::configured(support::Options { plugins: true, ..Default::default() }).await;
         let client = fixture.client().await;
         let workspace = fixture.directory.path().join("workspace");
         let text_path = workspace.join("000-preview.txt");
@@ -3492,7 +2770,7 @@ async fn immutable_tool_images_render_and_preview_without_stopping_the_running_t
     };
     use image::{ExtendedColorType, ImageEncoder, codecs::png};
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::registered_images().await;
+        let mut fixture = Fixture::configured(support::Options { registered: true, images: true, ..Default::default() }).await;
         let client = fixture.client().await;
         let path = fixture.directory.path().join("workspace/scene.png");
         let pixels: Vec<u8> = (0..192 * 128).flat_map(|index| {
@@ -3656,7 +2934,7 @@ async fn production_sixel_negotiates_from_real_queries_and_resize_keeps_unicode_
     use maka_host_runtime::application::host::Client as HostClient;
     const SIXEL: &[u8] = b"\x1bP9;1;0q\"1;1;";
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::registered_images().await;
+        let mut fixture = Fixture::configured(support::Options { registered: true, images: true, ..Default::default() }).await;
         let client = fixture.client().await;
         let path = fixture.directory.path().join("workspace/graphics-scene.png");
         let pixels: Vec<u8> = (0..64 * 48).flat_map(|index| {
@@ -3870,7 +3148,11 @@ async fn production_workspace_picker_browses_deep_folders_and_restores_the_real_
         });
     }
     tokio::time::timeout(Duration::from_secs(90), async {
-        let fixture = Fixture::registered().await;
+        let fixture = Fixture::configured(support::Options {
+            registered: true,
+            ..Default::default()
+        })
+        .await;
         let child_path = fixture.directory.path().join("workspace/中文工程/子目录");
         std::fs::create_dir_all(&child_path).unwrap();
         let client = fixture.client().await;
@@ -4038,7 +3320,7 @@ async fn production_workspace_picker_browses_deep_folders_and_restores_the_real_
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn production_binary_sends_renders_provider_text_and_restores_its_actual_terminal() {
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::registered().await;
+        let mut fixture = Fixture::configured(support::Options { registered: true, ..Default::default() }).await;
         fixture.seed_history(1).await;
         let gate = ReplyGate::history(fixture.directory.path(), fixture.address.clone());
         gate.arm();
@@ -4189,7 +3471,7 @@ async fn production_history_retry_and_live_reconnect_preserve_the_draft_receipt_
     }
 
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::registered().await;
+        let mut fixture = Fixture::configured(support::Options { registered: true, ..Default::default() }).await;
         fixture.seed_history(1).await;
         let history = ReplyGate::disconnect_history(fixture.directory.path(), fixture.address.clone());
         let catchup = ReplyGate::history(fixture.directory.path(), history.address.clone());

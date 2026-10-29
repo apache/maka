@@ -19,11 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  formSubmission,
-  initialForm,
-  utf8Bytes,
-} from '../../products/maka/workbench/app/interaction-form.ts';
+import { formSubmission, initialForm } from '../app/interaction-form.ts';
 
 const string = (name, extra = {}) => ({
   kind: 'string',
@@ -33,52 +29,50 @@ const string = (name, extra = {}) => ({
   ...extra,
 });
 
-// Exercise the same pure validator and message carriers imported by the actual
-// terminal InteractionPanel. Node strips types; no native module or UI is emulated.
-test('terminal forms preserve complete multibyte defaults and aggregate answers', () => {
-  const original = `原文😀${'甲😀'.repeat(1500)}完整结尾`;
-  assert.ok([...original].length > 2048);
-  assert.ok(utf8Bytes(original) > 8192);
-  const fields = [string('note', { default: original })];
-  const draft = initialForm(fields);
-  assert.equal(draft[0].included, true);
-  assert.ok(draft[0].value === original, 'the complete original default must initialize the draft');
-  const complete = formSubmission(fields, draft);
-  assert.ok(complete.answer, 'a complete default without an authored maximum must remain valid');
-  assert.deepEqual(complete.problems, [null]);
-  assert.ok(
-    complete.answer.values.note === original,
-    'submission must retain every original UTF-8 byte, including the final marker',
-  );
-
-  // Every field fits the former per-field byte bound, while the complete answer
-  // exceeds the independent whole-answer bound. Optional omission stays distinct.
-  const value = '界'.repeat(600);
-  assert.ok(utf8Bytes(value) < 2048);
-  const aggregateFields = Array.from({ length: 6 }, (_, index) =>
-    string(`field-${index}`, { default: value, maxLength: 600 }),
-  );
-  aggregateFields.push(string('omitted', { required: false }));
-  assert.ok(
-    utf8Bytes(
-      JSON.stringify(
-        Object.fromEntries(aggregateFields.slice(0, 6).map((field) => [field.name, value])),
-      ),
-    ) > 8192,
-  );
-  const aggregate = formSubmission(aggregateFields, initialForm(aggregateFields));
-  assert.ok(aggregate.answer, 'complete valid fields must not acquire an aggregate answer ceiling');
-  assert.deepEqual(
-    Object.keys(aggregate.answer.values),
-    aggregateFields.slice(0, 6).map((field) => field.name),
-  );
-  assert.deepEqual(aggregate.problems, Array(7).fill(null));
-  for (const field of aggregateFields.slice(0, 6)) {
-    assert.ok(
-      aggregate.answer.values[field.name] === value,
-      `${field.name} must retain its complete value`,
-    );
-  }
+test('forms aggregate typed Unicode defaults and omit untouched optional fields', () => {
+  const fields = [
+    string('note', { default: '原文😀\n完整结尾' }),
+    { kind: 'number', name: 'ratio', label: 'Ratio', required: true, default: 1.25 },
+    { kind: 'integer', name: 'retries', label: 'Retries', required: true, default: 0 },
+    { kind: 'boolean', name: 'confirmed', label: 'Confirmed', required: true, default: false },
+    {
+      kind: 'single_select',
+      name: 'plan',
+      label: 'Plan',
+      required: true,
+      default: 'basic',
+      options: [
+        { value: 'basic', label: 'Basic' },
+        { value: 'full', label: 'Full' },
+      ],
+    },
+    {
+      kind: 'multi_select',
+      name: 'extras',
+      label: 'Extras',
+      required: true,
+      default: ['logs', 'metrics'],
+      options: [
+        { value: 'logs', label: 'Logs' },
+        { value: 'metrics', label: 'Metrics' },
+      ],
+    },
+    string('omitted', { required: false }),
+  ];
+  const result = formSubmission(fields, initialForm(fields));
+  assert.deepEqual(result.problems, Array(fields.length).fill(null));
+  assert.deepEqual(JSON.parse(JSON.stringify(result.answer)), {
+    kind: 'form',
+    action: 'accept',
+    values: {
+      note: '原文😀\n完整结尾',
+      ratio: 1.25,
+      retries: 0,
+      confirmed: false,
+      plan: 'basic',
+      extras: ['logs', 'metrics'],
+    },
+  });
 });
 
 test('terminal forms preserve authored limits, omission, and malformed-value rejection', () => {

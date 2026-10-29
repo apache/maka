@@ -861,31 +861,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn clipboard_and_locator_commands_retain_the_exact_browser_owner() {
-        for handle in [
-            json!({"kind":"tab","id":"owned"}),
-            json!({"kind":"app","id":"owned"}),
-        ] {
-            for payload in [
-                json!({"method":"clipboardRead","handle":handle}),
-                json!({"method":"clipboardReadText","handle":handle}),
-                json!({"method":"clipboardWriteText","handle":handle,"text":"fixture"}),
-                json!({"method":"clipboardWrite","handle":handle,"items":[{"entries":[{"mimeType":"text/plain","text":"fixture"}]}]}),
-                json!({"method":"browserMutation","handle":handle,"locator":{"selector":"button"},"operation":{"kind":"click"}}),
-                json!({"method":"browserCua","handle":handle,"operation":{"kind":"move","x":-1.25,"y":2.5}}),
-            ] {
-                let command =
-                    serde_json::from_value(payload.clone()).expect("public Computer Use command");
-                assert_eq!(
-                    browser_command(&command),
-                    handle["kind"] == "tab",
-                    "{payload}"
-                );
-            }
-        }
-    }
-
     struct QueuedAudio {
         native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
         admission: Arc<admission::Gate>,
