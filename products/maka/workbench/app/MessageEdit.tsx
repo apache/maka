@@ -21,7 +21,7 @@ import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import { useHost } from './host';
-import { messageKey, type Position, type Row } from './history';
+import { canRegenerateFromText, messageKey, type Position, type Row } from './history';
 import { readOriginal, type OriginalMessage } from './MessageCopy';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { C, IconButton } from './ui';
@@ -72,10 +72,8 @@ export function MessageEdit(props: {
       const row = props.row();
       if (!row || row.role !== 'user' || row.field !== 'body' || !row.position || !row.turnId)
         return null;
-      // Only the text is resent; a regenerated reply would lose the attachments.
-      // Unknown attachments (a later fragment loaded alone) count as some.
-      if (props.regenerate && (row.attachments === undefined || row.attachments.length > 0))
-        return null;
+      // Text replay must not drop attachments or structured references.
+      if (props.regenerate && !canRegenerateFromText(row)) return null;
       // A fork before the turn of a steering message would also drop the message that opened it.
       if (!props.opensTurn()) return null;
       return {

@@ -6857,6 +6857,11 @@ export const contracts = {
               AgentHistoryChunk: {
                 type: 'object',
                 properties: {
+                  hasReferences: {
+                    description:
+                      'The original user input has quotes, directory references or inline references.\nPresent only on the first fragment; display text cannot reconstruct these references.',
+                    type: 'boolean',
+                  },
                   finalOutput: {
                     description:
                       "Part of the successfully completed native Turn's final output at `through`.\nIncludes all body parts and source citations; never a Thinking field.",

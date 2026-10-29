@@ -3161,3 +3161,83 @@ async fn item_accepted_text_at_old_fence_is_independent_of_later_body_cache() {
         "one frozen public history fence must not depend on later body materialization or reopening"
     );
 }
+
+#[tokio::test]
+async fn history_distinguishes_plain_text_from_structured_user_references() {
+    use maka_agent_facts::input::MessageInput;
+    use maka_agent_ports::session::history::HistoryView;
+    let temp = tempfile::tempdir().unwrap();
+    let log = EventLog::open(&temp.path().join("references.sqlite"))
+        .await
+        .unwrap();
+    let cases = [
+        ("plain", serde_json::json!({}), false),
+        (
+            "quote",
+            serde_json::json!({"quotes":[{"text":"The release moved to November."}]}),
+            true,
+        ),
+        (
+            "directory",
+            serde_json::json!({"directory_references":[{"hostId":"root","path":"src/中文"}]}),
+            true,
+        ),
+        (
+            "inline",
+            serde_json::json!({"inline_references":[{"kind":"workspace_file","value":"notes.txt","label":"@notes.txt","start":0}]}),
+            true,
+        ),
+    ];
+    for (session, references, expected) in cases {
+        log.create_session(session, "create", &serde_json::json!({}), 1)
+            .await
+            .unwrap();
+        let mut input = serde_json::json!({"text":"Summarize this material", "display_text":null});
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(references.as_object().unwrap().clone());
+        let content: MessageInput = serde_json::from_value(input).unwrap();
+        let through = log
+            .append(&event(
+                session,
+                Fact::InvocationOpened {
+                    configuration: None,
+                    input: InvocationInput::Message {
+                        content,
+                        source_messages: Vec::new(),
+                        request_fingerprint: None,
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+        for position in [Position::Start, Position::Tail] {
+            let Page::Ready { chunks, .. } = log
+                .history_view(
+                    session,
+                    through,
+                    position,
+                    false,
+                    HistoryView::Conversation,
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: 4,
+                        max_chunks: Some(8),
+                        max_json_bytes: 64 * 1024,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(chunks.len(), 1, "one visible user fragment for {session}");
+            let chunk = &chunks[0];
+            assert_eq!(chunk.role, Role::User);
+            assert_eq!(
+                chunk.has_references,
+                chunk.offset == 0 && expected,
+                "reference metadata for {session} at {}",
+                chunk.offset
+            );
+        }
+    }
+    log.close().await.unwrap();
+}

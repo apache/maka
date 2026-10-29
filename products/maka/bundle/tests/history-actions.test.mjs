@@ -19,7 +19,12 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { openingUserMessage } from '../../workbench/app/history.ts';
+import {
+  canRegenerateFromText,
+  mergeChunks,
+  openingUserMessage,
+  updateHistoryMetadata,
+} from '../../workbench/app/history.ts';
 
 const user = (text, turnId, sequence) => ({
   key: String(sequence),
@@ -46,4 +51,28 @@ test('turn actions require a proven opening message across history windows', () 
     openingUserMessage([earlier, opening, followup], 'current', before)?.text,
     'Build the application',
   );
+});
+
+test('regeneration waits for original metadata and retains reference exclusions across fragments', () => {
+  const first = {
+    ...user('Original request', 'current', 2),
+    offset: 0,
+    totalBytes: 20,
+    attachments: [],
+  };
+  const later = { ...first, text: 'tail', offset: 16 };
+  const [tail] = mergeChunks([], [later], false, 10);
+  assert.equal(canRegenerateFromText(tail), false);
+  const [plain] = updateHistoryMetadata([tail], [{ ...first, hasReferences: false }], 10);
+  assert.equal(canRegenerateFromText(plain), true);
+  const [referenced] = updateHistoryMetadata([tail], [{ ...first, hasReferences: true }], 10);
+  assert.equal(canRegenerateFromText(referenced), false);
+  const [continued] = mergeChunks([referenced], [later], false, 11);
+  assert.equal(canRegenerateFromText(continued), false);
+  const [attached] = updateHistoryMetadata(
+    [tail],
+    [{ ...first, attachments: [{ name: 'image.png' }] }],
+    10,
+  );
+  assert.equal(canRegenerateFromText(attached), false);
 });
