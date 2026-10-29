@@ -24,6 +24,10 @@ pub(crate) fn schema(include: impl Fn(&str, &str) -> bool) -> String {
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch(include_str!("../../migrations/0001_runtime.sql"))
         .unwrap();
+    db.execute_batch(include_str!(
+        "../../migrations/0005_browser_upload_origin_index.sql"
+    ))
+    .unwrap();
     let mut query = db.prepare(
         "SELECT type,name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND tbl_name NOT IN (SELECT name FROM pragma_table_list WHERE schema='main' AND type='shadow') ORDER BY rowid",
     ).unwrap();

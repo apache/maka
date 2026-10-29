@@ -45,7 +45,8 @@ export function computerCapability(request: Request): boolean {
     target.toolName === 'cua_repl' &&
     (((target.capability === 'computer_use' || target.capability === 'computer_audio') &&
       target.scope.kind === 'capability') ||
-      ((target.capability === 'browser' || target.capability === 'browser_download') &&
+      ((target.capability === 'browser' || target.capability === 'browser_download' ||
+        target.capability === 'browser_upload') &&
         target.scope.kind === 'browser_origin') ||
       (target.capability === 'browser_history' && target.scope.kind === 'browser_profile'))
   );
@@ -71,7 +72,9 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
                 ? tr('Computer output audio for this session')
                 : props.request.target.capability === 'browser_history'
                   ? tr('Browsing history for this browser profile')
-                  : props.request.target.capability === 'browser_download'
+                  : props.request.target.capability === 'browser_upload'
+                    ? tr('Browser file uploads for this session')
+                    : props.request.target.capability === 'browser_download'
                     ? tr('Browser file downloads for this session')
                     : props.request.target.capability === 'browser'
                       ? tr('Browser access for this session')
@@ -94,7 +97,11 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
                   ? tr(
                       "Allow this tool to read the selected browser profile's browsing history for this session. Page access, downloads, and other browser profiles need separate permission. Reconnecting the browser requires permission again.",
                     )
-                  : props.request.target.capability === 'browser_download'
+                  : props.request.target.capability === 'browser_upload'
+                    ? tr(
+                        "This allows the requesting tool to upload files to the displayed browser origin. File access, browser page access and file downloads require separate permissions. The grant lasts for this session's current permission boundary.",
+                      )
+                    : props.request.target.capability === 'browser_download'
                     ? tr(
                         "This allows the requesting tool to download files from the displayed browser origin. Browser page access is a separate permission. The grant lasts for this session's current permission boundary.",
                       )

@@ -51,6 +51,31 @@ pub struct ResourceDescriptor {
     pub length: u64,
     pub metadata: Value,
 }
+
+/// The original request's capture entry point, without cloning its whole Context.
+/// It preserves the same dispatch, cancellation and resource group; it grants no
+/// invocation or filesystem authority.
+#[derive(Clone)]
+pub struct ResourceCapturer {
+    dispatch: std::sync::Weak<Dispatch>,
+    scope: Scope,
+}
+impl ResourceCapturer {
+    pub fn scope(&self) -> &Scope {
+        &self.scope
+    }
+
+    /// Reserve existing Host budgets under this exact original request Scope.
+    pub fn capture(
+        &self,
+        descriptors: BTreeMap<String, ResourceDescriptor>,
+    ) -> Result<ResourceCapture> {
+        self.dispatch
+            .upgrade()
+            .ok_or("Host deployment is closed")?
+            .capture_resources(self.scope.clone(), descriptors)
+    }
+}
 /// Owned local inputs or privately reserved immutable inputs. Neither variant
 /// authorizes an invocation. The final Application owner still checks admission.
 pub struct CallResources(ResourceInput);
@@ -121,6 +146,13 @@ impl Client {
     }
 }
 impl Context {
+    pub fn resource_capturer(&self) -> ResourceCapturer {
+        ResourceCapturer {
+            dispatch: self.dispatch.clone(),
+            scope: self.scope.clone(),
+        }
+    }
+
     /// Native producers reserve the same Host budgets before allocating bytes.
     /// Captured input remains tied to this exact request Scope, never its descriptor.
     pub fn capture_resources(
@@ -232,6 +264,29 @@ impl ResourceCapture {
     /// Moves the original buffers and reservations. No socket reader, writable
     /// alias or whole-payload copy escapes this transition.
     pub fn finish(self) -> Result<CallResources> {
+        Ok(CallResources(ResourceInput::Captured(Box::new(
+            self.finish_reserved()?,
+        ))))
+    }
+
+    /// Freeze resources while keeping their original budgets and Scope ticket.
+    /// The whole capture remains retained until its last resource is released.
+    pub fn finish_resources(self) -> Result<Attachments> {
+        let reserved = Arc::new(self.finish_reserved()?);
+        Ok(reserved
+            .attachments
+            .iter()
+            .map(|(slot, resource)| {
+                let resource: Arc<dyn ReadResource> = Arc::new(OwnedResource {
+                    resource: resource.clone(),
+                    _reserved: reserved.clone(),
+                });
+                (slot.clone(), resource)
+            })
+            .collect())
+    }
+
+    fn finish_reserved(self) -> Result<Reserved> {
         self.check_open()?;
         if self.receiving.values().any(|r| r.written != r.buffer.len()) {
             return Err("resource capture is incomplete".into());
@@ -260,14 +315,39 @@ impl ResourceCapture {
                 (name, value)
             })
             .collect();
-        Ok(CallResources(ResourceInput::Captured(Box::new(Reserved {
+        Ok(Reserved {
             attachments,
             bytes,
             resources,
             admitted,
             group: scope.resources.clone(),
             parent,
-        }))))
+        })
+    }
+}
+
+struct OwnedResource {
+    // Drop this reference before the reservation can release its raw resources,
+    // followed by their original permits and Scope ticket. No wrapper is stored
+    // in Reserved itself, so this ownership graph has no reservation cycle.
+    resource: Arc<dyn ReadResource>,
+    _reserved: Arc<Reserved>,
+}
+impl ReadResource for OwnedResource {
+    fn encoding(&self) -> ResourceEncoding {
+        self.resource.encoding()
+    }
+    fn resource_type(&self) -> ResourceType {
+        self.resource.resource_type()
+    }
+    fn bytes(&self) -> usize {
+        self.resource.bytes()
+    }
+    fn metadata(&self) -> Value {
+        self.resource.metadata()
+    }
+    fn read(&self, range: Range<usize>) -> Result<Vec<u8>> {
+        self.resource.read(range)
     }
 }
 struct Frozen {
@@ -415,5 +495,119 @@ impl Dispatch {
                 })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod owned_resource_tests {
+    use super::*;
+
+    struct Fixture {
+        capture: ResourceCapture,
+        bytes: Arc<Semaphore>,
+        resources: Arc<Semaphore>,
+        scope: Scope,
+        _receiver: mpsc::UnboundedReceiver<Command>,
+    }
+    fn fixture() -> Fixture {
+        let scope = maka_capabilities::call::Issuer::default()
+            .issue(
+                maka_capabilities::call::Identity::Remote {
+                    request_id: Uuid::new_v4(),
+                },
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let bytes = Arc::new(Semaphore::new(8));
+        let resources = Arc::new(Semaphore::new(8));
+        let (commands, receiver) = mpsc::unbounded_channel();
+        let receiving = [("first", vec![1u8, 2]), ("second", vec![3u8, 4])]
+            .into_iter()
+            .map(|(slot, buffer)| {
+                (
+                    slot.into(),
+                    Receiving {
+                        descriptor: ResourceDescriptor {
+                            encoding: ResourceEncoding::Bytes,
+                            resource: maka_plugin_core::contract::binary_resource_type(),
+                            length: buffer.len() as u64,
+                            metadata: Value::Null,
+                        },
+                        written: buffer.len(),
+                        buffer: buffer.into_boxed_slice(),
+                    },
+                )
+            })
+            .collect();
+        let parent = scope.resources.reserve().unwrap();
+        let capture = ResourceCapture {
+            receiving,
+            bytes: bytes.clone().try_acquire_many_owned(3).unwrap(),
+            resources: resources.clone().try_acquire_many_owned(4).unwrap(),
+            admitted: AttachmentSize {
+                payload: 4,
+                descriptors: 3,
+            },
+            scope: scope.clone(),
+            commands,
+            parent: Some(parent),
+        };
+        Fixture {
+            capture,
+            bytes,
+            resources,
+            scope,
+            _receiver: receiver,
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_resources_hold_the_original_permits_and_scope_until_last_release() {
+        let Fixture {
+            capture,
+            bytes,
+            resources,
+            scope,
+            _receiver,
+        } = fixture();
+        let mut owned = capture.finish_resources().unwrap();
+        assert_eq!(owned["first"].read(0..2).unwrap(), [1, 2]);
+        assert_eq!(owned["second"].read(0..2).unwrap(), [3, 4]);
+        assert!(owned["first"].read(0..3).is_err());
+        assert_eq!(owned["first"].encoding(), ResourceEncoding::Bytes);
+        assert_eq!(
+            owned["first"].resource_type(),
+            maka_plugin_core::contract::binary_resource_type()
+        );
+        assert_eq!(owned["first"].metadata(), Value::Null);
+        assert_eq!(
+            (bytes.available_permits(), resources.available_permits()),
+            (5, 4)
+        );
+        assert!(!scope.resources.is_idle());
+        drop(owned.remove("first").unwrap());
+        assert_eq!(
+            (bytes.available_permits(), resources.available_permits()),
+            (5, 4)
+        );
+        let mut settlement = Box::pin(scope.resources.settle());
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(settlement.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let last = owned.remove("second").unwrap();
+        drop(owned);
+        assert_eq!(
+            (bytes.available_permits(), resources.available_permits()),
+            (5, 4)
+        );
+        drop(last);
+        settlement.await.unwrap();
+        assert_eq!(
+            (bytes.available_permits(), resources.available_permits()),
+            (8, 8)
+        );
+        assert!(scope.resources.is_idle());
     }
 }

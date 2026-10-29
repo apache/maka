@@ -18,6 +18,8 @@
  */
 
 use super::*;
+
+mod upload;
 use maka_agent_api::{
     contract::WorkspaceAccess,
     session::{ResolvedConfiguration, StoredSessionConfiguration},
@@ -54,6 +56,8 @@ pub(super) struct PreparationScope {
     /// Cancelled when the actual original native future becomes terminal.
     /// Retained already-written replies have separate settlement custody.
     pub active: CancellationToken,
+    /// Actual parent Host resource budgets and original Scope, not a read grant.
+    pub input_resources: Option<maka_host_runtime::application::ResourceCapturer>,
 }
 
 impl Access {
@@ -286,6 +290,21 @@ impl Access {
 }
 
 impl BrowserAuthorization for Access {
+    fn prepare_upload(
+        &self,
+        request: maka_computer_use::BrowserUploadRequest,
+        cancellation: CancellationToken,
+    ) -> maka_computer_use::BrowserUploadFuture {
+        self.prepare_upload_request(request, cancellation)
+    }
+    fn check_upload(
+        &self,
+        request: maka_computer_use::BrowserUploadRequest,
+        cancellation: CancellationToken,
+    ) -> AuthorizationFuture {
+        self.check_upload_request(request, cancellation)
+    }
+
     fn authorize_session_preparation(
         &self,
         preparation: BrowserSessionPreparation,

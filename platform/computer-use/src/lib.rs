@@ -23,6 +23,8 @@
 //! pinned native implementation. Perception and driver administration are absent.
 
 mod activity;
+mod browser_upload;
+pub use browser_upload::{BrowserUploadFile, BrowserUploadFuture, BrowserUploadRequest};
 #[cfg(feature = "native-desktop")]
 mod browser;
 #[path = "browser/clipboard.rs"]
@@ -54,6 +56,7 @@ mod linux_input;
 #[cfg(all(feature = "native-desktop", target_os = "macos"))]
 mod macos;
 mod native_interruption;
+mod native_monitor;
 #[cfg(feature = "native-desktop")]
 mod observation;
 mod permission_subject;
@@ -77,6 +80,9 @@ pub use maka_capabilities::computer::BrowserLeaseSubject;
 pub use native_interruption::{
     InterruptionFuture, NativeBindingSource, NativeInterruption, NativeInterruptionDrain,
     NativeInterruptionObserver,
+};
+pub use native_monitor::{
+    NativeMonitorAuthority, NativeMonitorFuture, NativeMonitorPermit, NativeMonitorResource,
 };
 pub use permission_subject::{ComputerAppBinding, ComputerAppTarget};
 pub fn facade() -> String {

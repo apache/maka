@@ -503,7 +503,7 @@ impl Run {
                     Box::pin(async move {
                         serde_json::to_value(
                             owner
-                                .evaluate(&method, input, scope, basis, interaction, cancel)
+                                .evaluate(&method, input, scope.into(), basis, interaction, cancel)
                                 .await?,
                         )
                         .map_err(failed)

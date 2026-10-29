@@ -122,6 +122,30 @@ const invoke = async (method, args = {}) => {
   if (!result.ok) throw new ErrorClass(result.error.message);
   return result.value;
 };
+class PlaywrightFileChooser {
+  #handle;
+  #id;
+  #multiple;
+  constructor(handle, id, multiple) {
+    this.#handle = handle;
+    this.#id = id;
+    this.#multiple = multiple;
+  }
+  isMultiple() {
+    return this.#multiple;
+  }
+  async setFiles(files, options = {}) {
+    if (files == null) throw new ErrorClass('fileChooser.setFiles requires files');
+    const paths = Array.isArray(files) ? files : [files];
+    if (paths.length === 0) throw new ErrorClass('fileChooser.setFiles requires at least one file');
+    await invoke('browserFileChooserSetFiles', {
+      handle: this.#handle,
+      fileChooserId: this.#id,
+      files: paths,
+      options: { timeoutMs: options?.timeoutMs },
+    });
+  }
+}
 class PlaywrightDownload {
   #handle;
   #scope;
@@ -574,11 +598,18 @@ const playwrightFor = (handle, identity) => {
       return value;
     },
     waitForEvent: async (event, options = {}) => {
-      if (event !== 'download')
+      if (event !== 'download' && event !== 'filechooser')
         throw new ErrorClass("playwright.waitForEvent only supports 'download' and 'filechooser'");
+      if (event === 'filechooser') {
+        const result = await invoke('browserFileChooserWait', {
+          handle,
+          options: { timeoutMs: options?.timeoutMs },
+        });
+        return new PlaywrightFileChooser(handle, result.fileChooserId, result.isMultiple);
+      }
       const result = await invoke('browserDownloadWait', {
         handle,
-        options: { timeoutMs: options.timeoutMs },
+        options: { timeoutMs: options?.timeoutMs },
       });
       return new PlaywrightDownload(handle, result.downloadScope, result.downloadId);
     },
@@ -913,6 +944,22 @@ const bind = async (method, args, document = true) => {
           });
         },
       }),
+      screenshot: async (options = {}) => {
+        const screenshotOptions = {};
+        if (options.fullPage !== undefined) {
+          if (typeof options.fullPage !== 'boolean')
+            throw new ErrorClass('tab.screenshot fullPage must be a boolean');
+          screenshotOptions.fullPage = options.fullPage;
+        }
+        if (options.clip) {
+          const { x, y, width, height } = options.clip;
+          if ([x, y, width, height].some((value) => typeof value !== 'number' || !Number.isFinite(value)))
+            throw new ErrorClass('tab.screenshot clip requires x, y, width, and height');
+          screenshotOptions.clip = { x, y, width, height };
+        }
+        const image = await invoke('browserScreenshot', { handle, options: screenshotOptions });
+        return decode(image.data);
+      },
       title: () => invoke('tabMetadata', { handle }).then((info) => decodeTabMetadata(info).title),
       url: () => invoke('tabMetadata', { handle }).then((info) => info.url),
       clipboard: Object.freeze({
@@ -962,6 +1009,12 @@ const bind = async (method, args, document = true) => {
       back: () => action('back', {}),
       forward: () => action('forward', {}),
       reload: () => action('reload', {}),
+      markHandoff: async () => {
+        await invoke('browserMarkTab', { handle, status: 'handoff' });
+      },
+      markDeliverable: async () => {
+        await invoke('browserMarkTab', { handle, status: 'deliverable' });
+      },
       close: () => action('close', {}),
     });
   } else {

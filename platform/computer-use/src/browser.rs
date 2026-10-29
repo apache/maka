@@ -35,6 +35,7 @@ mod cursor;
 mod dialogs;
 mod downloads;
 mod extension;
+mod filechooser;
 mod frames;
 mod origin;
 mod owned_input;
@@ -42,6 +43,7 @@ mod ownership;
 pub(crate) mod provider;
 use provider::Provider;
 mod playwright;
+mod screenshot;
 mod surface;
 pub(crate) use ownership::Host;
 use ownership::{BrowserIdentity, TabIdentity};
@@ -152,6 +154,7 @@ struct Tab {
     last_turn: String,
     dialogs: Option<dialogs::Controller>,
     downloads: Option<downloads::Controller>,
+    filechoosers: Option<filechooser::Store>,
     dialog_host: Option<std::sync::Arc<dyn crate::BrowserHostEffects>>,
     clipboard: Option<clipboard_bridge::Bridge>,
     clipboard_store: std::sync::Arc<crate::browser_clipboard::Store>,
@@ -811,6 +814,14 @@ impl Browsers {
             Command::BrowserUserOpenTabs { browser_id } => {
                 Box::pin(self.user_tabs(&browser_id)).await
             }
+            Command::BrowserScreenshot { handle: Handle::Tab(handle), options } =>
+                Box::pin(self.screenshot(&handle, options, call)).await,
+            Command::BrowserMarkTab {
+                handle: Handle::Tab(handle),
+                status,
+            } => {
+                Box::pin(self.mark_tab(&handle, status, invocation, cancellation, language)).await
+            }
             Command::BrowserUserGetTabContext { browser_id, tab_id } => {
                 Box::pin(self.user_tab_context(&browser_id, &tab_id, invocation, cancellation)).await
             }
@@ -1030,6 +1041,7 @@ impl Browsers {
                 })
                 .await
             }
+            Command::BrowserFileChooserSetFiles {handle,file_chooser_id,files,options} => Box::pin(self.set_file_chooser_files(handle,file_chooser_id,files,options,BrowserCall::new(invocation,cancellation,language))).await,
             Command::BrowserDownloadPath {
                 handle: Handle::Tab(handle),
                 scope,
@@ -1633,6 +1645,7 @@ impl Browsers {
                     last_turn: turn.to_owned(),
                     dialogs: None,
                     downloads: None,
+                    filechoosers: None,
                     dialog_host: invocation.browser_host_effects(),
                     clipboard: None,
                     clipboard_store,
@@ -1809,6 +1822,7 @@ impl Browsers {
         }
         let mut result = if closing {
             tab.cleanup_clipboard_current().await?;
+            tab.cleanup_filechoosers_current().await?;
             let extension_close = tab.admit_extension_close(invocation, cancellation).await?;
             // Held response cleanup uses this actual Close operation while its
             // exact claim is still Live. Existing Pending releases keep their
@@ -2066,6 +2080,9 @@ impl Tab {
     }
 
     fn begin_disconnect(&self) {
+        if let Some(choosers) = &self.filechoosers {
+            choosers.begin_close();
+        }
         if let Some(downloads) = &self.downloads {
             downloads.begin_close();
         }
@@ -2082,6 +2099,7 @@ impl Tab {
         self.begin_disconnect();
         self.cleanup_clipboard().await?;
         self.cleanup_downloads().await?;
+        self.cleanup_filechoosers().await?;
         if let Some(dialogs) = self.dialogs.as_mut() {
             dialogs.close().await?;
         }

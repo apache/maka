@@ -17,10 +17,10 @@
  * under the License.
  */
 
-//! Custody of the original, already admitted DOWN -> UP sequence.
+//! Custody of admitted browser input and temporary page producers.
 //!
 //! The operation custodian and caller poll one Shared future. Only the fixed
-//! releases of actually issued inputs use its captured transport admission.
+//! releases of actually issued resources use its captured transport admission.
 
 use super::*;
 use futures_util::{FutureExt, future::BoxFuture};
@@ -31,6 +31,10 @@ pub(super) struct Held(usize);
 
 #[derive(Clone)]
 enum Release {
+    Screencast,
+    ScreencastFrame {
+        session_id: serde_json::Number,
+    },
     Mouse {
         session: Option<String>,
         params: Value,
@@ -44,6 +48,12 @@ enum Release {
 impl Release {
     fn request(&self, modifiers: u32) -> (Option<&str>, &'static str, Value) {
         match self {
+            Self::Screencast => (None, "Page.stopScreencast", json!({})),
+            Self::ScreencastFrame { session_id } => (
+                None,
+                "Page.screencastFrameAck",
+                json!({"sessionId": session_id}),
+            ),
             Self::Mouse { session, params } => (
                 session.as_deref(),
                 "Input.dispatchMouseEvent",
@@ -64,12 +74,16 @@ impl Release {
 }
 #[derive(Clone, Copy)]
 enum ReleaseMethod {
+    Screencast,
+    ScreencastFrame,
     Mouse,
     Key,
 }
 impl ReleaseMethod {
     fn name(self) -> &'static str {
         match self {
+            Self::Screencast => "Page.stopScreencast",
+            Self::ScreencastFrame => "Page.screencastFrameAck",
             Self::Mouse => "Input.dispatchMouseEvent",
             Self::Key => "Input.dispatchKeyEvent",
         }
@@ -89,6 +103,8 @@ enum HeldState {
 impl HeldState {
     fn method(&self) -> &'static str {
         match self {
+            Self::Issued(Release::Screencast) => ReleaseMethod::Screencast.name(),
+            Self::Issued(Release::ScreencastFrame { .. }) => ReleaseMethod::ScreencastFrame.name(),
             Self::Issued(Release::Mouse { .. }) => ReleaseMethod::Mouse.name(),
             Self::Issued(Release::Key { .. }) => ReleaseMethod::Key.name(),
             Self::Releasing(command) | Self::Unconfirmed(command) => command.method.name(),
@@ -257,6 +273,8 @@ impl Resource {
         let command = ReleaseCommand {
             session: session.map(str::to_owned),
             method: match release {
+                Release::Screencast => ReleaseMethod::Screencast,
+                Release::ScreencastFrame { .. } => ReleaseMethod::ScreencastFrame,
                 Release::Mouse { .. } => ReleaseMethod::Mouse,
                 Release::Key { .. } => ReleaseMethod::Key,
             },
@@ -328,6 +346,65 @@ pub(super) struct Sequence {
     cancellation: CancellationToken,
 }
 impl Sequence {
+    pub(super) async fn start_screencast(&self, params: Value) -> Result<Option<Held>, ToolError> {
+        check_input(&self.cancellation)?;
+        if let Some(dialogs) = &self.socket.dialogs {
+            dialogs.synchronize().await;
+            dialogs.state.check_method("Page.startScreencast")?;
+        }
+        let _admission = self.socket.preparation.before_request().await?;
+        check_input(&self.cancellation)?;
+        let held = self.resource.issued(Release::Screencast, None);
+        let result = match &self.socket.extension_context {
+            Some(context) => {
+                self.socket
+                    .connection
+                    .call_with_extension_context(context, None, "Page.startScreencast", params)
+                    .await
+            }
+            None => {
+                self.socket
+                    .connection
+                    .call(None, "Page.startScreencast", params)
+                    .await
+            }
+        };
+        self.resource.press_finished(held, &result);
+        match result {
+            Ok(_) => Ok(Some(held)),
+            Err(error) => {
+                use cua_driver_core::browser::{CdpFailureDisposition, cdp_ws::CdpReplyError};
+                // The matched protocol method-not-found reply establishes that
+                // no screencast producer was created. Host refusal and unknown
+                // transport outcomes never become an observation fallback.
+                if let Some(reply) = error.downcast_ref::<CdpReplyError>()
+                    && reply.method() == "Page.startScreencast"
+                    && reply.code().is_some()
+                    && reply.disposition() == CdpFailureDisposition::ReplyFailure
+                {
+                    if reply.code() == Some(-32601) {
+                        self.resource.state().held[held.0] = None;
+                    }
+                    // Other matched Chrome errors still require the already
+                    // registered stop to settle before selecting fallback.
+                    return Ok(None);
+                }
+                Err(Cdp::failure(error))
+            }
+        }
+    }
+    pub(super) fn screencast_frame(&self, session_id: serde_json::Number) -> Held {
+        // Only an event from this sequence's captured CDP connection reaches
+        // this method; the number is an ACK token, never a grant or target.
+        let mut state = self.resource.state();
+        let held = Held(state.held.len());
+        state
+            .held
+            .push(Some(HeldState::Issued(Release::ScreencastFrame {
+                session_id,
+            })));
+        held
+    }
     async fn press(
         &self,
         session: Option<&str>,

@@ -58,16 +58,44 @@ type OperationFixture = Arc<
         + Sync,
 >;
 
+/// The production caller carries the original Host budget capability. Direct
+/// product fixtures retain their old Scope, and cannot claim upload support.
+pub(super) struct EvaluationScope {
+    call: Scope,
+    input_resources: Option<maka_host_runtime::application::ResourceCapturer>,
+}
+impl From<maka_host_runtime::application::ResourceCapturer> for EvaluationScope {
+    fn from(resources: maka_host_runtime::application::ResourceCapturer) -> Self {
+        Self {
+            call: resources.scope().clone(),
+            input_resources: Some(resources),
+        }
+    }
+}
+#[cfg(test)]
+impl From<Scope> for EvaluationScope {
+    fn from(call: Scope) -> Self {
+        Self {
+            call,
+            input_resources: None,
+        }
+    }
+}
+
 impl Computer {
     pub(super) async fn evaluate(
         self: &Arc<Self>,
         name: &str,
         input: Value,
-        call: Scope,
+        evaluation: EvaluationScope,
         basis: PermissionBasis,
         interaction: Arc<sessions::Interaction>,
         cancellation: CancellationToken,
     ) -> Result<ResultValue, ToolError> {
+        let EvaluationScope {
+            call,
+            input_resources,
+        } = evaluation;
         let invocation = call.identity.agent().expect("checked invocation").clone();
         let mut kernels = tokio::select! {
             biased;
@@ -159,6 +187,7 @@ impl Computer {
             cell: context.clone(),
             #[cfg(test)]
             operation_fixture: None,
+            input_resources,
         });
         let store = maka_agent_authority::permissions::execution(
             &self.store,
@@ -425,6 +454,10 @@ impl Computer {
             matches!(native.platform(), "mac" | "windows") && !browser_command(&command);
         let session = invocation.session_id.clone();
         let turn = invocation.turn_id.clone();
+        let monitor_enabled = native.platform() == "mac";
+        let monitor_owner = self.clone();
+        let monitor_gate = bridge.admission.clone();
+        let monitor_operation = operation_id.clone();
         let preparation_active = CancellationToken::new();
         let browser_access = browser_access::Access::new(
             self.clone(),
@@ -437,6 +470,7 @@ impl Computer {
                 epoch: bridge.epoch.clone(),
                 operation: operation_id.clone(),
                 active: preparation_active.clone(),
+                input_resources: bridge.input_resources.clone(),
             },
         );
         let native_interruption = sessions::native_interruption_observer(
@@ -498,6 +532,7 @@ impl Computer {
                     basis,
                     &effect_targets,
                     move |operation_cancel| async move {
+                        let monitor_invocation = effect_invocation.clone();
                         app_access::settle(
                             &effect_store,
                             &effect_invocation,
@@ -514,6 +549,18 @@ impl Computer {
                                         .with_operation_settlement(operation_settlement)
                                         .with_browser_host_effects(host_effects);
                                 if let Some(subject) = subject {
+                                    if monitor_enabled {
+                                        context = context.with_native_monitor_authority(
+                                            epoch.native_monitor_authority(
+                                                &monitor_owner,
+                                                monitor_gate,
+                                                monitor_invocation,
+                                                monitor_operation,
+                                                basis,
+                                                subject.clone(),
+                                            )?,
+                                        );
+                                    }
                                     context = context.with_app_target(subject);
                                 }
                                 let _timeout = pause_native.then(|| cell.suspend_timeout());
@@ -665,6 +712,7 @@ struct Bridge {
     basis: PermissionBasis,
     language: Language,
     cell: CellContext,
+    input_resources: Option<maka_host_runtime::application::ResourceCapturer>,
 }
 
 async fn audio_consent(
@@ -726,6 +774,8 @@ fn browser_command(command: &maka_computer_use::protocol::Command) -> bool {
             | Command::BrowserUserOpenTabs { .. }
             | Command::BrowserUserGetTabContext { .. }
             | Command::BrowserUserClaimTab { .. }
+            | Command::BrowserMarkTab { .. }
+            | Command::BrowserScreenshot { .. }
             | Command::BrowserEvaluate { .. }
             | Command::BrowserRead { .. }
             | Command::BrowserCua {
@@ -733,6 +783,8 @@ fn browser_command(command: &maka_computer_use::protocol::Command) -> bool {
                 ..
             }
             | Command::BrowserWait { .. }
+            | Command::BrowserFileChooserWait { .. }
+            | Command::BrowserFileChooserSetFiles { .. }
             | Command::BrowserDownloadWait { .. }
             | Command::BrowserDownloadPath { .. }
             | Command::BrowserDownloadMedia { .. }
@@ -1241,6 +1293,7 @@ mod tests {
                 language: Language::En,
                 cell: context.clone(),
                 operation_fixture: Some(fixture),
+                input_resources: None,
             });
             let runtime=Repl::new("globalThis.native=()=>call('cua',{method:'listWindows',options:{}});globalThis.browser=()=>call('cua',{method:'listBrowsers',options:{}});",CellLimits::default()).unwrap();
             let result=runtime.evaluate("let caught=false;try{await native()}catch(e){caught=true}console.log(JSON.stringify({caught,browser:await browser()}));".into(),

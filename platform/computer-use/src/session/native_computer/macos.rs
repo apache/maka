@@ -183,6 +183,31 @@ impl Session {
         let key = self
             .raw_mac_application(&approved, cancellation, language)
             .await?;
+        if matches!(&action, Action::PressKey { .. } | Action::TypeText { .. }) {
+            let input = match action {
+                Action::PressKey { key, .. } => crate::macos::keyboard::Input::PressKey(key),
+                Action::TypeText { text, .. } => crate::macos::keyboard::Input::TypeText(text),
+                _ => unreachable!("keyboard action was selected"),
+            };
+            let record = self
+                .raw_computer
+                .mac_targets
+                .get(&key)
+                .ok_or_else(|| failed("native app target unavailable"))?;
+            let application = record.application.clone();
+            let controller = record.controller.clone();
+            let authority = invocation
+                .native_monitor_authority()
+                .ok_or_else(|| failed("native input requires its current Host monitor lease"))?;
+            if authority.subject() != &approved {
+                return Err(failed("native monitor lease belongs to a different app"));
+            }
+            let focus = controller.attach_focus(self.epoch, authority).await?;
+            application
+                .keyboard(input, cancellation.clone(), focus, self.native.clone())
+                .await?;
+            return Ok(Value::Null);
+        }
         if crate::macos::Target::handles(&action) {
             let application = self
                 .raw_computer
@@ -191,7 +216,23 @@ impl Session {
                 .ok_or_else(|| failed("native app target unavailable"))?
                 .application
                 .clone();
-            application.action(action, cancellation.clone()).await?;
+            let authority = invocation
+                .native_monitor_authority()
+                .ok_or_else(|| failed("native input requires its current Host monitor lease"))?;
+            if authority.subject() != &approved {
+                return Err(failed("native monitor lease belongs to a different app"));
+            }
+            let controller = self
+                .raw_computer
+                .mac_targets
+                .get(&key)
+                .ok_or_else(|| failed("native app target unavailable"))?
+                .controller
+                .clone();
+            let focus = controller.attach_focus(self.epoch, authority).await?;
+            application
+                .native_action(action, cancellation.clone(), focus)
+                .await?;
         } else {
             let handle = self
                 .raw_mac_window(
@@ -220,8 +261,7 @@ impl Session {
                 )
                 .await?;
             } else {
-                // Keyboard and coordinate routes retain their exact-window
-                // implementation; this does not establish app-wide key parity.
+                // Coordinate routes retain their existing exact-window input.
                 self.action(
                     &handle,
                     action,
@@ -266,9 +306,11 @@ impl Session {
             return Ok(());
         };
         let application = record.application.clone();
+        let controller = record.controller.clone();
         let window = record.window.retained().map(str::to_owned);
         record.state = MacApplicationState::Retiring { error: None };
-        let result = async {
+        let result: Result<(), ToolError> = async {
+            controller.release_focus(self.epoch).await?;
             application.release().await?;
             if let Some(handle) = window
                 && self.targets.contains_key(&handle)
@@ -604,7 +646,7 @@ impl Session {
             let capture = result.structured_content.as_ref()
                 .and_then(|value| value["capture_id"].as_str()).map(str::to_owned);
             let image = result.content.iter().find(|block| matches!(block, ContentBlock::Image { .. }))
-                .map(data_url).transpose()?;
+                .map(super::data_url).transpose()?;
             let state: WindowStateOutput = decode(result)?;
             let observed = application.observe().await?;
             if observed.id != id {

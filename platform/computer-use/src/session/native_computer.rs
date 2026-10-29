@@ -178,8 +178,12 @@ impl MacApplicationKey {
 struct WindowsObservation {
     binding: crate::ComputerAppBinding,
     generation: crate::desktop::worker::native_owner::NativeGeneration,
-    state: WindowStateOutput,
+    state: Option<WindowStateOutput>,
+    frame: cua_driver_sdk::NativeWindowFrame,
+    logical_size: Option<[u32; 2]>,
     capture: Option<String>,
+    image_bounds: Option<[i32; 4]>,
+    target_observed: bool,
 }
 
 impl Session {
@@ -277,7 +281,7 @@ impl Session {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn data_url(block: &ContentBlock) -> Result<String, ToolError> {
     match block {
         ContentBlock::Image { data, mime_type } => Ok(format!("data:{mime_type};base64,{data}")),

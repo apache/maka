@@ -50,7 +50,7 @@ pub(super) type Retirement =
     futures_util::future::Shared<BoxFuture<'static, Result<(), ToolError>>>;
 
 #[derive(Default)]
-struct TurnCleanup {
+pub(super) struct TurnCleanup {
     pending: Mutex<Option<Retirement>>,
     // Actual observation-write custody, not a second permission flag. Native
     // admission always checks the canonical logical-Turn fact in its T1.
@@ -60,6 +60,18 @@ struct TurnCleanup {
 }
 
 impl TurnCleanup {
+    pub(super) fn check_native_monitor_admission(&self) -> Result<(), ToolError> {
+        if self
+            .pending
+            .lock()
+            .expect("Computer turn cleanup lock poisoned")
+            .is_some()
+        {
+            return Err(failed("Native monitor turn is closing"));
+        }
+        Ok(())
+    }
+
     fn start(
         &self,
         tasks: &tokio_util::task::TaskTracker,
@@ -294,8 +306,9 @@ pub(super) struct Epoch {
     pub native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
     audio: Mutex<Option<Arc<AudioReceipt>>>,
     browser_preparations: Mutex<Vec<Arc<BrowserPreparationReceipt>>>,
+    pub(super) native_monitors: Mutex<Vec<Arc<super::native_monitor::Receipt>>>,
     turns: Arc<Mutex<BTreeMap<String, Arc<TurnCleanup>>>>,
-    effects_changed: Arc<tokio::sync::Notify>,
+    pub(super) effects_changed: Arc<tokio::sync::Notify>,
     retirement: Mutex<Option<Retirement>>,
 }
 struct BrowserPreparationReceipt {
@@ -530,6 +543,18 @@ async fn turn_ended(
     Ok(boundary.state.terminal_outcome().is_some())
 }
 impl Epoch {
+    pub(super) fn native_monitor_turn(&self, turn: &str) -> Result<Arc<TurnCleanup>, ToolError> {
+        let cleanup = self
+            .turns
+            .lock()
+            .expect("Computer turn registry lock poisoned")
+            .get(turn)
+            .cloned()
+            .ok_or_else(|| failed("Native monitor turn retired"))?;
+        cleanup.check_native_monitor_admission()?;
+        Ok(cleanup)
+    }
+
     /// Retain cleanup responsibility before the fixed native preparation can start.
     pub fn record_browser_preparation(
         &self,
@@ -585,7 +610,15 @@ impl Epoch {
     }
 
     async fn close_native(&self) -> Result<(), ToolError> {
-        let result = self.native.lock().await.close_native().await;
+        self.seal_native_monitors(None);
+        let monitors = self.retire_native_monitors(None).await;
+        let native = self.native.lock().await.close_native().await;
+        let result = match (monitors, native) {
+            (Ok(()), result) | (result, Ok(())) => result,
+            (Err(monitors), Err(native)) => Err(ToolError::CleanupUnconfirmed(format!(
+                "{monitors}; {native}"
+            ))),
+        };
         if result.is_ok() {
             self.files.close().await?;
             self.clear_audio();
@@ -670,6 +703,7 @@ impl Kernel {
         // Retained transport for an admitted RPC does not keep this VM's
         // automatic attached-service producer alive after reset/retirement.
         self.admission.close_admission();
+        self.epoch.seal_native_monitors(None);
         let mut failures = Vec::new();
         if let Some(runtime) = self.repl
             && let Err(error) = runtime.close().await
@@ -707,6 +741,7 @@ impl Interaction {
             native: Arc::new(tokio::sync::Mutex::new(native)),
             audio: Default::default(),
             browser_preparations: Default::default(),
+            native_monitors: Default::default(),
             turns: self.turns.clone(),
             effects_changed: self.effects_changed.clone(),
             retirement: Default::default(),
@@ -845,6 +880,10 @@ impl Interaction {
         language: Language,
     ) -> Retirement {
         let epochs = self.epochs.lock().unwrap().clone();
+        // Fence fixed producers synchronously, before any sibling cleanup wait.
+        for epoch in &epochs {
+            epoch.seal_native_monitors(Some(turn));
+        }
         let native_owner = self.native_owner.clone();
         let session = session.to_owned();
         let turn = turn.to_owned();
@@ -858,6 +897,9 @@ impl Interaction {
                 failures.push(message(error));
             }
             for epoch in &epochs {
+                if let Err(error) = epoch.retire_native_monitors(Some(&turn)).await {
+                    failures.push(message(error));
+                }
                 let mut native = epoch.native.lock().await;
                 let windows = native.platform() == "windows";
                 match native.finish_turn(&session, &turn, language).await {
@@ -1161,6 +1203,7 @@ fn watch_scanned(owner: &Arc<Computer>, scanned: impl Fn() + Send + 'static) {
                 }
                 let epochs = entry.epochs.lock().unwrap().clone();
                 for epoch in epochs {
+                    epoch.observe_native_monitor_authority().await;
                     let preparations = epoch
                         .browser_preparations
                         .lock()

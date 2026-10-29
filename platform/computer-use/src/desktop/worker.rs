@@ -80,7 +80,7 @@ pub(crate) enum Request {
         operation: native_owner::NativeOperation,
         operation_id: Option<String>,
         arguments: Value,
-        native_window_pixels: bool,
+        coordinate_frame: native_owner::NativeCoordinateFrame,
         language: maka_agent_facts::language::Language,
     },
     #[cfg(all(target_os = "windows", feature = "native-desktop"))]

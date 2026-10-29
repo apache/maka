@@ -78,6 +78,15 @@ pub enum ReadOutput {
     Image { bytes: Vec<u8>, mime_type: String },
 }
 
+/// Metadata observed from the authorized regular file before creating a sink.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinaryFileMetadata {
+    pub name: String,
+    pub bytes: u64,
+    /// Last modification time observed from this opened file, when available.
+    pub modified: Option<std::time::SystemTime>,
+}
+
 #[derive(Clone)]
 pub struct ReadExecutor {
     authority: Arc<scoped::Authority>,
@@ -115,6 +124,53 @@ impl ReadExecutor {
         tokio::task::spawn_blocking(move || authority.read(input, page_budget, cancellation))
             .await
             .map_err(|e| failed(format!("Read worker failed: {e}")))?
+    }
+
+    /// Observe an authorized regular file's name and length for budget sizing.
+    /// This does not freeze content or authorize a later open; copying must
+    /// open through the same authority again and check its current metadata.
+    ///
+    /// # Errors
+    /// Returns file, policy, cancellation or worker errors.
+    pub async fn binary_metadata(
+        &self,
+        path: String,
+        cancellation: CancellationToken,
+    ) -> Result<BinaryFileMetadata, ToolError> {
+        if path.contains("://") {
+            return Err(failed("Filesystem Read requires a file path"));
+        }
+        let authority = self.authority.clone();
+        tokio::task::spawn_blocking(move || authority.binary_metadata(path, cancellation))
+            .await
+            .map_err(|error| failed(format!("Binary metadata worker failed: {error}")))?
+    }
+
+    /// Copy an authorized regular file into a caller-owned binary sink.
+    /// The factory runs only after opening through this executor's directory
+    /// authority. The source descriptor stays in the joined worker; the caller
+    /// finalizes the returned sink within its original resource custody.
+    ///
+    /// # Errors
+    /// Returns policy, file, sink, cancellation or observable source-change
+    /// errors. Blocking work is joined before returning, including cancellation.
+    pub async fn copy_binary<W, F>(
+        &self,
+        path: String,
+        create: F,
+        cancellation: CancellationToken,
+    ) -> Result<W, ToolError>
+    where
+        W: std::io::Write + Send + 'static,
+        F: FnOnce(BinaryFileMetadata) -> Result<W, ToolError> + Send + 'static,
+    {
+        if path.contains("://") {
+            return Err(failed("Filesystem Read requires a file path"));
+        }
+        let authority = self.authority.clone();
+        tokio::task::spawn_blocking(move || authority.copy_binary(path, create, cancellation))
+            .await
+            .map_err(|error| failed(format!("Binary Read worker failed: {error}")))?
     }
 }
 
@@ -353,5 +409,125 @@ mod image_tests {
                 mime_type: "image/png".into()
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod binary_copy_tests {
+    use super::*;
+    use std::{
+        fs,
+        io::{self, Write},
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    fn executor(root: &Path) -> ReadExecutor {
+        ReadExecutor::new(
+            root,
+            ReadScope::Restricted {
+                roots: vec![root.to_owned()],
+            },
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn binary_copy_denied_path_directory_or_symlink_never_creates_sink() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.bin");
+        fs::write(&secret, b"private\0bytes").unwrap();
+        let alias = {
+            #[cfg(unix)]
+            {
+                let alias = root.path().join("alias.bin");
+                std::os::unix::fs::symlink(&secret, &alias).unwrap();
+                Some(alias)
+            }
+            #[cfg(not(unix))]
+            {
+                None::<std::path::PathBuf>
+            }
+        };
+        let read = executor(root.path());
+        let factories = Arc::new(AtomicUsize::new(0));
+        for path in [Some(secret), Some(root.path().to_owned()), alias]
+            .into_iter()
+            .flatten()
+        {
+            let called = factories.clone();
+            assert!(
+                read.copy_binary(
+                    path.to_str().unwrap().into(),
+                    move |_| {
+                        called.fetch_add(1, Ordering::SeqCst);
+                        Ok(Vec::<u8>::new())
+                    },
+                    CancellationToken::new(),
+                )
+                .await
+                .is_err()
+            );
+        }
+        assert_eq!(factories.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn binary_copy_cancellation_waits_for_the_original_blocking_writer() {
+        struct BlockingSink {
+            entered: Option<tokio::sync::oneshot::Sender<()>>,
+            release: std::sync::mpsc::Receiver<()>,
+            dropped: Arc<AtomicBool>,
+        }
+        impl Write for BlockingSink {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.entered.take().unwrap().send(()).unwrap();
+                self.release.recv().map_err(io::Error::other)?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Drop for BlockingSink {
+            fn drop(&mut self) {
+                self.dropped.store(true, Ordering::SeqCst);
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("source.bin"), vec![0u8; 128 * 1024]).unwrap();
+        let read = executor(root.path());
+        let cancellation = CancellationToken::new();
+        let pending_cancellation = cancellation.clone();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let writer_dropped = dropped.clone();
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (release, pending_release) = std::sync::mpsc::channel();
+        let mut copying = Box::pin(read.copy_binary(
+            "source.bin".into(),
+            move |_| {
+                Ok(BlockingSink {
+                    entered: Some(entered),
+                    release: pending_release,
+                    dropped: writer_dropped,
+                })
+            },
+            pending_cancellation,
+        ));
+        tokio::select! {
+            _ = &mut copying => panic!("copy returned before the blocked writer was released"),
+            result = waiting => result.unwrap(),
+        }
+        cancellation.cancel();
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(copying.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert!(!dropped.load(Ordering::SeqCst));
+        release.send(()).unwrap();
+        assert!(matches!(copying.await, Err(ToolError::Failed(message))
+            if message == "Read cancelled"));
+        assert!(dropped.load(Ordering::SeqCst));
     }
 }

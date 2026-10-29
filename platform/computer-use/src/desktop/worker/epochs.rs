@@ -219,6 +219,7 @@ enum Event {
 }
 
 struct Authorization {
+    callbacks: callbacks::WorkerCallbacks,
     id: u64,
     events: mpsc::UnboundedSender<Event>,
     identity: Option<ScopeIdentity>,
@@ -289,6 +290,39 @@ impl Authorization {
 }
 
 impl BrowserAuthorization for Authorization {
+    fn prepare_upload(
+        &self,
+        request: crate::BrowserUploadRequest,
+        cancellation: CancellationToken,
+    ) -> crate::BrowserUploadFuture {
+        match self.identity.clone() {
+            Some(identity) => {
+                self.callbacks
+                    .prepare_upload(identity, self.id, request, cancellation)
+            }
+            None => Box::pin(async {
+                Err(failed(
+                    "Upload snapshot requires its original invocation identity",
+                ))
+            }),
+        }
+    }
+    fn check_upload(
+        &self,
+        request: crate::BrowserUploadRequest,
+        cancellation: CancellationToken,
+    ) -> crate::AuthorizationFuture {
+        match self.identity.clone() {
+            Some(identity) => self
+                .callbacks
+                .check_upload(identity, self.id, request, cancellation),
+            None => Box::pin(async {
+                Err(failed(
+                    "Upload check requires its original invocation identity",
+                ))
+            }),
+        }
+    }
     fn authorize_history(
         &self,
         request: crate::BrowserSessionPreparation,
@@ -406,6 +440,7 @@ impl EpochWorker {
                             });
                         let authorization: Arc<dyn BrowserAuthorization> =
                             Arc::new(Authorization {
+                                callbacks: callbacks.clone(),
                                 id,
                                 events: events.clone(),
                                 identity: callback_identity.clone(),
@@ -525,6 +560,7 @@ impl EpochWorker {
                         };
                         let authorization: Arc<dyn BrowserAuthorization> =
                             Arc::new(Authorization {
+                                callbacks: callbacks.clone(),
                                 id,
                                 events: events.clone(),
                                 identity: Some(identity.clone()),
@@ -2258,6 +2294,9 @@ mod tests {
     async fn typed_child_authorization_refuses_missing_stale_and_cancelled_scope_before_wire() {
         let (events, mut incoming) = mpsc::unbounded_channel();
         let mut authority = Authorization {
+            callbacks: callbacks::WorkerCallbacks::new(Arc::new(|_| {
+                Err(failed("unexpected upload callback in preparation fixture"))
+            })),
             id: 41,
             events,
             identity: None,
@@ -2388,6 +2427,9 @@ mod tests {
     async fn typed_child_history_preserves_scoped_wire_and_the_original_host_refusal() {
         let (events, mut incoming) = mpsc::unbounded_channel();
         let authority = Authorization {
+            callbacks: callbacks::WorkerCallbacks::new(Arc::new(|_| {
+                Err(failed("unexpected upload callback in preparation fixture"))
+            })),
             id: 41,
             events,
             identity: Some(preparation_identity()),

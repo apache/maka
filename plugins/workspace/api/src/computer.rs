@@ -203,6 +203,14 @@ pub fn is_browser_download_target(candidate: &maka_agent_facts::interaction::Gra
     )
 }
 
+/// Recognize file upload consent from the original Computer Use producer.
+pub fn is_browser_upload_target(candidate: &maka_agent_facts::interaction::GrantTarget) -> bool {
+    is_browser_origin_target(
+        candidate,
+        maka_agent_facts::interaction::GrantCapability::BrowserUpload,
+    )
+}
+
 fn is_browser_origin_target(
     candidate: &maka_agent_facts::interaction::GrantTarget,
     capability: maka_agent_facts::interaction::GrantCapability,

@@ -66,6 +66,8 @@ Tab 输入：`typeText(index|null, text)`、`paste(index|null, text, {format?})`
 粘贴格式：`text`（默认）、`md`（将 Markdown 源码作为纯文本）和 `html`。Linux 和 Windows 原生应用仅支持 `text`。原生 HTML 粘贴仅支持 macOS，需要可读的可编辑值和选区；它会临时激活确切窗口、保留选区，并恢复原剪贴板，除非用户已复制更新的内容。值未改变会报告为不确定。浏览器 HTML 粘贴需要已观察的 contenteditable 元素。
 
 Tab 导航：`goto(url)`、`back()`、`forward()`、`reload()`、`close()`。
+`await tab.screenshot({ fullPage: false, clip: { x, y, width, height } })` 返回 JPEG 字节，不自动输出图片。不传 `clip` 时截取视口；`fullPage: true` 截取整个文档。裁剪宽高必须为正数，坐标与尺寸使用 CSS 像素。视口截图先等待新帧，确认清理后才回退到同一标签页的截图命令；不重放结果不确定的操作。
+
 Extension 提供方支持 `await tab.markDeliverable()`：在正常 Turn 结束时保留标签页并归还用户；`await tab.markHandoff()` 则为同一个 Session 保留标签页，下一次实际 Turn 激活时恢复并清除标记。原来的 agent/user 来源不变，因此 agent 创建的页面在之后未重新标记的 Turn 结束时关闭。后一次明确标记覆盖前一次。两者在收到匹配的意图 ACK 后返回 undefined；这不证明物理交付或清理成功，不保留站点权限，也不自动重放不确定的请求。直接 CDP 不支持这些标记。
 导航支持 HTTP(S) 和 about:blank，并等待可观察的文档。覆盖主要 CDP 目标；跨进程 iframe 无障碍支持尚不完整。
 

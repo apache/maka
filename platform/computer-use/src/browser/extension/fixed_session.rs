@@ -242,6 +242,7 @@ fn render(ack: &ExtensionFixedUiAck) -> Result<RenderState, ToolError> {
         ExtensionFixedUiAck::Attempted {
             acknowledged: true,
             state: Some(state),
+            ..
         } => serde_json::from_value(json!({"status":"ready","visible":state.visible,
                 "requestedPosition":state.requested_position}))
         .map_err(failed)?,
@@ -271,7 +272,11 @@ impl Host {
             .tabs
             .get(identity)
             .ok_or_else(|| unknown("fixed session lost its actual lease"))?;
-        if lease.creator.owner != owner || lease.creator.provider.extension().is_none() {
+        let expected_owner = lease
+            .handoff_transfer
+            .as_ref()
+            .map_or(lease.creator.owner, |attempt| attempt.requested.owner);
+        if expected_owner != owner || lease.creator.provider.extension().is_none() {
             return Err(unknown("fixed session changed its actual owner/provider"));
         }
         lease
@@ -562,6 +567,13 @@ impl Host {
                 });
             }
         }
+        if matches!(operation, ExtensionOperation::SessionUi { ui, .. }
+            if matches!(ui.operation(), ExtensionFixedUiOperation::FinalizeDeliverable | ExtensionFixedUiOperation::FinalizeHandoff))
+        {
+            // Clear's actual acknowledgement must still drain this issued scope.
+            // The failed presentation does not turn a known page action into Unknown.
+            return Ok(());
+        }
         resource
             .uncertainty
             .get_or_insert_with(|| reason.to_owned());
@@ -614,7 +626,13 @@ impl Host {
             ui.cursor_id(),
             ui.owner_epoch(),
         );
-        if matches!(proof.ui, ExtensionFixedUiAck::Unknown) {
+        if matches!(proof.ui, ExtensionFixedUiAck::Unknown)
+            && !matches!(
+                ui.operation(),
+                ExtensionFixedUiOperation::FinalizeDeliverable
+                    | ExtensionFixedUiOperation::FinalizeHandoff
+            )
+        {
             resource
                 .uncertainty
                 .get_or_insert_with(|| "actual fixed UI outcome remains unknown".into());
@@ -645,6 +663,7 @@ impl Host {
                 ExtensionFixedUiAck::Attempted {
                     acknowledged: true,
                     state: Some(_),
+                    ..
                 } => None,
                 ExtensionFixedUiAck::NotAttempted => Some("fixed UI was not attempted".into()),
                 ExtensionFixedUiAck::Unknown => Some("fixed UI outcome remains unknown".into()),
@@ -1257,8 +1276,13 @@ pub(super) async fn prepare_fixed_tab(
             .clone()
     };
     let dispatch = expected.dispatch.clone();
+    let handoff_boundary = host
+        .lock()
+        .await
+        .handoff_preparation_boundary(scope, &identity);
     let result = scope
         .dispatch(async {
+            enter_handoff_preparation(handoff_boundary.as_ref())?;
             enter_fixed_ui(&dispatch).map_err(|error| *error)?;
             scope
                 .control
@@ -1277,7 +1301,11 @@ pub(super) async fn prepare_fixed_tab(
                 .lock()
                 .await
                 .fixed_undispatched_error(scope, &identity, &expected, error);
-        if !not_dispatched {
+        if not_dispatched {
+            host.lock()
+                .await
+                .rollback_handoff_transfer(&identity, scope.owner, &scope.context);
+        } else {
             retain_prepare_error(scope, host, &identity, &expected, &error.to_string()).await;
         }
     } else if let Err(error) = &reconciled {
@@ -1950,6 +1978,140 @@ impl Host {
             FixedCleanupPurpose::Owner => false,
         })
     }
+    pub(super) async fn finalize_retained_presentation(
+        &mut self,
+        owner: uuid::Uuid,
+        identity: &TabIdentity,
+        mark: TabMark,
+    ) {
+        let result = self
+            .finalize_retained_presentation_once(owner, identity, mark)
+            .await;
+        if let Err(error) = result
+            && let Some(lease) = self.tabs.get_mut(identity)
+            && lease.creator.owner == owner
+            && let Some(state) = &mut lease.extension
+        {
+            state.retained_presentation = RetainedPresentation::Failed(error.to_string());
+            state.presentation_error = Some(error.to_string());
+        }
+    }
+
+    async fn finalize_retained_presentation_once(
+        &mut self,
+        owner: uuid::Uuid,
+        identity: &TabIdentity,
+        mark: TabMark,
+    ) -> Result<(), ToolError> {
+        let lease = self
+            .tabs
+            .get(identity)
+            .filter(|lease| lease.creator.owner == owner && lease.handoff_transfer.is_none())
+            .ok_or_else(|| unknown("retained presentation lost its owner"))?;
+        let provider = lease.creator.provider.clone();
+        let state = lease
+            .extension
+            .as_ref()
+            .ok_or_else(|| unknown("retained presentation lost its physical resource"))?;
+        match &state.retained_presentation {
+            RetainedPresentation::NotAttempted => {}
+            RetainedPresentation::Pending => return Ok(()),
+            RetainedPresentation::Acknowledged(ack) => {
+                if ack.tab_id.to_string() != identity.target {
+                    return Err(unknown(
+                        "retained presentation acknowledgement changed resource",
+                    ));
+                }
+                return Ok(());
+            }
+            RetainedPresentation::Failed(reason) => return Err(unknown(reason)),
+        }
+        if !provider.extension().is_some_and(|extension| {
+            extension
+                .capabilities()
+                .is_ok_and(|caps| caps.retained_tab_presentation)
+        }) {
+            return Err(failed(
+                "selected provider has no retained tab presentation service",
+            ));
+        }
+        let FixedPreparation::Retained(resource) = &state.fixed_preparation else {
+            return Err(failed(
+                "retained presentation requires an existing fixed UI resource",
+            ));
+        };
+        let prepared = resource
+            .acknowledged
+            .as_ref()
+            .ok_or_else(|| unknown("retained presentation has no matched preparation"))?;
+        let receipt = prepared.receipt.clone();
+        self.current_fixed(owner, identity, &receipt)?;
+        let (operation, epoch) = resource
+            .last_ui
+            .as_ref()
+            .map(|last| (last.operation.clone(), last.epoch))
+            .unwrap_or_else(|| (resource.attempt.operation.clone(), resource.attempt.epoch));
+        let mut ui = resource.current_ui.clone();
+        ui.operation = match mark {
+            TabMark::Deliverable => ExtensionFixedUiOperation::FinalizeDeliverable,
+            TabMark::Handoff => ExtensionFixedUiOperation::FinalizeHandoff,
+        };
+        ui.owner_epoch = epoch.to_string();
+        ui.point = None;
+        ui.action = ExtensionFixedUiAction::Idle;
+        let scope = self.extension_context(
+            owner,
+            &provider,
+            operation,
+            epoch,
+            CallTarget::Retirement,
+            false,
+        )?;
+        let dispatch = self.begin_fixed_ui(owner, identity, &scope, &ui)?;
+        self.fixed_state_mut(owner, identity)?.retained_presentation =
+            RetainedPresentation::Pending;
+        let result = scope
+            .dispatch_retirement(async {
+                enter_fixed_ui(&dispatch).map_err(|error| *error)?;
+                scope.control.session_ui(&receipt, &ui).await
+            })
+            .await;
+        self.reconcile_provider(owner, &provider).await?;
+        let proof = result.map_err(provider::extension_error)?;
+        let ExtensionFixedUiAck::Attempted {
+            retention: Some(ack),
+            ..
+        } = proof.ui
+        else {
+            return Err(unknown(
+                "retained presentation has no actual matched acknowledgement",
+            ));
+        };
+        let expected = match mark {
+            TabMark::Deliverable => {
+                cua_driver_core::browser::ExtensionRetentionPresentationStatus::Deliverable
+            }
+            TabMark::Handoff => {
+                cua_driver_core::browser::ExtensionRetentionPresentationStatus::Handoff
+            }
+        };
+        if ack.tab_id.to_string() != identity.target
+            || ack.status != expected
+            || !ack.intent_persisted
+        {
+            return Err(unknown(
+                "retained presentation acknowledgement changed its requested intent",
+            ));
+        }
+        let state = self.fixed_state_mut(owner, identity)?;
+        if !ack.renderer_acknowledged || (!ack.observed && !ack.badge_applied) {
+            state.presentation_error =
+                Some("retained intent persisted but favicon rendering was not confirmed".into());
+        }
+        state.retained_presentation = RetainedPresentation::Acknowledged(ack);
+        Ok(())
+    }
+
     pub(in crate::browser) async fn finalize_fixed_session_ui(
         &mut self,
         owner: uuid::Uuid,

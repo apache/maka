@@ -66,6 +66,8 @@ Tab 輸入：`typeText(index|null, text)`、`paste(index|null, text, {format?})`
 貼上格式：`text`（預設）、`md`（將 Markdown 原始碼作為純文字）和 `html`。Linux 和 Windows 原生應用程式僅支援 `text`。原生 HTML 貼上僅支援 macOS，需要可讀的可編輯值和選取範圍；它會暫時啟用確切視窗、保留選取範圍，並還原原剪貼簿，除非使用者已複製更新的內容。值未改變會回報為不確定。瀏覽器 HTML 貼上需要已觀察的 contenteditable 元素。
 
 Tab 導覽：`goto(url)`、`back()`、`forward()`、`reload()`、`close()`。
+`await tab.screenshot({ fullPage: false, clip: { x, y, width, height } })` 傳回 JPEG 位元組，不自動輸出圖片。不傳 `clip` 時擷取視埠；`fullPage: true` 擷取整份文件。裁剪寬高必須為正數，座標與尺寸使用 CSS 像素。視埠擷取先等待新影格，確認清理後才退回同一分頁的擷取命令；不重播結果不確定的操作。
+
 Extension 提供者支援 `await tab.markDeliverable()`：在正常 Turn 結束時保留分頁並歸還使用者；`await tab.markHandoff()` 則為同一個 Session 保留分頁，下一次實際 Turn 啟用時恢復並清除標記。原本的 agent/user 來源不變，因此 agent 建立的分頁會在之後未重新標記的 Turn 結束時關閉。後一次明確標記覆蓋前一次。兩者在收到相符的意圖 ACK 後傳回 undefined；這不證明實體交付或清理成功，不保留網站權限，也不自動重播不確定的請求。直接 CDP 不支援這些標記。
 導覽支援 HTTP(S) 和 about:blank，並等待可觀察的文件。涵蓋主要 CDP 目標；跨程序 iframe 輔助使用支援尚不完整。
 

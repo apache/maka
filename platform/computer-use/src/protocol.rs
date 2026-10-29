@@ -27,6 +27,9 @@ pub use browser_capability::{
 mod browser_cua;
 pub use browser_cua::BrowserCuaOperation;
 
+mod browser_filechooser;
+pub use browser_filechooser::BrowserFileChooserOptions;
+
 mod browser_wait;
 pub use browser_wait::BrowserWaitOperation;
 
@@ -178,6 +181,14 @@ pub enum Command {
         #[serde(rename = "tabId")]
         tab_id: String,
     },
+    BrowserScreenshot {
+        handle: Handle,
+        options: BrowserScreenshotOptions,
+    },
+    BrowserMarkTab {
+        handle: Handle,
+        status: BrowserTabMark,
+    },
     TabMetadata {
         handle: Handle,
     },
@@ -239,6 +250,19 @@ pub enum Command {
         handle: Handle,
         operation: BrowserWaitOperation,
     },
+    BrowserFileChooserWait {
+        handle: Handle,
+        #[serde(default)]
+        options: BrowserFileChooserOptions,
+    },
+    BrowserFileChooserSetFiles {
+        handle: Handle,
+        #[serde(rename = "fileChooserId")]
+        file_chooser_id: String,
+        files: Vec<String>,
+        #[serde(default)]
+        options: BrowserFileChooserOptions,
+    },
     BrowserDownloadWait {
         handle: Handle,
         #[serde(default)]
@@ -268,6 +292,16 @@ pub enum Command {
         url: Option<String>,
         options: CreateTabOptions,
     },
+}
+
+/// End-of-turn retention intent; it grants no new browser control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BrowserTabMark {
+    /// Keep custody for the same session until a later actual turn resumes it.
+    Handoff,
+    /// Keep the tab open while returning it to the user.
+    Deliverable,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -300,6 +334,20 @@ pub struct ObservationOptions {
     pub emit: Option<bool>,
     #[serde(default)]
     pub disable_diffing: bool,
+}
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BrowserScreenshotOptions {
+    pub full_page: Option<bool>,
+    pub clip: Option<BrowserScreenshotClip>,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserScreenshotClip {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -112,7 +112,9 @@ impl GrantTarget {
         }
         match (&self.capability, &self.scope) {
             (
-                GrantCapability::Browser | GrantCapability::BrowserDownload,
+                GrantCapability::Browser
+                | GrantCapability::BrowserDownload
+                | GrantCapability::BrowserUpload,
                 GrantScope::BrowserOrigin { origin },
             ) => {
                 let url = url::Url::parse(origin).map_err(|_| "Invalid browser origin")?;

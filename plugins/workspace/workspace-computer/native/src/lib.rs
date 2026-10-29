@@ -27,6 +27,7 @@ mod browser_popup;
 mod evaluate;
 #[cfg(all(test, target_os = "linux"))]
 mod live_tests;
+mod native_monitor;
 mod sessions;
 
 use futures_util::{FutureExt, future::BoxFuture};
@@ -157,7 +158,7 @@ impl Computer {
             let result = self.evaluate(
                 name,
                 input,
-                context.scope().clone(),
+                context.resource_capturer().into(),
                 configuration.permission_basis(),
                 interaction.clone(),
                 cancellation.clone(),

@@ -34,7 +34,7 @@ pub use caller::Caller;
 pub use context::Context;
 pub use native_context::{NativeContext, NativePersistence, NativeRequest, NativeServices};
 pub use resource_ingress::{
-    CallResources, RESOURCE_CHUNK_LIMIT, ResourceCapture, ResourceDescriptor,
+    CallResources, RESOURCE_CHUNK_LIMIT, ResourceCapture, ResourceCapturer, ResourceDescriptor,
 };
 mod requests;
 mod subscriptions;

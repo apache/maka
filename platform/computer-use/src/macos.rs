@@ -20,6 +20,8 @@
 //! Retained AX elements are the identity for macOS semantic operations. Cua's
 //! bounded walker and exact-window checks supply the platform implementation.
 pub(crate) mod controller;
+pub(crate) mod focus;
+pub(crate) mod keyboard;
 pub(crate) mod page_scroll;
 pub(crate) mod pasteboard;
 pub(crate) mod permission_subject;
@@ -351,6 +353,24 @@ impl Target {
         action: Action,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<(), ToolError> {
+        self.action_inner(action, cancellation, None)
+    }
+
+    fn native_action(
+        &mut self,
+        action: Action,
+        cancellation: &tokio_util::sync::CancellationToken,
+        focus: &focus::Resource,
+    ) -> Result<(), ToolError> {
+        self.action_inner(action, cancellation, Some(focus))
+    }
+
+    fn action_inner(
+        &mut self,
+        action: Action,
+        cancellation: &tokio_util::sync::CancellationToken,
+        focus: Option<&focus::Resource>,
+    ) -> Result<(), ToolError> {
         // SAFETY: each pointer comes from `element`, which rechecks the retained
         // target and ancestry; the Session serializes actions and retirement.
         unsafe {
@@ -365,7 +385,13 @@ impl Target {
                         ));
                     }
                     let element = self.element(index)?;
-                    self.prepare_menu(element, cancellation)?;
+                    if let Some(focus) = focus {
+                        self.prepare_native_menu(element)?;
+                        check_cancelled(cancellation)?;
+                        focus.enforce(self.focus_window())?;
+                    } else {
+                        self.prepare_menu(element, cancellation)?;
+                    }
                     let actions = copy_action_names(element);
                     let action = match options.mouse_button.unwrap_or(MouseButton::Left) {
                         MouseButton::Left => "AXPress",
@@ -396,7 +422,13 @@ impl Target {
                 }
                 Action::Secondary { index, action } => {
                     let element = self.element(index)?;
-                    self.prepare_menu(element, cancellation)?;
+                    if let Some(focus) = focus {
+                        self.prepare_native_menu(element)?;
+                        check_cancelled(cancellation)?;
+                        focus.enforce(self.focus_window())?;
+                    } else {
+                        self.prepare_menu(element, cancellation)?;
+                    }
                     if !copy_action_names(element).contains(&action) {
                         return Err(failed(
                             "action_not_exposed: use an action listed in the current AX state",
@@ -422,12 +454,18 @@ impl Target {
                             return Err(failed("value must be finite"));
                         }
                         check_cancelled(cancellation)?;
+                        if let Some(focus) = focus {
+                            focus.enforce(self.focus_window())?;
+                        }
                         check(set_number_attr(element, "AXValue", number))?;
                         if copy_number_attr(element, "AXValue") != Some(number) {
                             return Err(failed("AX value read-back did not match"));
                         }
                     } else {
                         check_cancelled(cancellation)?;
+                        if let Some(focus) = focus {
+                            focus.enforce(self.focus_window())?;
+                        }
                         check(set_string_attr(element, "AXValue", &value))?;
                         if copy_string_attr(element, "AXValue").as_deref() != Some(&value) {
                             return Err(failed("AX value read-back did not match"));
@@ -450,6 +488,9 @@ impl Target {
                     let (start, length) = selection(&value, &text, &options)?;
                     let range = (start as isize, length as isize);
                     check_cancelled(cancellation)?;
+                    if let Some(focus) = focus {
+                        focus.enforce(self.focus_window())?;
+                    }
                     write_range(element, range)?;
                     if read_range(element) != Some(range) {
                         return Err(failed("AX selection read-back failed"));
@@ -460,6 +501,59 @@ impl Target {
         }
         Ok(())
     }
+    fn focus_window(&self) -> Option<platform_macos::input::native_move::FocusActivationWindow> {
+        let pointer = self.window.as_ptr() as AXUIElementRef;
+        let attribute = CFString::new("AXActivationPoint");
+        let mut value = std::ptr::null();
+        // SAFETY: the window is retained on this controller owner. Copy follows
+        // the AX create rule and every nonnull value is released below.
+        let status = unsafe {
+            AXUIElementCopyAttributeValue(pointer, attribute.as_concrete_TypeRef(), &mut value)
+        };
+        let activation_point = if status != kAXErrorSuccess {
+            None
+        } else if value.is_null() {
+            Some(None)
+        } else {
+            #[repr(C)]
+            struct NativePoint {
+                x: f64,
+                y: f64,
+            }
+            let mut point = NativePoint { x: 0.0, y: 0.0 };
+            let valid = unsafe {
+                CFGetTypeID(value) == AXValueGetTypeID()
+                    && AXValueGetValue(
+                        value as _,
+                        kAXValueCGPointType,
+                        (&mut point as *mut NativePoint).cast(),
+                    )
+            };
+            valid.then_some(Some([point.x, point.y]))
+        };
+        if !value.is_null() {
+            unsafe { CFRelease(value) };
+        }
+        Some(platform_macos::input::native_move::FocusActivationWindow {
+            window_id: self.window_id,
+            bounds: unsafe { element_screen_rect(pointer) },
+            activation_point,
+        })
+    }
+
+    fn prepare_native_menu(&self, element: AXUIElementRef) -> Result<(), ToolError> {
+        if unsafe { element_window_id(element) }.is_some() {
+            return Ok(());
+        }
+        self.verify()?;
+        if !unsafe { in_application_menu(self.pid, element) } {
+            return Err(failed(
+                "stale_element: read getAXState before using this menu",
+            ));
+        }
+        Ok(())
+    }
+
     fn prepare_menu(
         &self,
         element: AXUIElementRef,

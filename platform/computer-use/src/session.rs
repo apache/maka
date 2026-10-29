@@ -297,6 +297,13 @@ impl Session {
                 .prepare_wait(handle, operation, invocation, cancellation, language)
                 .await;
         }
+        if let Command::BrowserFileChooserWait { handle, options } = command {
+            self.admit_invocation(invocation.session(), cancellation)?;
+            return self
+                .browsers
+                .prepare_file_chooser(handle, options, invocation, cancellation, language)
+                .await;
+        }
         if let Command::BrowserDownloadWait { handle, options } = command {
             self.admit_invocation(invocation.session(), cancellation)?;
             return self

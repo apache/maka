@@ -80,6 +80,8 @@ struct Inner {
     generation: String,
     bundle: Option<String>,
     lifecycle: Mutex<Lifecycle>,
+    focus: Mutex<HashMap<NativeEpochId, Arc<super::focus::Resource>>>,
+    focus_close: Mutex<Option<Completion<()>>>,
 }
 
 enum Lifecycle {
@@ -146,6 +148,14 @@ pub(crate) struct IndexedId(u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ResolveId(u64);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct KeyboardId(u64);
+
+enum KeyboardStep {
+    Finished,
+    NeedLayout(KeyboardId),
+}
+
 #[derive(Debug)]
 pub(crate) struct IndexedPoint {
     pub(crate) point: Option<[f64; 2]>,
@@ -198,6 +208,25 @@ enum Command {
         slot: u64,
         action: Action,
         cancellation: CancellationToken,
+    },
+    NativeApplicationAction {
+        slot: u64,
+        action: Action,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    },
+    BeginKeyboard {
+        slot: u64,
+        input: super::keyboard::Input,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    },
+    FinishKeyboard {
+        token: KeyboardId,
+        layout: Option<platform_macos::input::native_keyboard::NativeKeyboardLayout>,
+    },
+    CancelKeyboard {
+        token: KeyboardId,
     },
     ClearApplication {
         slot: u64,
@@ -288,6 +317,7 @@ enum Response {
     Position([i64; 2]),
     Indexed(IndexedStep),
     Resolved(ResolveStep),
+    Keyboard(KeyboardStep),
     Stopped,
 }
 
@@ -310,6 +340,8 @@ impl Controller {
                 generation,
                 bundle,
                 lifecycle: Mutex::new(Lifecycle::Dormant),
+                focus: Mutex::new(HashMap::new()),
+                focus_close: Mutex::new(None),
             }),
         }
     }
@@ -424,7 +456,97 @@ impl Controller {
         }
     }
 
+    pub(crate) async fn attach_focus(
+        &self,
+        epoch: NativeEpochId,
+        authority: Arc<dyn crate::NativeMonitorAuthority>,
+    ) -> Result<Arc<super::focus::Resource>, ToolError> {
+        self.ensure_started().await?;
+        let previous = self
+            .inner
+            .focus
+            .lock()
+            .expect("native focus uses poisoned")
+            .get(&epoch)
+            .cloned();
+        if let Some(previous) = &previous
+            && !previous.same_authority(&authority)
+        {
+            // The retained controller/JS handle does not carry an earlier
+            // turn's authority into a new Host lease.
+            crate::NativeMonitorResource::seal_admission(previous.as_ref());
+            crate::NativeMonitorResource::close(previous.as_ref()).await?;
+        }
+        let retiring = self
+            .inner
+            .focus
+            .lock()
+            .expect("native focus uses poisoned")
+            .values()
+            .filter(|resource| resource.is_sealed())
+            .cloned()
+            .collect::<Vec<_>>();
+        for resource in retiring {
+            crate::NativeMonitorResource::close(resource.as_ref()).await?;
+        }
+        let resource = {
+            // This lock is also the final Controller-close admission fence.
+            let closing = self
+                .inner
+                .focus_close
+                .lock()
+                .expect("native focus close poisoned");
+            if closing.is_some() {
+                return Err(failed("native AX controller is closing"));
+            }
+            let mut uses = self.inner.focus.lock().expect("native focus uses poisoned");
+            match uses.get(&epoch) {
+                Some(resource) if resource.same_authority(&authority) => resource.clone(),
+                Some(resource)
+                    if !previous
+                        .as_ref()
+                        .is_some_and(|previous| Arc::ptr_eq(resource, previous)) =>
+                {
+                    return Err(failed(
+                        "native monitor Host lease changed during attachment",
+                    ));
+                }
+                _ => {
+                    let resource = super::focus::Resource::new(
+                        self.inner.pid,
+                        self.inner.generation.clone(),
+                        &authority,
+                    );
+                    uses.insert(epoch, resource.clone());
+                    resource
+                }
+            }
+        };
+        authority.attach(resource.clone()).await?;
+        let setup = resource.clone();
+        tokio::task::spawn_blocking(move || objc2::rc::autoreleasepool(|_| setup.start()))
+            .await
+            .map_err(failed)??;
+        Ok(resource)
+    }
+
+    pub(crate) async fn release_focus(&self, epoch: NativeEpochId) -> Result<(), ToolError> {
+        let resource = self
+            .inner
+            .focus
+            .lock()
+            .expect("native focus uses poisoned")
+            .get(&epoch)
+            .cloned();
+        if let Some(resource) = resource {
+            crate::NativeMonitorResource::seal_admission(resource.as_ref());
+            crate::NativeMonitorResource::close(resource.as_ref()).await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn release_epoch(&self, epoch: NativeEpochId) -> Result<(), ToolError> {
+        self.release_focus(epoch).await?;
         self.retire(Command::ReleaseEpoch { epoch }).await
     }
 
@@ -583,6 +705,57 @@ impl Controller {
     /// Admit one close operation; its custodian retains the original Stop ACK
     /// and join even if an observer of the close future disappears.
     pub(crate) async fn close(&self) -> Result<(), ToolError> {
+        let pending = {
+            let mut closing = self
+                .inner
+                .focus_close
+                .lock()
+                .expect("native focus close poisoned");
+            if let Some(pending) = &*closing {
+                pending.clone()
+            } else {
+                let resources = self
+                    .inner
+                    .focus
+                    .lock()
+                    .expect("native focus uses poisoned")
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for resource in &resources {
+                    crate::NativeMonitorResource::seal_admission(resource.as_ref());
+                }
+                let (reply, pending) = watch::channel(None);
+                *closing = Some(pending.clone());
+                let native_close = self.close_ax();
+                tokio::spawn(async move {
+                    let cleanups = resources
+                        .iter()
+                        .map(|resource| crate::NativeMonitorResource::close(resource.as_ref()))
+                        .collect::<Vec<_>>();
+                    let mut failures = Vec::new();
+                    for cleanup in cleanups {
+                        if let Err(error) = cleanup.await {
+                            failures.push(error.to_string());
+                        }
+                    }
+                    if let Err(error) = completed(native_close).await {
+                        failures.push(error.to_string());
+                    }
+                    let result = if failures.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(cleanup_error(failures.join("; ")))
+                    };
+                    let _ = reply.send(Some(result));
+                });
+                pending
+            }
+        };
+        completed(pending).await
+    }
+
+    fn close_ax(&self) -> Completion<()> {
         enum ClosingOwner {
             Starting(Completion<Arc<Transport>, StartFailure>),
             Running(Arc<Transport>),
@@ -607,7 +780,7 @@ impl Controller {
                         result: Ok(()),
                         _owner: None,
                     };
-                    return Ok(());
+                    return watch::channel(Some(Ok(()))).1;
                 }
                 Lifecycle::Starting(pending) => {
                     let owner = ClosingOwner::Starting(pending.clone());
@@ -630,7 +803,9 @@ impl Controller {
                     }
                 }
                 Lifecycle::Closing(pending) => CloseAction::Observe(pending.clone()),
-                Lifecycle::Terminal { result, .. } => return result.clone(),
+                Lifecycle::Terminal { result, .. } => {
+                    return watch::channel(Some(result.clone())).1;
+                }
             }
         };
         let pending = match action {
@@ -666,7 +841,7 @@ impl Controller {
                 pending
             }
         };
-        completed(pending).await
+        pending
     }
 }
 
@@ -764,6 +939,81 @@ impl Window {
 }
 
 impl Application {
+    pub(crate) async fn keyboard(
+        &self,
+        input: super::keyboard::Input,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+        native: Arc<tokio::sync::Mutex<crate::driver::Driver>>,
+    ) -> Result<(), ToolError> {
+        let application = self.clone();
+        // Once first polled, this task retains the preparation,
+        // metadata request, and native terminal reply even if its caller drops.
+        let task = tokio::spawn(async move {
+            let step = match application
+                .controller
+                .request(Command::BeginKeyboard {
+                    slot: application.slot,
+                    input,
+                    cancellation,
+                    focus,
+                })
+                .await?
+            {
+                Response::Keyboard(step) => step,
+                _ => return Err(unexpected()),
+            };
+            let KeyboardStep::NeedLayout(token) = step else {
+                return Ok(());
+            };
+            // Wait for source creation on the CF owner before scheduling
+            // the main-queue layout read.
+            let result = match crate::driver::Driver::mac_keyboard_layout(&native).await {
+                Ok(layout) => application
+                    .controller
+                    .request(Command::FinishKeyboard { token, layout })
+                    .await
+                    .and_then(unit),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                // The finish may have been refused before native dispatch (for
+                // example a generation change). Retire the same token; never
+                // recreate its source, replay input, or infer cleanup from it.
+                return match application
+                    .controller
+                    .retire(Command::CancelKeyboard { token })
+                    .await
+                {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => Err(cleanup_error(format!(
+                        "{error}; keyboard preparation: {cleanup}"
+                    ))),
+                };
+            }
+            Ok(())
+        });
+        task.await
+            .map_err(|error| cleanup_error(format!("native keyboard custodian failed: {error}")))?
+    }
+
+    pub(crate) async fn native_action(
+        &self,
+        action: Action,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    ) -> Result<(), ToolError> {
+        self.controller
+            .request(Command::NativeApplicationAction {
+                slot: self.slot,
+                action,
+                cancellation,
+                focus,
+            })
+            .await
+            .and_then(unit)
+    }
+
     pub(crate) async fn observe(&self) -> Result<ApplicationObservation, ToolError> {
         match self
             .controller
@@ -1154,6 +1404,12 @@ impl PendingResolve {
     }
 }
 
+struct PendingKeyboard {
+    slot: u64,
+    epoch: NativeEpochId,
+    preparation: super::keyboard::PendingText,
+}
+
 struct WorkerState {
     pid: i32,
     generation: String,
@@ -1162,6 +1418,7 @@ struct WorkerState {
     slots: HashMap<u64, Slot>,
     indexed: HashMap<IndexedId, PendingIndexed>,
     resolving: HashMap<ResolveId, PendingResolve>,
+    keyboards: HashMap<KeyboardId, PendingKeyboard>,
     position: [i64; 2],
     next_token: u64,
 }
@@ -1187,6 +1444,7 @@ impl WorkerState {
             slots: HashMap::new(),
             indexed: HashMap::new(),
             resolving: HashMap::new(),
+            keyboards: HashMap::new(),
             position: [0, 0],
             next_token: 1,
         })
@@ -1249,6 +1507,7 @@ impl WorkerState {
                 | Command::Position
                 | Command::SetPosition { .. }
                 | Command::CancelIndexed { .. }
+                | Command::CancelKeyboard { .. }
                 | Command::ReleaseResolve { .. }
                 | Command::Stop
         ) {
@@ -1281,6 +1540,87 @@ impl WorkerState {
                     .action(action, &cancellation)?;
                 Ok(Response::Unit)
             }
+            Command::NativeApplicationAction {
+                slot,
+                action,
+                cancellation,
+                focus,
+            } => {
+                let application = self.application_slot_mut(slot)?;
+                let target = application.observed.as_mut().ok_or_else(|| {
+                    failed("stale_element: observe the application before semantic input")
+                })?;
+                target.native_action(action, &cancellation, &focus)?;
+                Ok(Response::Unit)
+            }
+            Command::BeginKeyboard {
+                slot,
+                input,
+                cancellation,
+                focus,
+            } => {
+                let application = self
+                    .slots
+                    .get(&slot)
+                    .ok_or_else(|| failed("native AX application handle has retired"))?
+                    .application()?;
+                let epoch = application.epoch;
+                // Allocate before native preparation so token exhaustion cannot
+                // orphan an already accepted source/permit on this owner.
+                let token = KeyboardId(self.token()?);
+                let application = self
+                    .slots
+                    .get(&slot)
+                    .ok_or_else(|| failed("native AX application handle has retired"))?
+                    .application()?;
+                let preparation = super::keyboard::begin(
+                    self.pid,
+                    self.bundle.as_deref(),
+                    input,
+                    focus,
+                    cancellation,
+                    || {
+                        if let Some(target) = &application.observed
+                            && target.verify().is_ok()
+                        {
+                            return target.focus_window();
+                        }
+                        let id = self.windows.primary_window_id().ok().flatten()?;
+                        Target::bind(self.pid as u32, u64::from(id))
+                            .ok()?
+                            .focus_window()
+                    },
+                )?;
+                let step = match preparation {
+                    super::keyboard::Preparation::Finished => KeyboardStep::Finished,
+                    super::keyboard::Preparation::NeedLayout(preparation) => {
+                        self.keyboards.insert(
+                            token,
+                            PendingKeyboard {
+                                slot,
+                                epoch,
+                                preparation,
+                            },
+                        );
+                        KeyboardStep::NeedLayout(token)
+                    }
+                };
+                Ok(Response::Keyboard(step))
+            }
+            Command::FinishKeyboard { token, layout } => {
+                let pending = self
+                    .keyboards
+                    .remove(&token)
+                    .ok_or_else(|| failed("native keyboard preparation has retired"))?;
+                pending.preparation.finish(self.pid, layout)?;
+                Ok(Response::Unit)
+            }
+            Command::CancelKeyboard { token } => {
+                if let Some(pending) = self.keyboards.remove(&token) {
+                    pending.preparation.cancel();
+                }
+                Ok(Response::Unit)
+            }
             Command::ClearApplication { slot } => {
                 if let Some(application) = self.slots.get_mut(&slot) {
                     application.application_mut()?.observed = None;
@@ -1291,6 +1631,7 @@ impl WorkerState {
                 if let Some(application) = self.slots.get_mut(&slot) {
                     application.application_mut()?;
                 }
+                self.cancel_keyboards(|pending| pending.slot == slot);
                 self.slots.remove(&slot);
                 self.indexed.retain(|_, pending| pending.slot != slot);
                 Ok(Response::Unit)
@@ -1356,6 +1697,7 @@ impl WorkerState {
                 Ok(Response::Pasted { restored })
             }
             Command::ReleaseEpoch { epoch } => {
+                self.cancel_keyboards(|pending| pending.epoch == epoch);
                 self.slots.retain(|_, slot| slot.epoch() != epoch);
                 self.indexed.retain(|_, pending| pending.epoch != epoch);
                 self.resolving.retain(|_, pending| pending.epoch() != epoch);
@@ -1647,7 +1989,21 @@ impl WorkerState {
         }
     }
 
+    fn cancel_keyboards(&mut self, matches: impl Fn(&PendingKeyboard) -> bool) {
+        let tokens = self
+            .keyboards
+            .iter()
+            .filter_map(|(token, pending)| matches(pending).then_some(*token))
+            .collect::<Vec<_>>();
+        for token in tokens {
+            if let Some(pending) = self.keyboards.remove(&token) {
+                pending.preparation.cancel();
+            }
+        }
+    }
+
     fn close(&mut self) -> Result<(), ToolError> {
+        self.cancel_keyboards(|_| true);
         let closed = self.windows.close();
         self.indexed.clear();
         self.resolving.clear();

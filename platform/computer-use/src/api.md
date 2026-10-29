@@ -119,6 +119,8 @@ unless the user copied something newer. An unchanged value is reported as uncert
 Browser HTML paste requires an observed contenteditable element.
 
 Tab navigation: `goto(url)`, `back()`, `forward()`, `reload()`, `close()`.
+`await tab.screenshot({ fullPage: false, clip: { x, y, width, height } })` returns JPEG bytes without emitting an image. Omit `clip` for the viewport; `fullPage: true` captures the document. Clip width and height must be positive. Coordinates and dimensions use CSS pixels. Viewport capture first tries a fresh screencast frame and then the same tab's screenshot command after acknowledged cleanup; uncertain operations are not replayed.
+
 On Extension providers, `await tab.markDeliverable()` keeps the tab open at normal turn end and releases it to the user. `await tab.markHandoff()` retains the tab for this same Session; the next actual turn resumes it with no mark. The original agent/user origin is preserved, so an agent-created tab closes at a later unmarked turn end. A later explicit mark replaces the previous mark. Both methods return undefined after the matching intent ACK, which does not prove physical delivery or cleanup. Marks retain no site permission; an uncertain call is not replayed. Direct CDP does not support these marks.
 
 `tab.clipboard` provides `read()`, `readText()`, `write(items)` and `writeText(text)`.
