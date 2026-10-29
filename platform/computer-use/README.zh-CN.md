@@ -88,3 +88,5 @@ MAKA_CUA_WINDOWS_EXECUTABLE=/mnt/c/path/to/maka.exe just run
 临时标签页由创建它的 Session 持有，并归当前使用它的 Turn 管理，Turn 完成时关闭；其他 Session 无法列出或取得这些标签页。重置清除本 Session 的绑定并关闭其临时标签页，保留用户应用和原有标签页。导航、窗口变化和新观察可能使原输入目标失效。取消或超时后需要重置，结果不确定的动作不会自动重放。关闭流程等待已接受的原生工作完成清理。
 
 输入与捕获行为应在目标桌面验证；REPL 单元测试不能证明原生焦点或无障碍行为。
+
+当前 checkpoint 已将平台专用的 `cua.computer` 接口及 `tab.dom_cua.get_visible_dom()` 接入 Host 授权与资源清理，但尚未实现完整的 LCU 行为对齐。原生 Windows 滚动仍不可用；Windows 截图坐标生命周期、macOS 焦点／键盘／粘贴行为，以及部分浏览器上传和边界语义尚未补齐。本 checkpoint 的 Windows、macOS 桌面集成尚未验证。

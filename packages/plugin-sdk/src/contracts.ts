@@ -2434,6 +2434,12 @@ export const contracts = {
                     type: 'string',
                     const: 'browser_download',
                   },
+                  {
+                    description:
+                      "Read the browser profile's browsing history, independent of page access.",
+                    type: 'string',
+                    const: 'browser_history',
+                  },
                 ],
               },
               GrantScope: {
@@ -2451,6 +2457,25 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'origin'],
+                  },
+                  {
+                    description:
+                      'One selected browser profile generation; never an origin or app-wide grant.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'browser_profile',
+                      },
+                      browserId: {
+                        type: 'string',
+                      },
+                      generation: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'browserId', 'generation'],
                   },
                   {
                     type: 'object',
@@ -2501,7 +2526,7 @@ export const contracts = {
               },
               ComputerAppPlatform: {
                 type: 'string',
-                enum: ['macos'],
+                enum: ['macos', 'windows'],
               },
               ComputerAppDisplay: {
                 type: 'object',
@@ -10033,6 +10058,12 @@ export const contracts = {
                     type: 'string',
                     const: 'browser_download',
                   },
+                  {
+                    description:
+                      "Read the browser profile's browsing history, independent of page access.",
+                    type: 'string',
+                    const: 'browser_history',
+                  },
                 ],
               },
               GrantScope: {
@@ -10050,6 +10081,25 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'origin'],
+                  },
+                  {
+                    description:
+                      'One selected browser profile generation; never an origin or app-wide grant.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'browser_profile',
+                      },
+                      browserId: {
+                        type: 'string',
+                      },
+                      generation: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'browserId', 'generation'],
                   },
                   {
                     type: 'object',
@@ -10100,7 +10150,7 @@ export const contracts = {
               },
               ComputerAppPlatform: {
                 type: 'string',
-                enum: ['macos'],
+                enum: ['macos', 'windows'],
               },
               ComputerAppDisplay: {
                 type: 'object',
@@ -16474,6 +16524,12 @@ export const contracts = {
                     type: 'string',
                     const: 'browser_download',
                   },
+                  {
+                    description:
+                      "Read the browser profile's browsing history, independent of page access.",
+                    type: 'string',
+                    const: 'browser_history',
+                  },
                 ],
               },
               GrantScope: {
@@ -16491,6 +16547,25 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'origin'],
+                  },
+                  {
+                    description:
+                      'One selected browser profile generation; never an origin or app-wide grant.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'browser_profile',
+                      },
+                      browserId: {
+                        type: 'string',
+                      },
+                      generation: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'browserId', 'generation'],
                   },
                   {
                     type: 'object',
@@ -16541,7 +16616,7 @@ export const contracts = {
               },
               ComputerAppPlatform: {
                 type: 'string',
-                enum: ['macos'],
+                enum: ['macos', 'windows'],
               },
               ComputerAppDisplay: {
                 type: 'object',
@@ -22141,6 +22216,12 @@ export const contracts = {
                     type: 'string',
                     const: 'browser_download',
                   },
+                  {
+                    description:
+                      "Read the browser profile's browsing history, independent of page access.",
+                    type: 'string',
+                    const: 'browser_history',
+                  },
                 ],
               },
               GrantScope: {
@@ -22158,6 +22239,25 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'origin'],
+                  },
+                  {
+                    description:
+                      'One selected browser profile generation; never an origin or app-wide grant.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'browser_profile',
+                      },
+                      browserId: {
+                        type: 'string',
+                      },
+                      generation: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'browserId', 'generation'],
                   },
                   {
                     type: 'object',
@@ -22208,7 +22308,7 @@ export const contracts = {
               },
               ComputerAppPlatform: {
                 type: 'string',
-                enum: ['macos'],
+                enum: ['macos', 'windows'],
               },
               ComputerAppDisplay: {
                 type: 'object',

@@ -3438,11 +3438,17 @@ export type FormField1 =
 export type FormFormat = 'email' | 'uri' | 'date' | 'date-time';
 export type GrantCapability =
   | ('browser' | 'computer_use' | 'computer_audio' | 'desktop_mcp' | 'mcp')
-  | 'browser_download';
+  | 'browser_download'
+  | 'browser_history';
 export type GrantScope =
   | {
       kind: 'browser_origin';
       origin: string;
+    }
+  | {
+      kind: 'browser_profile';
+      browserId: string;
+      generation: string;
     }
   | {
       kind: 'capability';
@@ -3457,7 +3463,7 @@ export type GrantScope =
       platform: ComputerAppPlatform;
       applicationId: string;
     };
-export type ComputerAppPlatform = 'macos';
+export type ComputerAppPlatform = 'macos' | 'windows';
 export type ComputerAppRisk = 'low' | 'high';
 export type InteractionOutcome =
   | {

@@ -88,3 +88,5 @@ Plain `cargo run -p maka-cli` retains the native default. To build the bridge di
 Sessions own their temporary tabs; turn completion closes the tabs held by that turn. Other Sessions cannot list or acquire them. Reset clears this Session's bindings and closes its temporary tabs, preserving user apps and preexisting tabs. Navigation, window changes and fresh observations can invalidate previous input targets. Cancellation or timeout requires a reset; an uncertain action is never replayed automatically. Shutdown waits for accepted native work to settle.
 
 Verify input and capture behavior on the target desktop; a REPL unit test cannot establish native focus or accessibility behavior.
+
+The current checkpoint connects the platform-specific `cua.computer` surface and `tab.dom_cua.get_visible_dom()` to Host authority and owned cleanup. It does not establish full LCU behavior parity. Raw Windows scrolling is still unavailable; Windows screenshot-coordinate lifetime, macOS focus/keyboard/paste behavior, and remaining browser upload and boundary semantics are incomplete. Windows and macOS desktop integration remains unverified for this checkpoint.

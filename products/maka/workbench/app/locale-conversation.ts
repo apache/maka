@@ -1498,4 +1498,20 @@ export const conversationMessages = {
       '允许请求工具从所显示的浏览器来源下载文件。页面访问权限需单独授权。此授权持续至该会话当前权限边界失效。',
       '允許請求工具從所顯示的瀏覽器來源下載檔案。頁面存取權限須另行授權。此授權持續至該對話目前權限邊界失效。',
     ],
+  'Browsing history for this browser profile': [
+    'Browsing history for this browser profile',
+    '此浏览器配置的浏览记录权限',
+    '此瀏覽器設定檔的瀏覽紀錄權限',
+  ],
+  "Allow this tool to read the selected browser profile's browsing history for this session. Page access, downloads, and other browser profiles need separate permission. Reconnecting the browser requires permission again.":
+    [
+      "Allow this tool to read the selected browser profile's browsing history for this session. Page access, downloads, and other browser profiles need separate permission. Reconnecting the browser requires permission again.",
+      '允许此工具在本会话中读取所选浏览器配置的浏览记录。页面访问、下载及其他浏览器配置需要分别授权。重新连接浏览器后需再次授权。',
+      '允許此工具在本對話中讀取所選瀏覽器設定檔的瀏覽紀錄。頁面存取、下載及其他瀏覽器設定檔需要分別授權。重新連線瀏覽器後須再次授權。',
+    ],
+  'Browser profile: {browser}': [
+    'Browser profile: {browser}',
+    '浏览器配置：{browser}',
+    '瀏覽器設定檔：{browser}',
+  ],
 } as const satisfies Catalog;
