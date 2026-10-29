@@ -60,7 +60,7 @@ const glyphs = {
   unread: '●',
 };
 
-export function Icon(props: { name: keyof typeof glyphs; color: string }) {
+export function Icon(props: { name: keyof typeof glyphs; color: string; size?: number }) {
   if (platform.isTerminal)
     return (
       <Text
@@ -83,11 +83,17 @@ export function Icon(props: { name: keyof typeof glyphs; color: string }) {
   return (
     <Canvas
       accessibilityElementsHidden
-      style={[{ width: 16, height: 16, flexShrink: 0 }, { pointerEvents: 'none' }]}
+      style={[
+        { width: props.size ?? 16, height: props.size ?? 16, flexShrink: 0 },
+        { pointerEvents: 'none' },
+      ]}
       draw={(cx) => {
+        // Glyphs are drawn on a 16-point grid; larger ones keep a 2-point stroke.
+        const scale = (props.size ?? 16) / 16;
+        cx.scale(scale, scale);
         cx.strokeStyle = props.color;
         cx.fillStyle = props.color;
-        cx.lineWidth = 1.5;
+        cx.lineWidth = scale === 1 ? 1.5 : 2 / scale;
         cx.lineCap = 'round';
         cx.lineJoin = 'round';
         cx.beginPath();

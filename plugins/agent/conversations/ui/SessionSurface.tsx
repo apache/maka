@@ -171,6 +171,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   const recoveredFork = signal<{ id: string; title: string } | null>(null);
   const handle = signal<ConversationHandle | null>(null);
   let dropFiles: ((event: { uris: string[] }) => void) | null = null;
+  const fileDragging = signal(false);
   let editor: { focus(): void } | undefined;
   const composerSession = computed(() => {
     const owner = handle();
@@ -996,7 +997,15 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       input.attach(sessionHandle);
       return (
         <viewRuntimeContext.Provider value={runtime}>
-          <View onFileDrop={(event) => dropFiles?.(event)} style={{ flex: 1, minHeight: 0 }}>
+          <View
+            onFileDrop={(event) => {
+              fileDragging.set(false);
+              dropFiles?.(event);
+            }}
+            onFileDragEnter={() => fileDragging.set(true)}
+            onFileDragLeave={() => fileDragging.set(false)}
+            style={{ flex: 1, minHeight: 0 }}
+          >
             <If when={selected() === null}>
               <View>
                 <Header
@@ -1056,6 +1065,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               dropFiles={(drop) => {
                 dropFiles = drop;
               }}
+              fileDragging={fileDragging}
               blocked={reloading}
               active={() => overlay() === null && !reloading() && (shell()?.visible() ?? false)}
               session={composerSession}
