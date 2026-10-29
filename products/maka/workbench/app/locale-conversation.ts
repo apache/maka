@@ -491,7 +491,16 @@ export const conversationMessages = {
     '這是「{title}」的分支，原對話未改動。',
   ],
   'Back to original': ['Back to original', '返回原对话', '返回原對話'],
-  'Edit and resend': ['Edit and resend', '编辑后重新发送', '編輯後重新傳送'],
+  'Edit and resend in a fork': [
+    'Edit and resend in a fork',
+    '在分支中编辑后重发',
+    '在分支中編輯後重新傳送',
+  ],
+  'Send or clear the draft first.': [
+    'Send or clear the draft first.',
+    '请先发送或清空草稿。',
+    '請先傳送或清空草稿。',
+  ],
   'Regenerate in a fork': ['Regenerate in a fork', '在分支中重新生成', '在分支中重新產生'],
   'This message has no text to edit.': [
     'This message has no text to edit.',

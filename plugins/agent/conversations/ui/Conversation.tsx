@@ -86,7 +86,7 @@ import {
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
-import { MessageEdit } from '../../../../products/maka/workbench/app/MessageEdit';
+import { MessageEdit, TurnRetry } from '../../../../products/maka/workbench/app/MessageEdit';
 import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
@@ -2546,6 +2546,30 @@ export function Conversation(props: ConversationProps) {
                               }
                             />
                           )}
+                          failureActions={
+                            platform.isTerminal
+                              ? undefined
+                              : (row) => (
+                                  // Only where the conversation ends in this failure.
+                                  <If
+                                    when={
+                                      run() !== 'running' && displayKeys().at(-1) === initial.rowId
+                                    }
+                                  >
+                                    <TurnRetry
+                                      row={() => loadedOpening(row().turnId)}
+                                      sessionId={sessionId}
+                                      through={() => latestKnown}
+                                      blocked={() =>
+                                        draft().trim() || attachments.files().length > 0
+                                          ? tr('Send or clear the draft first.')
+                                          : sendBlockedReason()
+                                      }
+                                      send={send}
+                                    />
+                                  </If>
+                                )
+                          }
                           editMessage={
                             !platform.isTerminal && props.edit
                               ? (row, ownerKey) => (
