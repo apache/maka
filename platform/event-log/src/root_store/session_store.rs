@@ -1263,14 +1263,9 @@ impl SessionStore {
     pub async fn invocation_recovery(
         &self,
         invocation: &Invocation,
-        max_operations: usize,
-        max_bytes: usize,
     ) -> Result<crate::recovery::InvocationRecovery, StoreError> {
         self.check_session(&invocation.session_id)?;
-        self.scoped()
-            .await?
-            .invocation_recovery(invocation, max_operations, max_bytes)
-            .await
+        self.scoped().await?.invocation_recovery(invocation).await
     }
 }
 

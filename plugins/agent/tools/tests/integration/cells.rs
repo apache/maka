@@ -157,7 +157,7 @@ async fn yielding_cells_keep_ancestry_deliver_deltas_share_json_and_drain_on_run
         let prefix = log.prefix(100, 1024*1024).await.unwrap();
         assert!(prefix.events.iter().any(|e| matches!(&e.event.fact, Fact::ToolDispatched {operation_id,call,..}
             if operation_id==cell_id && matches!(&call.origin,ToolOrigin::CodeCell{parent_operation_id,..} if parent_operation_id=="first:first"))));
-        assert!(log.invocation_recovery(&invocation,100,1024*1024).await.unwrap().uncertain_operations.contains(&cell_id.to_string()));
+        assert!(log.invocation_recovery(&invocation).await.unwrap().uncertain_operations.contains(&cell_id.to_string()));
         release.notify_one();
         let last = invoke(&log,&run,&invocation,"observe","wait",json!({"cell_id":cell_id,"max_tokens":1000})).await;
         assert_eq!(last["state"],"completed");
@@ -174,11 +174,11 @@ async fn yielding_cells_keep_ancestry_deliver_deltas_share_json_and_drain_on_run
         let stopped = invoke(&log,&run,&invocation,"terminate","wait",json!({"cell_id":stopping["cell_id"],"terminate":true})).await;
         assert_eq!(stopped["state"],"terminated");
         assert_eq!(stopped["content"],json!([]), "termination must not repeat previously observed output");
-        assert!(log.invocation_recovery(&invocation,100,1024*1024).await.unwrap().uncertain_operations.is_empty());
+        assert!(log.invocation_recovery(&invocation).await.unwrap().uncertain_operations.is_empty());
         let unfinished = invoke(&log,&run,&invocation,"unfinished","exec",json!({"code":"notify('pending'); await yield_control(); await tools.block({});"})).await;
         assert_eq!(unfinished["state"],"running");
         run.shutdown().await.unwrap();
-        assert!(log.invocation_recovery(&invocation,100,1024*1024).await.unwrap().uncertain_operations.is_empty());
+        assert!(log.invocation_recovery(&invocation).await.unwrap().uncertain_operations.is_empty());
         let fence = log.prefix(100,1024*1024).await.unwrap().high_water;
         let headers = log.transcript_headers(&invocation.session_id, &maka_event_log::transcript::TranscriptRead {
             through: fence, position: None, direction: maka_event_log::transcript::TranscriptDirection::Older, limit: 8,
@@ -193,7 +193,7 @@ async fn yielding_cells_keep_ancestry_deliver_deltas_share_json_and_drain_on_run
         drop(run);
         fixture::close(log).await;
         let reopened = EventLog::open(&path).await.unwrap();
-        assert!(reopened.invocation_recovery(&invocation,100,1024*1024).await.unwrap().uncertain_operations.is_empty());
+        assert!(reopened.invocation_recovery(&invocation).await.unwrap().uncertain_operations.is_empty());
         reopened.close().await.unwrap();
     }).await.expect("Code Mode observation and shutdown must not hang");
 }
@@ -268,4 +268,74 @@ async fn collected_cell_recovery_uses_the_original_run_language_and_keeps_user_o
             "missing-cell recovery must warn against duplicate effects: {message}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cells_accept_concurrent_work_and_honor_the_requested_output_budget() {
+    let directory = tempfile::tempdir().unwrap();
+    let log = Arc::new(
+        EventLog::open(&directory.path().join("events.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let invocation = fixture::invocation("many-cells");
+    log.create_session(&invocation.session_id, "create", &json!({}), 1)
+        .await
+        .unwrap();
+    fixture::accepted(&log, &invocation, &[]).await;
+    let catalog = ToolCatalog::new([ToolRegistration {
+        definition: ToolDefinition {
+            name: "block".into(),
+            description: "wait".into(),
+            input_schema: json!({"type":"object"}),
+            freeform: None,
+            output_schema: None,
+            provider: None,
+        },
+        handler: ToolHandler::Immediate(Arc::new(Block(Arc::new(Notify::new())))),
+        nesting: ToolNesting::Nestable,
+        semantics: ToolSemantics::Parallel,
+    }])
+    .unwrap();
+    let run = RunTools::new(
+        maka_agent_facts::language::Language::En,
+        log.clone(),
+        invocation.clone(),
+        catalog,
+        ToolMode::CodeMode,
+        CodeExecutor::new(CellLimits::default()).unwrap(),
+        maka_tools::availability::LoadedTools::temporary().unwrap(),
+    );
+    for index in 0..5 {
+        let result = invoke(&log, &run, &invocation, &format!("cell-{index}"), "exec", json!({
+            "code": "text('x'.repeat(140 * 1024)); await yield_control(); await tools.block({});",
+            "max_output_tokens": 50_000,
+        })).await;
+        assert_eq!(result["state"], "running");
+        assert_eq!(
+            result["content"][0]["text"].as_str().unwrap(),
+            "x".repeat(140 * 1024)
+        );
+    }
+    let history = log.prefix(128, 4 * 1024 * 1024).await.unwrap();
+    let complete = history.events.iter().filter(|stored| matches!(
+        &stored.event.fact,
+        Fact::ToolSettled { outcome: maka_agent_facts::event::ToolOutcome::Succeeded {
+            model_projection: maka_agent_facts::tool_output::DurableToolProjection::Text { text }, ..
+        }, .. } if text.ends_with(&"x".repeat(140 * 1024))
+    )).count();
+    assert_eq!(
+        complete, 5,
+        "each model-visible observation retains the requested output"
+    );
+    run.shutdown().await.unwrap();
+    assert!(
+        log.invocation_recovery(&invocation)
+            .await
+            .unwrap()
+            .uncertain_operations
+            .is_empty()
+    );
+    drop(run);
+    fixture::close(log).await;
 }

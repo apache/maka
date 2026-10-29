@@ -309,10 +309,7 @@ async fn check_boundary(boundary: Boundary) {
     // Reopen the actual database with no fault injector. Recovery evidence must
     // retain every unresolved dispatch, including the parent when child T1 failed.
     let log = Arc::new(EventLog::open(&path).await.unwrap());
-    let recovery = log
-        .invocation_recovery(&invocation, 32, 64 * 1024)
-        .await
-        .unwrap();
+    let recovery = log.invocation_recovery(&invocation).await.unwrap();
     let mut pending = recovery.uncertain_operations;
     pending.sort();
     assert_eq!(pending, uncertain);

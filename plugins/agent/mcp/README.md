@@ -114,7 +114,7 @@ Tool schemas are frozen for each captured connection. A list-change notification
 
 Calls are sent once, with no automatic replay or expired-session recovery. Timeout/cancellation requests cancellation and retires an unsettled connection. Local stdio cleanup waits for process-group termination. Missing terminal results remain outcome-unknown; closing an HTTP connection cannot prove that external work stopped, so its cleanup remains unconfirmed. Inspect the external system before deliberately retrying an uncertain effect. Shutdown closes all owned connections.
 
-At most 64 servers, 64 catalog pages and 1,024 tools per server are accepted; serialized catalog size is capped at 1 MiB, with the shared catalog's own validation still applied. Incoming stdio messages, HTTP JSON/error bodies and SSE events are capped at 16 MiB before parsing. HTTP POST SSE limits also count comments between event separators. Defaults are 10 seconds for startup and 120 seconds per call; supported configured ranges are 1–300,000 ms and 1–3,600,000 ms respectively.
+Server configuration and discovery have no fixed count, page or byte quotas. Discovery follows cursors to completion and rejects repeated cursors. Stdio messages, HTTP JSON/error bodies and SSE events retain their complete payloads; cancellation and connection cleanup still apply. Defaults are 10 seconds for startup and 120 seconds per call; supported configured ranges are 1–300,000 ms and 1–3,600,000 ms respectively.
 
 This integration exposes tools. It does not expose a resources/prompts browser, roots, sampling, elicitation, tasks, OAuth management or legacy HTTP+SSE transport.
 
@@ -125,4 +125,4 @@ cargo test -p maka-mcp
 cargo test -p maka-agent-native mcp_native_direct_and_code_mode
 ```
 
-The tests use a real subprocess server and loopback HTTP/SSE server. They cover paginated discovery, results/media, explicit environment forwarding, size limits before EOF, cancellation and process cleanup, direct/Code Mode calls, approvals and live permissions.
+The tests use a real subprocess server and loopback HTTP/SSE server. They cover paginated discovery, results/media, explicit environment forwarding, large catalogs and complete large results, cancellation and process cleanup, direct/Code Mode calls, approvals and live permissions.
