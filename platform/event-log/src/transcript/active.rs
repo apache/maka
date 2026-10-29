@@ -54,8 +54,8 @@ pub(crate) async fn interrupted_messages(
     Ok(ids)
 }
 impl EventLog {
-    /// Freeze only the unresolved step at this historical log fence. This read
-    /// does not accept its observations as model history or durable transcript.
+    /// Read an active executor overlay at a historical fence. Model preview belongs
+    /// to the attempt reader and has no SQL reconstruction path.
     pub async fn active_transcript(
         &self,
         invocation: &Invocation,
@@ -94,10 +94,19 @@ impl EventLog {
                     if ended {
                         return Ok(Vec::new());
                     }
-                    let step = evidence::pending_step(&mut tx, id, fence).await?;
+                    let external: bool = sqlx::query_scalar(
+                        "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?1
+                         AND kind='executor_started' AND sequence<=?2)",
+                    )
+                    .bind(id)
+                    .bind(fence)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    if !external {
+                        return Ok(Vec::new());
+                    }
                     let mut view = InvocationView::new();
-                    let selected =
-                        evidence::selected(&mut tx, id, step.as_deref(), fence, false).await?;
+                    let selected = evidence::selected(&mut tx, id, None, fence, false).await?;
                     for sequence in selected {
                         let fact = evidence::fact(&mut tx, sequence).await?;
                         if fact.event.invocation != invocation {

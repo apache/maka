@@ -136,6 +136,7 @@ pub(super) struct Owner {
     sources: BTreeMap<PackageRef, Package>,
     native: NativeRegistry,
     issuer: Issuer,
+    preparation_resources: maka_capabilities::model_preparation::ModelPreparationResources,
     policy: Arc<dyn Policy>,
     scripts: Option<Arc<dyn backend::Factory>>,
     shared: Option<usize>,
@@ -164,6 +165,7 @@ impl Owner {
         sources: BTreeMap<PackageRef, Package>,
         native: NativeRegistry,
         issuer: Issuer,
+        preparation_resources: maka_capabilities::model_preparation::ModelPreparationResources,
         policy: Arc<dyn Policy>,
         scripts: Option<Arc<dyn backend::Factory>>,
         updates: watch::Sender<Snapshot>,
@@ -192,6 +194,7 @@ impl Owner {
             sources,
             native,
             issuer,
+            preparation_resources,
             policy,
             scripts,
             shared: None,
@@ -432,6 +435,7 @@ impl Owner {
         Ok(())
     }
     fn stop(&mut self) {
+        self.preparation_resources.close();
         self.closing = true;
         self.starting = false;
         self.pending.clear();
@@ -803,6 +807,7 @@ impl Owner {
                         imports: self.owned[activation.instance()].imports.clone(),
                         dispatch: self.dispatch.clone(),
                         issuer: self.issuer.clone(),
+                        preparation_resources: self.preparation_resources.clone(),
                     },
                     persistence: self
                         .persisted

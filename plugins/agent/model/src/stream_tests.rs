@@ -130,8 +130,8 @@ async fn split_output_keeps_backpressure_until_consumed_and_exceeds_one_window()
             panic!("one complete text part expected");
         };
         assert_eq!(
-            text,
-            &format!(
+            text.chunks().collect::<String>(),
+            format!(
                 "{}{}{}",
                 "a".repeat(16 * 1024),
                 "b".repeat(16 * 1024),

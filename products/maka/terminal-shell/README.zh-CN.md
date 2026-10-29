@@ -21,7 +21,7 @@
 
 在终端中运行实验性的 [Maka 工作台](../workbench/README.zh-CN.md)（使用 NSH 构建的 Agent 工作台），支持鼠标与键盘操作，连接或启动 Maka Host Root。
 
-NSH 源码位于 [`third-party/nsh`](../../../third-party/nsh/SOURCE.md)。Cargo 从这里构建运行时、TSX 打包器、`nsh-base` 组件和 UI 类型声明生成器，无需单独检出 NSH。相关的 NSH 与 Maka 修改在同一源码树中完成，并通过终端的[真实 Host 测试](tests/real_host.rs)一起验证：`cargo test -p maka-cli --no-default-features --test terminal_real_host`。
+NSH 源码位于 [`third-party/nsh`](../../../third-party/nsh/SOURCE.md)。Cargo 从这里构建运行时、TSX 打包器、`nsh-base` 组件和 UI 类型声明生成器，无需单独检出 NSH。相关的 NSH 与 Maka 修改在同一源码树中完成，并通过终端的[真实 Host 测试](tests/real_host/mod.rs)一起验证：`cargo test -p maka-cli --no-default-features --test integration terminal::`。
 
 ## 启动
 

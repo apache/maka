@@ -136,8 +136,7 @@ pub(super) const SUMMARY_ADMISSION: &str = "WITH covered AS (
                    THEN CAST(json_extract(c.event_json,'$.fact.step_id') AS TEXT) ELSE c.operation_id END
              WHERE c.invocation_id=?1 AND (c.kind='model_completed' OR
                (c.kind='model_observed' AND json_extract(r.event_json,'$.fact.item_acceptance')=1
-                 AND json_extract(c.event_json,'$.fact.event.kind') IN
-                   ('part_finished','tool_call','provider_tool_result','source')))
+                 AND json_extract(c.event_json,'$.fact.event.kind')='part'))
                AND json_extract(r.event_json, '$.fact.purpose')='main'
                AND c.sequence <= ?3 AND c.sequence > (SELECT high FROM covered))";
 

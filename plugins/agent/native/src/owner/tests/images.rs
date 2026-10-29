@@ -26,11 +26,10 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::ModelToolCall;
 use maka_agent_facts::model::ModelUsage;
+use maka_agent_facts::model::recorded::{CompletionPart, ModelCompletion, ModelPartRecord};
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_output::ToolSuccess;
 
@@ -88,19 +87,19 @@ async fn canonical_images_use_original_agent_grants_and_bounded_base64() {
     fixture
         .session(&session)
         .await
-        .append(&write(Fact::ModelObserved {
-            step_id: "image-step".into(),
-            event: ModelEvent::ToolCall(call.clone()),
-        }))
-        .await
-        .unwrap();
-    fixture
-        .session(&session)
-        .await
         .append(&write(Fact::ModelCompleted {
             step_id: "image-step".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall { call }],
+            output: ModelCompletion {
+                parts: vec![CompletionPart::Own(ModelPartRecord {
+                    ordinal: 0,
+                    message_id: maka_agent_facts::tool_call::tool_use_id(
+                        &invocation.invocation_id,
+                        "image-step:image",
+                    ),
+                    started_at: std::time::SystemTime::now(),
+                    provider_part_id: Some(call.id.clone()),
+                    part: Arc::new(ModelPart::ToolCall { call }),
+                })],
                 finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
                 usage: ModelUsage::default(),
                 provider_options: None,

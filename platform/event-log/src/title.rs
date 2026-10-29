@@ -31,7 +31,7 @@ use std::time::SystemTime;
 
 #[derive(Serialize)]
 struct Failure {
-    // A non-runtime event must not populate the generated runtime event_session.
+    // A non-runtime event must not populate the runtime event_session.
     opening: Invocation,
     recorded_at: SystemTime,
     cause: TitleFailureCause,
@@ -48,18 +48,35 @@ impl EventLog {
             .validate()
             .map_err(|error| invalid(&error.to_string()))?;
         let commits = self.commits.session(&invocation.session_id);
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            original_title_binding(&mut tx, &invocation).await?;
-            let failure = Failure { opening: invocation, recorded_at: SystemTime::now(), cause };
-            let result = sqlx::query("INSERT INTO event_log(event_id,kind,event_json) VALUES (?,'title_failure',?)")
-                .bind(uuid::Uuid::new_v4().to_string()).bind(serde_json::to_string(&failure)?)
-                .execute(&mut *tx).await?;
-            let sequence = crate::sequence_number(result.last_insert_rowid())?;
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;
-            commits.publish(sequence);
-            Ok(sequence)
-        })).await
+        self.connection
+            .run(move |connection| {
+                Box::pin(async move {
+                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+                    original_title_binding(&mut tx, &invocation).await?;
+                    let failure = Failure {
+                        opening: invocation,
+                        recorded_at: SystemTime::now(),
+                        cause,
+                    };
+                    let event_id = uuid::Uuid::new_v4().to_string();
+                    let json = serde_json::to_string(&failure)?;
+                    let result = crate::canonical_insert::insert(crate::canonical_insert::Record {
+                        sequence: None,
+                        event_id: &event_id,
+                        invocation_id: None,
+                        kind: "title_failure",
+                        operation_id: None,
+                        json: &json,
+                    })
+                    .execute(&mut *tx)
+                    .await?;
+                    let sequence = crate::sequence_number(result.last_insert_rowid())?;
+                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    commits.publish(sequence);
+                    Ok(sequence)
+                })
+            })
+            .await
     }
 }
 

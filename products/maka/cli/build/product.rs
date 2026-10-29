@@ -56,7 +56,7 @@ pub fn bundle() {
         .unwrap()
         .parent()
         .unwrap();
-    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build/main.rs");
     println!("cargo:rerun-if-changed=build/product.rs");
     let output = std::path::PathBuf::from(env::var_os("OUT_DIR").unwrap());
     println!("cargo:rerun-if-env-changed=MAKA_JS_DEPS");

@@ -51,7 +51,7 @@ async fn concurrent_sessions_share_the_same_available_project() {
 }
 
 #[tokio::test]
-async fn blocked_creation_allows_other_sessions_and_precedes_close() {
+async fn creation_waiting_for_session_allows_other_sessions_and_is_rejected_by_close() {
     use futures_util::poll;
 
     let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
@@ -88,12 +88,24 @@ async fn blocked_creation_allows_other_sessions_and_precedes_close() {
     let mut close = fixture.owner.close();
     assert!(poll!(close.as_mut()).is_pending());
     drop(gate);
-    let Created::Created { session: created } = blocked.await.unwrap() else {
-        panic!("creation admitted before close must settle");
-    };
-    assert_eq!(created.id, session);
+    // Waiting for Session ordering has not admitted workspace or SQL work.
+    let (created, closed) = tokio::join!(blocked, close);
+    assert!(matches!(
+        created.unwrap(),
+        Created::Rejected {
+            reason: Rejection::Closed
+        }
+    ));
+    assert!(
+        fixture
+            .store
+            .get_session::<Value>(&session)
+            .await
+            .unwrap()
+            .is_none()
+    );
     drop(prepared);
-    close.await.unwrap();
+    closed.unwrap();
     fixture.app.shutdown().await.unwrap();
     fixture.config.shutdown().await.unwrap();
 }

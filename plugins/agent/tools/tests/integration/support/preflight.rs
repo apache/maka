@@ -24,8 +24,6 @@ use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::model::ModelFinishReason;
-use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::ModelToolCall;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
@@ -103,6 +101,48 @@ pub fn call(
         provider_executed: false,
     }
 }
+pub fn completion(
+    invocation: &Invocation,
+    step: &str,
+    calls: &[ModelToolCall],
+) -> maka_agent_facts::model::recorded::ModelCompletion {
+    use maka_agent_facts::{
+        context::ModelPurpose,
+        model::{
+            ModelEvent,
+            assembly::{AttemptBinding, AttemptWriter},
+        },
+    };
+    let mut writer = AttemptWriter::new(
+        AttemptBinding {
+            invocation: invocation.clone(),
+            step_id: step.into(),
+            purpose: ModelPurpose::Main,
+        },
+        false,
+    )
+    .unwrap();
+    for call in calls {
+        writer
+            .push(
+                ModelEvent::ToolCall(call.clone()),
+                std::time::SystemTime::now(),
+            )
+            .unwrap();
+    }
+    writer
+        .push(
+            ModelEvent::Finished {
+                reason: ModelFinishReason::ToolCalls,
+                usage: Default::default(),
+                provider_options: None,
+            },
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+    writer.completed().unwrap().completion()
+}
+
 pub async fn accepted(log: &EventLog, invocation: &Invocation, calls: &[ModelToolCall]) {
     let facts = [
         Fact::InvocationOpened {
@@ -130,19 +170,7 @@ pub async fn accepted(log: &EventLog, invocation: &Invocation, calls: &[ModelToo
         },
         Fact::ModelCompleted {
             step_id: invocation.invocation_id.clone(),
-            output: ModelStep {
-                parts: calls
-                    .iter()
-                    .cloned()
-                    .map(|call| ModelPart::ToolCall { call })
-                    .collect(),
-                finish_reason: ModelFinishReason::ToolCalls,
-                usage: Default::default(),
-                provider_options: None,
-                response_id: None,
-                model: None,
-                timestamp: None,
-            },
+            output: completion(invocation, &invocation.invocation_id, calls),
         },
     ];
     log.append_batch(

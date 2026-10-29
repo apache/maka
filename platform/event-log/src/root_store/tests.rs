@@ -500,9 +500,6 @@ async fn rejects_legacy_non_session_journals_without_orphaning_rows() {
     }
 }
 
-mod prepared_cache;
-mod prepared_owner;
-
 #[tokio::test]
 async fn committed_sequence_validates_history_when_another_session_outpaces_its_hint() {
     use maka_agent_facts::event::{

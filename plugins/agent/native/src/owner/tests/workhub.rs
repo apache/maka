@@ -1004,8 +1004,24 @@ async fn workhub_routing_to_busy_worker_follows_exact_queued_message_after_later
         assert_eq!(delivered["status"]["progress"]["kind"],"delivered");
         assert_eq!(delivered["status"]["progress"]["shared"],false);
         assert_ne!(delivered["status"]["progress"]["execution"]["invocationId"],busy["invocationId"]);
-        worker_mutation(&fixture,"send",json!({"sessionId":worker,"message":"Later separate work","model":fixture.selection().await})).await;
-        let (mut socket,_)=listener.accept().await.unwrap();request(&mut socket).await;response(&mut socket).await;
+        let later=worker_mutation(&fixture,"send",json!({"sessionId":worker,"message":"Later separate work","model":fixture.selection().await})).await;
+        let mut later_socket=loop {
+            let (mut socket,_)=listener.accept().await.unwrap();
+            let input=request(&mut socket).await;
+            if is_coordinator(&input) {
+                assert!(is_worker_notice(&input),"unexpected coordinator continuation");
+                let notice=input["messages"].as_array().unwrap().iter().rev()
+                    .find(|message| message["role"] == "user").unwrap()["content"].as_str().unwrap();
+                let observed:Value=serde_json::from_str(notice.split_once("Original worker observation:\n").unwrap().1).unwrap();
+                assert_eq!(observed["taskId"],task_id);
+                response(&mut socket).await;
+            } else {
+                assert_eq!(input["messages"].as_array().unwrap().last().unwrap()["content"],"Later separate work");
+                break socket;
+            }
+        };
+        assert_eq!(query_import(&fixture,"worker","observe",json!({"sessionId":worker})).await["run"]["invocationId"],later["invocationId"]);
+        response(&mut later_socket).await;
         idle(&fixture,"worker",&worker).await;
         let original=query_import(&fixture,hub::EXPORT,"task",json!({"taskId":task_id})).await;
         assert_eq!(original,delivered,"task follows its message, never the Session tip");
@@ -2067,7 +2083,6 @@ async fn workhub_dependencies_wait_cancel_and_dispatch_once_with_complete_origin
     .unwrap();
 }
 
-#[path = "workhub_graph.rs"]
 mod graph_tests;
 
 #[tokio::test]

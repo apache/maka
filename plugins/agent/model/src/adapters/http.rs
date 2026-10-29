@@ -17,7 +17,9 @@
  * under the License.
  */
 
-use super::{anthropic, body, error, events, request};
+use super::{anthropic, anthropic_documents, body, error, events, request};
+#[cfg(test)]
+mod upload_tests;
 use crate::{ModelError, ProviderFailureReason};
 use maka_agent_facts::model::budget;
 use maka_agent_ports::model::{Context, Emission, Lifetime, ProviderAdapter, Request, Session};
@@ -76,14 +78,19 @@ impl Session for HttpSession {
     }
 }
 pub(super) enum Decoder {
-    Anthropic(Box<protocol_anthropic::stream::Stream>),
+    Anthropic {
+        stream: Box<protocol_anthropic::stream::Stream>,
+        documents: Option<anthropic_documents::Documents>,
+    },
     Chat(Box<chat::Stream>),
 }
 impl Decoder {
     fn push(&mut self, bytes: &[u8]) -> Result<Vec<Event>, ModelError> {
         let mut next_id = || uuid::Uuid::new_v4().to_string();
         match self {
-            Self::Anthropic(stream) => stream.push(bytes, &mut next_id, |_| {}).map_err(failure),
+            Self::Anthropic { stream, .. } => {
+                stream.push(bytes, &mut next_id, |_| {}).map_err(failure)
+            }
             Self::Chat(stream) => {
                 let mut events = stream.push(bytes, &mut next_id).map_err(failure)?;
                 if stream.terminal() {
@@ -93,9 +100,23 @@ impl Decoder {
             }
         }
     }
+    async fn resolve(
+        &self,
+        events: &mut [Event],
+        cancellation: &CancellationToken,
+    ) -> Result<(), ModelError> {
+        if let Self::Anthropic {
+            documents: Some(documents),
+            ..
+        } = self
+        {
+            documents.resolve(events, cancellation).await?;
+        }
+        Ok(())
+    }
     fn finish(&mut self) -> Result<Vec<Event>, ModelError> {
         match self {
-            Self::Anthropic(stream) => Ok(stream.finish()),
+            Self::Anthropic { stream, .. } => Ok(stream.finish()),
             Self::Chat(stream) => stream
                 .finish(&mut || uuid::Uuid::new_v4().to_string())
                 .map_err(failure),
@@ -237,6 +258,8 @@ async fn run_inner(
         // Request bytes have been dispatched. Retain only the decoder and
         // protocol metadata while receiving; output owns its actual queue budget.
         drop(prepared.body);
+        drop(prepared.anthropic_source.take());
+        drop(prepared.chat.take());
         loop {
             let chunk = tokio::time::timeout(context.idle_timeout, body.0.next())
                 .await
@@ -256,7 +279,11 @@ async fn run_inner(
                     // Bound the vector of decoded events even if an HTTP peer
                     // combines many records into one transport chunk.
                     for bytes in bytes.chunks(16 * 1024) {
-                        let decoded = prepared.decoder.push(bytes)?;
+                        let mut decoded = prepared.decoder.push(bytes)?;
+                        prepared
+                            .decoder
+                            .resolve(&mut decoded, &context.cancellation)
+                            .await?;
                         emit(decoded, &mut events, context, &shared).await?;
                         if events.finished {
                             body.0.close().await.map_err(body_error)?;
@@ -265,7 +292,12 @@ async fn run_inner(
                     }
                 }
                 None => {
-                    emit(prepared.decoder.finish()?, &mut events, context, &shared).await?;
+                    let mut decoded = prepared.decoder.finish()?;
+                    prepared
+                        .decoder
+                        .resolve(&mut decoded, &context.cancellation)
+                        .await?;
+                    emit(decoded, &mut events, context, &shared).await?;
                     return if events.finished {
                         Ok(())
                     } else {
@@ -295,15 +327,35 @@ fn body_error(error: http::Error) -> ModelError {
     }
 }
 
-async fn dispatch(context: &Context, request: http::Request) -> Result<http::Response, ModelError> {
+fn observe_upload(
+    input: http::RequestBody,
+    activity: tokio::sync::watch::Sender<tokio::time::Instant>,
+) -> http::RequestBody {
+    input.inspect(move |chunk| {
+        if chunk.as_ref().is_ok_and(|bytes| !bytes.is_empty()) {
+            activity.send_replace(tokio::time::Instant::now());
+        }
+    })
+}
+
+async fn dispatch(
+    context: &Context,
+    mut request: http::Request,
+) -> Result<http::Response, ModelError> {
+    let (activity, mut progress) = tokio::sync::watch::channel(tokio::time::Instant::now());
+    request.body = observe_upload(request.body, activity);
     let cancellation = context.cancellation.child_token();
     let pending = context.transport.request(request, cancellation.clone());
     tokio::pin!(pending);
-    let cause = tokio::select! {
-        biased;
-        result = &mut pending => return result,
-        _ = context.cancellation.cancelled() => ModelError::Cancelled,
-        _ = tokio::time::sleep(context.idle_timeout) => ModelError::TimedOut,
+    let cause = loop {
+        let deadline = *progress.borrow_and_update() + context.idle_timeout;
+        break tokio::select! {
+            biased;
+            result = &mut pending => return result,
+            _ = context.cancellation.cancelled() => ModelError::Cancelled,
+            Ok(()) = progress.changed() => continue,
+            _ = tokio::time::sleep_until(deadline) => ModelError::TimedOut,
+        };
     };
     cancellation.cancel();
     match pending.await {

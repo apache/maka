@@ -70,7 +70,7 @@ async fn run(protocol: &str, kind: ProviderKind) {
                 provider_options: options.clone(),
                 max_output_tokens: Some(4096),
             };
-            let reads = super::provider_stream::prepare_input(&mut input);
+            let reads = super::provider_stream::prepare_input(&mut input).await;
             let mut stream = executor
                 .stream(input, CancellationToken::new())
                 .await
@@ -117,16 +117,16 @@ async fn run(protocol: &str, kind: ProviderKind) {
                             text,
                             provider_options,
                         } => Some(AssistantPart::Reasoning {
-                            text: text.clone(),
-                            provider_options: provider_options.clone(),
+                            text: text.chunks().collect(),
+                            provider_options: provider_options.as_deref().cloned(),
                         }),
                         ModelPart::Text {
                             text,
                             provider_options,
                             ..
                         } => Some(AssistantPart::Text {
-                            text: text.clone(),
-                            provider_options: provider_options.clone(),
+                            text: text.chunks().collect(),
+                            provider_options: provider_options.as_deref().cloned(),
                         }),
                         ModelPart::ToolCall { call } => Some(AssistantPart::ToolCall {
                             tool_call_id: call.id.clone(),
@@ -156,9 +156,10 @@ async fn run(protocol: &str, kind: ProviderKind) {
                             text_kind: TextKind::Text,
                             text,
                             ..
-                        } => Some(text.as_str()),
+                        } => Some(text.chunks()),
                         _ => None,
                     })
+                    .flatten()
                     .collect::<String>();
                 assert!(
                     text.contains("cobalt-tool-receipt-73"),
@@ -240,7 +241,7 @@ async fn vision(protocol: &str, kind: ProviderKind) {
         ],
         provider_options: None,
     }].into();
-    let reads = super::provider_stream::prepare_input(&mut input);
+    let reads = super::provider_stream::prepare_input(&mut input).await;
     let executor = ModelExecutor::new(Duration::from_secs(120)).unwrap();
     let mut stream = executor
         .stream(input, CancellationToken::new())
@@ -267,9 +268,10 @@ async fn vision(protocol: &str, kind: ProviderKind) {
                 text_kind: TextKind::Text,
                 text,
                 ..
-            } => Some(text.as_str()),
+            } => Some(text.chunks()),
             _ => None,
         })
+        .flatten()
         .collect::<String>();
     assert!(
         text.to_ascii_lowercase().contains("red"),

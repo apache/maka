@@ -31,8 +31,10 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::ModelInterruption;
 use maka_agent_facts::event::TerminalStatus;
-use maka_agent_facts::model::ModelEvent;
+use maka_agent_facts::model::ModelPart;
+use maka_agent_facts::model::assembly::{AttemptCut, PreviewPart};
 use maka_agent_facts::model::error::ModelFailureCause;
+use maka_agent_facts::model::recorded::{CompletionPart, ModelPartial};
 use maka_code_runtime::CellLimits;
 use maka_model::{ModelError, ModelExecutor, ProviderKind};
 use maka_tools::CodeExecutor;
@@ -43,6 +45,17 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+
+fn preview_has_text(cut: &AttemptCut, expected: &str) -> bool {
+    cut.parts.iter().any(|part| matches!(part, PreviewPart::Text { text, .. } if text.chunks().collect::<String>() == expected))
+}
+
+fn partial_has_text(partial: &ModelPartial, expected: &str) -> bool {
+    partial.parts.iter().any(|part| match part {
+        CompletionPart::Own(record) => matches!(record.part.as_ref(), ModelPart::Text { text, .. } if text.chunks().collect::<String>() == expected),
+        CompletionPart::Ref(_) => false,
+    })
+}
 
 fn input(base: &str, suffix: &str) -> RunInput {
     let mut input = invocation::input(
@@ -128,14 +141,14 @@ async fn safe_retry_preserves_failed_evidence_and_cancellation_stops_backoff() {
             let worker = engine();
             let cancellation = CancellationToken::new();
             let mut commits = log.subscribe_commits();
+            let running = worker.start(log.store(), input(&base, "retry"), cancellation.clone()).await.unwrap();
+            let mut preview = running.preview();
             let stop = async {
                 if reset {
                     loop {
-                        let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-                        if prefix.events.iter().any(|event| matches!(&event.event.fact,
-                            Fact::ModelObserved { event: ModelEvent::PartDelta { text, .. }, .. }
-                                if text == "unfinished-secret-fragment")) { break; }
-                        commits.changed().await.unwrap();
+                        let current = preview.borrow_and_update().clone();
+                        if current.as_ref().is_some_and(|cut| preview_has_text(cut, "unfinished-secret-fragment")) { break; }
+                        preview.changed().await.unwrap();
                     }
                     observed.notify_one();
                 }
@@ -149,7 +162,7 @@ async fn safe_retry_preserves_failed_evidence_and_cancellation_stops_backoff() {
                     cancellation.cancel();
                 }
             };
-            let (result, ()) = tokio::join!(worker.run(log.store(), input(&base, "retry"), cancellation.clone()), stop);
+            let (result, ()) = tokio::join!(running.wait(), stop);
             if cancel { assert!(matches!(result, Err(RunError::Cancelled))); }
             else { result.unwrap(); }
             worker.drain().await;
@@ -169,7 +182,7 @@ async fn safe_retry_preserves_failed_evidence_and_cancellation_stops_backoff() {
                 Fact::ModelInterrupted { diagnostic: Some(message), .. } if !message.is_empty())),
                 "a recovered request must retain its original failure cause");
             assert!(prefix.events.iter().any(|event| matches!(&event.event.fact,
-                Fact::ModelObserved { event: ModelEvent::PartDelta { text, .. }, .. } if text == "unfinished-secret-fragment")));
+                Fact::ModelInterrupted { partial: Some(partial), .. } if partial_has_text(partial, "unfinished-secret-fragment"))));
             assert!(!prefix.events.iter().any(|event| matches!(event.event.fact,
                 Fact::ToolDispatched { .. } | Fact::ToolRejected { .. })));
         }
@@ -203,7 +216,7 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_inp
                 source_digest: "fixture".into(), input_digest: "fixture".into(), route_identity: route,
                 checkpoint_event_id: None, effective_source_digest: None },
             Fact::ModelCompleted { step_id: "old".into(), output: serde_json::from_value(json!({
-                "parts":[{"kind":"text","text_kind":"text","text":"trimmed old tail","provider_options":null}],
+                "parts":[{"kind":"own","data":{"ordinal":0,"message_id":"old-model-text","started_at":{"secs_since_epoch":1,"nanos_since_epoch":0},"provider_part_id":null,"part":{"kind":"text","text_kind":"text","text":"trimmed old tail","provider_options":null}}}],
                 "finish_reason":"stop","usage":{}
             })).unwrap() },
             Fact::InvocationEnded { outcome: InvocationOutcome::Cancelled { source: "user".into() } },
@@ -358,49 +371,37 @@ async fn partial_text_survives_cancellation_without_becoming_replayed_model_hist
             let log = Arc::new(SessionFixture::open(&path).await.unwrap());
             let engine = engine();
             let cancellation = CancellationToken::new();
-            let running_engine = engine.clone();
-            let running_token = cancellation.clone();
-            let first = input(&base, "cancelled");
-            let running_store = log.store();
-            let running = tokio::spawn(async move {
-                running_engine
-                    .run(running_store, first, running_token)
-                    .await
-            });
-            let observed = loop {
-                let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-                if prefix.events.iter().any(|stored| {
-                    matches!(
-                        &stored.event.fact,
-                        Fact::ModelObserved { event: ModelEvent::PartDelta { text, .. }, .. }
-                            if text == "unfinished-secret-fragment"
-                    )
-                }) {
-                    break prefix;
+            let running = engine.start(log.store(), input(&base, "cancelled"), cancellation.clone()).await.unwrap();
+            let mut preview = running.preview();
+            let visible = loop {
+                let current = preview.borrow_and_update().clone();
+                if let Some(cut) = current
+                    && preview_has_text(&cut, "unfinished-secret-fragment")
+                {
+                    break cut;
                 }
-                assert!(
-                    !running.is_finished(),
-                    "model ended before durable partial text"
-                );
-                tokio::task::yield_now().await;
+                preview.changed().await.expect("Main remains open until cancellation");
             };
+            let observed = log.prefix(100, 128 * 1024).await.unwrap();
             let active = observed.project_invocation("invocation-cancelled");
             assert_eq!(active.terminal, None);
             assert_eq!(active.unfinished_model_steps.len(), 1);
             cancellation.cancel();
             assert!(matches!(
-                running.await.unwrap(),
+                running.wait().await,
                 Err(RunError::Model(ModelError::Cancelled))
             ));
             let settled = log.prefix(100, 128 * 1024).await.unwrap();
-            let tail = &settled.events[observed.events.len()..];
+            assert!(preview.borrow().is_none(), "sealed attempt is no longer current");
+            assert!(preview_has_text(&visible, "unfinished-secret-fragment"), "a held cut stays stable after producer completion");
+            let tail = &settled.events;
             let interrupted = tail
                 .iter()
                 .position(|stored| {
                     matches!(
                         &stored.event.fact,
-                        Fact::ModelInterrupted { step_id, status: ModelInterruption::Cancelled, .. }
-                            if step_id == &active.unfinished_model_steps[0]
+                        Fact::ModelInterrupted { step_id, status: ModelInterruption::Cancelled, partial: Some(partial), .. }
+                            if step_id == &active.unfinished_model_steps[0] && partial_has_text(partial, "unfinished-secret-fragment")
                     )
                 })
                 .unwrap();
@@ -443,8 +444,8 @@ async fn partial_text_survives_cancellation_without_becoming_replayed_model_hist
         )));
         assert!(prefix.events.iter().any(|stored| matches!(
             &stored.event.fact,
-            Fact::ModelObserved { event: ModelEvent::PartDelta { text, .. }, .. }
-                if text == "unfinished-secret-fragment"
+            Fact::ModelInterrupted { partial: Some(partial), .. }
+                if partial_has_text(partial, "unfinished-secret-fragment")
         )));
         for suffix in ["cancelled", "next", "reopened"] {
             let state = prefix.project_invocation(&format!("invocation-{suffix}"));

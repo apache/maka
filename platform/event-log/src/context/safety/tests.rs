@@ -33,7 +33,11 @@ const LEDGER: &str = "CREATE TABLE event_log (
     kind TEXT NOT NULL,
     operation_id TEXT,
     event_json TEXT,
-    event_session TEXT GENERATED ALWAYS AS (json_extract(event_json,'$.invocation.session_id')) STORED
+    accounting_at REAL,
+    accounting_usage TEXT,
+    invocation_model TEXT,
+    accounting_tool TEXT,
+    event_session TEXT
 );
 CREATE VIEW runtime_events AS SELECT * FROM event_log WHERE invocation_id IS NOT NULL AND event_json IS NOT NULL;
 CREATE INDEX invocation_sequence ON event_log(invocation_id, sequence);
@@ -53,6 +57,8 @@ fn execution_schema() -> String {
             "context_independent_",
             "context_summary_",
             "tool_call_identity",
+            "model_part_",
+            "model_selected_parts",
         ]
         .iter()
         .any(|prefix| name.starts_with(prefix))
@@ -73,7 +79,6 @@ async fn database() -> SqliteConnection {
     db
 }
 
-#[path = "execution.rs"]
 mod execution;
 
 async fn append(db: &mut SqliteConnection, kind: &str, op: Option<&str>, fact: Value) -> u64 {
@@ -145,6 +150,17 @@ fn fixture_fact(kind: &str, op: Option<&str>, mut fields: Value) -> Fact {
             }
         }
         "model_interrupted" => {
+            if let Some(parts) = fields
+                .get_mut("partial")
+                .and_then(|partial| partial.get_mut("parts"))
+                .and_then(Value::as_array_mut)
+            {
+                for part in parts {
+                    if part["kind"] == "own" {
+                        complete_model_part(&mut part["data"]["part"]);
+                    }
+                }
+            }
             fields
                 .as_object_mut()
                 .unwrap()
@@ -166,43 +182,21 @@ fn fixture_fact(kind: &str, op: Option<&str>, mut fields: Value) -> Fact {
             output.entry("finish_reason").or_insert(json!("stop"));
             output.entry("usage").or_insert(json!({}));
             for part in fields["output"]["parts"].as_array_mut().unwrap() {
-                if part["kind"] == "tool_call" {
-                    complete_model_call(&mut part["call"]);
-                }
-                if part["kind"] == "tool_result" {
-                    let part = part.as_object_mut().unwrap();
-                    part.entry("output").or_insert(Value::Null);
-                    part.entry("is_error").or_insert(json!(false));
+                if part["kind"] == "own" {
+                    complete_model_part(&mut part["data"]["part"]);
                 }
             }
         }
-        "model_observed" => {
-            let event_kind = fields["event"]["kind"].as_str().unwrap().to_owned();
-            let data = &mut fields["event"]["data"];
-            if event_kind == "tool_call" {
-                complete_model_call(data);
-            } else {
-                let data = data.as_object_mut().unwrap();
-                match event_kind.as_str() {
-                    "part_delta" => {
-                        data.entry("id").or_insert(json!("part"));
-                        data.entry("text").or_insert(json!("fixture"));
-                    }
-                    "part_finished" => {
-                        data.entry("id").or_insert(json!("part"));
-                    }
-                    "finished" => {
-                        data.entry("reason").or_insert(json!("stop"));
-                        data.entry("usage").or_insert(json!({}));
-                    }
-                    "provider_tool_result" => {
-                        data.entry("output").or_insert(Value::Null);
-                        data.entry("is_error").or_insert(json!(false));
-                    }
-                    other => panic!("unsupported fixture observation {other}"),
-                }
+        "model_observed" => match fields["event"]["kind"].as_str().unwrap() {
+            "part" => complete_model_part(&mut fields["event"]["data"]["part"]),
+            "finished" => {
+                let data = fields["event"]["data"].as_object_mut().unwrap();
+                data.entry("reason").or_insert(json!("stop"));
+                data.entry("usage").or_insert(json!({}));
             }
-        }
+            "provider_options" | "response_metadata" => {}
+            other => panic!("unsupported fixture observation {other}"),
+        },
         "tool_dispatched" | "tool_rejected" => {
             fields["operation_id"] = json!(op.unwrap());
             fields
@@ -286,10 +280,50 @@ fn fixture_fact(kind: &str, op: Option<&str>, mut fields: Value) -> Fact {
     serde_json::from_value(fields).expect("fixture has every required typed fact field")
 }
 
-fn complete_model_call(call: &mut Value) {
-    let call = call.as_object_mut().unwrap();
-    call.entry("input")
-        .or_insert(json!({"kind":"json","data":{}}));
+fn complete_model_part(part: &mut Value) {
+    match part["kind"].as_str().unwrap() {
+        "tool_call" => {
+            part["call"]
+                .as_object_mut()
+                .unwrap()
+                .entry("input")
+                .or_insert(json!({"kind":"json","data":{}}));
+        }
+        "tool_result" => {
+            let fields = part.as_object_mut().unwrap();
+            fields.entry("output").or_insert(Value::Null);
+            fields.entry("is_error").or_insert(json!(false));
+        }
+        "text" | "source" => {}
+        other => panic!("unsupported fixture part {other}"),
+    }
+}
+
+fn recorded_part(step: &str, ordinal: u64, mut part: Value) -> Value {
+    complete_model_part(&mut part);
+    let message_id = if part["kind"] == "tool_call" {
+        maka_agent_facts::tool_call::tool_use_id(
+            "invocation",
+            &format!("{step}:{}", part["call"]["id"].as_str().unwrap()),
+        )
+    } else {
+        uuid::Uuid::now_v7().to_string()
+    };
+    json!({"ordinal":ordinal,"message_id":message_id,"started_at":std::time::UNIX_EPOCH,
+        "provider_part_id":null,"part":part})
+}
+
+fn own_part(step: &str, ordinal: u64, part: Value) -> Value {
+    json!({"kind":"own","data":recorded_part(step, ordinal, part)})
+}
+
+async fn part_reference(db: &mut SqliteConnection, sequence: u64, ordinal: u64) -> Value {
+    let id: String = sqlx::query_scalar("SELECT event_id FROM event_log WHERE sequence=?")
+        .bind(sequence as i64)
+        .fetch_one(db)
+        .await
+        .unwrap();
+    json!({"kind":"ref","data":{"event_id":id,"ordinal":ordinal}})
 }
 
 async fn append_worker(
@@ -306,10 +340,19 @@ async fn append_worker(
         fact,
     );
     let json = serde_json::to_string(&event)?;
-    let result=sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?)")
-        .bind(&event.id).bind(&event.invocation.invocation_id).bind(event.fact.kind()).bind(event.fact.operation_id()).bind(&json).execute(&mut *worker).await?;
+    let result = crate::canonical_insert::insert(crate::canonical_insert::Record {
+        sequence: None,
+        event_id: &event.id,
+        invocation_id: Some(&event.invocation.invocation_id),
+        kind: event.fact.kind(),
+        operation_id: event.fact.operation_id(),
+        json: &json,
+    })
+    .execute(&mut *worker)
+    .await?;
     let sequence = u64::try_from(result.last_insert_rowid()).unwrap();
     let stored = StoredEvent { sequence, event };
+    crate::model_items::record(worker, &stored).await?;
     crate::context::projection::record(worker, &stored, &json).await?;
     Ok(sequence)
 }
@@ -413,13 +456,14 @@ async fn accepted_call_dispatch_and_completion_do_not_duplicate_obligations() {
     )
     .await;
     let call = json!({"id":"call","name":"tool","provider_executed":false});
-    append(
+    let observed = append(
         &mut db,
         "model_observed",
         None,
-        json!({"step_id":"step","event":{"kind":"tool_call","data":call}}),
+        json!({"step_id":"step","event":{"kind":"part","data":recorded_part("step",0,json!({"kind":"tool_call","call":call}))}}),
     )
     .await;
+    let reference = part_reference(&mut db, observed, 0).await;
     append(&mut db, "tool_dispatched", Some("step:call"), json!({})).await;
     append(
         &mut db,
@@ -432,7 +476,7 @@ async fn accepted_call_dispatch_and_completion_do_not_duplicate_obligations() {
         &mut db,
         "model_completed",
         Some("step"),
-        json!({"step_id":"step","output":{"parts":[{"kind":"tool_call","call":call}]}}),
+        json!({"step_id":"step","output":{"parts":[reference]}}),
     )
     .await;
     ended(&mut db, "succeeded").await;
@@ -462,9 +506,9 @@ async fn interrupted_provider_effect_requires_matching_result_before_interrupt()
             json!({"step_id":"step"}),
         )
         .await;
-        append(&mut db,"model_observed",None,json!({"step_id":"step","event":{"kind":"tool_call","data":{"id":"call","name":"provider","provider_executed":true}}})).await;
+        append(&mut db,"model_observed",None,json!({"step_id":"step","event":{"kind":"part","data":recorded_part("step",0,json!({"kind":"tool_call","call":{"id":"call","name":"provider","provider_executed":true}}))}})).await;
         if let Some((id, name, step)) = result {
-            append(&mut db,"model_observed",None,json!({"step_id":step,"event":{"kind":"provider_tool_result","data":{"id":id,"name":name}}})).await;
+            append(&mut db,"model_observed",None,json!({"step_id":step,"event":{"kind":"part","data":recorded_part(step,1,json!({"kind":"tool_result","id":id,"name":name}))}})).await;
         }
         append(
             &mut db,
@@ -542,11 +586,17 @@ async fn completion_without_matching_provider_result_blocks_manual_message_too()
             json!({"step_id":"step"}),
         )
         .await;
-        let mut parts = vec![
+        let mut parts = vec![own_part(
+            "step",
+            0,
             json!({"kind":"tool_call","call":{"id":"call","name":"provider","provider_executed":true}}),
-        ];
+        )];
         if include_result {
-            parts.push(json!({"kind":"tool_result","id":"call","name":"provider"}));
+            parts.push(own_part(
+                "step",
+                1,
+                json!({"kind":"tool_result","id":"call","name":"provider"}),
+            ));
         }
         append(
             &mut db,

@@ -146,7 +146,7 @@ impl ToolExecutor for Echo {
                     };
                     let mut metrics = tokio::task::spawn_blocking({
                         let root = gate.root.clone();
-                        move || super::snapshot(&root, 0)
+                        move || super::snapshot(&root)
                     })
                     .await
                     .unwrap();

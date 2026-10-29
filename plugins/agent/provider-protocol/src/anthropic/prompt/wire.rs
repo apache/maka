@@ -78,19 +78,19 @@ pub enum Source {
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum Caller {
+pub enum Caller<T = String> {
     Direct,
     #[serde(rename = "code_execution_20250825")]
     Code20250825 {
-        tool_id: String,
+        tool_id: T,
     },
     #[serde(rename = "code_execution_20260120")]
     Code20260120 {
-        tool_id: String,
+        tool_id: T,
     },
 }
-impl Caller {
-    pub fn source_id(&self) -> Option<&str> {
+impl<T> Caller<T> {
+    pub fn source_id(&self) -> Option<&T> {
         match self {
             Self::Direct => None,
             Self::Code20250825 { tool_id } | Self::Code20260120 { tool_id } => Some(tool_id),

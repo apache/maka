@@ -41,7 +41,6 @@ mod session_import;
 mod session_longevity;
 mod stale_pruning;
 mod startup_recovery;
-mod startup_recovery_limits;
 mod tool_arguments;
 mod tool_scheduling;
 
@@ -53,6 +52,7 @@ mod support {
     pub(crate) mod http;
     pub(crate) mod image_projection;
     pub(crate) mod invocation;
+    pub(crate) mod model_records;
     pub(crate) mod recovery;
     pub(crate) mod recovery_session;
     pub(crate) mod store;

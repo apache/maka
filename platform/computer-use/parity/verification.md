@@ -109,6 +109,9 @@ cargo test --offline -p maka-computer-use --features native-desktop \
   --test repl_native_geometry --no-run
 ```
 
+The consolidated test target is now `--test integration`; the command above
+records the target name used for that historical receipt.
+
 The tested ELF SHA-256 is
 `e4cf2ffb0234f548aaac0d3fddc189be8b29bd6287074d001ca1b689ab1e861a`.
 The retained source freeze identifies the inputs to that build; later source
@@ -339,9 +342,9 @@ These checks prove comparison behavior only. They do not launch a desktop.
 
 ## Existing live test entry points
 
-Maka's [native tests](../tests/native.rs) cover WSL/Windows with an explicitly
+Maka's [native tests](../tests/integration/native.rs) cover WSL/Windows with an explicitly
 selected disposable fixture window and matching Windows helper. The
-[REPL/browser tests](../tests/repl_browser.rs) contain isolated Chrome and macOS
+[REPL/browser tests](../tests/integration/repl_browser/mod.rs) contain isolated Chrome and macOS
 fixture tests. Their ignored-test requirements and platform guards are the
 authority for execution prerequisites. A broad `cargo test` does not run those
 ignored tests.
@@ -352,7 +355,7 @@ Build the `maka-computer-native` lib tests with dependency feature
 `maka-computer-use/native-desktop`, then run the ignored
 `live_tests::linux_product_timeout_retires_vm_but_run_waits_for_exact_native_t2`
 inside the disposable X11/D-Bus desktop. It requires
-`MAKA_COMPUTER_LIVE_FIXTURE_BIN` pointing to the separately built `repl_browser`
+`MAKA_COMPUTER_LIVE_FIXTURE_BIN` pointing to the separately built computer-use `integration`
 fixture executable and `MAKA_COMPUTER_LIVE_ARTIFACT_DIR` pointing to its own
 writable capture directory. Unix sockets must remain on a Linux filesystem;
 `MAKA_COMPUTER_LIVE_SOCKET_DIR` can select that task-owned location. The fixture

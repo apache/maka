@@ -82,7 +82,7 @@ impl EventLog {
         self.connection
             .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::check_read(tx, &session, input.through).await?;
+                    super::directory::ensure(tx, &session, input.through).await?;
                     let query = if after.is_some() {
                         "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND (source_sequence,item_index)>(?3,?4) ORDER BY source_sequence,item_index LIMIT 65"
                     } else {

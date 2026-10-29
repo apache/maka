@@ -37,7 +37,6 @@ use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::ModelToolCall;
 use maka_agent_facts::model::ModelUsage;
 use maka_code_runtime::CellLimits;
@@ -60,8 +59,10 @@ async fn tool_call(log: &EventLog) {
         log,
         Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall {
+            output: crate::support::model_records::completion(
+                invocation(),
+                "step",
+                vec![ModelPart::ToolCall {
                     call: ModelToolCall {
                         id: "call".into(),
                         name: "write_file".into(),
@@ -70,13 +71,8 @@ async fn tool_call(log: &EventLog) {
                         provider_executed: false,
                     },
                 }],
-                finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
-                usage: ModelUsage::default(),
-                provider_options: None,
-                response_id: None,
-                model: None,
-                timestamp: None,
-            },
+                maka_agent_facts::model::ModelFinishReason::ToolCalls,
+            ),
         },
     )
     .await;
@@ -96,11 +92,7 @@ async fn reopened_pending_main_and_summary_are_failed_without_replaying_admissio
                     &log,
                     Fact::ModelCompleted {
                         step_id: "step".into(),
-                        output: serde_json::from_value(json!({
-                            "parts":[{"kind":"text","text_kind":"text","text":"completed prefix"}],
-                            "finish_reason":"stop", "usage":{}
-                        }))
-                        .unwrap(),
+                        output: crate::support::model_records::completion(invocation(), "step", serde_json::from_value::<Vec<maka_agent_facts::model::ModelPart>>(json!([{"kind":"text","text_kind":"text","text":"completed prefix"}])).unwrap(), maka_agent_facts::model::ModelFinishReason::Stop),
                     },
                 )
                 .await;
@@ -411,8 +403,7 @@ async fn explicit_new_message_after_unknown_dispatch_informs_model_without_repla
             request(&log).await;
             append(&log, Fact::ModelCompleted {
                 step_id: "step".into(),
-                output: ModelStep {
-                    parts: ["call", "never-dispatched"].into_iter().map(|id| ModelPart::ToolCall {
+                output: crate::support::model_records::completion(invocation(), "step", ["call", "never-dispatched"].into_iter().map(|id| ModelPart::ToolCall {
                         call: ModelToolCall {
                             id: id.into(),
                             name: "write_file".into(),
@@ -420,14 +411,7 @@ async fn explicit_new_message_after_unknown_dispatch_informs_model_without_repla
                             provider_options: None,
                             provider_executed: false,
                         },
-                    }).collect(),
-                    finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
-                    usage: ModelUsage::default(),
-                    provider_options: None,
-                    response_id: None,
-                    model: None,
-                    timestamp: None,
-                },
+                    }).collect(), maka_agent_facts::model::ModelFinishReason::ToolCalls),
             }).await;
             append(&log, Fact::ToolDispatched { presentation: None,
         title: None,
@@ -515,14 +499,13 @@ async fn item_acceptance_survives_crashes_before_dispatch_before_settlement_and_
                 .is_err(),
             "an unaccepted call cannot acquire execution"
         );
-        append(
-            &log,
-            Fact::ModelObserved {
-                step_id: "step".into(),
-                event: ModelEvent::ToolCall(call.clone()),
-            },
-        )
-        .await;
+        let mut writer = crate::support::model_records::writer(invocation(), "step", true);
+        let writes = crate::support::model_records::observations(
+            &mut writer,
+            [ModelEvent::ToolCall(call.clone())],
+        );
+        let sequences = log.append_batch(&writes).await.unwrap();
+        crate::support::model_records::receipts(&mut writer, &writes, &sequences);
         assert!(
             log.append(&attempt(dispatch(json!({"path":"different.txt"}))))
                 .await
@@ -590,10 +573,8 @@ async fn item_acceptance_survives_crashes_before_dispatch_before_settlement_and_
 
 #[tokio::test]
 async fn accepted_history_budget_counts_complete_items_not_token_envelopes() {
-    use maka_agent_facts::event::EventWrite;
     use maka_agent_facts::model::ModelEvent;
     use maka_agent_facts::model::TextKind;
-    use maka_agent_facts::model::assembly::StepBuilder;
     for interrupted in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let log = EventLog::open(&directory.path().join("events.sqlite"))
@@ -601,7 +582,7 @@ async fn accepted_history_budget_counts_complete_items_not_token_envelopes() {
             .unwrap();
         opening(&log).await;
         recovery::item_request(&log).await;
-        let mut builder = StepBuilder::for_step("step").unwrap();
+        let mut writer = crate::support::model_records::writer(invocation(), "step", true);
         let mut observations = vec![ModelEvent::PartStarted {
             id: "text".into(),
             text_kind: TextKind::Text,
@@ -623,21 +604,9 @@ async fn accepted_history_budget_counts_complete_items_not_token_envelopes() {
                 provider_options: None,
             });
         }
-        let writes: Vec<_> = observations
-            .into_iter()
-            .map(|event| {
-                builder.push(event.clone()).unwrap();
-                EventWrite::plain(RuntimeEvent::new(
-                    invocation(),
-                    Fact::ModelObserved {
-                        step_id: "step".into(),
-                        event,
-                    },
-                ))
-                .unwrap()
-            })
-            .collect();
-        log.append_batch(&writes).await.unwrap();
+        let writes = crate::support::model_records::observations(&mut writer, observations);
+        let sequences = log.append_batch(&writes).await.unwrap();
+        crate::support::model_records::receipts(&mut writer, &writes, &sequences);
         append(
             &log,
             if interrupted {
@@ -646,11 +615,12 @@ async fn accepted_history_budget_counts_complete_items_not_token_envelopes() {
                     diagnostic: None,
                     step_id: "step".into(),
                     status: ModelInterruption::RetryableFailure,
+                    partial: writer.partial(),
                 }
             } else {
                 Fact::ModelCompleted {
                     step_id: "step".into(),
-                    output: builder.finish().unwrap(),
+                    output: writer.completed().unwrap().completion(),
                 }
             },
         )
@@ -681,7 +651,7 @@ async fn accepted_history_budget_counts_complete_items_not_token_envelopes() {
         assert_eq!(items.items.len(), 1);
         assert!(
             matches!(&items.items[0].part,ModelPart::Text {text,provider_options:Some(options),..}
-            if text == &"x".repeat(128) && options["openai"]["itemId"] == "kept")
+            if text.chunks().collect::<String>() == "x".repeat(128) && options["openai"]["itemId"] == "kept")
         );
         assert!(items.items[0].sequence < items.sequence);
         assert_eq!(items.items[0].index, 0);

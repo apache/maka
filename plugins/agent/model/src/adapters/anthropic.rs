@@ -55,21 +55,70 @@ impl Messages {
     }
 }
 
+use super::wire::source::{FragmentCursor, SourceFragment};
 use crate::prompt::{PreparedWire, WireChunk, WireCursor, WireFormat, WireSource};
+use bytes::Bytes;
 use maka_agent_facts::model::prompt_source::{
-    NextWire, NextWireMetadata, WireMetadata, WireMetadataCursor, WirePosition,
+    NextWire, NextWireMetadata, WireItemMetadata, WireMetadata, WireMetadataCursor, WirePosition,
+    source::IdentifiedText,
 };
 use maka_capabilities::http;
 use maka_provider_protocol::anthropic::prompt::{
     prepared::{
-        Decision, MetadataPrepass, Overlay, PartMetadata, PreparedChunks, PreparedEncoder,
-        PreparedPart, Replay,
+        CacheCandidate, Decision, FrozenCacheCandidate, MetadataPrepass, Overlay, PartMetadata,
+        PreparedChunks, PreparedEncoder, PreparedPart, Replay, SourcePresence,
     },
     streaming::{Context, MessageInfo, Metadata, Selection, StreamOptions},
 };
 use maka_provider_protocol::json_stream::JsonChunks;
 use serde_json::Value;
 use std::sync::Arc;
+
+type SourcePart = PartMetadata<IdentifiedText, FrozenCacheCandidate>;
+type ReplayPart = PartMetadata<String, FrozenCacheCandidate>;
+#[derive(Clone)]
+enum Part {
+    Source(Arc<SourcePart>),
+    Generated(Arc<PartMetadata>),
+}
+impl Part {
+    fn from_wire(metadata: WireItemMetadata) -> Result<Self, ModelError> {
+        match metadata {
+            WireItemMetadata::Anthropic(part) => Ok(Self::Source(part)),
+            WireItemMetadata::GeneratedAnthropic(part) => Ok(Self::Generated(part)),
+            WireItemMetadata::Message(_) => Err(ModelError::Adapter(
+                "unexpected Anthropic message metadata".into(),
+            )),
+        }
+    }
+    fn projection(&self) -> ReplayPart {
+        match self {
+            Self::Source(part) => {
+                let mut part = part.map_text(|text| hex_identity(text.identity));
+                part.document = None;
+                part
+            }
+            Self::Generated(part) => {
+                part.map_sources(Clone::clone, |value| match value.directive() {
+                    Ok(directive) => FrozenCacheCandidate::Valid(directive),
+                    Err(_) => FrozenCacheCandidate::Invalid,
+                })
+            }
+        }
+    }
+}
+fn hex_identity(identity: [u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(identity.len() * 2);
+    for byte in identity {
+        output.push(HEX[usize::from(byte >> 4)] as char);
+        output.push(HEX[usize::from(byte & 15)] as char);
+    }
+    output
+}
+
+// Directory futures can be immediately ready; yield between bounded record batches.
+const DIRECTORY_WORK_QUANTUM: usize = 64;
 
 type Position = (usize, usize);
 
@@ -167,15 +216,14 @@ impl WireMetadataCursor for DirectMetadata {
                     piece_index,
                 },
                 message_index,
-                metadata: serde_json::to_value(part.metadata)
-                    .map_err(|error| ModelError::Adapter(error.to_string()))?,
+                metadata: WireItemMetadata::GeneratedAnthropic(Arc::new(part.metadata)),
             }))
         })
     }
 }
 struct DirectCurrent {
     chunks: std::iter::Peekable<PreparedChunks>,
-    metadata: Option<Value>,
+    metadata: Option<WireItemMetadata>,
     index: usize,
     first: bool,
 }
@@ -192,7 +240,7 @@ impl WireCursor for DirectCursor {
                     if let Some(bytes) = current.chunks.next() {
                         let item_start = std::mem::take(&mut current.first);
                         return Ok(Some(WireChunk {
-                            bytes,
+                            bytes: bytes.into(),
                             item_start,
                             item_end: current.chunks.peek().is_none(),
                             message_index: current.index,
@@ -217,10 +265,9 @@ impl WireCursor for DirectCursor {
                 self.target = None;
                 self.current = Some(DirectCurrent {
                     chunks: part.chunks.peekable(),
-                    metadata: Some(
-                        serde_json::to_value(part.metadata)
-                            .map_err(|error| ModelError::Adapter(error.to_string()))?,
-                    ),
+                    metadata: Some(WireItemMetadata::GeneratedAnthropic(Arc::new(
+                        part.metadata,
+                    ))),
                     index,
                     first: true,
                 });
@@ -233,17 +280,32 @@ pub(super) async fn metadata(wire: &PreparedWire) -> Result<Metadata, ModelError
     let mut cursor = wire.source.open_metadata(0).ok_or_else(|| {
         ModelError::Adapter("Anthropic prepared metadata cursor is missing".into())
     })?;
-    let mut prepass = MetadataPrepass::default();
+    let indexed = wire.source.source_identities().is_some();
+    let mut prepass = if indexed {
+        MetadataPrepass::for_indexed_replay()
+    } else {
+        MetadataPrepass::for_replay()
+    };
     let mut next_index = 0;
     let mut index = 0;
+    let mut processed = 0usize;
     while let Some(record) = cursor.next().await? {
-        let part: PartMetadata = serde_json::from_value(record.metadata)
-            .map_err(|error| ModelError::Adapter(error.to_string()))?;
+        let metadata = Part::from_wire(record.metadata)?;
+        if !indexed && matches!(&metadata, Part::Source(_)) {
+            return Err(ModelError::Adapter(
+                "frozen Anthropic source is missing its membership index".into(),
+            ));
+        }
+        let part = metadata.projection();
         if part.part_index == 0 {
             index = next_index;
             next_index += 1;
         }
         prepass.push(index, &part).map_err(super::http::failure)?;
+        processed += 1;
+        if processed.is_multiple_of(DIRECTORY_WORK_QUANTUM) {
+            tokio::task::yield_now().await;
+        }
     }
     Ok(prepass.finish())
 }
@@ -252,7 +314,7 @@ struct Record {
     position: WirePosition,
     logical: Position,
     info: Option<MessageInfo>,
-    metadata: PartMetadata,
+    metadata: Part,
     decision: Decision,
 }
 struct Lane {
@@ -262,6 +324,9 @@ struct Lane {
     next_index: usize,
     index: usize,
     pending: Option<Record>,
+    source_identities:
+        Option<Arc<dyn maka_agent_facts::model::prompt_source::SourceIdentityLookup>>,
+    budgets: Option<Arc<dyn maka_agent_facts::model::prompt_source::source::SourceBudgetFactory>>,
 }
 impl Lane {
     fn new(
@@ -278,6 +343,8 @@ impl Lane {
             next_index: 0,
             index: 0,
             pending: None,
+            source_identities: wire.source.source_identities(),
+            budgets: wire.source.budget_factory(),
         })
     }
     async fn next(&mut self) -> Result<Option<Record>, ModelError> {
@@ -287,22 +354,53 @@ impl Lane {
         let Some(record) = self.cursor.next().await? else {
             return Ok(None);
         };
-        let metadata: PartMetadata = serde_json::from_value(record.metadata)
-            .map_err(|error| ModelError::Adapter(error.to_string()))?;
-        let info = if metadata.part_index == 0 {
+        let metadata = Part::from_wire(record.metadata)?;
+        let projection = metadata.projection();
+        let info = if projection.part_index == 0 {
             self.index = self.next_index;
             self.next_index += 1;
-            Some(self.replay.begin(self.index, &metadata.message))
+            Some(self.replay.begin(self.index, &projection.message))
         } else {
             None
         };
-        let decision = self
-            .replay
-            .part(&metadata, self.selection)
-            .map_err(super::http::failure)?;
+        let decision = if let Some(identities) = &self.source_identities {
+            let mut present = SourcePresence::Present;
+            if self.replay.needs_caller_source(&projection, self.selection) {
+                let Part::Source(part) = &metadata else {
+                    return Err(ModelError::Adapter(
+                        "indexed source membership received generated metadata".into(),
+                    ));
+                };
+                let identity = part
+                    .caller
+                    .as_ref()
+                    .and_then(|caller| caller.caller.source_id())
+                    .expect("caller source requirement checked")
+                    .identity;
+                let budget = self
+                    .budgets
+                    .as_ref()
+                    .ok_or_else(|| {
+                        ModelError::Adapter("source membership has no preparation resources".into())
+                    })?
+                    .acquire()
+                    .await
+                    .map_err(|error| ModelError::Adapter(error.to_string()))?;
+                present = if identities.contains(identity, budget).await? {
+                    SourcePresence::Present
+                } else {
+                    SourcePresence::Missing
+                };
+            }
+            self.replay
+                .part_with_source_presence(&projection, self.selection, present)
+        } else {
+            self.replay.part(&projection, self.selection)
+        }
+        .map_err(super::http::failure)?;
         Ok(Some(Record {
             position: record.position,
-            logical: (self.index, metadata.part_index),
+            logical: (self.index, projection.part_index),
             info,
             metadata,
             decision,
@@ -323,23 +421,209 @@ impl Lane {
 }
 struct Payload {
     cursor: Box<dyn WireCursor>,
-    overlay: Overlay,
+    transform: PayloadTransform,
+    input: Option<Bytes>,
+    input_end: bool,
     ended: bool,
 }
+enum PayloadTransform {
+    Generated(Overlay),
+    Source(SourceOverlay),
+}
+struct SourceOverlay {
+    offset: u64,
+    expected: u64,
+    insertions: Vec<(u64, VecDeque<SourceFragment>)>,
+    inserted: usize,
+    active: Option<Box<FragmentCursor>>,
+    deletes: Vec<std::ops::Range<u64>>,
+}
+impl SourceOverlay {
+    fn new(metadata: &SourcePart, decision: &Decision) -> Self {
+        fn literal(bytes: &'static [u8]) -> SourceFragment {
+            SourceFragment::literal(bytes)
+        }
+        let mut insertions = Vec::new();
+        let mut field = |slot: &maka_provider_protocol::anthropic::prompt::prepared::FieldSlot,
+                         fields: Vec<SourceFragment>| {
+            let mut fragments = VecDeque::new();
+            if slot.comma_before {
+                fragments.push_back(literal(b","));
+            }
+            fragments.extend(fields);
+            if slot.comma_after {
+                fragments.push_back(literal(b","));
+            }
+            insertions.push((slot.offset, fragments));
+        };
+        if let (Some(slot), Some(caller)) = (&metadata.caller_slot, &metadata.caller)
+            && decision.caller.is_some()
+        {
+            use maka_provider_protocol::anthropic::prompt::Caller;
+            let fields = match &caller.caller {
+                Caller::Direct => vec![literal(b"\"caller\":{\"type\":\"direct\"}")],
+                Caller::Code20250825 { tool_id } | Caller::Code20260120 { tool_id } => {
+                    let kind = if matches!(&caller.caller, Caller::Code20250825 { .. }) {
+                        b"\"caller\":{\"type\":\"code_execution_20250825\",\"tool_id\":\""
+                            .as_slice()
+                    } else {
+                        b"\"caller\":{\"type\":\"code_execution_20260120\",\"tool_id\":\""
+                            .as_slice()
+                    };
+                    vec![
+                        literal(kind),
+                        SourceFragment::Text(tool_id.text.clone()),
+                        literal(b"\"}"),
+                    ]
+                }
+            };
+            field(slot, fields);
+        }
+        if let (Some(slot), Some(cache)) = (&metadata.cache_slot, decision.cache) {
+            field(
+                slot,
+                vec![
+                    literal(b"\"cache_control\":"),
+                    SourceFragment::owned(
+                        serde_json::to_vec(&cache).expect("cache directive JSON"),
+                    ),
+                ],
+            );
+        }
+        insertions.sort_by_key(|(offset, _)| *offset);
+        let deletes = if decision.trim {
+            metadata
+                .trim
+                .as_ref()
+                .map(|trim| vec![trim.leading.clone(), trim.trailing.clone()])
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        Self {
+            offset: 0,
+            expected: metadata.base_bytes,
+            insertions,
+            inserted: 0,
+            active: None,
+            deletes,
+        }
+    }
+}
 impl Payload {
-    async fn next(&mut self) -> Result<Option<Vec<u8>>, ModelError> {
-        if self.ended {
-            return Ok(None);
+    fn new(cursor: Box<dyn WireCursor>, metadata: &Part, decision: &Decision) -> Self {
+        let transform = match metadata {
+            Part::Generated(metadata) => {
+                PayloadTransform::Generated(Overlay::new(metadata, decision))
+            }
+            Part::Source(metadata) => {
+                PayloadTransform::Source(SourceOverlay::new(metadata, decision))
+            }
+        };
+        Self {
+            cursor,
+            transform,
+            input: None,
+            input_end: false,
+            ended: false,
         }
-        let chunk = self.cursor.next().await?.ok_or_else(|| {
-            ModelError::Adapter("Anthropic wire item ended before its boundary".into())
-        })?;
-        let bytes = self.overlay.push(&chunk.bytes);
-        if chunk.item_end {
-            self.overlay.finish().map_err(super::http::failure)?;
-            self.ended = true;
+    }
+    async fn next(&mut self) -> Result<Option<Bytes>, ModelError> {
+        loop {
+            if self.ended {
+                return Ok(None);
+            }
+            if self.input.is_none() && !self.input_end {
+                let chunk = self.cursor.next().await?.ok_or_else(|| {
+                    ModelError::Adapter("Anthropic wire item ended before its boundary".into())
+                })?;
+                self.input = Some(chunk.bytes);
+                self.input_end = chunk.item_end;
+            }
+            match &mut self.transform {
+                PayloadTransform::Generated(overlay) => {
+                    let input = self.input.take().expect("generated payload input");
+                    let bytes = overlay.push(&input);
+                    if self.input_end {
+                        overlay.finish().map_err(super::http::failure)?;
+                        self.ended = true;
+                    }
+                    return Ok(Some(bytes.into()));
+                }
+                PayloadTransform::Source(overlay) => {
+                    if let Some((at, fragments)) = overlay.insertions.get_mut(overlay.inserted)
+                        && *at == overlay.offset
+                    {
+                        if overlay.active.is_none() {
+                            overlay.active =
+                                fragments.pop_front().map(FragmentCursor::new).map(Box::new);
+                        }
+                        if let Some(active) = &mut overlay.active {
+                            let budget = self.cursor.budget().ok_or_else(|| {
+                                ModelError::Adapter(
+                                    "Anthropic source cursor has no preparation work envelope"
+                                        .into(),
+                                )
+                            })?;
+                            if let Some(bytes) = active
+                                .next(budget)
+                                .await
+                                .map_err(|error| ModelError::Adapter(error.to_string()))?
+                            {
+                                if !bytes.is_empty() {
+                                    return Ok(Some(bytes));
+                                }
+                                continue;
+                            }
+                            overlay.active = None;
+                            continue;
+                        }
+                        overlay.inserted += 1;
+                        continue;
+                    }
+                    let Some(input) = &mut self.input else {
+                        if overlay.offset != overlay.expected
+                            || overlay.inserted != overlay.insertions.len()
+                        {
+                            return Err(ModelError::Adapter(
+                                "incomplete Anthropic source wire block".into(),
+                            ));
+                        }
+                        self.ended = true;
+                        continue;
+                    };
+                    if input.is_empty() {
+                        self.input = None;
+                        continue;
+                    }
+                    let mut end = overlay.offset + input.len() as u64;
+                    if let Some((at, _)) = overlay.insertions.get(overlay.inserted) {
+                        end = end.min(*at);
+                    }
+                    let mut deleted = false;
+                    for range in &overlay.deletes {
+                        if range.contains(&overlay.offset) {
+                            deleted = true;
+                            end = end.min(range.end);
+                        } else if range.start > overlay.offset {
+                            end = end.min(range.start);
+                        }
+                    }
+                    let length = usize::try_from(end - overlay.offset)
+                        .expect("slice length fits source chunk");
+                    if length == 0 {
+                        return Err(ModelError::Adapter(
+                            "Anthropic source overlay made no progress".into(),
+                        ));
+                    }
+                    let bytes = input.split_to(length);
+                    overlay.offset = end;
+                    if !deleted {
+                        return Ok(Some(bytes));
+                    }
+                }
+            }
         }
-        Ok(Some(bytes))
     }
 }
 struct Group {
@@ -430,17 +714,13 @@ impl State {
         let cursor = self.wire.source.open_at(record.position).ok_or_else(|| {
             ModelError::Adapter("Anthropic prepared source lacks indexed item reads".into())
         })?;
-        self.payload = Some(Payload {
-            cursor,
-            overlay: Overlay::new(&record.metadata, &record.decision),
-            ended: false,
-        });
+        self.payload = Some(Payload::new(cursor, &record.metadata, &record.decision));
         Ok(())
     }
-    async fn next(&mut self) -> Result<Option<Vec<u8>>, ModelError> {
+    async fn next(&mut self) -> Result<Option<Bytes>, ModelError> {
         loop {
             if let Some(bytes) = self.queue.pop_front() {
-                return Ok(Some(bytes));
+                return Ok(Some(bytes.into()));
             }
             if let Some(payload) = &mut self.payload {
                 if let Some(bytes) = payload.next().await? {
@@ -469,7 +749,7 @@ impl State {
                     });
                     self.head = None;
                 }
-                return Ok(Some(bytes));
+                return Ok(Some(bytes.into()));
             }
 
             if let Some(system) = &mut self.system {
@@ -560,9 +840,12 @@ pub(super) fn body(
         state,
         |mut state| async move {
             match state.next().await.map_err(super::http::upload_error)? {
-                Some(bytes) => Ok(Some((http::Bytes::from(bytes), state))),
+                Some(bytes) => Ok(Some((bytes, state))),
                 None => Ok(None),
             }
         },
     )))
 }
+
+#[cfg(test)]
+mod tests;

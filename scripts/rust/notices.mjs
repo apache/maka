@@ -44,7 +44,7 @@ async function inputs(root) {
     'scripts/rust/notices.mjs',
     'products/maka/bundle/scripts/build.mjs',
     'products/maka/bundle/package.json',
-    'products/maka/cli/build.rs',
+    'products/maka/cli/build/main.rs',
     'products/maka/cli/build/product.rs',
     'tools/ui-build/src/lib.rs',
     'tools/ui-build/src/main.rs',

@@ -612,7 +612,7 @@ fn prepare_inner(
         };
     let response = response::Options {
         tool_names: response_names,
-        documents,
+        documents: documents.into(),
         json_tool,
         implicit_code_execution: dynamic_web && !explicit_code,
         metadata_namespace: request

@@ -140,16 +140,16 @@ async fn sglang_protocols_preserve_reasoning_tools_and_replay() {
                             text,
                             provider_options,
                         } => Some(AssistantPart::Reasoning {
-                            text: text.clone(),
-                            provider_options: provider_options.clone(),
+                            text: text.chunks().collect(),
+                            provider_options: provider_options.as_deref().cloned(),
                         }),
                         ModelPart::Text {
                             text,
                             provider_options,
                             ..
                         } => Some(AssistantPart::Text {
-                            text: text.clone(),
-                            provider_options: provider_options.clone(),
+                            text: text.chunks().collect(),
+                            provider_options: provider_options.as_deref().cloned(),
                         }),
                         ModelPart::ToolCall { call } => Some(AssistantPart::ToolCall {
                             tool_call_id: call.id.clone(),
@@ -179,9 +179,10 @@ async fn sglang_protocols_preserve_reasoning_tools_and_replay() {
                             text_kind: TextKind::Text,
                             text,
                             ..
-                        } => Some(text.as_str()),
+                        } => Some(text.chunks()),
                         _ => None,
                     })
+                    .flatten()
                     .collect::<String>();
                 assert!(
                     text.contains("amber-native-42"),

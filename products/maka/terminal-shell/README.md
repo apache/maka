@@ -21,7 +21,7 @@
 
 Runs the experimental [Maka workbench](../workbench/README.md), an Agent workbench built with NSH, in the terminal, with mouse and keyboard interaction, connecting to or starting a Maka Host Root.
 
-NSH lives in [`third-party/nsh`](../../../third-party/nsh/SOURCE.md). Cargo builds the runtime, TSX bundler, `nsh-base` components and UI declaration generator from that source; a separate NSH checkout is unnecessary. Make related NSH and Maka changes in the same tree and validate them together with the terminal's [real Host tests](tests/real_host.rs): `cargo test -p maka-cli --no-default-features --test terminal_real_host`.
+NSH lives in [`third-party/nsh`](../../../third-party/nsh/SOURCE.md). Cargo builds the runtime, TSX bundler, `nsh-base` components and UI declaration generator from that source; a separate NSH checkout is unnecessary. Make related NSH and Maka changes in the same tree and validate them together with the terminal's [real Host tests](tests/real_host/mod.rs): `cargo test -p maka-cli --no-default-features --test integration terminal::`.
 
 ## Start
 

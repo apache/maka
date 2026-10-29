@@ -63,12 +63,11 @@ impl ToolExecutor for Effect {
                         .any(|event| event.sequence < dispatched.sequence
                             && match &event.event.fact {
                                 Fact::ModelObserved {
-                                    event: maka_agent_facts::model::ModelEvent::ToolCall(call),
+                                    event: maka_agent_facts::model::recorded::ModelObservation::Part(record),
                                     ..
-                                } => call.name == "echo" && call.input.as_json() == Some(&input),
+                                } => matches!(record.part.as_ref(), maka_agent_facts::model::ModelPart::ToolCall { call } if call.name == "echo" && call.input.as_json() == Some(&input)),
                                 Fact::ModelCompleted { output, .. } =>
-                                    output.tool_calls().any(|call| call.name == "echo"
-                                        && call.input.as_json() == Some(&input)),
+                                    crate::support::model_records::parts(output, &prefix.events).any(|part| matches!(part, maka_agent_facts::model::ModelPart::ToolCall { call } if call.name == "echo" && call.input.as_json() == Some(&input))),
                                 _ => false,
                             }),
                 "complete call must commit before its effect"

@@ -619,6 +619,11 @@ async fn global_and_compaction_documents_keep_literal_drafts_receipts_and_scroll
         std::fs::write(&instruction_path, initial_instructions).unwrap();
         let client = fixture.client().await;
         let session = fixture.session.clone();
+        let selected = support::mutate(&client, "selectBackend", json!({
+            "sessionId":session,
+            "backend":{"kind":"model","connectionId":fixture.selection["connectionId"],"modelId":fixture.selection["modelId"],"thinkingLevel":null}
+        })).await;
+        assert_eq!(selected["kind"], "committed");
         let (mut view, bindings) = fixture.view(client.clone(), Some(session.clone()));
         wait_editable_composer(&mut view).await;
         view.handle_event(Event::Paste("SETTINGS_KEEP_RESIDENT_DRAFT".into()));
@@ -753,6 +758,7 @@ async fn global_and_compaction_documents_keep_literal_drafts_receipts_and_scroll
         activate(&mut view, "Close settings").await;
         editable(&mut view, "Message composer").await;
         assert_eq!(view.surface().focused(), Some(composer));
+        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("SETTINGS_KEEP_RESIDENT_DRAFT"));
         support::wait_enabled_button(&mut view, "Send message").await;
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         let request = fixture.next_request().await;

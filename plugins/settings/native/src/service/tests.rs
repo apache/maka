@@ -103,8 +103,8 @@ impl Fixture {
         let caller_key = "00000000-0000-4000-8000-000000000002";
         let deployment = "00000000-0000-4000-8000-000000000003".parse().unwrap();
         log.commit_application(deployment, 0, serde_json::from_value(json!({"instances":{
-            "settings":{"key":"00000000-0000-4000-8000-000000000001","package":settings.application_ref(),"usePackage":"host"},
-            "caller":{"key":caller_key,"package":caller.application_ref(),"usePackage":"host",
+            "settings":{"key":"00000000-0000-4000-8000-000000000001","package":{"source":"pinned","package":settings.application_ref()},"usePackage":"host"},
+            "caller":{"key":caller_key,"package":{"source":"pinned","package":caller.application_ref()},"usePackage":"host",
                 "bindings":{"settings":[{"kind":"instance","path":["settings"],"export":crate::EXPORT}]}}
         }})).unwrap(), vec![], vec![settings, caller]).await.unwrap();
         let mut registry = NativeRegistry::default();

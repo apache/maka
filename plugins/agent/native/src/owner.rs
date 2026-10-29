@@ -156,8 +156,11 @@ enum PreparedBackend {
     Model(Box<(crate::model::Source, maka_agent_engine::PreparedModel)>),
     Executor(Box<crate::executor::Backend>),
 }
+#[derive(Clone)]
 struct Control {
     compacting: bool,
+    preview:
+        tokio::sync::watch::Receiver<Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>>,
     invocation: Invocation,
     basis: MessageBasis,
     cancellation: CancellationToken,
@@ -167,8 +170,14 @@ struct Control {
 struct Runs {
     closing: bool,
     controls: BTreeMap<String, Control>,
+    preparing: BTreeMap<String, CancellationToken>,
     /// Sessions whose original execution has not confirmed physical cleanup.
     quarantined: BTreeSet<String>,
+}
+impl Runs {
+    fn busy(&self, session: &str) -> bool {
+        self.controls.contains_key(session) || self.preparing.contains_key(session)
+    }
 }
 pub(crate) struct Owner {
     graphs: Option<Arc<crate::workhub::tasks::graph::Graphs>>,
@@ -219,6 +228,24 @@ pub(crate) enum BuiltinBehavior {
 }
 
 impl Owner {
+    pub(crate) fn preview_epoch(&self) -> &str {
+        &self.revision.activation
+    }
+
+    pub(crate) async fn preview_reader(
+        &self,
+        session: &str,
+    ) -> Option<
+        tokio::sync::watch::Receiver<Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>>,
+    > {
+        self.runs
+            .lock()
+            .await
+            .controls
+            .get(session)
+            .map(|control| control.preview.clone())
+    }
+
     pub(crate) fn tool_store(
         &self,
         context: &maka_agent_facts::tools::ToolCallContext,
@@ -489,10 +516,11 @@ impl Owner {
                 stop.clone(),
             )),
         };
-        let engine = Engine::with_pricing(
+        let engine = Engine::with_resources(
             models,
             cells,
-            Arc::new(crate::model::Prices(configuration.clone())),
+            Some(Arc::new(crate::model::Prices(configuration.clone()))),
+            context.services().model_preparation_resources(),
         )
         .map_err(|error| error.to_string())?;
         let mcp_projects = Arc::new(crate::mcp::Projects::new(
@@ -892,7 +920,7 @@ impl Owner {
                     reason: Rejection::ToolsUnavailable,
                 });
             }
-            if runs.controls.contains_key(&input.session_id)
+            if runs.busy(&input.session_id)
                 || !self.store.session(&input.session_id).await.map_err(|error| error.to_string())?.message_queue(&input.session_id).await.map_err(|_| "agent_queue_unavailable")?.entries.is_empty()
                 || self.store.session(&input.session_id).await.map_err(|error| error.to_string())?.latest_turn_boundary(&input.session_id).await.map_err(|_| "agent_execution_unavailable")?
                     .is_some_and(|boundary| matches!(boundary.state, maka_event_log::turns::InvocationState::Ended { outcome: maka_agent_facts::event::InvocationOutcome::HandoffPaused { .. }, .. })) {
@@ -1358,6 +1386,7 @@ impl Owner {
         let producer = self.producer_gate.clone().try_lock_owned().ok()?;
         let runs = self.runs.clone().try_lock_owned().ok()?;
         if !runs.controls.is_empty()
+            || !runs.preparing.is_empty()
             || !runs.quarantined.is_empty()
             || !self.workers.is_empty()
             || !self.auxiliary.resources.is_idle()
@@ -1413,7 +1442,7 @@ impl Owner {
                     "Agent configuration store cleanup failed");
             }
             let runs = owner.runs.lock().await;
-            if !runs.quarantined.is_empty() {
+            if !runs.quarantined.is_empty() || !runs.preparing.is_empty() {
                 return Err("agent_cleanup_unconfirmed".into());
             }
             projects?;
@@ -1458,7 +1487,6 @@ fn public_error(error: RunError) -> String {
 }
 
 #[cfg(test)]
-#[path = "owner/tests.rs"]
 mod tests;
 
 pub(crate) fn owns_session(prefix: &str, id: &str) -> bool {

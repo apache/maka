@@ -23,11 +23,14 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+bytes = "1.12.1"
+maka-provider-protocol.workspace = true
 hex.workspace = true
 maka-plugin-core.workspace = true
 maka-sandbox.workspace = true
 base64 = "0.23.1"
 regress = "0.12.0"
+ropey = "1.6.1"
 ryu-js = "1.0.3"
 sha2.workspace = true
 url = "2.5.8"

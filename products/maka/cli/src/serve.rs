@@ -22,7 +22,7 @@ use maka_host_runtime::{
     application::host::{Host, LifecycleMode, Options, websocket::WebSocketListener},
 };
 use serde_json::json;
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 pub(super) async fn run(
@@ -122,51 +122,15 @@ async fn serve_product(
     result.and(cleanup)
 }
 
-/// Process policy belongs to the CLI, never to an embedded Host library.
 pub(super) async fn listen(
     endpoint: super::endpoint::LocalEndpoint,
     websocket: Option<WebSocketListener>,
     host: Arc<Host>,
     cancellation: CancellationToken,
 ) -> Result<(), HostError> {
-    let _finished = cancellation.clone().drop_guard();
-    watch_shutdown(
-        host.wait_for_drain(),
-        cancellation.clone(),
-        Duration::from_secs(10),
-    );
     host.serve(endpoint.listener, websocket, cancellation)
         .await
         .map_err(Into::into)
-}
-
-fn watch_shutdown(
-    draining: impl Future<Output = ()> + Send + 'static,
-    cancellation: CancellationToken,
-    grace: Duration,
-) {
-    let runtime = tokio::runtime::Handle::current();
-    // Observe before polling the listener: its synchronous diagnostics can block.
-    // Neither notification needs a Tokio worker or I/O driver to make progress.
-    // The thread owns no Host/Root and stays armed through runtime teardown;
-    // normal process exit needs no join. Never block it on diagnostic output.
-    if std::thread::Builder::new()
-        .name("host-exit".into())
-        .spawn(move || {
-            runtime.block_on(async {
-                tokio::select! {
-                    _ = draining => {},
-                    _ = cancellation.cancelled() => {},
-                }
-            });
-            std::thread::sleep(grace);
-            // Recovery, not this exit, determines outcomes of interrupted work.
-            std::process::exit(70);
-        })
-        .is_err()
-    {
-        std::process::exit(70);
-    }
 }
 
 pub(super) fn home_directory() -> Result<Option<std::path::PathBuf>, maka_host_runtime::HostError> {
@@ -182,63 +146,244 @@ pub(super) fn home_directory() -> Result<Option<std::path::PathBuf>, maka_host_r
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maka_event_log::root::{RootNamespaces, RootOwner};
+    use maka_host_runtime::application::{
+        Context, Handler, NativeActivation, NativeOwner, NativeRegistry, host::Configuration,
+    };
     use std::{
-        process::{Command, Stdio},
-        time::Instant,
+        io::{BufRead, Read, Write},
+        process::{Child, Command, Stdio},
+        time::{Duration, Instant},
     };
 
+    struct ChildGuard(Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    const CLOSING: &str = "original cleanup is waiting";
+
+    struct CleanupGate(std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
+    impl Handler for CleanupGate {
+        fn call(
+            &self,
+            _: String,
+            input: serde_json::Value,
+            _: Context,
+        ) -> futures_util::future::BoxFuture<'static, Result<serde_json::Value, String>> {
+            Box::pin(async move { Ok(input) })
+        }
+    }
+    impl NativeOwner for CleanupGate {
+        fn activated(&self) {
+            self.0.lock().unwrap().take().unwrap().send(()).unwrap();
+        }
+        fn close(&self) -> futures_util::future::BoxFuture<'static, Result<(), String>> {
+            Box::pin(async {
+                tokio::task::spawn_blocking(|| {
+                    println!("{CLOSING}");
+                    std::io::stdout().flush().unwrap();
+                    let mut release = [0];
+                    std::io::stdin().read_exact(&mut release).unwrap();
+                    assert_eq!(release, [1]);
+                })
+                .await
+                .map_err(|error| error.to_string())
+            })
+        }
+    }
+
     #[test]
-    fn shutdown_deadline_bounds_blocking_runtime_teardown_without_delaying_normal_exit() {
-        const CHILD: &str = "MAKA_SHUTDOWN_DEADLINE_TEST";
-        if let Ok(mode) = std::env::var(CHILD) {
+    fn listen_keeps_root_until_blocking_cleanup_finishes() {
+        const CHILD_ROOT: &str = "MAKA_LISTEN_CLEANUP_TEST_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             runtime.block_on(async {
-                let draining = CancellationToken::new();
-                let finished = CancellationToken::new();
-                let _finished = finished.clone().drop_guard();
-                watch_shutdown(
-                    draining.clone().cancelled_owned(),
-                    finished,
-                    Duration::from_millis(250),
+                let owner = RootOwner::create(
+                    &std::path::PathBuf::from(root),
+                    &RootNamespaces::for_current_account().unwrap(),
+                )
+                .unwrap();
+                let store = Arc::new(maka_transport::open_store(Arc::new(owner)).await.unwrap());
+                let deployment = uuid::Uuid::new_v4();
+                let contract: maka_plugin_core::contract::Contract = serde_json::from_value(json!({
+                    "name":"example.CleanupGate", "version":1, "transport":"remote",
+                    "interface":{"kind":"service","methods":{"ping":{
+                        "mode":"query","input":{},"output":{},"resources":{}
+                    }}}
+                }))
+                .unwrap();
+                let package = |id: &str, implementation: &str, imports, exports| {
+                    maka_packages::Package::new(std::collections::BTreeMap::from([(
+                        "maka.extension.json".into(),
+                        serde_json::to_vec(&json!({
+                            "schemaVersion":1,"id":id,"application":{"host":{
+                                "implementation":{"kind":"native","implementation":implementation},
+                                "configuration":{"type":"object"},"imports":imports,"exports":exports
+                            }}
+                        })).unwrap(),
+                    )]))
+                    .unwrap()
+                };
+                let provider = package(
+                    "example.cleanup-gate", "cleanup-gate", json!({}),
+                    json!({"ping":{"contract":contract,"availability":"required"}}),
                 );
-                if mode == "synchronous" {
-                    draining.cancel();
-                    // No yield between announcing drain and blocking the listener.
-                    std::thread::sleep(Duration::from_secs(60));
-                } else if mode == "teardown" {
-                    let (started, ready) = tokio::sync::oneshot::channel();
-                    tokio::task::spawn_blocking(move || {
-                        started.send(()).unwrap();
-                        std::thread::sleep(Duration::from_secs(60));
-                    });
-                    ready.await.unwrap();
-                }
-                // A direct listener return must also bound final runtime teardown.
+                let consumer = package(
+                    "example.cleanup-consumer", "cleanup-consumer",
+                    json!({"ping":{"contract":contract,"cardinality":{"kind":"one"}}}),
+                    json!({}),
+                );
+                let consumer_id = uuid::Uuid::new_v4();
+                let input = serde_json::from_value(json!({"ui":null,"instances":{
+                    "gate":{
+                        "key":uuid::Uuid::new_v4(),
+                        "package":maka_plugin_core::package::PackageSelection::from(provider.application_ref()),
+                        "usePackage":"host"
+                    },
+                    "consumer":{
+                        "key":consumer_id,
+                        "package":maka_plugin_core::package::PackageSelection::from(consumer.application_ref()),
+                        "usePackage":"host",
+                        "bindings":{"ping":[{"kind":"instance","path":["gate"],"export":"ping"}]}
+                    }
+                }}))
+                .unwrap();
+                store
+                    .commit_application(deployment, 0, input, vec![], vec![provider, consumer])
+                    .await
+                    .unwrap();
+                let (started, ready) = tokio::sync::oneshot::channel();
+                let cleanup = Arc::new(CleanupGate(std::sync::Mutex::new(Some(started))));
+                let mut native = NativeRegistry::default();
+                native
+                    .insert(
+                        "cleanup-gate".into(),
+                        Arc::new(move |_, _| {
+                            let owner = cleanup.clone();
+                            let contract = contract.clone();
+                            Box::pin(async move {
+                                NativeActivation {
+                                    exports: Ok(std::collections::BTreeMap::from([(
+                                        "ping".into(),
+                                        maka_plugin_core::runtime::Published {
+                                            contract,
+                                            value: owner.clone() as Arc<dyn Handler>,
+                                        },
+                                    )])),
+                                    owner,
+                                }
+                            })
+                        }),
+                    )
+                    .unwrap();
+                native
+                    .insert(
+                        "cleanup-consumer".into(),
+                        Arc::new(|_, _| Box::pin(async {
+                            NativeActivation {
+                                exports: Ok(Default::default()),
+                                owner: Arc::new(()),
+                            }
+                        })),
+                    )
+                    .unwrap();
+                let host = Host::open_with_options(
+                    store,
+                    deployment,
+                    native,
+                    None,
+                    Configuration::PublicHost {
+                        endpoints: std::collections::BTreeMap::from([(
+                            "ping".into(),
+                            maka_host_runtime::application::transport::HostEndpoint {
+                                consumer: maka_plugin_core::composition::InstanceId(vec![consumer_id]),
+                                import: "ping".into(),
+                                grant: maka_host_runtime::application::transport::Grant {
+                                    methods: std::collections::BTreeSet::from(["ping".into()]),
+                                    recovery: false,
+                                },
+                            },
+                        )]),
+                        native: vec![],
+                        product_methods: Default::default(),
+                    },
+                    Options {
+                        lifecycle_mode: LifecycleMode::Service,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+                ready.await.unwrap();
+                let cancellation = CancellationToken::new();
+                cancellation.cancel();
+                listen(
+                    super::super::endpoint::LocalEndpoint::bind().unwrap(),
+                    None,
+                    host,
+                    cancellation,
+                )
+                .await
+                .unwrap();
             });
             drop(runtime);
             return;
         }
-        for (mode, code) in [("normal", 0), ("synchronous", 70), ("teardown", 70)] {
-            let mut child = Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "serve::tests::shutdown_deadline_bounds_blocking_runtime_teardown_without_delaying_normal_exit"])
-                .env(CHILD, mode)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        let mut child = ChildGuard(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "serve::tests::listen_keeps_root_until_blocking_cleanup_finishes",
+                    "--nocapture",
+                ])
+                .env(CHILD_ROOT, &root)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
-                .spawn().unwrap();
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let status = loop {
-                if let Some(status) = child.try_wait().unwrap() {
-                    break status;
+                .spawn()
+                .unwrap(),
+        );
+        let output = child.0.stdout.take().unwrap();
+        let (closing, ready) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in std::io::BufReader::new(output).lines() {
+                if line.unwrap() == CLOSING {
+                    closing.send(()).unwrap();
                 }
-                if Instant::now() >= deadline {
-                    child.kill().unwrap();
-                    child.wait().unwrap();
-                    panic!("Host exit deadline did not terminate blocked cleanup");
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            };
-            assert_eq!(status.code(), Some(code));
-        }
+            }
+        });
+        ready
+            .recv_timeout(Duration::from_secs(20))
+            .expect("real listener did not reach original blocking cleanup");
+        // Surviving the former ten-second process deadline is the regression target.
+        std::thread::sleep(Duration::from_secs(11));
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "listener must leave forced termination to its process owner"
+        );
+        let namespaces = RootNamespaces::for_current_account().unwrap();
+        let unavailable = RootOwner::open(&root, &namespaces)
+            .err()
+            .expect("original blocking cleanup must retain Root");
+        assert_eq!(unavailable.kind(), std::io::ErrorKind::WouldBlock);
+        child.0.stdin.take().unwrap().write_all(&[1]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let status = loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "released cleanup did not finish");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(status.success(), "released listener exited with {status}");
+        reader.join().unwrap();
+        drop(RootOwner::open(&root, &namespaces).unwrap());
     }
 }

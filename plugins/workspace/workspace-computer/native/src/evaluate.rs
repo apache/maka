@@ -590,6 +590,7 @@ impl Computer {
             },
             "cua_operation".into(),
             input,
+            None,
             cancellation,
             effect,
         )
@@ -933,12 +934,13 @@ mod tests {
             workspace::BindingStamp,
         };
         use maka_capabilities::call::{Identity, Issuer};
+        use maka_code_runtime::CellAbort;
         use maka_event_log::root::{RootNamespaces, RootOwner};
         // This cfg(test)-only operation fixture represents the Host boundary
         // AFTER the sealed native drain check. It never constructs a public
         // native proof or claims a physical Escape/Windows/Chrome execution.
         // Journal, SQL, real Bridge::invoke, Gate and V8 are the product paths.
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, Debug)]
         enum Writer {
             Confirmed,
             Failed,
@@ -1136,6 +1138,7 @@ mod tests {
                             },
                             "cua_operation".into(),
                             input,
+                            None,
                             cancellation,
                             PreparedEffect::new(move |_| {
                                 Box::pin(async move {
@@ -1217,19 +1220,37 @@ mod tests {
                 cell: context.clone(),
                 operation_fixture: Some(fixture),
             });
-            let runtime=Repl::new("globalThis.native=()=>call('cua',{method:'listWindows',options:{}});globalThis.browser=()=>call('cua',{method:'listBrowsers',options:{}});",CellLimits::default()).unwrap();
-            let result=runtime.evaluate("let caught=false;try{await native()}catch(e){caught=true}console.log(JSON.stringify({caught,browser:await browser()}));".into(),
-                bridge.clone(),CancellationToken::new(),context.clone(),Duration::from_secs(3)).await.unwrap();
+            let bootstrap = format!(
+                "{}\nglobalThis.native=()=>invoke('listWindows',{{options:{{}}}});globalThis.browser=()=>invoke('listBrowsers',{{options:{{}}}});",
+                maka_computer_use::facade()
+            );
+            let runtime = Repl::new(bootstrap, CellLimits::default()).unwrap();
+            let result=runtime.evaluate("let caught=false;try{await native()}catch(e){caught=true}nodeRepl.write({caught,browser:await browser()});".into(),
+                bridge.clone(),CancellationToken::new(),context.clone(),Duration::from_secs(3)).await;
             if eligible {
-                assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+                assert!(
+                    matches!(&result, Ok(CellResult::Success { .. })),
+                    "{result:?}"
+                );
                 assert!(
                     !owner.stopping.is_cancelled(),
                     "actual Bridge must not cancel the Computer after exact drained native Unknown"
                 );
                 assert!(admission.check_open().is_ok());
                 assert!(!runtime.is_closed(), "same JS kernel remains available");
-                assert!(
-                    matches!(context.take_output().as_slice(),[CellOutput::Text{text}] if text=="{\"caught\":true,\"browser\":\"browser-still-live\"}")
+                let output = context.take_output();
+                let [CellOutput::Text { text }] = output.as_slice() else {
+                    panic!(
+                        "the recovered native call and live browser must emit one JSON result: {output:?}"
+                    );
+                };
+                let value: Value = serde_json::from_str(text).unwrap_or_else(|error| {
+                    panic!("invalid emitted bridge result: {error}; output={output:?}")
+                });
+                assert_eq!(
+                    value,
+                    json!({"caught":true,"browser":"browser-still-live"}),
+                    "the facade must throw the native failure and unwrap the live browser result: {output:?}"
                 );
                 let tip = store
                     .run_source("session", "run", None)
@@ -1241,7 +1262,34 @@ mod tests {
                     "following browser has its real canonical T2"
                 );
             } else {
-                assert!(matches!(result, CellResult::Failure { .. }));
+                match (post_drain, writer, &result) {
+                    (false, Writer::Confirmed, Ok(CellResult::Failure { .. })) => {}
+                    (
+                        true,
+                        Writer::Failed,
+                        Err(CellAbort::Tool(ToolError::Persistence(message))),
+                    ) => {
+                        assert!(
+                            message.contains(
+                                "native interruption differs from its original dispatch binding"
+                            ),
+                            "the rejected fence must preserve its original binding error: {message}"
+                        );
+                    }
+                    (
+                        true,
+                        Writer::Missing,
+                        Err(CellAbort::Tool(ToolError::CleanupUnconfirmed(message))),
+                    ) => {
+                        assert_eq!(
+                            message,
+                            "Native input drained without its canonical interruption writer"
+                        );
+                    }
+                    _ => {
+                        panic!("unexpected post_drain={post_drain}, writer={writer:?}: {result:?}")
+                    }
+                }
                 assert!(
                     owner.stopping.is_cancelled(),
                     "ordinary Unknown or an unconfirmed canonical fence retains the existing failure boundary"

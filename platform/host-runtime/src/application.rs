@@ -814,6 +814,11 @@ impl Application {
             ..Default::default()
         });
         let stop = CancellationToken::new();
+        let preparation_resources =
+            maka_capabilities::model_preparation::ModelPreparationResources::new(
+                maka_capabilities::model_preparation::PreparationPolicy::default(),
+            )
+            .map_err(|error| error.to_string())?;
         let dispatch = Arc::new(Dispatch {
             commands,
             bytes: Arc::new(Semaphore::new(resource_ingress::INPUT_WINDOW)),
@@ -834,6 +839,7 @@ impl Application {
                 sources,
                 native,
                 issuer,
+                preparation_resources,
                 policy,
                 scripts,
                 updates,

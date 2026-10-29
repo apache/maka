@@ -173,9 +173,10 @@ async fn receive(
         // A source canonical_at belongs to another partition's sequence domain.
         // The first target consumption freezes these bytes at its own sequence;
         // retries above preserve any existing target freeze unchanged.
-        sqlx::query("INSERT INTO artifacts (session_id,id,created_at,record_json,content_sha256,payload,canonical_at) VALUES (?,?,?,?,?,zeroblob(?),NULL)")
+        sqlx::query("INSERT INTO artifacts (session_id,id,created_at,record_json,content_sha256,payload,canonical_at,lookup_digest) VALUES (?,?,?,?,?,zeroblob(?),NULL,?)")
             .bind(session_id).bind(&id).bind(artifact.created_at as i64)
             .bind(serde_json::to_string(&artifact)?).bind(&digest).bind(artifact.size_bytes as i64)
+            .bind(crate::artifacts::identity::artifact_lookup_digest(session_id, &id).as_slice())
             .execute(&mut *tx).await?;
     }
     let (rowid, length): (i64, i64) =

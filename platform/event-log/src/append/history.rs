@@ -116,11 +116,15 @@ async fn outcomes(
     | Fact::ModelInterrupted { step_id, .. }
     | Fact::ModelObserved { step_id, .. } = &event.fact
     {
-        let requested: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='model_requested')",
-        ).bind(id).bind(step_id).fetch_one(&mut *connection).await?;
-        if !requested {
-            return Err(invalid("model output without request"));
+        let summary: Option<bool> = sqlx::query_scalar(
+            "SELECT json_extract(event_json,'$.fact.purpose')='summary' FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='model_requested'",
+        ).bind(id).bind(step_id).fetch_optional(&mut *connection).await?;
+        let summary = summary.ok_or_else(|| invalid("model output without request"))?;
+        if summary
+            && let Fact::ModelObserved { event, .. } = &event.fact
+            && !event.is_summary_observation()
+        {
+            return Err(invalid("private summary output cannot be journaled"));
         }
         let settled: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind IN ('model_completed','model_interrupted'))",

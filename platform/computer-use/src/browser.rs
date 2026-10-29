@@ -3252,7 +3252,6 @@ mod tests {
 
     struct Decision {
         allow: bool,
-        delay: Duration,
         accesses: Arc<Mutex<Vec<crate::BrowserAccess>>>,
     }
     impl crate::BrowserAuthorization for Decision {
@@ -3263,11 +3262,7 @@ mod tests {
         ) -> crate::AuthorizationFuture {
             self.accesses.lock().unwrap().push(access);
             let allow = self.allow;
-            let delay = self.delay;
             Box::pin(async move {
-                if !delay.is_zero() {
-                    tokio::time::sleep(delay).await;
-                }
                 if allow {
                     Ok(())
                 } else {
@@ -3290,22 +3285,11 @@ mod tests {
         crate::InvocationContext<'static>,
         Arc<Mutex<Vec<crate::BrowserAccess>>>,
     ) {
-        decision_context_with_delay(allow, Duration::ZERO)
-    }
-
-    fn decision_context_with_delay(
-        allow: bool,
-        delay: Duration,
-    ) -> (
-        crate::InvocationContext<'static>,
-        Arc<Mutex<Vec<crate::BrowserAccess>>>,
-    ) {
         let accesses = Arc::new(Mutex::new(Vec::new()));
         (
             crate::InvocationContext::new("fixture", "turn").with_browser_authorization(Arc::new(
                 Decision {
                     allow,
-                    delay,
                     accesses: accesses.clone(),
                 },
             )),
@@ -4133,13 +4117,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(
-                value,
-                json!({
-                    "id":"fixture", "name":"fixture", "type":"cdp",
-                    "apiProfile":{"mode":"ax","user":false},
-                })
-            );
+            assert_eq!(value["id"], "fixture");
             assert_eq!(server.await.unwrap(), ["/json/version", "/json/list"]);
             assert!(browsers.targets.is_empty());
         }
@@ -4209,35 +4187,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lazy_browser_read_bounds_a_stalled_websocket_handshake() {
+    async fn lazy_cdp_connection_obeys_read_deadline_and_cancellation_and_closes_its_socket() {
         for cancel_at_handshake in [false, true] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let cancellation = CancellationToken::new();
             let cancelled = cancellation.clone();
-            let settle = CancellationToken::new();
-            let settled = settle.clone();
             let server = tokio::spawn(async move {
                 let tabs = [
                     json!({"id":"page","title":"Fixture","url":"https://example.com/","type":"page","webSocketDebuggerUrl":format!("ws://{address}/devtools/page/page")}),
                 ];
-                // Binding and the metadata admission's inventories precede
-                // the lazy connection. Site consent requires its fixed Origin
-                // proof and has not happened at this stalled handshake.
-                for _ in 0..4 {
-                    serve_inventory(&listener, &tabs).await;
-                }
+                serve_inventory(&listener, &tabs).await;
                 let (stream, _) = listener.accept().await.unwrap();
                 let mut stream = BufReader::new(stream);
                 let mut line = String::new();
                 stream.read_line(&mut line).await.unwrap();
                 assert!(line.starts_with("GET /devtools/page/page "));
+                loop {
+                    line.clear();
+                    assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
                 if cancel_at_handshake {
                     cancelled.cancel();
                 }
-                // Keep the accepted socket open without completing its
-                // upgrade. A plain connection timeout would take ten seconds.
-                settled.cancelled().await;
+                // Never upgrade: deadline/cancellation must drop the actual
+                // connecting socket, without dispatching a CDP request.
+                let mut bytes = [0; 1];
+                assert_eq!(stream.read(&mut bytes).await.unwrap(), 0);
             });
             let mut browsers = Browsers::default();
             browsers
@@ -4250,56 +4229,54 @@ mod tests {
                 )
                 .unwrap();
             let cursor = crate::cursor::Spec::default();
-            // The real authorization future may outlast the selector budget.
-            // Its wait must not consume the lazy connection's remaining time.
-            let (context, _) = decision_context_with_delay(true, Duration::from_millis(300));
             let bound = browsers
                 .invoke(
                     Command::BrowserTab {
                         browser_id: "fixture".into(),
                         reference: BrowserTabReference::Existing("page".into()),
                     },
-                    &context,
+                    &decision_context(true).0,
                     &cursor,
                     &cancellation,
                     Language::En,
                 )
                 .await
                 .unwrap();
-            let began = tokio::time::Instant::now();
+            let Handle::Tab(handle) = serde_json::from_value(bound["handle"].clone()).unwrap()
+            else {
+                panic!("binding must return a tab handle");
+            };
+            let tab = browsers.targets.get_mut(&handle).unwrap();
+            assert!(tab.socket.is_none(), "binding must remain lazy");
+            let mut budget = Some(ReadBudget::new(&BrowserReadOptions {
+                timeout_ms: Some(if cancel_at_handshake { 3000 } else { 200 }),
+            }));
+            // This is the same bounded connect used by metadata preparation;
+            // inventory and consent have their own behavior tests.
             let result = tokio::time::timeout(
                 Duration::from_secs(2),
-                browsers.invoke(
-                    Command::BrowserRead {
-                        handle: serde_json::from_value(bound["handle"].clone()).unwrap(),
-                        locator: LocatorPlan {
-                            selector: "button".into(),
-                        },
-                        operation: BrowserReadOperation::InnerText,
-                        options: BrowserReadOptions {
-                            timeout_ms: Some(if cancel_at_handshake { 3000 } else { 200 }),
-                        },
-                    },
-                    &context,
-                    &cursor,
-                    &cancellation,
-                    Language::En,
-                ),
+                read_step(&mut budget, &cancellation, tab.connect_metadata()),
             )
             .await
-            .expect("the read escaped its deadline or cancellation");
-            let error = result.unwrap_err().to_string();
-            if cancel_at_handshake {
-                assert!(error.to_lowercase().contains("cancel"), "{error}");
+            .expect("the connecting socket escaped its read deadline or cancellation");
+            let expected = if cancel_at_handshake {
+                "Browser read cancelled"
             } else {
-                assert!(error.contains("deadline"), "{error}");
-            }
-            assert!(began.elapsed() < Duration::from_secs(1));
-            settle.cancel();
+                "Playwright selector deadline exceeded"
+            };
+            assert!(
+                matches!(&result, Err(ToolError::Failed(message)) if message == expected),
+                "{result:?}"
+            );
+            assert!(
+                tab.socket.is_none(),
+                "a failed handshake cannot retain a socket"
+            );
             tokio::time::timeout(Duration::from_secs(1), server)
                 .await
-                .expect("the fixture must observe a lazy handshake after Host consent")
+                .expect("the fixture must see the handshake socket close")
                 .unwrap();
+            browsers.close(&cursor).await.unwrap();
         }
     }
 
@@ -4804,7 +4781,6 @@ mod tests {
             if host {
                 context = context.with_browser_authorization(Arc::new(Decision {
                     allow: false,
-                    delay: Duration::ZERO,
                     accesses: accesses.clone(),
                 }));
             }

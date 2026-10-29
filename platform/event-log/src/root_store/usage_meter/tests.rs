@@ -17,6 +17,8 @@
  * under the License.
  */
 
+use maka_agent_facts::model::recorded::ModelObservation;
+
 use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
@@ -69,7 +71,7 @@ use crate::{
 };
 use maka_agent_facts::{
     event::{InvocationInput, InvocationOutcome, ModelInterruption},
-    model::{ModelEvent, ModelFinishReason, ModelStep},
+    model::{ModelFinishReason, recorded::ModelCompletion},
 };
 use serde_json::{Value, json};
 use sqlx::Row;
@@ -116,7 +118,7 @@ fn completed(step: &str, input: Option<u64>, output: Option<u64>) -> EventWrite 
     event(
         Fact::ModelCompleted {
             step_id: step.into(),
-            output: ModelStep {
+            output: ModelCompletion {
                 parts: vec![],
                 finish_reason: ModelFinishReason::Stop,
                 usage: ModelUsage {
@@ -137,7 +139,7 @@ fn observed(step: &str, input: Option<u64>, output: Option<u64>) -> EventWrite {
     event(
         Fact::ModelObserved {
             step_id: step.into(),
-            event: ModelEvent::Finished {
+            event: ModelObservation::Finished {
                 reason: ModelFinishReason::Stop,
                 usage: ModelUsage {
                     input_tokens: input,
@@ -153,6 +155,7 @@ fn observed(step: &str, input: Option<u64>, output: Option<u64>) -> EventWrite {
 fn interrupted(step: &str) -> EventWrite {
     event(
         Fact::ModelInterrupted {
+            partial: None,
             step_id: step.into(),
             status: ModelInterruption::Failed,
             model_failure: None,

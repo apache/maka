@@ -123,15 +123,17 @@ mod tests {
                 ),
             ] {
                 let value = json!({"invocation":{"turn_id":"turn"}, "recorded_at":UNIX_EPOCH + Duration::from_millis(at), "fact":fact});
-                sqlx::query("INSERT INTO event_log(sequence,invocation_id,kind,operation_id,event_id,event_json) VALUES (?, 'invocation', ?, ?, ?, ?)")
-                    .bind(sequence)
-                    .bind(kind)
-                    .bind(step)
-                    .bind(format!("event-{sequence}"))
-                    .bind(value.to_string())
-                    .execute(&mut db)
-                    .await
-                    .unwrap();
+                crate::canonical_insert::insert(crate::canonical_insert::Record {
+                    sequence: Some(sequence),
+                    event_id: &format!("event-{sequence}"),
+                    invocation_id: Some("invocation"),
+                    kind,
+                    operation_id: Some(step),
+                    json: &value.to_string(),
+                })
+                .execute(&mut db)
+                .await
+                .unwrap();
             }
             let row = db
                 .run_on_worker(|handle| {
@@ -173,27 +175,40 @@ mod tests {
         .execute(&mut db)
         .await
         .unwrap();
-        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
-            INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json)
-            SELECT x*3-2,printf('summary-%08d',x),'invocation','model_requested',printf('summary-%08d',x),
-                json_object('invocation',json_object('session_id','session'),'fact',json_object(
-                    'purpose','summary','source_high_water',x*3-3,'source_digest',printf('source-%08d',x))) FROM n")
-            .bind(old_rounds).execute(&mut db).await.unwrap();
-        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
-            INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json)
-            SELECT x*3-1,printf('main-%08d',x),'invocation','model_requested',printf('main-%08d',x),
-                json_object('invocation',json_object('session_id','session'),'fact',json_object('purpose','main')) FROM n")
-            .bind(old_rounds).execute(&mut db).await.unwrap();
-        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
-            INSERT INTO event_log(sequence,event_id,invocation_id,kind,event_json)
-            SELECT x*3,printf('checkpoint-%08d',x),'invocation','context_checkpoint_recorded',
-                json_object('invocation',json_object('session_id','session'),'fact',json_object('checkpoint',json_object(
-                    'summary_step_id',printf('summary-%08d',x)))) FROM n")
-            .bind(old_rounds).execute(&mut db).await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        crate::connection::worker_query(&mut tx, move |worker| Box::pin(async move {
+        for round in 1..=old_rounds {
+            for (sequence, id, kind, operation, fact) in [
+                (round * 3 - 2, format!("summary-{round:08}"), "model_requested", Some(format!("summary-{round:08}")),
+                    json!({"purpose":"summary","source_high_water":round*3-3,"source_digest":format!("source-{round:08}")})),
+                (round * 3 - 1, format!("main-{round:08}"), "model_requested", Some(format!("main-{round:08}")), json!({"purpose":"main"})),
+                (round * 3, format!("checkpoint-{round:08}"), "context_checkpoint_recorded", None,
+                    json!({"checkpoint":{"summary_step_id":format!("summary-{round:08}")}})),
+            ] {
+                let json = json!({"invocation":{"session_id":"session"},"fact":fact}).to_string();
+                crate::canonical_insert::insert(crate::canonical_insert::Record {
+                    sequence: Some(sequence), event_id: &id, invocation_id: Some("invocation"),
+                    kind, operation_id: operation.as_deref(), json: &json,
+                }).execute(&mut *worker).await?;
+            }
+        }
+        Ok(())
+        })).await.unwrap();
+        tx.commit().await.unwrap();
         let base = old_rounds * 3;
-        sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json,retained_json,body_digest)
-            VALUES(?,'collected','invocation','model_requested','collected',NULL,'{}','collected')")
-            .bind(base+1).execute(&mut db).await.unwrap();
+        crate::canonical_insert::insert(crate::canonical_insert::Record {
+            sequence: Some(base + 1),
+            event_id: "collected",
+            invocation_id: Some("invocation"),
+            kind: "model_requested",
+            operation_id: Some("collected"),
+            json: "{}",
+        })
+        .execute(&mut db)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE event_log SET event_json=NULL,retained_json='{}',body_digest='collected' WHERE sequence=?")
+            .bind(base + 1).execute(&mut db).await.unwrap();
         for (offset, at, kind, step, fact) in [
             (
                 2,
@@ -247,11 +262,17 @@ mod tests {
         ] {
             let value = json!({"invocation":{"session_id":"session","turn_id":"turn"},
                 "recorded_at":UNIX_EPOCH + Duration::from_millis(at),"fact":fact});
-            sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json)
-                VALUES(?,?,'invocation',?,?,?)")
-                .bind(base+offset).bind(format!("target-{offset}"))
-                .bind(kind).bind((!step.is_empty()).then_some(step)).bind(value.to_string())
-                .execute(&mut db).await.unwrap();
+            crate::canonical_insert::insert(crate::canonical_insert::Record {
+                sequence: Some(base + offset),
+                event_id: &format!("target-{offset}"),
+                invocation_id: Some("invocation"),
+                kind,
+                operation_id: (!step.is_empty()).then_some(step),
+                json: &value.to_string(),
+            })
+            .execute(&mut db)
+            .await
+            .unwrap();
         }
         let steps = Arc::new(AtomicUsize::new(0));
         let observed = steps.clone();

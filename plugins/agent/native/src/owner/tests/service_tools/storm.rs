@@ -68,7 +68,7 @@ async fn reply(socket: &mut TcpStream, calls: std::ops::Range<usize>, bytes: usi
     if !text.is_empty() {
         body.push_str(&format!("data: {}\n\n", json!({"id":"service-model","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]})));
     }
-    body.push_str(&format!("data: {}\n\ndata: [DONE]\n\n", json!({"id":"service-model","choices":[{"index":0,"delta":{},"finish_reason":if text.is_empty(){"tool_calls"}else{"stop"}}],"usage":{"prompt_tokens":7,"completion_tokens":11,"total_tokens":18}})));
+    body.push_str(&format!("data: {}\n\ndata: [DONE]\n\n", json!({"id":"service-model","choices":[{"index":0,"delta":{},"finish_reason":if text.is_empty(){"tool_calls"}else{"stop"}}],"usage":{"prompt_tokens":7,"completion_tokens":11,"total_tokens":18,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":3}}})));
     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
 }
 
@@ -89,6 +89,13 @@ async fn run(case: Case) -> Value {
     )
     .await;
     let session = fixture.create("Service result fanout").await;
+    let summary_prompt = fixture
+        .query("compactionPrompt", json!({"sessionId":session}))
+        .await
+        .unwrap()["compactionPrompt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let (finished, mut finish) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         let mut issued = 0;
@@ -100,10 +107,12 @@ async fn run(case: Case) -> Value {
                 _ = &mut finish => return summaries,
             };
             let body = request(&mut socket).await;
-            if !has_tool(&body, "Counter") {
+            let last = body["messages"].as_array().unwrap().last().unwrap();
+            if last["role"] == "user" && last["content"] == summary_prompt {
                 summaries += 1;
                 reply(&mut socket, 0..0, 0, "earlier service results summarized").await;
             } else {
+                assert!(has_tool(&body, "Counter"), "unexpected request purpose");
                 assert!(!final_seen, "Main continued after its final response");
                 if issued < case.calls {
                     let end = if case.query { case.calls } else { issued + 1 };
@@ -172,7 +181,9 @@ async fn run(case: Case) -> Value {
                 ModelUsage {
                     input_tokens: Some(7),
                     output_tokens: Some(11),
-                    ..Default::default()
+                    cache_read_tokens: Some(2),
+                    cache_write_tokens: None,
+                    reasoning_tokens: Some(3),
                 }
             );
         }

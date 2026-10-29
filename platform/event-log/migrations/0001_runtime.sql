@@ -26,48 +26,16 @@ CREATE TABLE event_log (
     kind TEXT NOT NULL,
     operation_id TEXT,
     -- Keep compact accounting fields before potentially large JSON overflow
-    -- pages. SQLite derives them from canonical bytes; they cannot be edited.
-    accounting_at REAL GENERATED ALWAYS AS (
-        CASE WHEN kind IN ('model_requested', 'model_completed', 'model_interrupted',
-                           'invocation_ended', 'auxiliary_model_started', 'auxiliary_model_settled',
-                           'tool_dispatched', 'tool_settled', 'tool_rejected')
-        THEN COALESCE(json_extract(COALESCE(event_json, retained_json), '$.recorded_at.secs_since_epoch'),
-                      json_extract(COALESCE(event_json, retained_json), '$.started_at.secs_since_epoch'),
-                      json_extract(COALESCE(event_json, retained_json), '$.completed_at.secs_since_epoch')) * 1000.0
-            + COALESCE(json_extract(COALESCE(event_json, retained_json), '$.recorded_at.nanos_since_epoch'),
-                       json_extract(COALESCE(event_json, retained_json), '$.started_at.nanos_since_epoch'),
-                       json_extract(COALESCE(event_json, retained_json), '$.completed_at.nanos_since_epoch')) / 1000000.0
-        END
-    ) STORED,
-    accounting_usage TEXT GENERATED ALWAYS AS (
-        CASE
-            WHEN kind = 'model_completed' THEN json_extract(COALESCE(event_json, retained_json), '$.fact.output.usage')
-            WHEN kind = 'model_observed' AND json_extract(COALESCE(event_json, retained_json), '$.fact.event.kind') = 'finished'
-                THEN json_extract(COALESCE(event_json, retained_json), '$.fact.event.data.usage')
-            WHEN kind = 'auxiliary_model_usage' THEN json_extract(COALESCE(event_json, retained_json), '$.usage')
-        END
-    ) STORED,
-    invocation_model TEXT GENERATED ALWAYS AS (
-        CASE WHEN kind = 'invocation_opened' THEN json_extract(COALESCE(event_json, retained_json), '$.fact.configuration.model') END
-    ) STORED,
-    accounting_tool TEXT GENERATED ALWAYS AS (
-        CASE
-            WHEN kind IN ('tool_dispatched', 'tool_rejected') THEN json_object(
-                'invocation', json_extract(COALESCE(event_json, retained_json), '$.invocation'),
-                'call', json_extract(COALESCE(event_json, retained_json), '$.fact.call'),
-                'name', json_extract(COALESCE(event_json, retained_json), '$.fact.name'),
-                'rejection', json_extract(COALESCE(event_json, retained_json), '$.fact.reason.kind'))
-            WHEN kind = 'tool_settled' THEN json_object(
-                'outcome', json_extract(COALESCE(event_json, retained_json), '$.fact.outcome.kind'))
-        END
-    ) STORED,
+    -- pages. The shared canonical INSERT derives their immutable publication values.
+    accounting_at REAL,
+    accounting_usage TEXT,
+    invocation_model TEXT,
+    accounting_tool TEXT,
     event_json TEXT,
     -- A collected body is absent, never a synthetic replayable RuntimeEvent.
     retained_json TEXT CHECK(retained_json IS NULL OR json_valid(retained_json)),
     body_digest TEXT,
-    event_session TEXT GENERATED ALWAYS AS (
-        json_extract(COALESCE(event_json, retained_json), '$.invocation.session_id')
-    ) STORED,
+    event_session TEXT,
     CHECK((event_json IS NOT NULL AND retained_json IS NULL AND body_digest IS NULL)
        OR (event_json IS NULL AND retained_json IS NOT NULL AND body_digest IS NOT NULL)),
     CHECK(invocation_id IS NOT NULL OR operation_id IS NULL)
@@ -362,47 +330,6 @@ CREATE TABLE application_operation_contracts (
     contract_json TEXT NOT NULL CHECK(json_valid(contract_json))
 );
 
-CREATE TABLE transcript_directory (
- session_id TEXT NOT NULL, source_sequence INTEGER NOT NULL CHECK(source_sequence >= 1),
- item_index INTEGER NOT NULL CHECK(item_index >= 0), turn_id TEXT NOT NULL, message_id TEXT NOT NULL,
- timestamp INTEGER NOT NULL, role TEXT NOT NULL, has_thinking INTEGER NOT NULL CHECK(has_thinking IN (0,1)),
- user_origin TEXT, state_status TEXT, tool_use_id TEXT, tool_name TEXT, tool_origin TEXT,
- parent_tool_call_id TEXT, parent_operation_id TEXT, has_args INTEGER, result_valid INTEGER,
- settlement TEXT, is_error INTEGER, content_kind TEXT, tool_title TEXT, presentation TEXT, duration_ms INTEGER,
- PRIMARY KEY(session_id,source_sequence,item_index), UNIQUE(session_id,message_id)
-);
-
-CREATE TABLE transcript_failures (
- session_id TEXT NOT NULL, source_sequence INTEGER NOT NULL, category TEXT NOT NULL,
- message_id TEXT, claimant_source_sequence INTEGER, claimant_item_index INTEGER, attempted_item_index INTEGER, reason TEXT,
- PRIMARY KEY(session_id,source_sequence)
-);
-
-CREATE TABLE recall_documents (
-    id INTEGER PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    source_sequence INTEGER NOT NULL,
-    item_index INTEGER NOT NULL,
-    message_id TEXT NOT NULL,
-    turn_id TEXT NOT NULL,
-    timestamp INTEGER NOT NULL,
-    role TEXT NOT NULL,
-    body TEXT NOT NULL,
-    folded TEXT NOT NULL,
-    attachments TEXT NOT NULL,
-    UNIQUE(session_id, source_sequence, item_index),
-    UNIQUE(session_id, message_id),
-    FOREIGN KEY(session_id, source_sequence, item_index)
-        REFERENCES transcript_directory(session_id, source_sequence, item_index) ON DELETE CASCADE
-);
-CREATE INDEX recall_document_turn ON recall_documents(session_id, turn_id, source_sequence, item_index);
-CREATE INDEX recall_document_context ON recall_documents(session_id, source_sequence, item_index)
-    WHERE body<>'' OR role IN ('tool_call','tool_result');
-CREATE VIRTUAL TABLE recall_terms USING fts5(grams, content='', contentless_delete=1, detail=none);
-CREATE TRIGGER recall_document_deleted AFTER DELETE ON recall_documents BEGIN
-    DELETE FROM recall_terms WHERE rowid=old.id;
-END;
-
 CREATE TABLE "shell_runs" (
     session_id TEXT NOT NULL REFERENCES session_control(id),
     id TEXT NOT NULL,
@@ -487,6 +414,7 @@ CREATE TABLE "project_locations" (
 ) STRICT;
 
 CREATE TABLE "artifacts" (
+    lookup_digest BLOB NOT NULL CHECK(length(lookup_digest) = 32),
     session_id TEXT NOT NULL REFERENCES session_control(id),
     id TEXT NOT NULL,
     created_at INTEGER NOT NULL CHECK(created_at >= 0),
@@ -502,6 +430,8 @@ CREATE TABLE "artifacts" (
 );
 
 CREATE TABLE "session_history_artifacts" (
+    lookup_digest BLOB NOT NULL CHECK(length(lookup_digest) = 32),
+    target_digest BLOB NOT NULL CHECK(length(target_digest) = 32),
     session_id TEXT NOT NULL REFERENCES session_history_copies(session_id),
     source_session_id TEXT NOT NULL,
     source_artifact_id TEXT NOT NULL,
@@ -591,15 +521,56 @@ CREATE TABLE context_semantic_rows (
     visible INTEGER NOT NULL,
     unknown_only INTEGER NOT NULL,
     row_json TEXT NOT NULL,
+    directory_json TEXT NOT NULL,
     PRIMARY KEY(owner_session_id,source_sequence,source_index,revision)
 );
+
+CREATE TABLE model_part_records (
+    owner_session_id TEXT NOT NULL,
+    invocation_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    ordinal INTEGER CHECK(ordinal>=0),
+    event_id TEXT NOT NULL REFERENCES event_log(event_id),
+    source_sequence INTEGER NOT NULL REFERENCES event_log(sequence),
+    record_index INTEGER NOT NULL CHECK(record_index>=0),
+    message_id TEXT NOT NULL,
+    record_kind TEXT NOT NULL CHECK(record_kind IN ('part','tool_input')),
+    CHECK((record_kind='part' AND ordinal IS NOT NULL) OR (record_kind='tool_input' AND ordinal IS NULL)),
+    PRIMARY KEY(event_id,record_kind,record_index),
+    UNIQUE(invocation_id,step_id,ordinal),
+    UNIQUE(owner_session_id,message_id)
+) WITHOUT ROWID;
+
+CREATE INDEX model_part_message_identity ON model_part_records(message_id,event_id);
+CREATE INDEX model_part_source ON model_part_records(source_sequence);
 
 CREATE TABLE context_semantic_fragments (
     source_sequence INTEGER NOT NULL,
     source_index INTEGER NOT NULL,
-    part_sequence INTEGER NOT NULL,
-    part_index INTEGER NOT NULL,
+    storage_kind TEXT NOT NULL CHECK(storage_kind IN ('pieces','canonical_tool_projection','canonical_model_part')),
+    byte_offset INTEGER,
+    byte_len INTEGER,
+    directory_json TEXT NOT NULL,
+    payload_bytes INTEGER NOT NULL CHECK(payload_bytes>0),
+    CHECK((storage_kind='pieces' AND byte_offset IS NULL AND byte_len IS NULL)
+       OR (storage_kind IN ('canonical_tool_projection','canonical_model_part') AND source_sequence>0
+           AND (storage_kind='canonical_model_part' OR source_index=0)
+           AND byte_offset IS NOT NULL AND byte_offset>=0
+           AND byte_len IS NOT NULL AND byte_len>0
+           AND byte_offset<=2147483647-byte_len)),
     PRIMARY KEY(source_sequence,source_index)
+) WITHOUT ROWID;
+
+CREATE TABLE context_semantic_directory_children (
+    source_sequence INTEGER NOT NULL,
+    source_index INTEGER NOT NULL,
+    list_kind TEXT NOT NULL CHECK(list_kind IN ('quotes','attachments','tool_parts')),
+    ordinal INTEGER NOT NULL CHECK(ordinal>=0),
+    directory_json TEXT NOT NULL,
+    PRIMARY KEY(source_sequence,source_index,list_kind,ordinal),
+    FOREIGN KEY(source_sequence,source_index)
+        REFERENCES context_semantic_fragments(source_sequence,source_index) ON DELETE CASCADE
+        DEFERRABLE INITIALLY DEFERRED
 ) WITHOUT ROWID;
 
 CREATE TABLE context_semantic_fragment_pieces (
@@ -742,7 +713,7 @@ CREATE TABLE interaction_pending (
 
 CREATE TABLE context_execution_work (
     invocation_id TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK(kind IN ('tool','model','call','interrupted','accepted_provider','completed_provider')),
+    kind TEXT NOT NULL CHECK(kind IN ('tool','model','call','interrupted','accepted_provider','completed_provider','executor_tool')),
     operation_id TEXT NOT NULL,
     call_id TEXT NOT NULL DEFAULT '',
     call_name TEXT NOT NULL DEFAULT '',
@@ -784,6 +755,9 @@ CREATE INDEX message_interrupt_run ON message_interrupt_receipts(session_id, run
 CREATE UNIQUE INDEX pending_root_invocation ON message_admissions (
     json_extract(record_json, '$.invocation.invocation_id')
 ) WHERE json_extract(record_json, '$.source.disposition') = 'turn_started';
+
+CREATE INDEX event_retired_material_owner ON event_log(event_session,sequence)
+    WHERE event_json IS NULL AND invocation_id IS NOT NULL;
 
 CREATE INDEX event_material_owner ON event_log(event_session, sequence)
     WHERE event_json IS NOT NULL;
@@ -872,12 +846,6 @@ CREATE INDEX catalog_message_facts ON event_log(
     json_extract(event_json, '$.invocation.session_id'), kind, sequence
 ) WHERE kind IN ('invocation_opened', 'model_completed');
 
-CREATE INDEX catalog_part_starts ON event_log(
-    json_extract(event_json, '$.invocation.session_id'), invocation_id,
-    json_extract(event_json, '$.fact.step_id'), sequence
-) WHERE kind = 'model_observed'
-    AND json_extract(event_json, '$.fact.event.kind') = 'part_started';
-
 CREATE INDEX catalog_visible_tail ON catalog_messages(
     session_id, sequence DESC, ordinal DESC
 );
@@ -889,12 +857,6 @@ CREATE INDEX catalog_latest_message ON catalog_messages(
 CREATE INDEX catalog_latest_preview ON catalog_messages(
     session_id, message_at DESC, sequence DESC, ordinal DESC
 ) WHERE preview IS NOT NULL;
-
-CREATE INDEX catalog_partial_deltas ON event_log(
-    invocation_id, json_extract(event_json, '$.fact.step_id'),
-    json_extract(event_json, '$.fact.event.data.id'), sequence
-) WHERE kind = 'model_observed'
-    AND json_extract(event_json, '$.fact.event.kind') = 'part_delta';
 
 CREATE INDEX navigation_boundaries ON event_log(
     json_extract(event_json, '$.invocation.session_id'), kind, sequence
@@ -965,15 +927,10 @@ CREATE INDEX diagnostic_session_sequence ON event_log(
     CASE WHEN kind='title_failure' THEN json_extract(event_json,'$.opening.session_id') ELSE json_extract(event_json,'$.invocation.session_id') END, sequence
 ) WHERE (kind='title_failure' OR (kind='invocation_ended' AND json_extract(event_json,'$.fact.outcome.kind')='failed') OR (kind='model_interrupted' AND json_extract(event_json,'$.fact.status')!='cancelled'));
 
-CREATE INDEX directory_turn ON transcript_directory(session_id,turn_id,source_sequence,item_index);
 
-CREATE INDEX directory_results ON transcript_directory(session_id,turn_id,tool_use_id,source_sequence,item_index) WHERE role='tool_result';
 
-CREATE INDEX directory_activity ON transcript_directory(session_id,turn_id,tool_use_id,source_sequence,item_index) WHERE role='tool_activity';
 
-CREATE INDEX directory_state ON transcript_directory(session_id,turn_id,source_sequence,item_index) WHERE role='turn_state';
 
-CREATE INDEX directory_user ON transcript_directory(session_id,source_sequence,item_index) WHERE role='user';
 
 CREATE INDEX message_source_openings ON event_log(kind)
 WHERE invocation_id IS NOT NULL AND event_json IS NOT NULL
@@ -1037,7 +994,6 @@ CREATE INDEX context_semantic_unknown_rows ON context_semantic_rows(owner_sessio
 
 CREATE INDEX context_semantic_notifications ON context_semantic_rows(owner_session_id,invocation_id,source_sequence,source_index,revision) WHERE kind='notification';
 
-CREATE INDEX context_semantic_part_fragments ON context_semantic_fragments(part_sequence,part_index,source_sequence,source_index);
 
 CREATE INDEX context_semantic_cut_revision ON context_semantic_cuts(owner_session_id,revision);
 
@@ -1109,6 +1065,31 @@ CREATE INDEX tool_call_identity ON event_log(invocation_id,
 
 CREATE VIEW runtime_events AS
     SELECT * FROM event_log WHERE invocation_id IS NOT NULL AND event_json IS NOT NULL;
+
+CREATE VIEW model_part_bodies AS
+SELECT p.*, e.kind AS source_kind,
+    json_extract(e.event_json, CASE e.kind
+      WHEN 'model_observed' THEN '$.fact.event.data'
+      WHEN 'model_completed' THEN '$.fact.output.parts[' || p.record_index || '].data'
+      WHEN 'model_interrupted' THEN '$.fact.partial.parts[' || p.record_index || '].data'
+    END) AS record,
+    json_extract(e.event_json, CASE e.kind
+      WHEN 'model_observed' THEN '$.fact.event.data.part'
+      WHEN 'model_completed' THEN '$.fact.output.parts[' || p.record_index || '].data.part'
+      WHEN 'model_interrupted' THEN '$.fact.partial.parts[' || p.record_index || '].data.part'
+    END) AS part
+FROM model_part_records p JOIN runtime_events e ON e.sequence=p.source_sequence
+WHERE p.record_kind='part';
+
+CREATE VIEW model_selected_parts AS
+SELECT e.invocation_id,e.operation_id AS step_id,e.kind AS terminal_kind,e.sequence,e.event_id,
+    CAST(json_extract(s.value,'$.data.ordinal') AS INTEGER) AS ordinal,
+    CASE json_extract(s.value,'$.kind') WHEN 'own' THEN e.event_id
+      WHEN 'ref' THEN json_extract(s.value,'$.data.event_id') END AS body_event_id
+FROM runtime_events e, json_each(e.event_json, CASE e.kind
+    WHEN 'model_completed' THEN '$.fact.output.parts'
+    WHEN 'model_interrupted' THEN '$.fact.partial.parts' END) s
+WHERE e.kind IN ('model_completed','model_interrupted');
 
 CREATE VIEW accounting_events AS
     SELECT sequence, event_id, invocation_id, kind, operation_id,
@@ -1310,3 +1291,6 @@ CREATE UNIQUE INDEX native_turn_interruption_lookup ON event_log(
     json_extract(event_json,'$.opening.session_id'),
     json_extract(event_json,'$.opening.turn_id')
 ) WHERE kind='native_turn_interrupted';
+CREATE INDEX artifacts_lookup_digest ON artifacts(lookup_digest);
+CREATE INDEX history_artifacts_lookup_digest ON session_history_artifacts(lookup_digest);
+CREATE INDEX history_artifacts_target_digest ON session_history_artifacts(target_digest);

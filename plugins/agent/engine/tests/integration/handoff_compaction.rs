@@ -144,7 +144,7 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
         assert_eq!(count.load(Ordering::SeqCst), 1);
         let prefix = log.prefix(100, 256 * 1024).await.unwrap();
         assert!(prefix.events.iter().any(|e| matches!(&e.event.fact,
-            Fact::ModelCompleted { output, .. } if output.parts.iter().any(|part| matches!(part,
+            Fact::ModelCompleted { output, .. } if crate::support::model_records::parts(output, &prefix.events).any(|part| matches!(part,
                 maka_agent_facts::model::ModelPart::Text { text_kind: maka_agent_facts::model::TextKind::Thinking, .. })))));
         assert!(prefix.events.iter().any(|e| matches!(&e.event.fact,
             Fact::ContextCheckpointRecorded { checkpoint } if checkpoint.mode == CheckpointMode::PreTurn)));

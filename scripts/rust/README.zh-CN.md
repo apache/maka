@@ -42,10 +42,10 @@ node scripts/rust/notices.mjs check
 
 检查生成的清单和许可证文本。[notices-sources.json](notices-sources.json)记录已审查的上游例外。发布组装还包含实际 V8 构建与 Rust 标准库的 notices。TSV 清单不能替代完整许可证文本。
 
-终端行为使用当前 [terminal-shell 真实 Host 测试](../../products/maka/terminal-shell/tests/real_host.rs)，包含生产 PTY 生命周期。通过 `cargo test -p maka-cli --no-default-features --test terminal_real_host` 运行。比较保留的 release 产物时，使用相同渲染器、终端协议、视口和负载；分别报告输入延迟、帧编码和输出传输。
+终端行为使用当前 [terminal-shell 真实 Host 测试](../../products/maka/terminal-shell/tests/real_host/mod.rs)，包含生产 PTY 生命周期。通过 `cargo test -p maka-cli --no-default-features --test integration terminal::` 运行。比较保留的 release 产物时，使用相同渲染器、终端协议、视口和负载；分别报告输入延迟、帧编码和输出传输。
 
 长任务对比使用两个版本保留的 release 测试可执行文件，基准夹具必须相同。
-通过 `cargo test --release --no-run` 构建 `maka-event-log --test archive`
+通过 `cargo test --release --no-run` 构建 `maka-event-log --test integration`
 和 `maka-agent-engine --test integration`，然后运行：
 
 ```sh
@@ -63,7 +63,7 @@ ARM64 平台上需加 `--features sha2/asm`，才能与产品后端一致。当�
 
 造数据不计时；Engine 耗时涵盖请求送达与执行完成，不包含
 Host IPC。[Engine 夹具](../../plugins/agent/engine/tests/integration/long_task_perf.rs)
-和 [prune 夹具](../../platform/event-log/tests/archive/performance.rs) 提供工具稀疏、
+和 [prune 夹具](../../platform/event-log/tests/integration/archive/performance.rs) 提供工具稀疏、
 工具密集及投影大小等参数。测量时不要同时构建；CPU 剖析与耗时对比分开运行。
 
 测量 1,000 / 10,000 / 100,000 轮时，将 `MAKA_ENGINE_PERF_FIXTURE_DIR` 指向
@@ -89,7 +89,7 @@ admission 后的定时触发不保证引擎仍处于准备阶段，需核对模�
 双 reader 回收及事务恢复另有行为测试，不代表任意同步 Rust 计算都可立即中断。
 
 `--kind transcript --sizes 128,512` 使用保留的 release
-`maka-event-log --test transcript_index` 可执行文件，补测同一 invocation 内的
+`maka-event-log --lib` 可执行文件，补测同一 invocation 内的
 大量模型步骤。每个样本从新副本生成 transcript，并逐条核对助手消息内容。
 
 `--kind executor --sizes 128,512` 用同一 transcript 可执行文件测量外部执行器

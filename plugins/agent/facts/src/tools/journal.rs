@@ -27,6 +27,8 @@ use tokio_util::sync::CancellationToken;
 
 /// Execution facts without an executor or a second admission authority.
 /// Prepared calls can own one-shot effects instead of pretending to be repeatable.
+/// A prior completion shares T1 or rejection; the caller retains its recovery
+/// owner until all calls drain, flushing it before returning a fatal error.
 #[derive(Clone)]
 pub struct ToolJournal {
     sink: Arc<dyn EventSink>,
@@ -77,6 +79,7 @@ impl ToolJournal {
         call: ToolCallIdentity,
         name: String,
         input: crate::model::ToolInput,
+        prior: Option<EventWrite>,
         reason: ToolRejection,
     ) -> ToolFuture {
         let sink = self.sink.clone();
@@ -93,12 +96,14 @@ impl ToolJournal {
                     reason,
                 },
             );
-            sink.commit(
+            sink.commit_with_prefix(
+                prior.as_slice(),
                 EventWrite::plain(event)
                     .map_err(|error| ToolError::Persistence(error.to_string()))?,
             )
             .await
             .map_err(|error| ToolError::Persistence(error.to_string()))?;
+            drop(prior);
             Err(ToolError::Failed(message))
         })
     }
@@ -106,12 +111,17 @@ impl ToolJournal {
     /// Journal a one-shot effect whose preparation and policy checks have
     /// already succeeded. Captured admission guards are dropped if T1 fails
     /// or cancellation prevents execution; the closure is never retried.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the accepted model fact must remain explicit at the T1 boundary"
+    )]
     pub fn invoke_call_with<T: Into<ToolSuccess> + Send + 'static>(
         &self,
         operation_id: String,
         call: ToolCallIdentity,
         name: String,
         input: Value,
+        prior: Option<EventWrite>,
         cancellation: CancellationToken,
         effect: impl FnOnce(CancellationToken) -> ToolFuture<T> + Send + 'static,
     ) -> ToolFuture {
@@ -120,6 +130,7 @@ impl ToolJournal {
             call,
             name,
             input,
+            prior,
             cancellation,
             PreparedEffect::new(move |cancellation| {
                 Box::pin(async move { effect(cancellation).await.map(Into::into) })
@@ -127,28 +138,45 @@ impl ToolJournal {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the accepted model fact must remain explicit at the T1 boundary"
+    )]
     pub fn invoke_prepared_call(
         &self,
         operation_id: String,
         call: ToolCallIdentity,
         name: String,
         input: Value,
+        prior: Option<EventWrite>,
         cancellation: CancellationToken,
         effect: PreparedEffect,
     ) -> ToolFuture {
-        let output =
-            self.invoke_prepared_output(operation_id, call, name, input, cancellation, effect);
+        let output = self.invoke_prepared_output(
+            operation_id,
+            call,
+            name,
+            input,
+            prior,
+            cancellation,
+            effect,
+        );
         Box::pin(async move { output.await.map(ToolOutput::into_json) })
     }
 
     /// Native consumers keep the typed result; encoding is only for persistence
     /// and wire adapters, not an unnecessary serialize/deserialize round trip.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the accepted model fact must remain explicit at the T1 boundary"
+    )]
     pub fn invoke_prepared_output(
         &self,
         operation_id: String,
         call: ToolCallIdentity,
         name: String,
         input: Value,
+        prior: Option<EventWrite>,
         cancellation: CancellationToken,
         mut effect: PreparedEffect,
     ) -> ToolFuture<ToolOutput> {
@@ -166,25 +194,44 @@ impl ToolJournal {
                     input,
                 },
             );
-            let sequence = sink
+            let receipt = sink
                 .clone()
-                .commit(
+                .commit_with_prefix(
+                    prior.as_slice(),
                     EventWrite::plain(dispatch)
                         .map_err(|error| ToolError::Persistence(error.to_string()))?,
                 )
-                .await
-                .map_err(|error| match error {
-                    crate::event::CommitError::Retired => {
-                        ToolError::Failed("session retired before effect".into())
+                .await;
+            let sequence = match receipt {
+                Ok(sequence) => sequence,
+                Err(
+                    error @ (crate::event::CommitError::Retired
+                    | crate::event::CommitError::PermissionRevoked
+                    | crate::event::CommitError::NativeTurnInterrupted),
+                ) => {
+                    if let Some(prior) = prior {
+                        sink.commit(prior).await.map_err(|flush| {
+                            ToolError::Persistence(format!(
+                                "{error}; completion flush failed: {flush}"
+                            ))
+                        })?;
                     }
-                    crate::event::CommitError::PermissionRevoked => {
-                        ToolError::Failed("permission grant is no longer current".into())
-                    }
-                    crate::event::CommitError::NativeTurnInterrupted => ToolError::Failed(
-                        "native Computer Use is stopped for this logical Turn".into(),
-                    ),
-                    other => ToolError::Persistence(other.to_string()),
-                })?;
+                    return Err(ToolError::Failed(match error {
+                        crate::event::CommitError::Retired => {
+                            "session retired before effect".into()
+                        }
+                        crate::event::CommitError::PermissionRevoked => {
+                            "permission grant is no longer current".into()
+                        }
+                        crate::event::CommitError::NativeTurnInterrupted => {
+                            "native Computer Use is stopped for this logical Turn".into()
+                        }
+                        _ => error.to_string(),
+                    }));
+                }
+                Err(error) => return Err(ToolError::Persistence(error.to_string())),
+            };
+            drop(prior);
             effect.admitted(sequence);
 
             let result = if cancellation.is_cancelled() {
@@ -299,28 +346,52 @@ mod admission_tests {
         dispatch_ready: AtomicBool,
         reject_dispatch: bool,
         settled: AtomicBool,
+        permission_revoked: bool,
+        fail_flush: bool,
+        committed: Mutex<Vec<EventWrite>>,
     }
     impl EventSink for Sink {
         fn commit(self: Arc<Self>, event: EventWrite) -> CommitFuture {
+            self.commit_with_prefix(&[], event)
+        }
+        fn commit_with_prefix(
+            self: Arc<Self>,
+            prefix: &[EventWrite],
+            last: EventWrite,
+        ) -> CommitFuture {
+            let mut events = prefix.to_vec();
+            events.push(last);
             Box::pin(async move {
-                if matches!(&event.event().fact, Fact::ToolDispatched { .. }) {
+                let dispatch = matches!(
+                    &events.last().unwrap().event().fact,
+                    Fact::ToolDispatched { .. }
+                );
+                if dispatch {
                     poll_fn(|_| {
                         if self.reject_dispatch {
                             Poll::Ready(Err(CommitError::OutcomeUnknown(
                                 "original commit observer lost".into(),
                             )))
+                        } else if self.permission_revoked {
+                            Poll::Ready(Err(CommitError::PermissionRevoked))
                         } else if self.dispatch_ready.load(Ordering::SeqCst) {
-                            Poll::Ready(Ok(7))
+                            Poll::Ready(Ok(()))
                         } else {
                             Poll::Pending
                         }
                     })
-                    .await
-                } else {
-                    assert!(matches!(&event.event().fact, Fact::ToolSettled { .. }));
-                    self.settled.store(true, Ordering::SeqCst);
-                    Ok(8)
+                    .await?;
+                } else if self.fail_flush {
+                    return Err(CommitError::Rejected("completion flush rejected".into()));
                 }
+                let mut committed = self.committed.lock().unwrap();
+                for event in events {
+                    if matches!(&event.event().fact, Fact::ToolSettled { .. }) {
+                        self.settled.store(true, Ordering::SeqCst);
+                    }
+                    committed.push(event);
+                }
+                Ok(if dispatch { 7 } else { 8 })
             })
         }
     }
@@ -336,6 +407,37 @@ mod admission_tests {
         )
     }
 
+    fn completion(sink: &Arc<Sink>) -> EventWrite {
+        EventWrite::plain(RuntimeEvent::new(
+            journal(sink.clone()).invocation().clone(),
+            Fact::ModelCompleted {
+                step_id: "step".into(),
+                output: crate::model::recorded::ModelCompletion {
+                    parts: vec![crate::model::recorded::CompletionPart::Own(
+                        crate::model::recorded::ModelPartRecord {
+                            ordinal: 0,
+                            message_id: "response".into(),
+                            started_at: std::time::SystemTime::UNIX_EPOCH,
+                            provider_part_id: Some("text".into()),
+                            part: Arc::new(crate::model::ModelPart::Text {
+                                text_kind: crate::model::TextKind::Text,
+                                text: "complete accepted response".into(),
+                                provider_options: None,
+                            }),
+                        },
+                    )],
+                    finish_reason: crate::model::ModelFinishReason::ToolCalls,
+                    usage: Default::default(),
+                    provider_options: None,
+                    response_id: None,
+                    model: None,
+                    timestamp: None,
+                },
+            },
+        ))
+        .unwrap()
+    }
+
     #[test]
     fn admission_ack_follows_real_t1_and_precedes_the_original_unsettled_effect() {
         let sink = Arc::new(Sink::default());
@@ -345,8 +447,19 @@ mod admission_tests {
         let effect_started = started.clone();
         let released = Arc::new(AtomicBool::new(false));
         let effect_released = released.clone();
+        let prior = completion(&sink);
+        let expected_completion = prior.clone();
+        let effect_sink = sink.clone();
         let effect = PreparedEffect::new(move |_| {
             Box::pin(async move {
+                {
+                    let committed = effect_sink.committed.lock().unwrap();
+                    assert_eq!(committed[0].event(), expected_completion.event());
+                    assert!(matches!(
+                        committed[1].event().fact,
+                        Fact::ToolDispatched { .. }
+                    ));
+                }
                 effect_started.store(true, Ordering::SeqCst);
                 poll_fn(|_| {
                     if effect_released.load(Ordering::SeqCst) {
@@ -364,6 +477,7 @@ mod admission_tests {
             ToolCallIdentity::standalone("call".into()),
             "effect".into(),
             serde_json::json!({}),
+            Some(prior),
             CancellationToken::new(),
             effect,
         );
@@ -404,6 +518,7 @@ mod admission_tests {
                 ToolCallIdentity::standalone("call".into()),
                 "effect".into(),
                 serde_json::json!({}),
+                None,
                 CancellationToken::new(),
                 effect,
             );
@@ -418,6 +533,71 @@ mod admission_tests {
             }
             drop(call);
             assert_eq!(*observed.lock().unwrap(), vec![EffectAdmission::NotStarted]);
+        }
+    }
+    #[test]
+    fn preparation_rejection_preserves_the_complete_accepted_response() {
+        let sink = Arc::new(Sink::default());
+        let prior = completion(&sink);
+        let expected = prior.clone();
+        let mut rejected = journal(sink.clone()).reject(
+            "operation".into(),
+            ToolCallIdentity::standalone("call".into()),
+            "effect".into(),
+            serde_json::json!({}).into(),
+            Some(prior),
+            ToolRejection::Cancelled,
+        );
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            rejected.as_mut().poll(&mut context),
+            Poll::Ready(Err(ToolError::Failed(_)))
+        ));
+        let committed = sink.committed.lock().unwrap();
+        assert_eq!(committed.len(), 2);
+        assert_eq!(committed[0].event(), expected.event());
+        assert!(matches!(
+            &committed[1].event().fact,
+            Fact::ToolRejected {
+                reason: ToolRejection::Cancelled,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn revoked_t1_preserves_completion_and_flush_failure_is_fatal() {
+        for fail_flush in [false, true] {
+            let sink = Arc::new(Sink {
+                permission_revoked: true,
+                fail_flush,
+                ..Default::default()
+            });
+            let prior = completion(&sink);
+            let expected = prior.clone();
+            let mut call = journal(sink.clone()).invoke_prepared_output(
+                "operation".into(),
+                ToolCallIdentity::standalone("call".into()),
+                "effect".into(),
+                serde_json::json!({}),
+                Some(prior),
+                CancellationToken::new(),
+                PreparedEffect::new(|_| panic!("revoked T1 must never start its effect")),
+            );
+            let mut context = Context::from_waker(Waker::noop());
+            match call.as_mut().poll(&mut context) {
+                Poll::Ready(Err(ToolError::Persistence(message))) if fail_flush => {
+                    assert!(message.contains("permission grant is no longer current"));
+                    assert!(message.contains("completion flush rejected"));
+                }
+                Poll::Ready(Err(ToolError::Failed(message))) if !fail_flush => {
+                    assert_eq!(message, "permission grant is no longer current");
+                    let committed = sink.committed.lock().unwrap();
+                    assert_eq!(committed.len(), 1);
+                    assert_eq!(committed[0].event(), expected.event());
+                }
+                _ => panic!("revoked T1 must preserve completion or report its failed flush"),
+            }
         }
     }
 }

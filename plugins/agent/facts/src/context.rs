@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::model::{ModelFinishReason, ModelPart, ModelStep, TextKind};
+use crate::model::{ModelFinishReason, ModelPart, TextKind};
 use serde::{Deserialize, Serialize};
 
 mod breakdown;
@@ -158,19 +158,24 @@ pub enum SummaryDefect {
 impl TextSummary {
     /// Ordinary text parts concatenate in original order; thinking is not a
     /// portable summary. The prompt controls the summary's content and format.
-    pub fn from_model_step(step: &ModelStep) -> Result<Self, SummaryDefect> {
-        if step.finish_reason != ModelFinishReason::Stop {
+    pub fn from_parts<'a>(
+        finish_reason: ModelFinishReason,
+        parts: impl IntoIterator<Item = &'a ModelPart>,
+    ) -> Result<Self, SummaryDefect> {
+        if finish_reason != ModelFinishReason::Stop {
             return Err(SummaryDefect::InvalidFinish);
         }
         let mut text = String::new();
-        for part in &step.parts {
+        for part in parts {
             match part {
                 ModelPart::Text {
                     text_kind: TextKind::Text,
                     text: part,
                     ..
                 } => {
-                    text.push_str(part);
+                    for chunk in part.chunks() {
+                        text.push_str(chunk);
+                    }
                 }
                 ModelPart::Text {
                     text_kind: TextKind::Thinking,
@@ -215,6 +220,7 @@ impl ContextCheckpoint {
 mod tests {
     use super::*;
     use crate::input::InvocationInput;
+    use crate::model::ModelStep;
 
     #[test]
     fn summary_preserves_custom_text_without_content_heuristics() {
@@ -231,7 +237,12 @@ mod tests {
                 "finish_reason":"stop", "usage":{"input_tokens":20000,"output_tokens":1}
             }))
             .unwrap();
-            assert_eq!(TextSummary::from_model_step(&step).unwrap().text, text);
+            assert_eq!(
+                TextSummary::from_parts(step.finish_reason, &step.parts)
+                    .unwrap()
+                    .text,
+                text
+            );
         }
     }
 
@@ -243,7 +254,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            TextSummary::from_model_step(&step),
+            TextSummary::from_parts(step.finish_reason, &step.parts),
             Err(SummaryDefect::InvalidFinish)
         );
         step.finish_reason = ModelFinishReason::Stop;
@@ -254,7 +265,7 @@ mod tests {
             .unwrap(),
         });
         assert_eq!(
-            TextSummary::from_model_step(&step),
+            TextSummary::from_parts(step.finish_reason, &step.parts),
             Err(SummaryDefect::ToolContent)
         );
     }

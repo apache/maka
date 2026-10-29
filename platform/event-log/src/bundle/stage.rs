@@ -456,5 +456,4 @@ async fn copy_contents(
 }
 
 #[cfg(test)]
-#[path = "stage_custody_tests.rs"]
 mod custody_tests;

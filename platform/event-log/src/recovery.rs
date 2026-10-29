@@ -29,22 +29,14 @@ use crate::{EventLog, StoreError};
 
 macro_rules! unresolved {
     ($tail:literal) => { concat!(
-        "WITH pending AS MATERIALIZED (
+        "WITH ", crate::model_items::accepted_calls!(), ", pending AS MATERIALIZED (
             SELECT kind, operation_id, opened_at FROM context_obligations
             WHERE invocation_id=?1 AND kind IN ('model','tool','call')
-        ), call_sources AS MATERIALIZED (
-            SELECT DISTINCT opened_at FROM pending WHERE kind='call'
         ), pending_calls(step_id, call) AS (
-            SELECT e.operation_id, json_extract(part.value, '$.call')
-            FROM call_sources s CROSS JOIN runtime_events e CROSS JOIN json_each(e.event_json, '$.fact.output.parts') part
-            WHERE e.sequence=s.opened_at AND e.kind='model_completed'
-              AND json_extract(part.value, '$.kind')='tool_call'
-              AND EXISTS(SELECT 1 FROM pending p WHERE p.kind='call' AND p.opened_at=s.opened_at
-                  AND p.operation_id=e.operation_id || ':' || json_extract(part.value, '$.call.id'))
-            UNION ALL
-            SELECT json_extract(e.event_json, '$.fact.step_id'), json_extract(e.event_json, '$.fact.event.data')
-            FROM pending p CROSS JOIN runtime_events e
-            WHERE p.kind='call' AND e.sequence=p.opened_at AND e.kind='model_observed'
+            SELECT c.step_id,c.call FROM pending p JOIN accepted_calls c
+              ON c.invocation_id=?1 AND c.sequence=p.opened_at
+              AND c.step_id || ':' || json_extract(c.call,'$.id')=p.operation_id
+            WHERE p.kind='call'
         ), unresolved(kind, id, name, input, call) AS (
             SELECT CASE kind WHEN 'model' THEN 0 ELSE 1 END, operation_id, '', 'null', 'null'
             FROM pending WHERE kind IN ('model','tool')

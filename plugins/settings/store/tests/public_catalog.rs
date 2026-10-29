@@ -26,7 +26,7 @@ use maka_config::{
 };
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use serde_json::{Value, json};
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
 fn record(body: Value, checked_at: i64) -> PublicCatalogRecord {
     PublicCatalogRecord {

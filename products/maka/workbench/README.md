@@ -34,11 +34,11 @@ tsc -p /tmp/maka-workbench-types/tsconfig.json --noEmit --skipLibCheck false
 
 The example writes declarations from the same NSH sources and native registry used by UI packages. Its TypeScript project includes `Bootstrap.tsx`, `App.tsx` and the Computer permission components; their real imports are checked too. It does not connect to a Host or open a desktop. Use an unused output directory and a TypeScript compiler compatible with the current `nsh check` toolchain.
 
-The [real Host test fixture](../terminal-shell/tests/support/mod.rs) writes `host.d.ts` to the directory named by `MAKA_NSH_EVIDENCE`, using `nsh_core::element::declarations` on the actual `maka/host` registry. To collect it from the same model-search test selected by CI, run from the repository root:
+The [real Host test fixture](../terminal-shell/tests/real_host/support.rs) writes `host.d.ts` to the directory named by `MAKA_NSH_EVIDENCE`, using `nsh_core::element::declarations` on the actual `maka/host` registry. To collect it from the same model-search test selected by CI, run from the repository root:
 
 ```sh
 MAKA_NSH_EVIDENCE=/tmp/maka-nsh-evidence cargo nextest run --locked --workspace \
-  -E 'package(=maka-cli) & binary(=terminal_real_host) & test(=keyboard::connection_filter_preserves_model_search_focus_and_keyboard_selection)'
+  -E 'package(=maka-cli) & binary(=integration) & test(=terminal::keyboard::connection_filter_preserves_model_search_focus_and_keyboard_selection)'
 ```
 
 This runs a real Host test; it is not a standalone type generator or a TypeScript check of the application.

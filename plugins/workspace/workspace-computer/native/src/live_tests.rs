@@ -75,7 +75,7 @@ struct Window {
 impl Window {
     async fn open(directory: &Path) -> Self {
         let binary = std::env::var_os("MAKA_COMPUTER_LIVE_FIXTURE_BIN")
-            .expect("explicit prebuilt repl_browser fixture ELF is required");
+            .expect("explicit prebuilt computer-use integration fixture ELF is required");
         // C:-mapped artifact storage need not support Unix socket nodes.
         let socket_base = std::env::var_os("MAKA_COMPUTER_LIVE_SOCKET_DIR")
             .map(PathBuf::from)
@@ -498,6 +498,7 @@ impl Run {
                 ToolCallIdentity::standalone(Uuid::new_v4().to_string()),
                 tool.into(),
                 input.clone(),
+                None,
                 cancellation,
                 move |cancel| {
                     Box::pin(async move {

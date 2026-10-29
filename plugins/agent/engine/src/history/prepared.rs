@@ -17,38 +17,101 @@
  * under the License.
  */
 
-//! Incremental semantic groups and separately captured provider-wire groups.
+//! Capture source-backed logical input without a private preparation store.
+use super::{
+    frozen::{FrozenDirectory, Items, MessageDescriptor},
+    source_projector::{ProjectContext, ProjectedRow},
+};
 use crate::RunError;
-use maka_agent_facts::model::prompt_source::{
-    WireCursor, WireMetadata, WireMetadataCursor, WireSource,
+use maka_agent_facts::history::semantic::directory::RowDirectory;
+use maka_agent_facts::{language::Language, model::prompt_source::source::*};
+use maka_event_log::{
+    context::semantic::{CapturedSource, SemanticSelection},
+    root_store::SessionStore,
 };
-use maka_agent_facts::{context::measure, language::Language};
-use maka_event_log::context::{
-    prepared::{PreparedView, PreparedWireCursor, PreparedWireView},
-    semantic::{SemanticReplay, SemanticSelection},
-};
-use maka_event_log::root_store::SessionStore;
-use maka_model::{
-    ModelError, ProviderConfig, ProviderKind, ToolDefinition,
-    prompt::{Message, Prompt, PromptCursor, PromptSource},
-};
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
-};
+use maka_model::{ModelPreparationResources, ProviderKind, prompt::Prompt};
+use std::{io, mem, ops::Range, sync::Arc};
 use tokio_util::sync::CancellationToken;
+mod backed;
+#[cfg(test)]
+mod backed_tests;
 
-pub(crate) struct PreparedHistory {
-    log: Arc<SessionStore>,
-    view: PreparedView,
-    wire: Mutex<Option<PreparedWireView>>,
-    language: Language,
-    vision: bool,
+pub(crate) struct FrozenHistory {
+    directory: HistoryDirectory,
+    resources: ModelPreparationResources,
     provider: ProviderKind,
-    replay: Option<SemanticReplay>,
-    session: String,
+    arena: super::capture_arena::CaptureArena,
+    resident_bytes: usize,
+    preparation: Arc<super::preparation::RequestPreparation>,
+}
+enum HistoryDirectory {
+    Resident(Arc<FrozenDirectory>),
+    Backed(Arc<super::arena_directory::ArenaDirectory>),
+}
+impl HistoryDirectory {
+    fn source(&self) -> Arc<dyn MessageSource> {
+        match self {
+            Self::Resident(source) => source.clone(),
+            Self::Backed(source) => source.clone(),
+        }
+    }
+    fn identity(&self) -> String {
+        match self {
+            Self::Resident(source) => source.identity(),
+            Self::Backed(source) => source.identity().to_owned(),
+        }
+    }
+    fn breakdown(&self) -> &maka_agent_facts::context::PreparedContextBreakdown {
+        match self {
+            Self::Resident(source) => source.breakdown(),
+            Self::Backed(source) => source.breakdown(),
+        }
+    }
+    fn len(&self) -> usize {
+        match self {
+            Self::Resident(source) => source.len(),
+            Self::Backed(source) => source.len(),
+        }
+    }
+}
+struct DirectoryOwner {
+    _source: CapturedSource,
+    _lease: maka_model::DirectoryLease,
+}
+enum Plan {
+    Resident {
+        rows: usize,
+        bytes: usize,
+        backing_bytes: usize,
+        chat: super::chat_source::ChatShape,
+    },
+    NeedsBacking {
+        rows: usize,
+        chat: super::chat_source::ChatShape,
+    },
+}
+pub(super) enum MessageBuilder {
+    User(Arc<dyn RecipeSource<ContentRecipe>>),
+    Assistant {
+        parts: Range<usize>,
+        options: Option<JsonSource>,
+    },
+    Tool(Box<ToolResultRecipe>),
+    DeferredUser {
+        parts: Range<usize>,
+    },
+}
+struct Producer {
+    id: [u8; 32],
+    position: usize,
+}
+struct AssistantGroup {
+    key: u64,
+    start: usize,
+    options: Option<JsonSource>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn capture(
     log: &Arc<SessionStore>,
     selection: SemanticSelection,
@@ -56,347 +119,695 @@ pub(crate) async fn capture(
     vision: bool,
     provider: &ProviderKind,
     cancellation: &CancellationToken,
-    prior: Option<&PreparedHistory>,
-) -> Result<Arc<PreparedHistory>, RunError> {
-    #[derive(serde::Serialize)]
-    struct Policy<'a> {
-        renderer: &'static str,
-        language: Language,
-        vision: bool,
-        provider: &'a ProviderKind,
+    resources: ModelPreparationResources,
+    overlay_bytes: usize,
+) -> Result<Arc<FrozenHistory>, RunError> {
+    let captured = log.capture_source(selection).await?;
+    let receipt = captured.reserve_local_resource()?;
+    let provider = provider.clone();
+    let cancellation = cancellation.child_token();
+    let observer = cancellation.clone().drop_guard();
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    let (delivered, acknowledged) = tokio::sync::oneshot::channel();
+    let evidence = crate::cleanup::current();
+    tokio::spawn(evidence.scope(async move {
+        use futures_util::FutureExt;
+        let result = std::panic::AssertUnwindSafe(capture_owned(
+            captured,
+            language,
+            vision,
+            &provider,
+            &cancellation,
+            resources,
+            overlay_bytes,
+        ))
+        .catch_unwind()
+        .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => {
+                receipt.finish(Err("frozen capture worker panicked".into()));
+                let _ = reply.send(Err(crate::cleanup::unconfirmed()));
+                return;
+            }
+        };
+        let settled = match result {
+            Ok(history) => {
+                let retained = history.clone();
+                if reply.send(Ok(history)).is_ok() && acknowledged.await.is_ok() {
+                    Ok(())
+                } else {
+                    retained.close().await.map_err(|error| {
+                        let reason = error.to_string();
+                        let _ = crate::cleanup::preparation_failed(error);
+                        reason
+                    })
+                }
+            }
+            Err(error) => {
+                let unconfirmed = error.is_cleanup_unconfirmed();
+                let _ = reply.send(Err(error));
+                if unconfirmed {
+                    Err("frozen input cleanup is unconfirmed".to_owned())
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        receipt.finish(settled);
+    }));
+    let result = receive
+        .await
+        .map_err(|error| crate::cleanup::preparation_failed(io::Error::other(error)))?;
+    if result.is_ok() && delivered.send(()).is_err() {
+        if let Ok(history) = result
+            && let Err(error) = history.close().await
+        {
+            return Err(crate::cleanup::preparation_failed(error));
+        }
+        return Err(crate::cleanup::unconfirmed());
     }
-    let policy = crate::runner::digest(&Policy {
-        renderer: "maka.semantic-render.v1",
+    observer.disarm();
+    result
+}
+
+async fn capture_owned(
+    captured: CapturedSource,
+    language: Language,
+    vision: bool,
+    provider: &ProviderKind,
+    cancellation: &CancellationToken,
+    resources: ModelPreparationResources,
+    overlay_bytes: usize,
+) -> Result<Arc<FrozenHistory>, RunError> {
+    let work = acquire_work(&resources, cancellation).await?;
+    let budget = work.budget();
+    let plan = plan(
+        &captured,
         language,
         vision,
         provider,
-    })?;
-    let session = selection.session.clone();
-    let replay = selection.replay.clone();
-    let build = log
-        .prepare_model_view(selection, &policy, prior.map(|history| &history.view))
-        .await?;
-    let mut after = None;
-    loop {
-        if cancellation.is_cancelled() {
-            return Err(RunError::Cancelled);
-        }
-        let groups = log
-            .prepared_dirty_groups(&build, after.as_deref(), 64)
-            .await?;
-        if groups.is_empty() {
-            break;
-        }
-        for group in groups {
-            if cancellation.is_cancelled() {
-                return Err(RunError::Cancelled);
-            }
-            let rows = log.prepared_group_rows(&build, &group).await?;
-            let (messages, manifest) = super::render_semantic_group(
-                log,
-                &rows,
-                super::semantic::RenderContext {
-                    session: &session,
-                    vision,
-                    language,
-                    provider,
-                    replay: replay.as_ref(),
-                },
+        &budget,
+        cancellation,
+        resources
+            .policy()
+            .staging_bytes
+            .checked_sub(overlay_bytes)
+            .ok_or_else(|| error(io::Error::other("overlay metadata exceeds staging policy")))?,
+    )
+    .await
+    .map_err(error)?;
+    drop(budget);
+    drop(work);
+    let (rows, bytes, backing_bytes, chat) = match plan {
+        Plan::Resident {
+            rows,
+            bytes,
+            backing_bytes,
+            chat,
+        } => (rows, bytes, backing_bytes, chat),
+        Plan::NeedsBacking { rows, chat } => {
+            return backed::capture(
+                captured,
+                language,
+                vision,
+                provider,
                 cancellation,
-                None,
+                resources,
+                rows,
+                chat,
+                overlay_bytes,
             )
-            .await?;
-            let breakdown = measure::prompt_breakdown(&messages);
-            log.put_prepared_group(&build, &group, messages, breakdown, manifest)
-                .await?;
-            after = Some(group.id);
+            .await;
         }
-    }
-    let view = log.finish_prepared(&build).await?;
-    Ok(Arc::new(PreparedHistory {
-        log: log.clone(),
-        view,
-        wire: Mutex::new(prior.and_then(|history| {
-            history
-                .wire
-                .lock()
-                .expect("prepared wire lock poisoned")
-                .clone()
-        })),
-        language,
-        vision,
-        provider: provider.clone(),
-        replay,
-        session,
-    }))
-}
+    };
+    let resident_arena = bytes
+        .checked_add(backing_bytes)
+        .is_some_and(|total| total <= resources.policy().staging_bytes - overlay_bytes);
+    let reserve = if resident_arena {
+        bytes + backing_bytes
+    } else {
+        bytes
+    };
+    let staged = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err(RunError::Cancelled),
+        staged = resources.reserve_staging(reserve.checked_add(overlay_bytes).ok_or_else(|| error(io::Error::other("staging envelope overflow")))?) => staged.map_err(error)?,
+    };
+    let mut lease = staged.directory(reserve).map_err(error)?;
+    let preparation = super::preparation::RequestPreparation::new(staged);
+    let arena_lease = if resident_arena {
+        Some(lease.split(backing_bytes).map_err(error)?)
+    } else {
+        None
+    };
+    let arena = super::capture_arena::CaptureArena::new(captured.clone(), arena_lease)
+        .await
+        .map_err(error)?;
+    let result = async {
+        let owner: Arc<dyn Send + Sync> = Arc::new(DirectoryOwner {
+            _source: captured.clone(),
+            _lease: lease,
+        });
+        let work = acquire_work(&resources, cancellation).await?;
+        let budget = work.budget();
+        let context = ProjectContext {
+            language,
+            vision,
+            provider,
+            replay: captured.selection().replay.as_ref(),
+            budget: budget.clone(),
+            directory_owner: owner.clone(),
+            captured: Some(&captured),
+            arena: Some(&arena),
+            cancellation,
+            row_root: None,
+            payload_root: None,
+            internal_arena: false,
+        };
+        let mut builders = Vec::with_capacity(rows);
+        let mut parts = Vec::with_capacity(rows);
+        let mut group = None;
+        let mut after = None;
+        let mut page_buffer = budget.allocate(32 * 1024).await.map_err(error)?;
+        loop {
+            cancelled(cancellation)?;
+            let mut page = captured.directory_page(after, page_buffer).await?;
+            while let Some(entry) = page.next_row()? {
+                cancelled(cancellation)?;
+                let row = entry.row;
+                let metadata = entry.directory;
+                let assistant = matches!(metadata, RowDirectory::AssistantPart { .. });
+                if !assistant {
+                    flush(&mut builders, &parts, &mut group);
+                }
+                let payload = captured.describe_payload(&row)?;
+                let row_root = captured.metadata_source(&row)?;
+                let row_context = context.for_row(&row_root, payload.as_ref());
+                let projected = super::source_projector::project_row(
+                    &metadata,
+                    entry.payload.as_ref(),
+                    &row_context,
+                )
+                .await
+                .map_err(error)?;
 
-impl PreparedHistory {
+                match projected {
+                    ProjectedRow::User(content) => builders.push(MessageBuilder::User(content)),
+                    ProjectedRow::Tool(result) => {
+                        builders.push(MessageBuilder::Tool(Box::new(result)))
+                    }
+                    ProjectedRow::Assistant(part) if !assistant => {
+                        let start = parts.len();
+                        parts.push(part);
+                        builders.push(MessageBuilder::Assistant {
+                            parts: start..parts.len(),
+                            options: None,
+                        });
+                    }
+                    ProjectedRow::Assistant(part) => {
+                        ensure_group(row.order.source_sequence, &mut builders, &parts, &mut group);
+                        parts.push(part);
+                    }
+                    ProjectedRow::AssistantMetadata { options } => {
+                        ensure_group(row.order.source_sequence, &mut builders, &parts, &mut group);
+                        if let Some(group) = &mut group
+                            && group.options.is_none()
+                        {
+                            group.options = Some(options);
+                        }
+                    }
+                    ProjectedRow::Skip => {}
+                }
+            }
+            after = page.next;
+            page_buffer = page.into_buffer();
+            if after.is_none() {
+                break;
+            }
+        }
+        flush(&mut builders, &parts, &mut group);
+        drop(page_buffer);
+        let (builders, deferred) = if chat.media_results != 0 {
+            let (builders, deferred) = super::chat_source::project(
+                builders,
+                chat,
+                language,
+                &budget,
+                owner.clone(),
+                cancellation,
+            )
+            .await
+            .map_err(error)?;
+            (builders, Some(deferred))
+        } else {
+            (builders, None)
+        };
+        arena.seal().await.map_err(error)?;
+        if matches!(provider, ProviderKind::Anthropic) {
+            freeze_mcp(&builders, &mut parts, &budget, cancellation)
+                .await
+                .map_err(error)?;
+        }
+        let parts: Arc<[AssistantRecipe]> = parts.into();
+        let mut messages = Vec::with_capacity(
+            rows.checked_add(chat.media_results)
+                .ok_or_else(|| error(io::Error::other("Chat message count overflow")))?,
+        );
+        for builder in builders {
+            cancelled(cancellation)?;
+            let recipe = match builder {
+                MessageBuilder::User(content) => MessageRecipe::User {
+                    content,
+                    provider_options: None,
+                },
+                MessageBuilder::Assistant {
+                    parts: range,
+                    options,
+                } => MessageRecipe::Assistant {
+                    content: Arc::new(Items::range(parts.clone(), range, owner.clone())),
+                    provider_options: options,
+                },
+                MessageBuilder::DeferredUser { parts: range } => MessageRecipe::User {
+                    content: Arc::new(Items::range(
+                        deferred
+                            .as_ref()
+                            .expect("deferred Chat message owns its flat part directory")
+                            .clone(),
+                        range,
+                        owner.clone(),
+                    )),
+                    provider_options: None,
+                },
+                MessageBuilder::Tool(result) => MessageRecipe::Tool {
+                    content: Arc::new(Items::new(vec![*result], owner.clone())),
+                    provider_options: None,
+                },
+            };
+            messages.push(
+                super::measure_source::describe(recipe, &budget, owner.clone(), cancellation)
+                    .await
+                    .map_err(error)?,
+            );
+        }
+        let directory = Arc::new(FrozenDirectory::new(messages, owner));
+        drop(context);
+        drop(budget);
+        drop(work);
+        Ok(Arc::new(FrozenHistory {
+            directory: HistoryDirectory::Resident(directory),
+            resources,
+            provider: provider.clone(),
+            arena: arena.clone(),
+            resident_bytes: reserve,
+            preparation,
+        }))
+    }
+    .await;
+    if result.is_err()
+        && let Err(error) = arena.close().await
+    {
+        return Err(crate::cleanup::preparation_failed(error));
+    }
+    result
+}
+impl FrozenHistory {
     pub fn prompt(self: &Arc<Self>) -> Prompt {
-        Prompt::new(
-            self.clone(),
-            self.view.identity.clone(),
-            self.view.message_count,
-            self.view.breakdown.clone(),
+        Prompt::from_recipes(
+            self.recipes(),
+            self.directory.identity(),
+            self.directory.len(),
+            self.directory.breakdown().clone(),
         )
         .with_normalization(self.provider.clone())
     }
-
-    pub async fn compile(
-        self: &Arc<Self>,
-        provider: &ProviderConfig,
-        options: &serde_json::Value,
-        tools: &[ToolDefinition],
-        cancellation: &CancellationToken,
-    ) -> Result<Prompt, RunError> {
-        let encoding = maka_model::WireEncoding::new(self.language, provider, options, tools)?;
-        let codec = encoding.codec().to_owned();
-        let format = encoding.format();
-        let prior = self
-            .wire
-            .lock()
-            .expect("prepared wire lock poisoned")
-            .clone();
-        let build = self
-            .log
-            .prepare_wire_view(&self.view, format, &codec, prior.as_ref())
-            .await?;
-        let mut after = None;
-        loop {
-            if cancellation.is_cancelled() {
-                return Err(RunError::Cancelled);
-            }
-            let groups = self
-                .log
-                .prepared_wire_dirty_groups(&build, after.as_deref(), 64)
-                .await?;
-            if groups.is_empty() {
-                break;
-            }
-            for group in groups {
-                let semantic = self.log.prepared_view_group(&self.view, &group).await?;
-                let (messages, _) = super::render_semantic_group(
-                    &self.log,
-                    &semantic.rows,
-                    super::semantic::RenderContext {
-                        session: &self.session,
-                        vision: self.vision,
-                        language: self.language,
-                        provider: &self.provider,
-                        replay: self.replay.as_ref(),
-                    },
-                    cancellation,
-                    Some(&semantic.manifest),
-                )
-                .await?;
-                let needed = maka_model::wire_preparation_dependencies(&messages, &provider.kind);
-                let anthropic_mcp_ids = if needed.is_empty() {
-                    Vec::new()
-                } else {
-                    self.log
-                        .prepared_prior_mcp_ids(&self.view, &group, &needed)
-                        .await?
-                };
-                let wire = encoding.prepare_group(
-                    messages,
-                    &maka_model::PreparationContext { anthropic_mcp_ids },
-                );
-                self.log
-                    .put_prepared_wire_group(&build, &group, wire)
-                    .await?;
-                after = Some(group.id);
-            }
-        }
-        let view = self.log.finish_prepared_wire(&build).await?;
-        *self.wire.lock().expect("prepared wire lock poisoned") = Some(view.clone());
-        Ok(self.prompt().with_wire(
-            format,
-            codec,
-            view.identity.clone(),
-            Arc::new(StoredWire {
-                log: self.log.clone(),
-                view,
-            }),
-        ))
+    pub fn recipes(&self) -> Arc<dyn MessageSource> {
+        self.directory.source()
+    }
+    pub fn preparation(&self) -> Arc<super::preparation::RequestPreparation> {
+        self.preparation.clone()
+    }
+    pub fn resident_bytes(&self) -> usize {
+        self.resident_bytes
+    }
+    pub fn resources(&self) -> &ModelPreparationResources {
+        &self.resources
+    }
+    pub async fn close(&self) -> io::Result<()> {
+        self.arena.close().await
+    }
+    pub fn arena(&self) -> &super::capture_arena::CaptureArena {
+        &self.arena
     }
 }
-
-impl PromptSource for PreparedHistory {
-    fn open(&self) -> Box<dyn PromptCursor> {
-        Box::new(Cursor {
-            log: self.log.clone(),
-            view: self.view.clone(),
-            language: self.language,
-            vision: self.vision,
-            provider: self.provider.clone(),
-            replay: self.replay.clone(),
-            session: self.session.clone(),
-            position: Some(0),
-            page: VecDeque::new(),
-        })
+async fn acquire_work(
+    resources: &ModelPreparationResources,
+    cancellation: &CancellationToken,
+) -> Result<maka_model::WorkLease, RunError> {
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Err(RunError::Cancelled),
+        work = resources.acquire_work() => work.map_err(error),
     }
 }
-struct Cursor {
-    log: Arc<SessionStore>,
-    view: PreparedView,
+fn error(error: io::Error) -> RunError {
+    RunError::preparation(error)
+}
+fn cancelled(cancellation: &CancellationToken) -> Result<(), RunError> {
+    if cancellation.is_cancelled() {
+        Err(RunError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+fn flush(
+    builders: &mut Vec<MessageBuilder>,
+    parts: &[AssistantRecipe],
+    group: &mut Option<AssistantGroup>,
+) {
+    if let Some(group) = group.take()
+        && (group.start != parts.len() || group.options.is_some())
+    {
+        builders.push(MessageBuilder::Assistant {
+            parts: group.start..parts.len(),
+            options: group.options,
+        });
+    }
+}
+fn ensure_group(
+    key: u64,
+    builders: &mut Vec<MessageBuilder>,
+    parts: &[AssistantRecipe],
+    group: &mut Option<AssistantGroup>,
+) {
+    if group.as_ref().is_some_and(|group| group.key == key) {
+        return;
+    }
+    flush(builders, parts, group);
+    *group = Some(AssistantGroup {
+        key,
+        start: parts.len(),
+        options: None,
+    });
+}
+fn add(total: &mut usize, bytes: usize) -> io::Result<()> {
+    *total = total
+        .checked_add(bytes)
+        .ok_or_else(|| io::Error::other("frozen directory size overflows"))?;
+    Ok(())
+}
+fn arc(size: usize) -> usize {
+    2 * mem::size_of::<usize>() + size
+}
+fn row_slots() -> usize {
+    mem::size_of::<MessageBuilder>()
+        + 2 * mem::size_of::<AssistantRecipe>()
+        + 2 * mem::size_of::<MessageDescriptor>()
+        + 2 * mem::size_of::<[u8; 32]>()
+        + 4 * mem::size_of::<IdentifiedText>()
+        + 3 * arc(mem::size_of::<Items<AssistantRecipe>>())
+        + arc(64)
+}
+#[allow(clippy::too_many_arguments)]
+async fn plan(
+    captured: &CapturedSource,
     language: Language,
     vision: bool,
-    provider: ProviderKind,
-    replay: Option<SemanticReplay>,
-    session: String,
-    position: Option<usize>,
-    page: VecDeque<Message>,
-}
-fn model_error(error: impl std::fmt::Display) -> ModelError {
-    ModelError::Adapter(format!("prepared history read failed: {error}"))
-}
-impl PromptCursor for Cursor {
-    fn next(&mut self) -> maka_agent_facts::model::prompt_source::Next<'_> {
-        Box::pin(async move {
-            loop {
-                if let Some(message) = self.page.pop_front() {
-                    return Ok(Some(message));
-                }
-                let Some(position) = self.position else {
-                    return Ok(None);
-                };
-                let Some(group) = self
-                    .log
-                    .prepared_semantic_group(&self.view, position)
-                    .await
-                    .map_err(model_error)?
-                else {
-                    self.position = None;
-                    continue;
-                };
-                let (messages, _) = super::render_semantic_group(
-                    &self.log,
-                    &group.rows,
-                    super::semantic::RenderContext {
-                        session: &self.session,
-                        vision: self.vision,
-                        language: self.language,
-                        provider: &self.provider,
-                        replay: self.replay.as_ref(),
-                    },
-                    &CancellationToken::new(),
-                    Some(&group.manifest),
-                )
-                .await
-                .map_err(model_error)?;
-                // Retain only the active logical group's remaining messages.
-                self.page.extend(messages.into_iter().skip(group.skip));
-                let next = position + self.page.len();
-                self.position = (next < self.view.message_count).then_some(next);
+    provider: &ProviderKind,
+    budget: &Arc<dyn SourceBudget>,
+    cancellation: &CancellationToken,
+    resident: usize,
+) -> io::Result<Plan> {
+    let context = ProjectContext {
+        language,
+        vision,
+        provider,
+        replay: captured.selection().replay.as_ref(),
+        budget: budget.clone(),
+        directory_owner: Arc::new(()),
+        captured: Some(captured),
+        arena: None,
+        cancellation,
+        row_root: None,
+        payload_root: None,
+        internal_arena: false,
+    };
+    let mut rows = 0usize;
+    let mut bytes = arc(mem::size_of::<DirectoryOwner>())
+        + 2 * mem::size_of::<[u8; 32]>()
+        + FrozenDirectory::fixed_metadata_bytes()
+        + arc(mem::size_of::<FrozenDirectory>())
+        + arc(mem::size_of::<FrozenHistory>())
+        + super::capture_arena::CaptureArena::metadata_bytes()
+        + super::preparation::RequestPreparation::metadata_bytes()
+        + 2 * arc(mem::size_of::<Vec<crate::prepared_prompt::OwnedOverlay>>());
+    let mut backing_bytes = 0usize;
+    let mut chat = super::chat_source::ChatShape::default();
+    let chat_policy = vision
+        && matches!(
+            provider,
+            ProviderKind::OpenaiChatCompletions | ProviderKind::OpenaiCompatible { .. }
+        );
+    let mut after = None;
+    let mut page_buffer = budget.allocate(32 * 1024).await?;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(crate::preparation_cancelled("capture cancelled"));
+        }
+        let mut page = captured
+            .directory_page(after, page_buffer)
+            .await
+            .map_err(io::Error::other)?;
+        while let Some(entry) = page.next_row().map_err(io::Error::other)? {
+            let row = entry.row;
+            rows = rows
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("frozen row count overflows"))?;
+            add(&mut bytes, row_slots())?;
+            if matches!(provider, ProviderKind::Anthropic) {
+                add(&mut bytes, mem::size_of::<Producer>())?;
             }
+            let metadata = entry.directory;
+            let payload = captured.describe_payload(&row).map_err(io::Error::other)?;
+            let row_root = captured.metadata_source(&row).map_err(io::Error::other)?;
+            let row_context = context.for_row(&row_root, payload.as_ref());
+
+            let payload = entry.payload.as_ref();
+            if chat_policy {
+                chat.accumulate(
+                    super::source_projector::chat_shape_row(&metadata, payload, &row_context)
+                        .await?,
+                )?;
+            }
+            add(
+                &mut backing_bytes,
+                super::source_projector::backing_bytes_row(&metadata, payload, &row_context)
+                    .await?,
+            )?;
+            add(
+                &mut bytes,
+                super::source_projector::footprint_row(&metadata, payload, &row_context).await?,
+            )?;
+        }
+        after = page.next;
+        page_buffer = page.into_buffer();
+        if after.is_none() {
+            break;
+        }
+    }
+    if chat.media_results != 0 {
+        add(
+            &mut bytes,
+            super::chat_source::allocation_bytes(rows, chat, language)?,
+        )?;
+    }
+    if bytes > resident {
+        Ok(Plan::NeedsBacking { rows, chat })
+    } else {
+        Ok(Plan::Resident {
+            rows,
+            bytes,
+            backing_bytes,
+            chat,
         })
     }
+}
+async fn identifier(
+    text: &TextSource,
+    budget: &Arc<dyn SourceBudget>,
+    cancellation: &CancellationToken,
+) -> io::Result<[u8; 32]> {
+    if let Some(measure) = text.measure() {
+        return Ok(measure.sha256);
+    }
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    super::measure_source::text_bytes(text, budget, cancellation, |bytes| {
+        hash.update(bytes);
+        Ok(())
+    })
+    .await?;
+    Ok(hash.finalize().into())
 }
 
-struct StoredWire {
-    log: Arc<SessionStore>,
-    view: PreparedWireView,
-}
-impl WireSource for StoredWire {
-    fn open_at(
-        &self,
-        position: maka_agent_facts::model::prompt_source::WirePosition,
-    ) -> Option<Box<dyn WireCursor>> {
-        Some(Box::new(WireReader {
-            log: self.log.clone(),
-            view: self.view.clone(),
-            position: Some(PreparedWireCursor {
-                message_offset: position.message_index,
-                piece_index: position.piece_index,
-            }),
-            page: VecDeque::new(),
-        }))
-    }
-    fn open(&self, start_message: usize) -> Box<dyn WireCursor> {
-        Box::new(WireReader {
-            log: self.log.clone(),
-            view: self.view.clone(),
-            position: Some(PreparedWireCursor {
-                message_offset: start_message,
-                piece_index: 0,
-            }),
-            page: VecDeque::new(),
-        })
-    }
-    fn open_metadata(&self, start_message: usize) -> Option<Box<dyn WireMetadataCursor>> {
-        Some(Box::new(MetadataReader {
-            log: self.log.clone(),
-            view: self.view.clone(),
-            position: Some(PreparedWireCursor {
-                message_offset: start_message,
-                piece_index: 0,
-            }),
-            page: VecDeque::new(),
-        }))
-    }
-    fn prefix_identity(
-        &self,
-        messages: usize,
-    ) -> maka_agent_facts::model::prompt_source::PrefixIdentity<'_> {
-        Box::pin(async move {
-            self.log
-                .prepared_wire_prefix_identity(&self.view, messages)
-                .await
-                .map_err(model_error)
-        })
-    }
-}
-struct WireReader {
-    log: Arc<SessionStore>,
-    view: PreparedWireView,
-    position: Option<PreparedWireCursor>,
-    page: VecDeque<maka_agent_facts::model::prompt_source::WireChunk>,
-}
-impl WireCursor for WireReader {
-    fn next(&mut self) -> maka_agent_facts::model::prompt_source::NextWire<'_> {
-        Box::pin(async move {
-            loop {
-                if let Some(chunk) = self.page.pop_front() {
-                    return Ok(Some(chunk));
-                }
-                let Some(position) = self.position.take() else {
-                    return Ok(None);
-                };
-                let page = self
-                    .log
-                    .prepared_wire_page(&self.view, position, 32)
-                    .await
-                    .map_err(model_error)?;
-                self.position = page.next_cursor;
-                self.page = page.chunks.into();
+async fn freeze_mcp(
+    messages: &[MessageBuilder],
+    parts: &mut [AssistantRecipe],
+    budget: &Arc<dyn SourceBudget>,
+    cancellation: &CancellationToken,
+) -> io::Result<()> {
+    let mut producers = Vec::with_capacity(parts.len());
+    let mut message = 0;
+    while message < messages.len() {
+        let MessageBuilder::Assistant { parts: range, .. } = &messages[message] else {
+            message += 1;
+            continue;
+        };
+        let start = range.start;
+        let mut end = range.end;
+        message += 1;
+        while let Some(MessageBuilder::Assistant { parts: range, .. }) = messages.get(message) {
+            end = range.end;
+            message += 1;
+        }
+        producers.clear();
+        for (position, part) in parts.iter().enumerate().take(end).skip(start) {
+            if let AssistantRecipe::ToolCall {
+                tool_call_id,
+                provider_executed: Some(true),
+                provider_options: Some(options),
+                ..
+            } = part
+                && let Some(kind) =
+                    json::field(options, &["anthropic", "type"], budget.clone()).await?
+                && kind.kind == json::JsonKind::String
+                && json::text_eq(&kind.text()?, "mcp-tool-use", budget.clone()).await?
+            {
+                producers.push(Producer {
+                    id: identifier(tool_call_id, budget, cancellation).await?,
+                    position,
+                });
             }
+        }
+        producers.sort_unstable_by(|left, right| {
+            left.id
+                .cmp(&right.id)
+                .then(left.position.cmp(&right.position))
+        });
+        for (position, part) in parts.iter_mut().enumerate().take(end).skip(start) {
+            if let AssistantRecipe::ToolResult(result) = part {
+                let id = identifier(&result.tool_call_id, budget, cancellation).await?;
+                let before = producers.partition_point(|producer| {
+                    producer.id < id || (producer.id == id && producer.position < position)
+                });
+                result.replay = if before != 0 && producers[before - 1].id == id {
+                    ToolResultReplay::AnthropicMcp
+                } else {
+                    ToolResultReplay::Ordinary
+                };
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::model::prompt_source::source::generated;
+    struct Budget;
+    impl SourceBudget for Budget {
+        fn allocate(&self, minimum: usize) -> Allocate<'_> {
+            Box::pin(async move { Ok(ChargedBuffer::new(vec![0; minimum], ())) })
+        }
+    }
+    #[tokio::test]
+    async fn identifier_uses_captured_decoded_measure_without_reading() {
+        use sha2::Digest;
+        struct NoReadBudget;
+        impl SourceBudget for NoReadBudget {
+            fn allocate(&self, _: usize) -> Allocate<'_> {
+                panic!("measured identifier must not allocate a source read buffer")
+            }
+        }
+        let bytes = "identifier 世界".as_bytes();
+        let digest: [u8; 32] = sha2::Sha256::digest(bytes).into();
+        let text = TextSource::measured(
+            SourceBytes::Inline(bytes.to_vec().into()),
+            TextEncoding::Utf8,
+            DecodedTextMeasure {
+                bytes: bytes.len() as u64,
+                sha256: digest,
+            },
+        );
+        assert_eq!(
+            identifier(
+                &text,
+                &(Arc::new(NoReadBudget) as Arc<dyn SourceBudget>),
+                &CancellationToken::new()
+            )
+            .await
+            .unwrap(),
+            digest
+        );
+    }
+    fn call() -> AssistantRecipe {
+        AssistantRecipe::ToolCall {
+            tool_call_id: generated::text("mcp-id"),
+            tool_name: generated::text("search"),
+            input: ToolInputRecipe::Json(generated::json(&serde_json::json!({}))),
+            kind: ToolCallKind::Function,
+            provider_executed: Some(true),
+            provider_options: Some(generated::json(
+                &serde_json::json!({"anthropic":{"type":"mcp-tool-use"}}),
+            )),
+        }
+    }
+    fn result() -> AssistantRecipe {
+        AssistantRecipe::ToolResult(ToolResultRecipe {
+            tool_call_id: generated::text("mcp-id"),
+            tool_name: generated::text("search"),
+            kind: ToolResultKind::Settled,
+            call_kind: ToolCallKind::Function,
+            output: ToolOutputRecipe::Text(generated::text("found")),
+            parsed_error: None,
+            replay: ToolResultReplay::Ordinary,
+            provider_options: None,
         })
     }
-}
-struct MetadataReader {
-    log: Arc<SessionStore>,
-    view: PreparedWireView,
-    position: Option<PreparedWireCursor>,
-    page: VecDeque<WireMetadata>,
-}
-impl WireMetadataCursor for MetadataReader {
-    fn next(&mut self) -> maka_agent_facts::model::prompt_source::NextWireMetadata<'_> {
-        Box::pin(async move {
-            loop {
-                if let Some(item) = self.page.pop_front() {
-                    return Ok(Some(item));
-                }
-                let Some(position) = self.position.take() else {
-                    return Ok(None);
-                };
-                let page = self
-                    .log
-                    .prepared_wire_metadata_page(&self.view, position, 64)
-                    .await
-                    .map_err(model_error)?;
-                self.position = page.next_cursor;
-                self.page = page.items.into();
-            }
-        })
+    #[tokio::test]
+    async fn mcp_binding_crosses_assistant_groups_and_stops_at_role_boundary() {
+        let mut parts = vec![call(), result(), result()];
+        let messages = vec![
+            MessageBuilder::Assistant {
+                parts: 0..1,
+                options: None,
+            },
+            MessageBuilder::Assistant {
+                parts: 1..2,
+                options: None,
+            },
+            MessageBuilder::User(Arc::new(Items::new(Vec::new(), Arc::new(())))),
+            MessageBuilder::Assistant {
+                parts: 2..3,
+                options: None,
+            },
+        ];
+        freeze_mcp(
+            &messages,
+            &mut parts,
+            &(Arc::new(Budget) as Arc<dyn SourceBudget>),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let AssistantRecipe::ToolResult(first) = &parts[1] else {
+            panic!("first result")
+        };
+        let AssistantRecipe::ToolResult(later) = &parts[2] else {
+            panic!("later result")
+        };
+        assert_eq!(first.replay, ToolResultReplay::AnthropicMcp);
+        assert_eq!(later.replay, ToolResultReplay::Ordinary);
     }
 }

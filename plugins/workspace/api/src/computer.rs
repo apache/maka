@@ -343,7 +343,7 @@ mod browser_history_target_tests {
         let mut history = target();
         history.capability = GrantCapability::BrowserHistory;
         history.scope = GrantScope::BrowserProfile {
-            browser_id: "maka:instance".to_owned(),
+            browser_id: "extension:maka:fixture-extension:fixture-instance:generation".to_owned(),
             generation: "generation".to_owned(),
         };
         assert!(is_browser_history_target(&history));
@@ -361,7 +361,7 @@ mod browser_history_target_tests {
         assert!(!is_browser_history_target(&foreign));
         let mut next_profile = history.clone();
         next_profile.scope = GrantScope::BrowserProfile {
-            browser_id: "maka:instance".to_owned(),
+            browser_id: "extension:maka:fixture-extension:fixture-instance:generation".to_owned(),
             generation: "other-generation".to_owned(),
         };
         assert_ne!(history, next_profile);

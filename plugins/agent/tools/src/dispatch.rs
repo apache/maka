@@ -24,8 +24,8 @@ use std::sync::{
 };
 
 use crate::CodeExecutor;
-use maka_agent_facts::event::EventSink;
 use maka_agent_facts::event::Invocation;
+use maka_agent_facts::event::{EventSink, EventWrite};
 use maka_agent_facts::language::Language;
 use maka_agent_facts::model::ModelToolCall;
 use maka_agent_facts::tool_call::ToolCallIdentity;
@@ -266,15 +266,19 @@ impl<'a> StepTools<'a> {
     pub async fn invoke(
         &mut self,
         call: &ModelToolCall,
+        prior: Option<EventWrite>,
         cancellation: CancellationToken,
     ) -> Result<Value, ToolError> {
-        self.dispatch(call.clone(), cancellation).await
+        self.dispatch(call.clone(), prior, cancellation).await
     }
 
     /// Admission happens in arrival order before any concurrent future runs.
+    /// The caller retains a prior completion owner through drain and flushes it
+    /// before returning fatal errors, including preparation panics.
     pub fn dispatch(
         &mut self,
         call: ModelToolCall,
+        prior: Option<EventWrite>,
         cancellation: CancellationToken,
     ) -> BoxFuture<'a, Result<Value, ToolError>> {
         let request = self.request.clone();
@@ -375,6 +379,7 @@ impl<'a> StepTools<'a> {
                             identity,
                             call.name.clone(),
                             call.input.clone(),
+                            prior,
                             reason,
                         )
                         .await;
@@ -387,6 +392,7 @@ impl<'a> StepTools<'a> {
                     identity,
                     call.name.clone(),
                     input,
+                    prior,
                     cancellation,
                     effect,
                 )

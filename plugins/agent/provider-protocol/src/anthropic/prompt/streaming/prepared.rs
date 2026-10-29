@@ -17,8 +17,8 @@
  * under the License.
  */
 
-//! Persistable Anthropic block projections. Only dirty input is decoded here;
-//! ordinary requests consume small metadata and already-encoded wire fragments.
+//! Anthropic block metadata, replay policy, and the explicit owned encoding oracle.
+pub use super::super::wire::{ClearAt, Effort};
 use super::*;
 use crate::json_stream::JsonChunks;
 use serde::{Deserialize, Serialize};
@@ -63,38 +63,88 @@ pub struct MessageMetadata {
     pub part_count: usize,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CacheProgram {
+pub struct CacheProgram<J = Value> {
     // At most three fallback candidates. Invalid unused fallbacks must not be
     // parsed eagerly: a prior accepted directive suppresses their evaluation.
-    candidates: Vec<Value>,
+    candidates: Vec<J>,
     site: CacheSite,
-    rejected: Option<(Value, CacheSite)>,
+    rejected: Option<(J, CacheSite)>,
 }
-impl CacheProgram {
+/// A cache candidate is validated during capture; invalid unused fallbacks stay inert.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum FrozenCacheCandidate {
+    Valid(CacheDirective),
+    Invalid,
+}
+
+/// Cache evaluation uses frozen metadata, including validation failures.
+pub trait CacheCandidate {
+    fn directive(&self) -> Result<CacheDirective>;
+}
+impl CacheCandidate for Value {
+    fn directive(&self) -> Result<CacheDirective> {
+        serde_json::from_value(self.clone()).map_err(|error| Error::InvalidArgument {
+            field: error.to_string(),
+            value: self.clone(),
+        })
+    }
+}
+impl CacheCandidate for FrozenCacheCandidate {
+    fn directive(&self) -> Result<CacheDirective> {
+        match self {
+            Self::Valid(directive) => Ok(*directive),
+            Self::Invalid => Err(Error::invalid(
+                "invalid Anthropic cache directive",
+                Value::Null,
+            )),
+        }
+    }
+}
+impl<J> CacheProgram<J> {
+    pub fn candidates(&self) -> &[J] {
+        &self.candidates
+    }
+    pub fn site(&self) -> CacheSite {
+        self.site
+    }
+    pub fn rejected(&self) -> Option<(&J, CacheSite)> {
+        self.rejected
+            .as_ref()
+            .map(|(candidate, site)| (candidate, *site))
+    }
+    /// Candidate vector backing; callers account any allocations inside `J` separately.
+    pub fn candidate_capacity_bytes(&self) -> usize {
+        self.candidates.capacity() * std::mem::size_of::<J>()
+    }
+    pub fn map_candidates<U>(&self, mut map: impl FnMut(&J) -> U) -> CacheProgram<U> {
+        CacheProgram {
+            candidates: self.candidates.iter().map(&mut map).collect(),
+            site: self.site,
+            rejected: self
+                .rejected
+                .as_ref()
+                .map(|(value, site)| (map(value), *site)),
+        }
+    }
+    pub fn new(candidates: Vec<J>, site: CacheSite, rejected: Option<(J, CacheSite)>) -> Self {
+        Self {
+            candidates,
+            site,
+            rejected,
+        }
+    }
+}
+impl<J: CacheCandidate> CacheProgram<J> {
     pub fn apply(&self, budget: &mut CacheBudget) -> Result<Option<CacheDirective>> {
         let mut selected = None;
         for value in &self.candidates {
-            let directive =
-                serde_json::from_value(value.clone()).map_err(|error: serde_json::Error| {
-                    Error::InvalidArgument {
-                        field: error.to_string(),
-                        value: value.clone(),
-                    }
-                })?;
-            selected = budget.reserve(Some(directive), self.site);
+            selected = budget.reserve(Some(value.directive()?), self.site);
             if selected.is_some() {
                 break;
             }
         }
         if let Some((value, site)) = &self.rejected {
-            let directive =
-                serde_json::from_value(value.clone()).map_err(|error: serde_json::Error| {
-                    Error::InvalidArgument {
-                        field: error.to_string(),
-                        value: value.clone(),
-                    }
-                })?;
-            budget.reserve(Some(directive), *site);
+            budget.reserve(Some(value.directive()?), *site);
         }
         Ok(selected)
     }
@@ -111,36 +161,96 @@ pub struct TextTrim {
     pub trailing: Range<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CallerMetadata {
-    pub id: String,
-    pub caller: Caller,
+pub struct CallerMetadata<T = String> {
+    pub id: T,
+    pub caller: Caller<T>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DocumentMetadata {
-    pub title: String,
-    pub filename: Option<String>,
-    pub media_type: String,
+pub struct DocumentMetadata<T = String> {
+    pub title: T,
+    pub filename: Option<T>,
+    pub media_type: T,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PartMetadata {
+pub struct PartMetadata<T = String, J = Value> {
     pub message: MessageMetadata,
     pub part_index: usize,
     pub emitted: bool,
     pub local_tool: bool,
     pub boundary: bool,
     pub system_text: bool,
-    pub cache: CacheProgram,
+    pub cache: CacheProgram<J>,
     pub cache_slot: Option<FieldSlot>,
     pub caller_slot: Option<FieldSlot>,
-    pub caller: Option<CallerMetadata>,
-    pub source_id: Option<String>,
-    pub mcp_id: Option<String>,
-    pub document: Option<DocumentMetadata>,
+    pub caller: Option<CallerMetadata<T>>,
+    pub source_id: Option<T>,
+    pub mcp_id: Option<T>,
+    pub document: Option<DocumentMetadata<T>>,
     pub features: Vec<String>,
     pub warnings: Vec<String>,
     pub trim: Option<TextTrim>,
     pub base_bytes: u64,
 }
+impl<T, J> PartMetadata<T, J> {
+    /// Local vector/string backing; `T` and `J` source owners are accounted separately.
+    pub fn local_allocation_bytes(&self) -> usize {
+        self.cache.candidate_capacity_bytes()
+            + self.features.capacity() * std::mem::size_of::<String>()
+            + self.features.iter().map(String::capacity).sum::<usize>()
+            + self.warnings.capacity() * std::mem::size_of::<String>()
+            + self.warnings.iter().map(String::capacity).sum::<usize>()
+    }
+}
+
+impl<T: Clone, J: Clone> PartMetadata<T, J> {
+    /// Project source identities for metadata-only policy without opening their text.
+    pub fn map_text<U>(&self, map: impl FnMut(&T) -> U) -> PartMetadata<U, J> {
+        self.map_sources(map, Clone::clone)
+    }
+    pub fn map_sources<U, K>(
+        &self,
+        mut map: impl FnMut(&T) -> U,
+        json: impl FnMut(&J) -> K,
+    ) -> PartMetadata<U, K> {
+        let caller = self.caller.as_ref().map(|caller| CallerMetadata {
+            id: map(&caller.id),
+            caller: match &caller.caller {
+                Caller::Direct => Caller::Direct,
+                Caller::Code20250825 { tool_id } => Caller::Code20250825 {
+                    tool_id: map(tool_id),
+                },
+                Caller::Code20260120 { tool_id } => Caller::Code20260120 {
+                    tool_id: map(tool_id),
+                },
+            },
+        });
+        let document = self.document.as_ref().map(|document| DocumentMetadata {
+            title: map(&document.title),
+            filename: document.filename.as_ref().map(&mut map),
+            media_type: map(&document.media_type),
+        });
+        PartMetadata {
+            message: self.message.clone(),
+            part_index: self.part_index,
+            emitted: self.emitted,
+            local_tool: self.local_tool,
+            boundary: self.boundary,
+            system_text: self.system_text,
+            cache: self.cache.map_candidates(json),
+            cache_slot: self.cache_slot.clone(),
+            caller_slot: self.caller_slot.clone(),
+            caller,
+            source_id: self.source_id.as_ref().map(&mut map),
+            mcp_id: self.mcp_id.as_ref().map(&mut map),
+            document,
+            features: self.features.clone(),
+            warnings: self.warnings.clone(),
+            trim: self.trim.clone(),
+            base_bytes: self.base_bytes,
+        }
+    }
+}
+
 pub struct PreparedPart {
     pub metadata: PartMetadata,
     pub chunks: PreparedChunks,
@@ -161,8 +271,7 @@ impl Iterator for PreparedChunks {
         }
     }
 }
-/// Dirty projection codec. It retains only group-local MCP IDs and the current
-/// logical-message metadata. Body storage belongs solely to the returned chunks.
+/// Owned codec for explicit generated input and independent golden tests.
 pub struct PreparedEncoder {
     options: StreamOptions,
     previous: Option<Role>,
@@ -177,13 +286,6 @@ impl PreparedEncoder {
             mcp_ids: HashSet::new(),
             current: None,
         }
-    }
-    /// Use when a dirty suffix continues an immutable assistant group. The IDs
-    /// are the new dirty group's referenced IDs resolved by the store index,
-    /// never the complete prior role-run ID set or reread bodies.
-    pub fn seed_assistant_mcp(&mut self, ids: impl IntoIterator<Item = String>) {
-        self.previous = Some(Role::Assistant);
-        self.mcp_ids.extend(ids);
     }
     pub fn begin(&mut self, message: &Message) -> Result<usize> {
         let role = role(message);
@@ -243,7 +345,7 @@ impl PreparedEncoder {
             last_user: None,
         };
         // A placeholder causes serde to preserve the original dynamic field's
-        // insertion position. It is removed before any wire fragment is stored.
+        // insertion position. It is removed from the returned static wire bytes.
         let placeholder = Some(CacheDirective::Ephemeral { ttl: None });
         let mut local_tool = false;
         let mut boundary = false;
@@ -588,17 +690,48 @@ fn text_trim(value: &Value) -> Option<TextTrim> {
     None
 }
 
-/// Preflight consumes persisted metadata rows only; it never reconstructs
-/// Messages. This pass is O(number of parts), and actual source IDs, caller
+/// Preflight consumes frozen part metadata without opening payload sources. This pass is O(number of parts), and actual source IDs, caller
 /// relationships, citation documents and diagnostics grow with their counts.
 /// The wire body is bounded/streamed; this is not a constant-memory claim for
 /// arbitrarily reference-rich histories or an O(delta) preparation guarantee.
-#[derive(Default)]
 pub struct MetadataPrepass {
     inner: Prepass,
+    diagnostics: bool,
+    collect_sources: bool,
+}
+impl Default for MetadataPrepass {
+    fn default() -> Self {
+        Self {
+            inner: Prepass::default(),
+            diagnostics: true,
+            collect_sources: true,
+        }
+    }
 }
 impl MetadataPrepass {
-    pub fn push(&mut self, message_index: usize, part: &PartMetadata) -> Result<()> {
+    /// Compute body/header decisions for adapters that do not consume diagnostics.
+    pub fn for_replay() -> Self {
+        Self {
+            inner: Prepass {
+                cache: CacheBudget::replay(),
+                ..Prepass::default()
+            },
+            diagnostics: false,
+            collect_sources: true,
+        }
+    }
+    /// Indexed source membership belongs to the prepaid wire backing.
+    pub fn for_indexed_replay() -> Self {
+        Self {
+            collect_sources: false,
+            ..Self::for_replay()
+        }
+    }
+    pub fn push<J: CacheCandidate>(
+        &mut self,
+        message_index: usize,
+        part: &PartMetadata<String, J>,
+    ) -> Result<()> {
         let state = &mut self.inner;
         if part.part_index == 0 {
             if message_index != state.count {
@@ -620,7 +753,8 @@ impl MetadataPrepass {
             if let Some(system) = &part.message.system {
                 state.system_plain &= system.plain();
                 if state.group == 0 {
-                    if system.changes > 0
+                    if self.diagnostics
+                        && system.changes > 0
                         && !state
                             .summary
                             .warnings
@@ -634,7 +768,9 @@ impl MetadataPrepass {
                             &mut state.summary,
                             "mid-conversation-output-config-2026-07-01",
                         );
-                    } else if system.clear_at.is_some() || system.effort.is_some() {
+                    } else if self.diagnostics
+                        && (system.clear_at.is_some() || system.effort.is_some())
+                    {
                         state.summary.warnings.push("clearAt and effort on this initial system message are not supported by Anthropic. Use a separate effort-only system message with empty content to set effort. These options have been ignored.".into());
                     }
                 } else if state.top_system.is_some() || !state.system_plain {
@@ -665,11 +801,16 @@ impl MetadataPrepass {
         for feature in &part.features {
             add_feature(&mut state.summary, known_feature(feature)?);
         }
-        state.summary.warnings.extend(part.warnings.iter().cloned());
-        if let Some(source) = &part.source_id {
+        if self.diagnostics {
+            state.summary.warnings.extend(part.warnings.iter().cloned());
+        }
+        if self.collect_sources
+            && let Some(source) = &part.source_id
+        {
             state.sources.insert(source.clone());
         }
-        if let Some(caller) = &part.caller
+        if self.diagnostics
+            && let Some(caller) = &part.caller
             && let Some(source) = caller.caller.source_id()
         {
             state
@@ -720,15 +861,20 @@ pub struct Decision {
     pub emit: bool,
     pub boundary: bool,
     pub local_tool: bool,
-    cache: Option<CacheDirective>,
-    caller: Option<Caller>,
-    trim: bool,
+    pub cache: Option<CacheDirective>,
+    pub caller: Option<Caller>,
+    pub trim: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourcePresence {
+    Present,
+    Missing,
 }
 impl Replay {
     pub fn new(context: Arc<Context>) -> Self {
         Self {
             context,
-            cache: CacheBudget::default(),
+            cache: CacheBudget::replay(),
             previous: None,
             group: 0,
             current: 0,
@@ -776,18 +922,55 @@ impl Replay {
             part_count: message.part_count,
         }
     }
-    pub fn part(&mut self, metadata: &PartMetadata, selection: Selection) -> Result<Decision> {
+    fn emitted<J>(&self, metadata: &PartMetadata<String, J>, selection: Selection) -> bool {
         let top = self
             .context
             .top_system
             .as_ref()
             .is_some_and(|range| range.contains(&self.current));
-        let selected = match selection {
-            Selection::All => true,
-            Selection::System => top && metadata.system_text,
-            Selection::Normal => !top && !metadata.local_tool,
-            Selection::Deferred => !top && metadata.local_tool,
-        };
+        metadata.emitted
+            && match selection {
+                Selection::All => !top || metadata.system_text,
+                Selection::System => top && metadata.system_text,
+                Selection::Normal => !top && !metadata.local_tool,
+                Selection::Deferred => !top && metadata.local_tool,
+            }
+    }
+    /// Whether this emitted caller needs a lookup in the frozen source index.
+    pub fn needs_caller_source<J>(
+        &self,
+        metadata: &PartMetadata<String, J>,
+        selection: Selection,
+    ) -> bool {
+        self.emitted(metadata, selection)
+            && self.context.last_user.is_some_and(|last| self.group < last)
+            && metadata
+                .caller
+                .as_ref()
+                .is_some_and(|caller| caller.caller.source_id().is_some())
+    }
+    pub fn part<J: CacheCandidate>(
+        &mut self,
+        metadata: &PartMetadata<String, J>,
+        selection: Selection,
+    ) -> Result<Decision> {
+        self.part_inner(metadata, selection, None)
+    }
+    /// Apply a source-membership decision without retaining a second source set.
+    pub fn part_with_source_presence<J: CacheCandidate>(
+        &mut self,
+        metadata: &PartMetadata<String, J>,
+        selection: Selection,
+        present: SourcePresence,
+    ) -> Result<Decision> {
+        self.part_inner(metadata, selection, Some(present))
+    }
+    fn part_inner<J: CacheCandidate>(
+        &mut self,
+        metadata: &PartMetadata<String, J>,
+        selection: Selection,
+        source_present: Option<SourcePresence>,
+    ) -> Result<Decision> {
         let cache = metadata.cache.apply(&mut self.cache)?;
         let caller = metadata
             .caller
@@ -795,12 +978,14 @@ impl Replay {
             .map(|value| value.caller.clone())
             .filter(|caller| {
                 !(self.context.last_user.is_some_and(|last| self.group < last)
-                    && caller
-                        .source_id()
-                        .is_some_and(|id| !self.context.sources.contains(id)))
+                    && caller.source_id().is_some_and(|id| !match source_present {
+                        Some(SourcePresence::Present) => true,
+                        Some(SourcePresence::Missing) => false,
+                        None => self.context.sources.contains(id),
+                    }))
             });
         Ok(Decision {
-            emit: metadata.emitted && selected && (!top || metadata.system_text),
+            emit: self.emitted(metadata, selection),
             boundary: metadata.boundary,
             local_tool: metadata.local_tool,
             cache,
@@ -810,7 +995,7 @@ impl Replay {
         })
     }
 }
-/// Per-block bounded transformation. Offsets refer to persisted static bytes;
+/// Per-block bounded transformation. Offsets refer to the static block bytes;
 /// inserts preserve serde field order, including cache_control before citations.
 /// Each call retains only its caller-owned input chunk and the small overlay.
 pub struct Overlay {
@@ -818,6 +1003,7 @@ pub struct Overlay {
     expected: u64,
     insertions: Vec<(u64, Vec<u8>)>,
     inserted: usize,
+    insertion_offset: usize,
     deletes: Vec<Range<u64>>,
 }
 impl Overlay {
@@ -857,27 +1043,64 @@ impl Overlay {
             expected: metadata.base_bytes,
             insertions,
             inserted: 0,
+            insertion_offset: 0,
             deletes,
         }
     }
-    pub fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
-        let mut output = Vec::with_capacity(chunk.len());
-        for byte in chunk {
-            while let Some((offset, bytes)) = self.insertions.get(self.inserted) {
-                if *offset != self.offset {
+    /// Advance into caller-owned output without allocating or retaining input.
+    /// Returns the consumed input and written output lengths independently:
+    /// inserting a dynamic field can fill output without consuming input.
+    pub fn write(&mut self, input: &[u8], output: &mut [u8]) -> (usize, usize) {
+        let mut consumed = 0;
+        let mut written = 0;
+        loop {
+            if let Some((offset, bytes)) = self.insertions.get(self.inserted)
+                && *offset == self.offset
+            {
+                let remaining = &bytes[self.insertion_offset..];
+                let count = remaining.len().min(output.len() - written);
+                output[written..written + count].copy_from_slice(&remaining[..count]);
+                written += count;
+                self.insertion_offset += count;
+                if self.insertion_offset != bytes.len() {
                     break;
                 }
-                output.extend_from_slice(bytes);
                 self.inserted += 1;
+                self.insertion_offset = 0;
+                continue;
             }
-            if !self
+            let Some(byte) = input.get(consumed) else {
+                break;
+            };
+            let deleted = self
                 .deletes
                 .iter()
-                .any(|range| range.contains(&self.offset))
-            {
-                output.push(*byte);
+                .any(|range| range.contains(&self.offset));
+            if !deleted {
+                let Some(slot) = output.get_mut(written) else {
+                    break;
+                };
+                *slot = *byte;
+                written += 1;
             }
+            consumed += 1;
             self.offset += 1;
+        }
+        (consumed, written)
+    }
+
+    /// Owned codec/test convenience. Native upload uses `write` and charged buffers.
+    pub fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        let mut consumed = 0;
+        loop {
+            let mut buffer = [0; 1024];
+            let (read, written) = self.write(&chunk[consumed..], &mut buffer);
+            consumed += read;
+            output.extend_from_slice(&buffer[..written]);
+            if read == 0 && written == 0 {
+                break;
+            }
         }
         output
     }

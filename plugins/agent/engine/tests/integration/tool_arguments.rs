@@ -24,8 +24,8 @@ use std::time::Duration;
 use crate::support::store::SessionFixture;
 use maka_agent_engine::{Engine, project_model_history};
 use maka_agent_facts::event::{Fact, TerminalStatus};
+use maka_agent_facts::model::ToolInput;
 use maka_agent_facts::model::prompt::{AssistantPart, Message, ToolOutput};
-use maka_agent_facts::model::{ModelEvent, ToolInput};
 use maka_agent_facts::tool_call::ToolRejection;
 use maka_code_runtime::CellLimits;
 use maka_model::ModelExecutor;
@@ -116,10 +116,13 @@ async fn malformed_arguments_are_rejected_and_corrected(mode: ToolMode) {
             } else { None }
         }).collect();
         assert_eq!(rejections.len(), 1);
-        assert!(prefix.events.iter().any(|stored| matches!(&stored.event.fact,
-            Fact::ModelObserved { event: ModelEvent::ToolCall(call), .. }
-                if call.id == "malformed-call" && call.name == name
-                    && call.input == ToolInput::InvalidJson { raw: RAW.into() })));
+        let expected_call = |part: &maka_agent_facts::model::ModelPart| matches!(part,
+            maka_agent_facts::model::ModelPart::ToolCall { call } if call.id == "malformed-call" && call.name == name && call.input == ToolInput::InvalidJson { raw: RAW.into() });
+        assert!(prefix.events.iter().any(|stored| match &stored.event.fact {
+            Fact::ModelObserved { event: maka_agent_facts::model::recorded::ModelObservation::Part(record), .. } => expected_call(record.part.as_ref()),
+            Fact::ModelCompleted { output, .. } => crate::support::model_records::parts(output, &prefix.events).any(expected_call),
+            _ => false,
+        }));
         let rejected_input = prefix.events.iter().find_map(|stored| {
             if let Fact::ToolRejected { input, .. } = &stored.event.fact { Some(input) } else { None }
         }).unwrap();
@@ -174,7 +177,7 @@ fn assert_diagnostic(error: &str) {
 #[tokio::test]
 async fn recovered_malformed_arguments_keep_raw_diagnostics_for_every_rejection_reason() {
     use crate::support::recovery_session as recovery;
-    use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelStep, ModelToolCall};
+    use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelToolCall};
     use maka_agent_facts::tool_call::ToolCallIdentity;
 
     for reason in [
@@ -193,8 +196,10 @@ async fn recovered_malformed_arguments_keep_raw_diagnostics_for_every_rejection_
             &log,
             Fact::ModelCompleted {
                 step_id: "step".into(),
-                output: ModelStep {
-                    parts: vec![ModelPart::ToolCall {
+                output: crate::support::model_records::completion(
+                    recovery::invocation(),
+                    "step",
+                    vec![ModelPart::ToolCall {
                         call: ModelToolCall {
                             id: "malformed-call".into(),
                             name: "echo".into(),
@@ -203,13 +208,8 @@ async fn recovered_malformed_arguments_keep_raw_diagnostics_for_every_rejection_
                             provider_executed: false,
                         },
                     }],
-                    finish_reason: ModelFinishReason::ToolCalls,
-                    usage: Default::default(),
-                    provider_options: None,
-                    response_id: None,
-                    model: None,
-                    timestamp: None,
-                },
+                    ModelFinishReason::ToolCalls,
+                ),
             },
         )
         .await;

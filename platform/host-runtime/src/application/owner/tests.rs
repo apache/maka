@@ -194,6 +194,10 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
             BTreeMap::new(),
             NativeRegistry::default(),
             issuer.clone(),
+            maka_capabilities::model_preparation::ModelPreparationResources::new(
+                maka_capabilities::model_preparation::PreparationPolicy::default(),
+            )
+            .unwrap(),
             Arc::new(Allowed),
             Some(domains.clone()),
             watch::channel(Snapshot::default()).0,
@@ -493,6 +497,10 @@ async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness
         sources,
         native,
         Issuer::default(),
+        maka_capabilities::model_preparation::ModelPreparationResources::new(
+            maka_capabilities::model_preparation::PreparationPolicy::default(),
+        )
+        .unwrap(),
         Arc::new(Allowed),
         None,
         updates,
@@ -588,6 +596,10 @@ async fn retiring_subscription_waits_for_cleanup(consumer_only: bool, loading_co
         BTreeMap::new(),
         NativeRegistry::default(),
         issuer.clone(),
+        maka_capabilities::model_preparation::ModelPreparationResources::new(
+            maka_capabilities::model_preparation::PreparationPolicy::default(),
+        )
+        .unwrap(),
         Arc::new(Allowed),
         None,
         watch::channel(Snapshot::default()).0,

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::support::provider as provider_support;
+use crate::support;
 use maka_agent_facts::configuration::*;
 use maka_config::ConfigurationStore;
 use maka_event_log::root::{RootNamespaces, RootOwner};
@@ -85,7 +85,7 @@ async fn edits_preserve_endpoint_ownership_and_removal_durably_cleans_only_its_c
     let unrelated = CredentialLocator::NetworkProxy {
         kind: PasswordKind::Password,
     };
-    provider_support::login(&store, &basis.connection_id, "fixture-key").await;
+    support::login(&store, &basis.connection_id, "fixture-key").await;
     basis.revision = store
         .catalog()
         .await
@@ -316,8 +316,8 @@ async fn partial_updates_reopen_and_preserve_fields_until_the_connection_configu
     store.close().await.unwrap();
     let store = ConfigurationStore::for_root(owner).await.unwrap();
     assert_eq!(
-        store.catalog().await.unwrap().connections,
-        [original.clone()]
+        store.catalog().await.unwrap().connections.as_slice(),
+        std::slice::from_ref(&original)
     );
     let renamed_basis = committed_basis(
         store

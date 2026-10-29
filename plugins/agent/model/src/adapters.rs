@@ -18,6 +18,7 @@
  */
 
 mod anthropic;
+mod anthropic_documents;
 mod body;
 mod chat_completions;
 mod codex;

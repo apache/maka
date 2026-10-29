@@ -140,6 +140,7 @@ impl ToolExecutor for JournaledTools {
             ToolCallIdentity::standalone(Uuid::new_v4().to_string()),
             name,
             input,
+            None,
             cancellation,
             move |cancellation| executor.invoke(effect_name, effect_input, cancellation),
         )

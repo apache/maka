@@ -219,7 +219,6 @@ impl EventLog {
             sqlx::query("SELECT context_source_pin_copy(?)")
                 .bind(&request.target_session_id).execute(&mut *tx).await?;
             crate::artifacts::history::retain(&mut tx, &request.source_session_id, &request.target_session_id, now).await?;
-            crate::transcript::directory::copy(&mut tx, &request.source_session_id, &request.target_session_id, through).await?;
             if let CopyPurpose::Revision { turn_id } = &request.purpose {
                 let retained = sqlx::query(
                     "INSERT INTO session_revision_sources

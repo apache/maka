@@ -17,19 +17,13 @@
  * under the License.
  */
 
-#[path = "reconciliation.rs"]
 mod reconciliation;
-#[path = "startup.rs"]
 mod startup;
 
-#[path = "mutation_progress.rs"]
 mod mutation_progress;
 
-#[path = "peer_confirmations.rs"]
 mod peer_confirmations;
-#[path = "receipts.rs"]
 mod receipts;
-#[path = "resource_mutations.rs"]
 mod resource_mutations;
 
 use super::*;

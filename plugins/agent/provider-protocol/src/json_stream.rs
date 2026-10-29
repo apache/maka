@@ -19,6 +19,7 @@
 
 //! Pull-based JSON encoding. A large string never creates a second encoded buffer.
 use serde_json::Value;
+pub mod pull;
 const CHUNK: usize = 16 * 1024;
 
 enum Task {

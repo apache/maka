@@ -25,7 +25,8 @@ use maka_agent_facts::continuation::RunBoundary;
 use maka_agent_facts::continuation::SessionBase;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::input::InvocationInput;
-use maka_model::prompt::{AssistantPart, Message};
+use maka_agent_facts::model::prompt_source::source::MessageRole;
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
@@ -134,7 +135,7 @@ pub(super) async fn inspect(
         }
         _ => return Err(invalid("source is not a resumable model Run")),
     };
-    let context = inner.log.read_lineage_view(source).await?;
+    let context = Arc::new(inner.log.read_lineage_view(source).await?);
     let prompt = model_attempt::prompt(
         inner,
         input,
@@ -146,75 +147,86 @@ pub(super) async fn inspect(
         },
         &input.invocation.invocation_id,
         false,
+        model_attempt::rendered_system(input),
+        maka_agent_facts::context::ModelPurpose::Main,
     )
     .await?;
-    let tools = maka_tools::RunTools::new(
-        input.configuration.language,
-        inner.log.clone(),
-        input.invocation.clone(),
-        catalog.clone(),
-        input.configuration.tool_mode,
-        inner
-            .shared
-            .cells
-            .clone()
-            .with_language(input.configuration.code_language),
-        inner.shared.loaded(&input.invocation.session_id),
-    )
-    .with_model(input.provider.tool_context());
-    let selected = if let crate::RunWork::Handoff { pause, .. } = &input.work {
-        if pause.execution.tools.catalog_digest != catalog.digest()
-            || pause
-                .execution
-                .tools
-                .loaded
-                .iter()
-                .any(|name| name.is_empty() || name.len() > 128)
-        {
-            return Err(RunError::InvalidInput(
-                "handoff tool catalog changed".into(),
-            ));
-        }
-        &pause.execution.tools.loaded
-    } else {
-        loaded_basis
-    };
-    let definitions = tools.replay_selected(selected);
-    // Resume validates names from the full explicit inventory, including tools
-    // not yet advertised through lazy discovery.
-    let mut available: std::collections::HashSet<_> = catalog.names().into_iter().collect();
-    available.extend(definitions.iter().map(|definition| definition.name.clone()));
-    // A handoff replays settled facts, including rejected calls to unavailable
-    // tools. It never executes them again; the registered catalog is checked above.
-    if !matches!(input.work, crate::RunWork::Handoff { .. }) {
-        let mut cursor = prompt.open();
-        while let Some(message) = cursor.next().await? {
-            if cancellation.is_cancelled() {
-                return Err(RunError::Cancelled);
+    let arena = prompt.arena().cloned();
+    let result = async {
+        let tools = maka_tools::RunTools::new(
+            input.configuration.language,
+            inner.log.clone(),
+            input.invocation.clone(),
+            catalog.clone(),
+            input.configuration.tool_mode,
+            inner
+                .shared
+                .cells
+                .clone()
+                .with_language(input.configuration.code_language),
+            inner.shared.loaded(&input.invocation.session_id),
+        )
+        .with_model(input.provider.tool_context());
+        let selected = if let crate::RunWork::Handoff { pause, .. } = &input.work {
+            if pause.execution.tools.catalog_digest != catalog.digest()
+                || pause
+                    .execution
+                    .tools
+                    .loaded
+                    .iter()
+                    .any(|name| name.is_empty() || name.len() > 128)
+            {
+                return Err(RunError::InvalidInput(
+                    "handoff tool catalog changed".into(),
+                ));
             }
-            if let Message::Assistant { content, .. } = message {
-                for part in content {
-                    if let AssistantPart::ToolCall {
-                        tool_name,
-                        provider_executed,
-                        ..
-                    } = part
-                        && provider_executed != Some(true)
-                        && !available.contains(&tool_name)
-                    {
+            &pause.execution.tools.loaded
+        } else {
+            loaded_basis
+        };
+        let definitions = tools.replay_selected(selected);
+        // Resume validates names from the full explicit inventory, including tools
+        // not yet advertised through lazy discovery.
+        let mut available: std::collections::HashSet<_> = catalog.names().into_iter().collect();
+        available.extend(definitions.iter().map(|definition| definition.name.clone()));
+        // A handoff replays settled facts, including rejected calls to unavailable
+        // tools. It never executes them again; the registered catalog is checked above.
+        if !matches!(input.work, crate::RunWork::Handoff { .. }) {
+            let available: std::collections::HashSet<[u8; 32]> = available
+                .iter()
+                .map(|name| Sha256::digest(name.as_bytes()).into())
+                .collect();
+            let recipes = prompt
+                .recipes()
+                .ok_or_else(|| invalid("continuation lacks a frozen logical directory"))?;
+            let mut cursor = recipes.open_metadata(0);
+            while let Some(message) = cursor.next().await.map_err(RunError::Preparation)? {
+                if cancellation.is_cancelled() {
+                    return Err(RunError::Cancelled);
+                }
+                let mut names = message.local_tool_names.open(0);
+                while let Some(name) = names.next().await.map_err(RunError::Preparation)? {
+                    if !available.contains(&name.identity) {
                         return Err(invalid("continuation requires an unavailable tool"));
                     }
                 }
             }
         }
+        let replay = replay(input, prompt, definitions, cancellation).await?;
+        if let crate::RunWork::Handoff { pause, .. } = &input.work
+            && replay != pause.execution.replay
+        {
+            return Err(invalid("handoff admission replay changed after sealing"));
+        }
+        Ok((base, replay))
     }
-    let replay = replay(input, prompt, definitions, cancellation).await?;
-    if let crate::RunWork::Handoff { pause, .. } = &input.work
-        && replay != pause.execution.replay
+    .await;
+    if let Some(arena) = arena
+        && let Err(error) = arena.close().await
     {
-        return Err(invalid("handoff admission replay changed after sealing"));
+        return Err(crate::cleanup::preparation_failed(error));
     }
-    Ok((base, replay))
+    result
 }
 
 /// Shared by reversible handoff preparation and independently verified admission.
@@ -224,48 +236,61 @@ pub(super) async fn replay<W>(
     definitions: Vec<maka_model::ToolDefinition>,
     cancellation: &CancellationToken,
 ) -> Result<ReplayEvidence, RunError> {
-    let mut cursor = prompt.open();
-    let mut first_is_user = None;
-    let mut last_is_stable = false;
-    while let Some(message) = cursor.next().await? {
+    let arena = prompt.arena().cloned();
+    let result = async {
+        let recipes = prompt
+            .recipes()
+            .ok_or_else(|| invalid("continuation lacks a frozen logical directory"))?;
+        let mut cursor = recipes.open_metadata(0);
+        let mut first_is_user = None;
+        let mut last_is_stable = false;
+        while let Some(message) = cursor.next().await.map_err(RunError::Preparation)? {
+            if cancellation.is_cancelled() {
+                return Err(RunError::Cancelled);
+            }
+            if message.role != MessageRole::System && first_is_user.is_none() {
+                first_is_user = Some(message.role == MessageRole::User);
+            }
+            last_is_stable = matches!(message.role, MessageRole::User | MessageRole::Tool)
+                || (message.role == MessageRole::Assistant && message.last_is_tool_result);
+        }
+        if first_is_user != Some(true) || !last_is_stable {
+            return Err(invalid(
+                "continuation requires stable user/tool replay boundaries",
+            ));
+        }
+        prompt
+            .compile_wire(
+                input.configuration.language,
+                &input.provider,
+                &input.provider_options,
+                &definitions,
+                cancellation,
+            )
+            .await?;
+        let request = model_attempt::prepare_request(
+            input,
+            prompt,
+            definitions,
+            input.main_output_limit,
+            maka_agent_facts::context::ModelPurpose::Main,
+        )?;
         if cancellation.is_cancelled() {
             return Err(RunError::Cancelled);
         }
-        if !matches!(message, Message::System { .. }) && first_is_user.is_none() {
-            first_is_user = Some(matches!(message, Message::User { .. }));
-        }
-        last_is_stable = matches!(message, Message::User { .. } | Message::Tool { .. })
-            || matches!(message, Message::Assistant { ref content, .. } if matches!(content.last(), Some(AssistantPart::ToolResult { .. })));
+        Ok(ReplayEvidence {
+            version: REPLAY_VERSION,
+            digest: request.input_digest,
+            route_identity: request.route_identity,
+        })
     }
-    if first_is_user != Some(true) || !last_is_stable {
-        return Err(invalid(
-            "continuation requires stable user/tool replay boundaries",
-        ));
+    .await;
+    if let Some(arena) = arena
+        && let Err(error) = arena.close().await
+    {
+        return Err(crate::cleanup::preparation_failed(error));
     }
-    prompt
-        .compile_wire(
-            input.configuration.language,
-            &input.provider,
-            &input.provider_options,
-            &definitions,
-            cancellation,
-        )
-        .await?;
-    let request = model_attempt::prepare_request(
-        input,
-        prompt,
-        definitions,
-        input.main_output_limit,
-        maka_agent_facts::context::ModelPurpose::Main,
-    )?;
-    if cancellation.is_cancelled() {
-        return Err(RunError::Cancelled);
-    }
-    Ok(ReplayEvidence {
-        version: REPLAY_VERSION,
-        digest: request.input_digest,
-        route_identity: request.route_identity,
-    })
+    result
 }
 
 fn invalid(reason: &str) -> RunError {

@@ -93,7 +93,7 @@ impl Fixture {
     }
 
     async fn key(&self, secret: &str) {
-        crate::support::provider::login(&self.store, &self.id, secret).await;
+        crate::support::login(&self.store, &self.id, secret).await;
     }
 
     async fn prepare(&self) -> Box<PreparedModelFetch> {

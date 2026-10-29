@@ -76,6 +76,10 @@ fn evidence(
     reply: &str,
     previous_checkpoint: Option<&str>,
 ) -> (Value, Option<String>) {
+    let mut recorded_parts = CanonicalModelParts::default();
+    for event in events {
+        recorded_parts.observe(event);
+    }
     assert!(!events.is_empty());
     assert!(
         events
@@ -107,17 +111,17 @@ fn evidence(
                 assert_eq!(output.finish_reason, ModelFinishReason::Stop);
                 assert_eq!(output.usage.input_tokens, Some(1));
                 assert_eq!(output.usage.output_tokens, Some(2));
-                let text: String = output
-                    .parts
-                    .iter()
+                let text: String = recorded_parts
+                    .parts(output)
                     .filter_map(|part| match part {
                         ModelPart::Text {
                             text_kind: TextKind::Text,
                             text,
                             ..
-                        } => Some(text.as_str()),
+                        } => Some(text),
                         _ => None,
                     })
+                    .flat_map(|text| text.chunks())
                     .collect();
                 assert_eq!(text, reply);
                 true

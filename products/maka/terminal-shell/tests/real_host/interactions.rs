@@ -609,7 +609,7 @@ async fn app_stop_controls_remain_independent_while_another_original_receipt_is_
             .unwrap();
             store
                 .append_computer_app_dispatch(
-                    &event,
+                    &[], &event,
                     std::slice::from_ref(&broad),
                     &target,
                     &display,
@@ -740,7 +740,7 @@ async fn inline_questions_keep_their_draft_and_submit_only_from_the_request_seat
         view.handle_event(Event::Paste("The message draft remains separate".into()));
         commit_native_events(&mut view).await;
         let composer_caret = view.surface().input_context().unwrap().selection;
-        activate(&mut view, "Other answer").await;
+        activate(&mut view, "Other answer 1 · Which release should we use?").await;
         tab_to_label(&mut view, "Other answer 1").await;
         wait_focused_input(&mut view, "Other answer 1").await;
         let original_answer = format!("原始答案 · 门口 {}", "完整答案保持原文 ".repeat(512));
@@ -758,7 +758,7 @@ async fn inline_questions_keep_their_draft_and_submit_only_from_the_request_seat
         assert_eq!(view.surface().focused(), Some(answer_editor));
         assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some(original_answer.as_str()));
         assert_eq!(view.surface().input_context().unwrap().selection, answer_caret);
-        activate(&mut view, "Skip").await;
+        activate(&mut view, "Skip · 2. Add diagnostics?").await;
         wait_enabled_node(&mut view, "Submit answers").await;
         view.resize(80, 24);
         escape(&mut view);

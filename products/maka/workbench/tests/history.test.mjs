@@ -26,6 +26,7 @@ import {
   replayStartCursor,
   updateHistoryMetadata,
 } from '../app/history.ts';
+import { orderProcessRows } from '../app/processGroups.ts';
 
 const user = (text, turnId, sequence) => ({
   key: String(sequence),
@@ -187,4 +188,51 @@ test('regeneration waits for original metadata and retains reference exclusions 
     10,
   );
   assert.equal(canRegenerateFromText(attached), false);
+});
+
+test('early open model text retains its ordinal seat across later canonical tool admission', () => {
+  const user = {
+    messageId: 'user',
+    field: 'body',
+    role: 'user',
+    text: 'go',
+    position: { sourceSequence: 1, itemIndex: 0 },
+  };
+  const early = {
+    messageId: 'early',
+    field: 'body',
+    role: 'assistant',
+    text: 'start',
+    modelPart: { stepId: 'step', ordinal: 0 },
+    preview: { stepOrder: 1, ordinal: 0, revision: 2 },
+  };
+  const tool = {
+    messageId: 'tool',
+    field: 'body',
+    role: 'tool_call',
+    text: '{}',
+    position: { sourceSequence: 20, itemIndex: 0 },
+    modelPart: { stepId: 'step', ordinal: 1 },
+  };
+  const later = {
+    messageId: 'later',
+    field: 'body',
+    role: 'assistant',
+    text: 'tail',
+    modelPart: { stepId: 'step', ordinal: 2 },
+    preview: { stepOrder: 1, ordinal: 2, revision: 2 },
+  };
+  assert.deepEqual(
+    orderProcessRows([user, tool, early, later]).map((row) => row.messageId),
+    ['user', 'early', 'tool', 'later'],
+  );
+  const canonicalEarly = {
+    ...early,
+    preview: undefined,
+    position: { sourceSequence: 25, itemIndex: 0 },
+  };
+  assert.deepEqual(
+    orderProcessRows([user, tool, canonicalEarly, later]).map((row) => row.messageId),
+    ['user', 'early', 'tool', 'later'],
+  );
 });
