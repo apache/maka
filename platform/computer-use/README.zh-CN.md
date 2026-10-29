@@ -65,7 +65,7 @@ maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_
 
 Extension 提供方通过 `browser.user` 提供用户标签页发现和取得入口。[API 说明](src/api.zh-CN.md)涵盖其权限规则、`tab.ax` 门面、Playwright、剪贴板和下载。Host 的 `browserPreparation` 默认为 `popup: false`、`requestHeaders: []`；非空 headers 也会启用有效的 popup 采用与 relay。这些设置不授予站点访问权限，也不证明 ChatGPT 页面 hooks 已关闭，详见[类型化配置](../../plugins/workspace/api/src/computer.rs)。
 
-导出的 Maka 源码也是定制 Chrome 连接扩展的入口。自定义浏览器对象 API 从 [facade.js](src/facade.js)、[protocol.rs](src/protocol.rs) 中的类型化命令及 [browser.rs](src/browser.rs) 派发入手，保留 Host 授权和资源所有权。这是源码开发入口，不是动态浏览器协议插件注册接口。ChatGPT 和原版 OpenCLI 按实际能力尽力兼容，注册任意扩展 ID 不会增加其协议支持。原版 OpenCLI 当前缺少浏览器会话所需的接口；没有精确 provider ID 或扩展实例选择时，`cua.getBrowser({id: "opencli"})` 会在创建或认领标签页前选择唯一可用的已有提供方，没有匹配或匹配多个时拒绝选择。精确 ID 和已有句柄始终固定到原连接，无需安装修改版 OpenCLI 扩展。安装及浏览器操作仍须使用匹配的 Maka CLI/Host 构建在各目标平台进行集成验证；仅发现连接不能证明操作行为。
+定制 Maka 连接扩展可从 [facade.js](src/facade.js)、[protocol.rs](src/protocol.rs) 中的类型化命令及 [browser.rs](src/browser.rs) 派发入手。ChatGPT 和原版 OpenCLI 按实际能力尽力兼容。OpenCLI 可在创建或认领标签页前回退到唯一可用的提供方；精确 ID 和已有句柄仍绑定原提供方。
 
 录制计算机输出音频需要 Host 显式配置 `audio: true`，默认关闭。启用后提供 `cua.computer.start_audio_recording`、`stop_audio_recording` 和 `nodeRepl.emitAudio`；仅录制输出音频，不选择麦克风。macOS 还需要单独的音频 Session 授权。重置和 Session 清理会丢弃其录音。
 
@@ -85,8 +85,6 @@ MAKA_CUA_WINDOWS_EXECUTABLE=/mnt/c/path/to/maka.exe just run
 
 ## 生命周期
 
-临时标签页由创建它的 Session 持有，并归当前使用它的 Turn 管理，Turn 完成时关闭；其他 Session 无法列出或取得这些标签页。重置清除本 Session 的绑定并关闭其临时标签页，保留用户应用和原有标签页。导航、窗口变化和新观察可能使原输入目标失效。取消或超时后需要重置，结果不确定的动作不会自动重放。关闭流程等待已接受的原生工作完成清理。
+临时标签页由所属 Session 持有。Turn 结束时，未标记保留的标签页关闭；`markDeliverable()` 为用户保留标签页，`markHandoff()` 则保留至后续 Turn。重新使用保留的标签页需要当前授权。重置和断开连接会请求清理，并保留标签页标记。导航和窗口变化可能使观察失效。结果不确定的输入不会自动重放。
 
-输入与捕获行为应在目标桌面验证；REPL 单元测试不能证明原生焦点或无障碍行为。
-
-当前 checkpoint 已将平台专用的 `cua.computer` 接口及 `tab.dom_cua.get_visible_dom()` 接入 Host 授权与资源清理，但尚未实现完整的 LCU 行为对齐。原生 Windows 滚动仍不可用；Windows 截图坐标生命周期、macOS 焦点／键盘／粘贴行为，以及部分浏览器上传和边界语义尚未补齐。本 checkpoint 的 Windows、macOS 桌面集成尚未验证。
+原生 Computer Use 需要交互式桌面，Linux 原生方法需要 X11。Windows 中提供截图 ID 时使用图像坐标，省略 ID 时使用窗口逻辑视口。浏览器上传支持已授权的普通文件，不支持目录上传或子框架文件选择器。浏览器宿主退出时仍被选择的文件不会自动回收。

@@ -18,7 +18,7 @@ nodeRepl.write(await (native.list_windows ? native.list_windows() : native.list_
 | `windows` | `activate_window`, `get_window_state`, `click`, `scroll`, `drag`, `press_key`, `type_text`, `launch_app`, `list_apps`, `list_windows`, `get_window`, `perform_secondary_action`, `set_value` |
 
 - Linux X11: use a returned `window` object for `get_window_state({window, query?, include_screenshot?})`. Pass an observed `element_id` **or** integer `x,y` to `click({window, element_id})` / `click({window, x, y, mouse_button?, click_count?, duration?, key?})`; window coordinates are local, and omitting `window` uses the desktop. Other inputs include `type_text({window?, text, element_id?})`, `press_key({window?, key, duration?})`, `scroll({window?, direction, pixels?, x?, y?, element_id?, key?})`, `drag({window?, path:[{x,y},…], key?})`, `move({window?, x,y,key?})`, `move_relative({dx,dy,key?})`, `activate_window({window})`, `perform_secondary_action({window,element_id,action})` and `launch_app({app})`. `duration` is milliseconds. `drag_handle()` creates a desktop handle with `start({x,y})`, `move_to({x,y})`, `end()`; finish it explicitly within the turn.
-- Windows: use the returned `{app,id,...}` window descriptor. Read `get_window_state({window, include_text?, include_screenshot?})` before indexed or screenshot input; screenshots default on, text off. Use `click({window,element_index})` or `click({window,x,y,screenshotId})`, `scroll({window,x,y,scrollX,scrollY,screenshotId?})`, `drag({window,from_x,from_y,to_x,to_y,screenshotId})`, `press_key({window,key})`, `type_text({window,text})`, `set_value({window,element_index,value})`, `perform_secondary_action({window,element_index,action})`, `activate_window({window})`, `get_window({id})` and `launch_app({app})`. Coordinate input needs the current window screenshot; `screenshotId` is its returned `id`. This checkpoint requires `screenshotId` for coordinate clicks and drags. Raw Windows `scroll` is exposed for API discovery but its actuator is not yet connected and the call is refused. Secondary actions currently support Expand/Collapse; other labels are refused.
+- Windows: use the returned `{app,id,...}` window descriptor. Read `get_window_state({window, include_text?, include_screenshot?})` before indexed or screenshot input; screenshots default on, text off. Use `click({window,element_index})` or `click({window,x,y,screenshotId?})`, `scroll({window,x,y,scrollX,scrollY,screenshotId?})`, `drag({window,from_x,from_y,to_x,to_y,screenshotId?})`, `press_key({window,key})`, `type_text({window,text})`, `set_value({window,element_index,value})`, `perform_secondary_action({window,element_index,action})`, `activate_window({window})`, `get_window({id})` and `launch_app({app})`. Set `screenshotId` to the returned screenshot `id` to use image coordinates. Without it, use integer window-local coordinates in the latest observed screenshot dimensions, or the window dimensions before a screenshot observation. Scroll accepts both `scrollX` and `scrollY` in the same call. Secondary actions currently support Expand/Collapse; other labels are refused.
 - macOS: use a returned app `id` as `app`. Read `get_app_state({app})`, then call `click({app,element_index})` or `click({app,x,y,mouse_button?,click_count?})`, `drag({app,from_x,from_y,to_x,to_y})`, `scroll({app,element_index,direction,pages?})` (or `x,y`), `press_key({app,key})`, `type_text({app,text})`, `paste({app,text,format:'text'})`, `set_value({app,element_index,value})`, `select_text({app,element_index,text,prefix?,suffix?,selection_type?})`, or `perform_secondary_action({app,element_index,action})`.
 
 Native inventories and state shapes differ by platform; reuse returned IDs and selectors, not App-wrapper handles. Linux state returns `ax_tree` and `screenshots`; screenshot entries include `filepath`, `bytes`, `data_url`. Windows state emits its screenshot images. Other native results are returned for `nodeRepl.write`/`emitImage`; mutators return undefined. Current Host/app permissions still apply, and a present method may refuse an unavailable backend or unsupported operation. Refresh state after a stale-target error; do not replay input whose outcome is unknown. Do not carry an active drag across turns; refresh observations after reset.
@@ -119,6 +119,8 @@ unless the user copied something newer. An unchanged value is reported as uncert
 Browser HTML paste requires an observed contenteditable element.
 
 Tab navigation: `goto(url)`, `back()`, `forward()`, `reload()`, `close()`.
+On Extension providers, `await tab.markDeliverable()` keeps the tab open at normal turn end and releases it to the user. `await tab.markHandoff()` retains the tab for this same Session; the next actual turn resumes it with no mark. The original agent/user origin is preserved, so an agent-created tab closes at a later unmarked turn end. A later explicit mark replaces the previous mark. Both methods return undefined after the matching intent ACK, which does not prove physical delivery or cleanup. Marks retain no site permission; an uncertain call is not replayed. Direct CDP does not support these marks.
+
 `tab.clipboard` provides `read()`, `readText()`, `write(items)` and `writeText(text)`.
 These methods return values without emitting them. A rich item has nonempty `entries`;
 each entry has `mimeType` and exactly one string field, `text` or `base64`. Optional
@@ -276,9 +278,10 @@ Cursors share no input authority and do not move the system pointer. Multiple cu
 do not isolate the physical keyboard, application focus or input method.
 Cancelled, timed-out or heap-exhausted REPLs require `cua_reset`, then target rebinding. Admitted
 native work settles before returning; reset does not undo dispatched input.
-At turn end, this Session closes temporary tabs it created for that turn and releases its page observations.
-Preexisting user tabs remain open. Reset clears this Session's REPL and bindings and closes its temporary tabs;
-it leaves user apps and preexisting tabs open. An unconfirmed close retains ownership and is not replayed.
+At normal turn end, this Session closes unmarked temporary tabs it created and releases its page observations.
+Preexisting user tabs and marked retained tabs remain open under the rules above. Reset clears this Session's
+REPL and bindings; it does not grant new access or erase this Session's retained resource and cleanup obligations.
+An unconfirmed mark or close retains custody and is not replayed.
 
 The same browser collection is available as `agent.browsers` and `cua.browsers`.
 Its `list`, `get(id)`, `getDefault`, and `getForUrl(url)` methods return metadata
@@ -421,3 +424,21 @@ Read `browser.capabilities.list()` and obtain the published viewport capability 
 # Page asset capability
 Use page assets only when the selected tab publishes that capability. Asset inventory belongs to the observed page and document. After navigation or document replacement, obtain a fresh inventory; old asset identifiers cannot authorize another page's files. Saving files requires the operation's current file-transfer permission.
 <!-- /browser-document -->
+
+### File choosers and uploads
+
+```js
+const pending = tab.playwright.waitForEvent('filechooser', { timeoutMs: 3000 });
+await tab.playwright.getByRole('button', { name: 'Upload' }).click();
+const chooser = await pending;
+chooser.isMultiple();
+await chooser.setFiles(['workspace-file.bin']);
+```
+
+Start the wait before the action that opens the chooser. The default and maximum chooser event wait are 3000 ms; an explicit timeout must be a positive integer. `isMultiple()` is synchronous. `setFiles(pathOrPaths, {timeoutMs})` accepts one path or a nonempty array; a single-file chooser rejects multiple paths. Its optional timeout is validated without discarding an in-flight selection.
+
+Paths refer to the Agent Host's filesystem and remain subject to the caller's workspace file policy. Page access, upload consent for the current HTTP(S) origin, and file-read permission are separate. The supported input snapshot is a regular file. Files are transported as immutable bytes and materialized by the selected Maka browser host; do not translate paths between operating systems yourself.
+
+Chooser handles belong to their issued tab, document and turn. Child-target choosers are unsupported. Extension choosers require complete source-event provenance; uploads additionally require verified browser-host file placement. Chatgpt is best effort, and configured CDP without such placement refuses upload before sending files. An existing bound tab is never replaced with another browser to satisfy the operation. A successful selection consumes the chooser. An unknown outcome must be reconciled rather than replayed.
+
+If cleanup reports an unconfirmed result, do not assume copied upload data has been deleted. Automatic reclamation after the browser host exits while files remain selected is not yet available.

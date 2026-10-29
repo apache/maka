@@ -14,7 +14,7 @@ nodeRepl.write(await (native.list_windows ? native.list_windows() : native.list_
 | `windows` | `activate_window`, `get_window_state`, `click`, `scroll`, `drag`, `press_key`, `type_text`, `launch_app`, `list_apps`, `list_windows`, `get_window`, `perform_secondary_action`, `set_value` |
 
 - Linux X11：使用傳回的 `window` 物件呼叫 `get_window_state({window, query?, include_screenshot?})`。點擊傳觀察到的 `element_id` **或**整數 `x,y`：`click({window,element_id})` / `click({window,x,y,mouse_button?,click_count?,duration?,key?})`。有 `window` 時座標相對視窗，省略則操作桌面。其他輸入為 `type_text({window?,text,element_id?})`、`press_key({window?,key,duration?})`、`scroll({window?,direction,pixels?,x?,y?,element_id?,key?})`、`drag({window?,path:[{x,y},…],key?})`、`move({window?,x,y,key?})`、`move_relative({dx,dy,key?})`、`activate_window({window})`、`perform_secondary_action({window,element_id,action})`、`launch_app({app})`。`duration` 單位為毫秒。`drag_handle()` 建立桌面拖曳控制物件，提供 `start({x,y})`、`move_to({x,y})`、`end()`；請在本 turn 內明確結束。
-- Windows：使用傳回的 `{app,id,...}` 視窗描述。索引或擷取畫面輸入前先讀 `get_window_state({window,include_text?,include_screenshot?})`；預設含擷取畫面、不含文字。輸入為 `click({window,element_index})` 或 `click({window,x,y,screenshotId})`、`scroll({window,x,y,scrollX,scrollY,screenshotId?})`、`drag({window,from_x,from_y,to_x,to_y,screenshotId})`、`press_key({window,key})`、`type_text({window,text})`、`set_value({window,element_index,value})`、`perform_secondary_action({window,element_index,action})`、`activate_window({window})`、`get_window({id})`、`launch_app({app})`。座標輸入需要目前視窗擷取畫面；`screenshotId` 使用傳回擷取畫面的 `id`。目前 checkpoint 的座標點擊和拖曳必須提供 `screenshotId`。原生 Windows `scroll` 已出現在介面清單中，但執行後端尚未接通，呼叫會被拒絕。次要操作目前支援 Expand/Collapse，其他標籤會被拒絕。
+- Windows：使用傳回的 `{app,id,...}` 視窗描述。索引或擷取畫面輸入前先讀 `get_window_state({window,include_text?,include_screenshot?})`；預設含擷取畫面、不含文字。輸入為 `click({window,element_index})` 或 `click({window,x,y,screenshotId?})`、`scroll({window,x,y,scrollX,scrollY,screenshotId?})`、`drag({window,from_x,from_y,to_x,to_y,screenshotId?})`、`press_key({window,key})`、`type_text({window,text})`、`set_value({window,element_index,value})`、`perform_secondary_action({window,element_index,action})`、`activate_window({window})`、`get_window({id})`、`launch_app({app})`。將 `screenshotId` 設為傳回擷取畫面的 `id` 時使用影像座標。省略時使用視窗局部整數座標，範圍依最近觀察到的擷取畫面尺寸計算；尚未觀察過擷取畫面時使用視窗尺寸。一次捲動可同時指定 `scrollX` 和 `scrollY`。次要操作目前支援 Expand/Collapse，其他標籤會被拒絕。
 - macOS：將傳回的應用程式 `id` 用作 `app`。先讀 `get_app_state({app})`，再用 `click({app,element_index})` 或 `click({app,x,y,mouse_button?,click_count?})`、`drag({app,from_x,from_y,to_x,to_y})`、`scroll({app,element_index,direction,pages?})`（也可用 `x,y`）、`press_key({app,key})`、`type_text({app,text})`、`paste({app,text,format:'text'})`、`set_value({app,element_index,value})`、`select_text({app,element_index,text,prefix?,suffix?,selection_type?})`、`perform_secondary_action({app,element_index,action})`。
 
 原生清單和狀態形狀依平台而異；重用傳回的 ID 和選擇器，不傳 App 包裝物件的控制代碼。Linux 狀態含 `ax_tree`、`screenshots`，擷取畫面項目含 `filepath`、`bytes`、`data_url`。Windows 狀態會輸出擷取畫面；其他原生結果由呼叫者用 `nodeRepl.write`/`emitImage` 輸出，變更方法傳回 undefined。目前 Host/應用程式權限仍然生效；方法存在不保證後端可用或操作已支援。目標失效後重新觀察，不重播結果未知的輸入；不要將未結束的拖曳跨 turn 使用；重設後重新觀察。
@@ -65,7 +65,9 @@ App 輸入：`typeText(text)`、`paste(text, {format?})`、`pressKey(key)`。
 Tab 輸入：`typeText(index|null, text)`、`paste(index|null, text, {format?})`、`pressKey(index|null, key)`。指定索引會先聚焦已觀察的欄位，`null` 表示目前焦點。按鍵範例：`Return`、`Tab`、`super+a`、`shift+Left`。
 貼上格式：`text`（預設）、`md`（將 Markdown 原始碼作為純文字）和 `html`。Linux 和 Windows 原生應用程式僅支援 `text`。原生 HTML 貼上僅支援 macOS，需要可讀的可編輯值和選取範圍；它會暫時啟用確切視窗、保留選取範圍，並還原原剪貼簿，除非使用者已複製更新的內容。值未改變會回報為不確定。瀏覽器 HTML 貼上需要已觀察的 contenteditable 元素。
 
-Tab 導覽：`goto(url)`、`back()`、`forward()`、`reload()`、`close()`。導覽支援 HTTP(S) 和 about:blank，並等待可觀察的文件。涵蓋主要 CDP 目標；跨程序 iframe 輔助使用支援尚不完整。
+Tab 導覽：`goto(url)`、`back()`、`forward()`、`reload()`、`close()`。
+Extension 提供者支援 `await tab.markDeliverable()`：在正常 Turn 結束時保留分頁並歸還使用者；`await tab.markHandoff()` 則為同一個 Session 保留分頁，下一次實際 Turn 啟用時恢復並清除標記。原本的 agent/user 來源不變，因此 agent 建立的分頁會在之後未重新標記的 Turn 結束時關閉。後一次明確標記覆蓋前一次。兩者在收到相符的意圖 ACK 後傳回 undefined；這不證明實體交付或清理成功，不保留網站權限，也不自動重播不確定的請求。直接 CDP 不支援這些標記。
+導覽支援 HTTP(S) 和 about:blank，並等待可觀察的文件。涵蓋主要 CDP 目標；跨程序 iframe 輔助使用支援尚不完整。
 
 `tab.clipboard` 提供 `read()`、`readText()`、`write(items)`、`writeText(text)`，傳回資料而不自動輸出。
 富文字項目包含非空 `entries`；每個項目包含 `mimeType`，以及字串欄位 `text` 或 `base64` 中的一個。
@@ -151,7 +153,7 @@ Host 啟用輸出音訊後，`await cua.computer.start_audio_recording({max_dura
 
 應用程式、瀏覽器網站和音訊授權等待會暫停剩餘執行預算。macOS/Windows 原生等待也會暫停預算；一般非同步等待和 Linux 原生操作繼續計時。暫停不會重設預算，也不會停用取消。
 每個 Session 有獨立的 Maka 游標。輸入操作自動顯示游標。`cua.cursor.configure({label?, color?, enabled?, reducedMotion?})` 修改此 Session 的顯示。顏色為 `blue`、`mint`、`violet`、`amber`、`rose`、`cyan`；標籤最多 48 個字元。`cua.cursor.getState()` 回報設定及原生/瀏覽器可見性。處於 `idle` 的原生繪製器在首次原生指示時啟動；`unavailable` 表示顯示主機缺少或失敗。重新設定可重試失敗的繪製器。閒置游標保留至停用或清理。游標不共享輸入權限，也不移動系統指標。多個游標不能隔離實體鍵盤、應用程式焦點或輸入法。
-REPL 被取消、逾時或耗盡堆積記憶體後，需要 `cua_reset` 並重新綁定目標。已接納的原生工作會在傳回前結算；重設不會撤銷已派發的輸入。Turn 結束時，目前 Session 會關閉為該 Turn 建立的暫時分頁，並釋放頁面觀察；既有的使用者分頁保持開啟。重設會清除此 Session 的 REPL 和綁定並關閉其暫時分頁，保留使用者應用程式和原有分頁。關閉結果未確認時會保留所有權，不重播關閉操作。
+REPL 被取消、逾時或耗盡堆積記憶體後，需要 `cua_reset` 並重新綁定目標。已接納的原生工作會在傳回前結算；重設不會撤銷已派發的輸入。正常 Turn 結束時，目前 Session 會關閉未標記保留的暫時分頁，並釋放頁面觀察；既有的使用者分頁和明確保留的分頁依上述規則保持開啟。重設清除本 Session 的 REPL 和綁定，不授予新權限，也不丟棄該 Session 保留的資源及清理責任。標記或關閉結果未確認時會保留責任，不重播操作。
 
 `agent.browsers` 與 `cua.browsers` 是同一瀏覽器集合；`list`、`get(id)`、`getDefault` 和 `getForUrl(url)` 回傳中繼資料或惰性 Browser，不輸出觀察。`cua.getBrowser` 是輸出說明的便捷入口。`browser.tabs.selected()` 回傳邏輯工作階段選取的分頁；它不選擇作業系統焦點分頁。直接 CDP 尚無邏輯選取服務，回傳 `undefined`。
 
@@ -245,3 +247,21 @@ Alt、Control、Meta、Shift、ControlOrMeta。`keypress({keys:[...]})` 向目�
 # 頁面資源能力
 僅在所選分頁發布該能力時使用頁面資源介面。資源清單歸屬於已觀察的頁面和文件。導覽或文件替換後取得新清單；舊資源 ID 不能授權另一頁面的檔案。儲存檔案需要該操作目前的檔案傳輸許可。
 <!-- /browser-document -->
+
+### 檔案選擇與上傳
+
+```js
+const pending = tab.playwright.waitForEvent('filechooser', { timeoutMs: 3000 });
+await tab.playwright.getByRole('button', { name: 'Upload' }).click();
+const chooser = await pending;
+chooser.isMultiple();
+await chooser.setFiles(['workspace-file.bin']);
+```
+
+先開始等待，再執行開啟檔案選擇器的操作。預設及最長事件等待時間為 3000 毫秒；明確指定的 timeout 必須是正整數。`isMultiple()` 同步回傳。`setFiles(pathOrPaths, {timeoutMs})` 接受單一路徑或非空陣列；單選選擇器拒絕多個路徑。可選 timeout 會驗證，但不會丟棄已派發的檔案選擇請求。
+
+路徑屬於 Agent Host 的檔案系統，仍受呼叫者的工作區檔案原則約束。網頁存取、目前 HTTP(S) 來源的上傳批准、檔案讀取權限彼此獨立。目前輸入快照支援一般檔案。檔案以不可變位元組傳輸，由所選 Maka 瀏覽器宿主實體化；不要自行換算作業系統之間的檔案路徑。
+
+選擇器控制代碼綁定簽發它的分頁、文件及 turn。子 target 的選擇器不受支援。擴充功能選擇器要求完整的事件來源資訊，上傳還要求證實瀏覽器宿主的檔案可見位置。Chatgpt 盡力相容；沒有該位置證明的設定 CDP 會在傳送檔案前拒絕上傳。不會為此把已綁定分頁替換到另一瀏覽器。成功選擇會消耗控制代碼；結果未知時應先處理原請求，不能重播。
+
+若清理回報結果未確認，請勿假定上傳副本已刪除。瀏覽器宿主結束時仍被選取的檔案，目前沒有後續自動回收能力。
