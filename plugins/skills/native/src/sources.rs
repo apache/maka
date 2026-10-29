@@ -232,7 +232,7 @@ mod tests {
         Workspace {
             worktree: None,
             project_id: None,
-            path: path.to_str().unwrap().into(),
+            path: workspace::project::host_path(&path).unwrap().into(),
             directory_identity,
             identity,
         }
@@ -421,13 +421,28 @@ mod tests {
         let mut marker = a.clone();
         marker.identity = workspace(&dir.path().join("projects/b")).await.identity;
         assert!(library.for_workspace(Some(marker), &call).await.is_err());
-        std::fs::rename(&a.path, dir.path().join("projects/original")).unwrap();
-        let _replacement = workspace(Path::new(&a.path)).await;
-        assert!(library.for_workspace(Some(a), &call).await.is_err());
+        match std::fs::rename(&a.path, dir.path().join("projects/original")) {
+            Ok(()) => {
+                let _replacement = workspace(Path::new(&a.path)).await;
+                assert!(library.for_workspace(Some(a), &call).await.is_err());
+            }
+            Err(error) => {
+                // Windows can prevent replacement while a captured directory is open.
+                assert!(cfg!(windows) && error.raw_os_error() == Some(32), "{error}");
+                assert!(library.for_workspace(Some(a), &call).await.is_ok());
+            }
+        }
         let b = workspace(&dir.path().join("projects/c")).await;
-        std::fs::rename(dir.path().join("projects"), dir.path().join("old-projects")).unwrap();
-        std::fs::create_dir_all(dir.path().join("projects")).unwrap();
-        assert!(library.for_workspace(Some(b), &call).await.is_err());
+        match std::fs::rename(dir.path().join("projects"), dir.path().join("old-projects")) {
+            Ok(()) => {
+                std::fs::create_dir_all(dir.path().join("projects")).unwrap();
+                assert!(library.for_workspace(Some(b), &call).await.is_err());
+            }
+            Err(error) => {
+                assert!(cfg!(windows) && error.raw_os_error() == Some(32), "{error}");
+                assert!(library.for_workspace(Some(b), &call).await.is_ok());
+            }
+        }
         call.finish().await.unwrap();
     }
 }

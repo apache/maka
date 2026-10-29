@@ -461,7 +461,9 @@ mod tests {
 
     fn protection_lifetime(prepare: fn(&Compiled) -> io::Result<Guards>) {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
+        let canonical = directory.path().canonicalize().unwrap();
+        let root =
+            std::path::Path::new(maka_fs_tools::workspace::project::host_path(&canonical).unwrap());
         let boundary = root.join("missing/protected");
         let policy = Policy {
             default: Access::Read,
