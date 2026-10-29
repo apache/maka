@@ -97,20 +97,27 @@ impl AccountSid {
     }
 
     pub(super) fn text(&self) -> io::Result<String> {
-        let mut text = ptr::null_mut();
-        // SAFETY: SID remains backed by self; API allocates the string output.
-        checked(unsafe { ConvertSidToStringSidW(self.as_ptr(), &mut text) })?;
-        let allocation = LocalAllocation(text.cast());
-        let mut length = 0;
-        // SAFETY: successful API output is a NUL-terminated UTF-16 SID string.
-        while unsafe { *text.add(length) } != 0 {
-            length += 1;
-        }
-        let value = String::from_utf16(unsafe { std::slice::from_raw_parts(text, length) })
-            .map_err(|_| io::Error::other("invalid account SID string"));
-        drop(allocation);
-        value
+        // SAFETY: this account owns the queried SID buffer.
+        unsafe { sid_text(self.as_ptr()) }
     }
+}
+
+/// # Safety
+/// `sid` must point to a valid SID for the duration of this call.
+pub(super) unsafe fn sid_text(sid: PSID) -> io::Result<String> {
+    let mut text = ptr::null_mut();
+    // SAFETY: the caller keeps the SID valid; the API allocates the output.
+    checked(unsafe { ConvertSidToStringSidW(sid, &mut text) })?;
+    let allocation = LocalAllocation(text.cast());
+    let mut length = 0;
+    // SAFETY: successful API output is a NUL-terminated UTF-16 SID string.
+    while unsafe { *text.add(length) } != 0 {
+        length += 1;
+    }
+    let value = String::from_utf16(unsafe { std::slice::from_raw_parts(text, length) })
+        .map_err(|_| io::Error::other("invalid account SID string"));
+    drop(allocation);
+    value
 }
 
 /// SID of the effective filesystem identity, including an impersonated caller.
