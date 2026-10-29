@@ -62,6 +62,7 @@ import {
 import {
   acceptedSend,
   mergeChunks,
+  openingUserMessage,
   replayStartCursor,
   updateHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
@@ -252,31 +253,15 @@ export function Conversation(props: ConversationProps) {
   const client = props.client;
   const sessionId = client.sessionId;
   const rows = signal<Row[]>([]);
-  // The first user message of a turn opened it; later ones in the same turn steered it.
-  const openingMessage = (turnId: string | undefined) =>
-    turnId === undefined
-      ? null
-      : (rows().find(
-          (other) => other.role === 'user' && other.field === 'body' && other.turnId === turnId,
-        ) ?? null);
+  const loadedOpening = (turnId: string | undefined) =>
+    openingUserMessage(rows(), turnId, historyWindow()?.before);
   const opensTurn = (row: Row) => {
-    const first = openingMessage(row.turnId);
+    const first = loadedOpening(row.turnId);
     return (
-      first === null ||
-      (first.position?.sourceSequence === row.position?.sourceSequence &&
-        first.position?.itemIndex === row.position?.itemIndex)
+      first !== null &&
+      first.position?.sourceSequence === row.position?.sourceSequence &&
+      first.position?.itemIndex === row.position?.itemIndex
     );
-  };
-  // A regenerated reply resends its opening message, so that message must be known to open the
-  // turn: either history is loaded from its start, or a row of an earlier turn is loaded above it.
-  const loadedOpening = (turnId: string | undefined) => {
-    const opening = openingMessage(turnId);
-    if (opening === null || historyWindow()?.before === null) return opening;
-    for (const other of rows()) {
-      if (other === opening) return null;
-      if (other.turnId !== undefined && other.turnId !== turnId) return opening;
-    }
-    return null;
   };
   const live = signal<Row[]>([]);
   const toolActivity = signal<ToolActivity[]>([]);
