@@ -21,7 +21,7 @@ import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import { useHost } from './host';
-import type { Position, Row } from './history';
+import { messageKey, type Position, type Row } from './history';
 import { readOriginal, type OriginalMessage } from './MessageCopy';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { C, IconButton } from './ui';
@@ -41,16 +41,24 @@ const sameTarget = (left: Target | null, right: Target | null) =>
 /**
  * Edit and resend a user message: fork the conversation before its turn and
  * put the message's text in the fork's composer. The original stays as it is.
+ * To regenerate a reply, the fork sends the turn's opening message again.
  */
 export function MessageEdit(props: {
-  row(): Row;
-  ownerKey(): string;
+  /** The user message; for a regenerated reply, the one that opened its turn. */
+  row(): Row | null;
+  /** Defaults to the row's own key. */
+  ownerKey?(): string;
+  regenerate?: boolean;
   sessionId: string;
   through(): number;
   /** Whether the row is the message that opened its turn; a steering message is not. */
   opensTurn(): boolean;
-  /** Resolves whether the fork was opened. */
-  edit(action: Extract<SessionAction, { kind: 'fork' }>, text: string): Promise<boolean>;
+  /** Resolves whether the fork was opened; `send` sends the text there. */
+  edit(
+    action: Extract<SessionAction, { kind: 'fork' }>,
+    text: string,
+    send: boolean,
+  ): Promise<boolean>;
 }) {
   const host = useHost();
   const pending = signal(false);
@@ -62,12 +70,17 @@ export function MessageEdit(props: {
   const target = computed<Target | null>(
     () => {
       const row = props.row();
-      if (row.role !== 'user' || row.field !== 'body' || !row.position || !row.turnId) return null;
+      if (!row || row.role !== 'user' || row.field !== 'body' || !row.position || !row.turnId)
+        return null;
+      // Only the text is resent; a regenerated reply would lose the attachments.
+      // Unknown attachments (a later fragment loaded alone) count as some.
+      if (props.regenerate && (row.attachments === undefined || row.attachments.length > 0))
+        return null;
       // A fork before the turn of a steering message would also drop the message that opened it.
       if (!props.opensTurn()) return null;
       return {
         sessionId: props.sessionId,
-        key: props.ownerKey(),
+        key: props.ownerKey?.() ?? messageKey(row),
         role: 'user',
         position: { ...row.position },
         through: row.metadataThrough ?? props.through(),
@@ -97,6 +110,7 @@ export function MessageEdit(props: {
           position: { kind: 'before_turn', turnId: original.turnId },
         },
         text,
+        props.regenerate ?? false,
       );
       if (!opened && owns(original)) notice.set(uiMessage('Fork created. Open it in Sessions.'));
     } catch (reason) {
@@ -114,9 +128,9 @@ export function MessageEdit(props: {
       </If>
       <If when={target() !== null}>
         <IconButton
-          label={tr('Edit and resend')}
+          label={props.regenerate ? tr('Regenerate in a fork') : tr('Edit and resend')}
           tooltip={pending() ? tr('Creating fork…') : undefined}
-          icon="edit"
+          icon={props.regenerate ? 'refresh' : 'edit'}
           disabled={pending()}
           onPress={inputAction(edit, target())}
         />

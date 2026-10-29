@@ -20,6 +20,7 @@
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
+import type { JSX } from 'nsh';
 import { useHost } from './host';
 import { sameValue } from '../../../../plugins/shared/value';
 import type { Position, Row } from './history';
@@ -51,6 +52,8 @@ export function FinalActions(props: {
   sessionId: string;
   through(): number;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
+  /** Another action on this turn, after the fork. */
+  extra?: JSX.Element;
 }) {
   const host = useHost();
   const pending = signal(false);
@@ -149,6 +152,7 @@ export function FinalActions(props: {
           disabled={pending() || target() === null}
           onPress={inputAction(fork, target())}
         />
+        {props.extra}
         <IconButton
           label={tr("View this turn's model usage")}
           icon="activity"
