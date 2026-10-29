@@ -1,0 +1,131 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+
+name: Computer Use Contracts
+
+on:
+  push:
+    branches: [ci/computer-use-contracts]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: computer-use-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_BUILD_JOBS: "2"
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  native:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-26, windows-2025]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'third-party/termina/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev pkg-config libx11-dev libxi-dev libxtst-dev libxext-dev libxrandr-dev libxfixes-dev libxkbcommon-dev libwayland-dev libfontconfig1-dev libfreetype6-dev libssl-dev
+      - name: Check native computer-use library
+        run: cargo check --locked -p maka-computer-use --lib --features native-desktop
+
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+          cache: npm
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'third-party/termina/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev pkg-config libx11-dev libxi-dev libxtst-dev libxext-dev libxcb1-dev libxrandr-dev libxfixes-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libfreetype6-dev libssl-dev
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-deny
+      - name: Install declared npm dependencies
+        run: |
+          npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
+          node scripts/setup.mjs
+      - name: Generate and check dependency inventory
+        run: |
+          node scripts/rust/dependencies.mjs generate
+          node scripts/rust/dependencies.mjs check
+      - name: Generate and check SDK contracts
+        run: |
+          node packages/plugin-sdk/scripts/generate.mjs generate
+          node packages/plugin-sdk/scripts/generate.mjs check
+          node node_modules/typescript/bin/tsc -p packages/plugin-sdk/tsconfig.json --noEmit
+          node node_modules/typescript/bin/tsc -p packages/plugin-sdk/tsconfig.acceptance.json
+      - name: Check current workbench types
+        run: |
+          cargo run --locked -p maka-workbench --example ui_types -- "$RUNNER_TEMP/computer-use-ui-types"
+          node node_modules/typescript/bin/tsc -p "$RUNNER_TEMP/computer-use-ui-types/tsconfig.json" --noEmit --skipLibCheck false
+      - name: Generate and check third-party notices
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/rust/notices.mjs generate
+          node scripts/rust/notices.mjs check
+      - name: Record generated patch
+        if: ${{ always() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/computer-use-contracts"
+          git rev-parse HEAD > "$RUNNER_TEMP/computer-use-contracts/source-sha.txt"
+          git diff --check
+          git diff --binary > "$RUNNER_TEMP/computer-use-contracts/generated-contracts.patch"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: computer-use-contracts
+          path: ${{ runner.temp }}/computer-use-contracts/
+          if-no-files-found: error
+          retention-days: 7
