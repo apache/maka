@@ -183,7 +183,7 @@ export function mergeChunks(rows: Row[], chunks: any[], older = false, through =
       turnId: chunk.turnId,
       timestamp: chunk.timestamp,
       ...((previous?.metadataThrough ?? -1) > through
-        ? historyMetadata(previous, previous!.metadataThrough!)
+        ? historyMetadata(previous, previous!.metadataThrough!, previous)
         : historyMetadata(chunk, through, previous)),
       position: chunk.position,
       field: chunk.field,

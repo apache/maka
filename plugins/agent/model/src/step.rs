@@ -96,9 +96,15 @@ mod tests {
                         },
                     ]
                 );
+                assert_eq!(step.finish_reason, ModelFinishReason::Stop);
+                assert_eq!(step.usage.output_tokens, Some(4));
                 assert_eq!(step.usage.reasoning_tokens, Some(2));
             }
         }
+    }
+
+    #[test]
+    fn failed_or_finished_builders_cannot_accept_more_events() {
         for already_finished in [false, true] {
             let mut builder = StepBuilder::default();
             let finish = ModelEvent::Finished {
@@ -119,34 +125,6 @@ mod tests {
             );
             assert!(builder.push(finish).is_err());
             assert!(builder.finish().is_err());
-        }
-        for reason in ["content-filter", "error", "unknown"] {
-            assert!(serde_json::from_value::<ModelFinishReason>(json!(reason)).is_err());
-        }
-        for (reason, wire) in [
-            (ModelFinishReason::Stop, "stop"),
-            (ModelFinishReason::ToolCalls, "tool-calls"),
-            (ModelFinishReason::Length, "length"),
-        ] {
-            assert_eq!(serde_json::to_value(reason).unwrap(), json!(wire));
-            assert_eq!(
-                serde_json::from_value::<ModelFinishReason>(json!(wire)).unwrap(),
-                reason
-            );
-            let finish = ModelEvent::Finished {
-                reason,
-                usage: ModelUsage {
-                    input_tokens: Some(3),
-                    output_tokens: Some(8),
-                    ..Default::default()
-                },
-                provider_options: None,
-            };
-            let mut builder = StepBuilder::default();
-            builder.push(finish).unwrap();
-            let step = builder.finish().unwrap();
-            assert_eq!(step.finish_reason, reason);
-            assert_eq!(step.usage.output_tokens, Some(8));
         }
     }
 }

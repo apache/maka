@@ -288,18 +288,18 @@ mod tests {
 
     #[test]
     fn browser_preparation_defaults_disable_both_host_preparations() {
+        let validator = jsonschema::validator_for(&configuration_schema()).unwrap();
         let expected = serde_json::json!({"popup": false, "requestHeaders": []});
-        assert_eq!(
-            serde_json::to_value(Configuration::default().browser_preparation)
-                .expect("default browser preparation serializes"),
-            expected,
-        );
         for input in [
             serde_json::json!({}),
             serde_json::json!({"browserPreparation": {}}),
             serde_json::json!({"browserPreparation": {"popup": false}}),
             serde_json::json!({"browserPreparation": {"requestHeaders": []}}),
         ] {
+            assert!(
+                validator.is_valid(&input),
+                "schema rejects optional controls: {input}"
+            );
             let configuration: Configuration = serde_json::from_value(input.clone())
                 .expect("omitted browser preparation controls use Host policy defaults");
             assert_eq!(
@@ -313,6 +313,7 @@ mod tests {
 
     #[test]
     fn browser_preparation_controls_are_independent() {
+        let validator = jsonschema::validator_for(&configuration_schema()).unwrap();
         for popup in [false, true] {
             for request_headers in [
                 serde_json::json!([]),
@@ -322,10 +323,15 @@ mod tests {
                     "popup": popup,
                     "requestHeaders": request_headers,
                 });
-                let configuration: Configuration = serde_json::from_value(serde_json::json!({
+                let input = serde_json::json!({
                     "browserPreparation": expected.clone(),
-                }))
-                .expect("popup and request headers can be configured independently");
+                });
+                assert!(
+                    validator.is_valid(&input),
+                    "schema rejects independent controls: {input}"
+                );
+                let configuration: Configuration = serde_json::from_value(input)
+                    .expect("popup and request headers can be configured independently");
                 assert_eq!(
                     serde_json::to_value(configuration.browser_preparation)
                         .expect("browser preparation serializes"),
@@ -337,55 +343,29 @@ mod tests {
     }
 
     #[test]
-    fn browser_preparation_rejects_unknown_fields() {
+    fn browser_preparation_schema_and_decoder_reject_invalid_input() {
+        let validator = jsonschema::validator_for(&configuration_schema()).unwrap();
         for input in [
             serde_json::json!({"browserPreparation": {"unexpected": true}}),
             serde_json::json!({"browserPreparation": {"requestHeaders": [{
                 "name": "X-Maka-Test", "value": "value", "unexpected": true,
             }]}}),
+            serde_json::json!({"browserPreparation": {"popup": "true"}}),
+            serde_json::json!({"browserPreparation": {"requestHeaders": {}}}),
+            serde_json::json!({"browserPreparation": {"requestHeaders": [{"name": 1, "value": "value"}]}}),
+            serde_json::json!({"browserPreparation": {"requestHeaders": [{"name": "X-Maka-Test", "value": 1}]}}),
+            serde_json::json!({"browserPreparation": {"requestHeaders": [{"name": "X-Maka-Test"}]}}),
+            serde_json::json!({"browserPreparation": {"requestHeaders": [{"value": "value"}]}}),
         ] {
             assert!(
+                !validator.is_valid(&input),
+                "schema accepts invalid controls: {input}"
+            );
+            assert!(
                 serde_json::from_value::<Configuration>(input.clone()).is_err(),
-                "unknown browser preparation field accepted: {input}",
+                "invalid browser preparation accepted: {input}",
             );
         }
-    }
-
-    #[test]
-    fn browser_preparation_schema_exposes_typed_optional_controls() {
-        let schema = configuration_schema();
-        assert_eq!(
-            schema["properties"]["browserPreparation"]["$ref"],
-            "#/$defs/ComputerBrowserPreparation",
-        );
-        assert_eq!(
-            schema["properties"]["browserPreparation"]["default"],
-            serde_json::json!({"popup": false, "requestHeaders": []}),
-        );
-        let preparation = &schema["$defs"]["ComputerBrowserPreparation"];
-        assert_eq!(preparation["additionalProperties"], false);
-        assert_eq!(preparation["properties"]["popup"]["type"], "boolean");
-        assert_eq!(preparation["properties"]["popup"]["default"], false);
-        assert_eq!(preparation["properties"]["requestHeaders"]["type"], "array");
-        assert_eq!(
-            preparation["properties"]["requestHeaders"]["default"],
-            serde_json::json!([]),
-        );
-        assert_eq!(
-            preparation["properties"]["requestHeaders"]["items"]["$ref"],
-            "#/$defs/ComputerBrowserPreparationHeader",
-        );
-        assert!(
-            preparation
-                .get("required")
-                .is_none_or(|required| required.as_array().is_some_and(Vec::is_empty)),
-            "browser preparation controls must remain optional",
-        );
-        let header = &schema["$defs"]["ComputerBrowserPreparationHeader"];
-        assert_eq!(header["additionalProperties"], false);
-        assert_eq!(header["properties"]["name"]["type"], "string");
-        assert_eq!(header["properties"]["value"]["type"], "string");
-        assert_eq!(header["required"], serde_json::json!(["name", "value"]));
     }
 
     #[test]

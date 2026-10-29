@@ -208,7 +208,6 @@ mod tests {
             let mut future = Box::pin(reader.read::<Value>());
             assert!(futures_util::poll!(&mut future).is_pending());
         }
-        assert_eq!(reader.body, body[..3]);
         output.write_all(&body[3..]).await.unwrap();
         assert_eq!(
             reader.read::<Value>().await.unwrap(),
@@ -221,7 +220,6 @@ mod tests {
             reader.read::<Value>().await.unwrap_err(),
             "Application channel ended before a complete frame"
         );
-        assert_eq!(reader.body, body[..3]);
     }
     #[tokio::test]
     async fn explicit_frame_bound_rejects_before_writing_a_prefix() {

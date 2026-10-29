@@ -26,6 +26,7 @@ import {
 } from '../../products/maka/workbench/app/toolActivity.ts';
 
 import {
+  canRegenerateFromText,
   mergeChunks,
   replayStartCursor,
   updateHistoryMetadata,
@@ -79,9 +80,25 @@ test('unchanged history pages retain rows while fragments and fenced metadata st
   };
   const initial = mergeChunks([], [first], false, 20);
   assert.equal(initial[0].text, '界');
+  assert.equal(canRegenerateFromText(initial[0]), true);
   assert.strictEqual(mergeChunks(initial, [], false, 99), initial);
   assert.strictEqual(mergeChunks(initial, [structuredClone(first)], false, 20), initial);
-  assert.strictEqual(mergeChunks(initial, [{ ...first, text: 'old' }], true, 19), initial);
+  const older = mergeChunks(initial, [{ ...first, text: 'old' }], true, 19);
+  assert.strictEqual(older, initial);
+  assert.equal(older[0].hasReferences, false);
+  assert.equal(canRegenerateFromText(older[0]), true);
+
+  const referenced = mergeChunks([], [{ ...first, hasReferences: true }], false, 20);
+  assert.equal(canRegenerateFromText(referenced[0]), false);
+  const olderReferenced = mergeChunks(
+    referenced,
+    [{ ...first, hasReferences: true, text: 'old' }],
+    true,
+    19,
+  );
+  assert.strictEqual(olderReferenced, referenced);
+  assert.equal(olderReferenced[0].hasReferences, true);
+  assert.equal(canRegenerateFromText(olderReferenced[0]), false);
 
   const extended = mergeChunks(initial, [{ ...first, offset: 3, text: '🙂' }], false, 21);
   assert.equal(extended[0].text, '界🙂');
