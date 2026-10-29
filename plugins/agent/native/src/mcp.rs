@@ -89,11 +89,6 @@ impl Servers {
             return Ok(servers);
         }
         let mut names = BTreeSet::new();
-        if configurations.len() > 64 {
-            return Err(StartupError::clean(
-                "At most 64 MCP servers may be configured",
-            ));
-        }
         for config in configurations {
             maka_mcp::validate(config).map_err(StartupError::clean)?;
             if !names.insert(&config.name) {

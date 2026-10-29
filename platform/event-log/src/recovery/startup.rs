@@ -58,9 +58,7 @@ pub async fn recover_invocations(log: &EventLog) -> Result<usize, RecoveryError>
             return Ok(recovered);
         }
         for invocation in &page.invocations {
-            let state = log
-                .invocation_recovery(invocation, 10_000, 8 * 1024 * 1024)
-                .await?;
+            let state = log.invocation_recovery(invocation).await?;
             let append = |fact| {
                 let event = RuntimeEvent::new(invocation.clone(), fact);
                 async move {

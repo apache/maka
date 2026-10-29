@@ -287,7 +287,7 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
         }
         assert_eq!(step.finished(), id == "finish");
         assert!(
-            log.invocation_recovery(&invocation, 32, 128 * 1024)
+            log.invocation_recovery(&invocation)
                 .await
                 .unwrap()
                 .uncertain_operations

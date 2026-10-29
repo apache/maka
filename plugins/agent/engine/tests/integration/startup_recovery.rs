@@ -263,10 +263,7 @@ async fn reopened_committed_call_without_dispatch_is_durably_known_not_executed(
         stored.event.fact,
         Fact::ToolDispatched { .. } | Fact::ToolSettled { .. }
     )));
-    let recovery = log
-        .invocation_recovery(&invocation(), 10, 16_384)
-        .await
-        .unwrap();
+    let recovery = log.invocation_recovery(&invocation()).await.unwrap();
     assert!(recovery.undispatched_calls.is_empty());
     assert!(recovery.uncertain_operations.is_empty());
     let commits = log.subscribe_commits();

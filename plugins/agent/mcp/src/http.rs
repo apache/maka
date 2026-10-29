@@ -17,8 +17,7 @@
  * under the License.
  */
 
-//! Bounded HTTP body ingress. rmcp owns protocol/session handling; its reqwest
-//! POST adapter buffers ordinary JSON/error bodies without a byte limit.
+//! HTTP response handling preserves MCP envelopes without exposing server error bodies.
 use futures_util::{StreamExt, stream::BoxStream};
 use reqwest::{
     StatusCode,
@@ -38,74 +37,8 @@ use std::{collections::HashMap, sync::Arc};
 pub(crate) struct Client(pub reqwest::Client);
 type Error = StreamableHttpError<reqwest::Error>;
 type Headers = HashMap<HeaderName, HeaderValue>;
-fn limit_error() -> Error {
-    Error::UnexpectedServerResponse("MCP HTTP response exceeds the byte limit".into())
-}
-async fn body(mut response: reqwest::Response) -> Result<Vec<u8>, Error> {
-    if response
-        .content_length()
-        .is_some_and(|len| len > super::MAX_MESSAGE as u64)
-    {
-        return Err(limit_error());
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        if chunk.len() > super::MAX_MESSAGE - bytes.len() {
-            return Err(limit_error());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
-}
-
-// Bound raw bytes between SSE event separators before the parser buffers them.
-// CRLF is one line ending even when split between network chunks. Comments
-// count towards the event budget too; no unbounded comment/unknown-field event.
-fn sse(response: reqwest::Response, limit: usize) -> BoxStream<'static, Result<Sse, SseError>> {
-    let stream = futures_util::stream::unfold(
-        (response.bytes_stream().boxed(), 0usize, false, false, false),
-        move |(mut source, mut size, mut line_has_bytes, mut cr, failed)| async move {
-            if failed {
-                return None;
-            }
-            let next = source.next().await?;
-            let chunk = match next {
-                Ok(chunk) => chunk,
-                Err(error) => {
-                    return Some((
-                        Err(std::io::Error::other(error)),
-                        (source, size, line_has_bytes, cr, true),
-                    ));
-                }
-            };
-            for &byte in &chunk {
-                if cr && byte == b'\n' {
-                    cr = false;
-                    continue;
-                }
-                cr = byte == b'\r';
-                if matches!(byte, b'\r' | b'\n') {
-                    if !line_has_bytes {
-                        size = 0;
-                    }
-                    line_has_bytes = false;
-                } else {
-                    line_has_bytes = true;
-                }
-                size = size.saturating_add(1);
-                if size > limit {
-                    return Some((
-                        Err(std::io::Error::other(
-                            "MCP SSE event exceeds the byte limit",
-                        )),
-                        (source, size, line_has_bytes, cr, true),
-                    ));
-                }
-            }
-            Some((Ok(chunk), (source, size, line_has_bytes, cr, false)))
-        },
-    );
-    SseStream::from_bytes_stream(stream)
+fn sse(response: reqwest::Response) -> BoxStream<'static, Result<Sse, SseError>> {
+    SseStream::from_bytes_stream(response.bytes_stream())
         .map(|event| {
             event
                 .map(|event| Sse {
@@ -133,34 +66,8 @@ impl StreamableHttpClient for Client {
         auth: Option<String>,
         headers: Headers,
     ) -> Result<BoxStream<'static, Result<Sse, SseError>>, Error> {
-        self.get_stream_with_max_sse_event_size(
-            uri,
-            session,
-            last,
-            auth,
-            headers,
-            super::MAX_MESSAGE,
-        )
-        .await
-    }
-    async fn get_stream_with_max_sse_event_size(
-        &self,
-        uri: Arc<str>,
-        session: Option<Arc<str>>,
-        last: Option<String>,
-        auth: Option<String>,
-        headers: Headers,
-        limit: usize,
-    ) -> Result<BoxStream<'static, Result<Sse, SseError>>, Error> {
         self.0
-            .get_stream_with_max_sse_event_size(
-                uri,
-                session,
-                last,
-                auth,
-                headers,
-                limit.min(super::MAX_MESSAGE),
-            )
+            .get_stream_with_max_sse_event_size(uri, session, last, auth, headers, usize::MAX)
             .await
     }
     async fn delete_session(
@@ -179,25 +86,6 @@ impl StreamableHttpClient for Client {
         session: Option<Arc<str>>,
         auth: Option<String>,
         headers: Headers,
-    ) -> Result<StreamableHttpPostResponse, Error> {
-        self.post_message_with_max_sse_event_size(
-            uri,
-            message,
-            session,
-            auth,
-            headers,
-            super::MAX_MESSAGE,
-        )
-        .await
-    }
-    async fn post_message_with_max_sse_event_size(
-        &self,
-        uri: Arc<str>,
-        message: ClientJsonRpcMessage,
-        session: Option<Arc<str>>,
-        auth: Option<String>,
-        headers: Headers,
-        limit: usize,
     ) -> Result<StreamableHttpPostResponse, Error> {
         let mut request = self
             .0
@@ -242,12 +130,9 @@ impl StreamableHttpClient for Client {
                 .as_deref()
                 .is_some_and(|v| v.starts_with("text/event-stream"))
         {
-            return Ok(StreamableHttpPostResponse::Sse(
-                sse(response, limit.min(super::MAX_MESSAGE)),
-                session,
-            ));
+            return Ok(StreamableHttpPostResponse::Sse(sse(response), session));
         }
-        let bytes = body(response).await?;
+        let bytes = response.bytes().await?;
         let parsed = serde_json::from_slice::<ServerJsonRpcMessage>(&bytes);
         if !status.is_success() {
             let auth_failure = matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
