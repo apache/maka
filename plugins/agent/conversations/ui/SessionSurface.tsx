@@ -27,6 +27,7 @@ import {
   Text,
   View,
   keymap,
+  platform,
   windowSize,
   type ViewRef,
   type JSX,
@@ -1131,6 +1132,9 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                         minHeight: bodyTextStyle.lineHeight + 16,
                         flexShrink: 1,
                         backgroundColor: C.surface,
+                        // A card of its own on the desktop: square corners
+                        // flush on the composer's rounded top read as notches.
+                        ...(platform.isTerminal ? {} : { borderRadius: 8, marginBottom: 8 }),
                       }}
                       contentStyle={{
                         paddingHorizontal: 16,
