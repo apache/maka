@@ -46,6 +46,7 @@ use core_foundation::{
 };
 use cua_driver_contract::WindowBounds;
 use maka_agent_facts::tools::ToolError;
+use platform_macos::ax::snapshot::RetainedElement;
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
