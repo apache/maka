@@ -7226,6 +7226,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
+ "maka-event-log",
  "maka-host-runtime",
  "maka-plugin-core",
  "maka-sandbox",

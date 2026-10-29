@@ -45,6 +45,8 @@ struct Message {
 pub struct Projection {
     streams: HashMap<(String, String, MessageKind), Message>,
     tools: HashMap<String, Tool>,
+    pending_models:
+        HashMap<String, HashSet<(maka_agent_ports::session::history::RowPosition, MessageKind)>>,
     preview_epoch: Option<String>,
     preview_attempt: Option<(String, String)>,
     preview_seed: HashMap<(String, String, MessageKind), String>,
@@ -64,6 +66,7 @@ struct Tool {
     card: acp::ToolCallUpdate,
     published: Option<acp::ToolCallUpdate>,
     authoritative: bool,
+    position: Option<maka_agent_ports::session::history::RowPosition>,
 }
 
 impl Projection {
@@ -117,6 +120,18 @@ impl Projection {
             self.streams
                 .get_mut(&(chunk.turn_id.clone(), chunk.message_id.clone(), kind))
         {
+            if !message.canonical
+                && matches!(
+                    chunk.model,
+                    Some(maka_agent_ports::session::history::HistoryModel::Native { .. })
+                )
+                && let Some(part) = &chunk.model_part
+            {
+                self.pending_models
+                    .entry(part.step_id.clone())
+                    .or_default()
+                    .insert((chunk.position, kind));
+            }
             message.canonical = true;
         }
         Ok(updates)
