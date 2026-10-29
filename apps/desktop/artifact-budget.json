@@ -194,7 +194,7 @@
     "node_modules/proxy-agent-negotiate@1.1.0",
     "node_modules/proxy-from-env@2.1.0",
     "node_modules/qrcode@1.5.4",
-    "node_modules/qs@6.16.0",
+    "node_modules/qs@6.17.0",
     "node_modules/require-addon@1.2.0",
     "node_modules/require-directory@2.1.1",
     "node_modules/require-from-string@2.0.2",
