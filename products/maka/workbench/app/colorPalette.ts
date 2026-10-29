@@ -119,8 +119,8 @@ export function toHex([L, C, h]: Oklch): string {
     .join('')}`;
 }
 
-// Lightness steps near the default palette's, with contrast at least as high,
-// so a palette mostly changes hue.
+// Lightness steps near the default palette's, so a palette mostly changes hue and
+// keeps contrast close to the default's (not guaranteed to match or exceed it).
 const DARK_STEPS = {
   background: 0.2,
   surface: 0.235,
