@@ -719,6 +719,180 @@ describe('plan context compaction', () => {
   });
 });
 
+describe('host-sealed unknown calls and no-progress folds (#6254)', () => {
+  function structuredSummaryText(body: string): string {
+    return `## Goal\n${body}\n\n## Progress\n- done\n\n## Next Steps\n1. continue\n\n## Critical Context\n- (none)`;
+  }
+
+  function sealEvent(
+    id: string,
+    invocationId: string,
+    toolCallIds: string[],
+    overrides: Partial<RuntimeEvent> = {},
+  ): RuntimeEvent {
+    return {
+      ...base(id, 'turn-1'),
+      invocationId,
+      role: 'system',
+      author: 'system',
+      status: 'failed',
+      content: {
+        kind: 'error',
+        code: 'outcome_unknown',
+        reason: 'outcome_unknown',
+        message: 'outcome_unknown',
+      },
+      actions: {
+        endInvocation: true,
+        stateDelta: {
+          recovered: true,
+          recoveryReason: 'outcome_unknown',
+          failureClass: 'outcome_unknown',
+          unresolvedToolCalls: toolCallIds.map((toolCallId) => ({
+            toolCallId,
+            toolName: 'tool',
+          })),
+        },
+      },
+      ...overrides,
+    };
+  }
+
+  test('a host-sealed unknown call no longer blocks coverage past its seal', () => {
+    const events = [
+      user('u1', 'turn-1'),
+      call('c1', 'call-1', 'turn-1'),
+      sealEvent('seal-1', 'run-1', ['call-1']),
+      model('m1', 'turn-1'),
+    ];
+    const withoutSeal = selectSafeCompactionPrefix(
+      events.filter((event) => event.id !== 'seal-1'),
+      { reserveTailEvents: 0 },
+    );
+    assert.deepEqual(withoutSeal, { ok: true, coveredCount: 1 });
+    const withSeal = selectSafeCompactionPrefix(events, { reserveTailEvents: 0 });
+    assert.deepEqual(withSeal, { ok: true, coveredCount: 4 });
+    const throughSealOnly = selectSafeCompactionPrefix(events, { reserveTailEvents: 1 });
+    assert.deepEqual(throughSealOnly, { ok: true, coveredCount: 3 });
+  });
+
+  test('coverage past a sealed call must include the seal event itself', () => {
+    const events = [
+      user('u1', 'turn-1'),
+      call('c1', 'call-1', 'turn-1'),
+      sealEvent('seal-1', 'run-1', ['call-1']),
+      model('m1', 'turn-1'),
+    ];
+    const boundary = selectSafeCompactionPrefix(events, { maxCoveredCount: 2 });
+    assert.deepEqual(boundary, { ok: true, coveredCount: 1 });
+  });
+
+  test('only a matching unknown-outcome seal closes an unmatched call', () => {
+    const pool = (seal: RuntimeEvent) => [
+      user('u1', 'turn-1'),
+      call('c1', 'call-1', 'turn-1'),
+      seal,
+      model('m1', 'turn-1'),
+    ];
+    const blocked = (events: RuntimeEvent[]): number => {
+      const boundary = selectSafeCompactionPrefix(events, { reserveTailEvents: 0 });
+      assert.equal(boundary.ok, true);
+      return boundary.ok ? boundary.coveredCount : -1;
+    };
+    assert.equal(
+      blocked(pool(sealEvent('seal-1', 'run-1', ['call-1'], { status: 'completed' }))),
+      1,
+      'completed seal does not close an unmatched call',
+    );
+    assert.equal(
+      blocked(
+        pool(
+          sealEvent('seal-1', 'run-1', ['call-1'], {
+            actions: {
+              endInvocation: true,
+              stateDelta: { recovered: true, failureClass: 'app_restarted' },
+            },
+          }),
+        ),
+      ),
+      1,
+      'wrong failure class does not close an unmatched call',
+    );
+    assert.equal(
+      blocked(
+        pool(
+          sealEvent('seal-1', 'run-1', ['call-1'], {
+            actions: {
+              endInvocation: true,
+              stateDelta: {
+                recovered: true,
+                failureClass: 'outcome_unknown',
+                unresolvedToolCalls: 'not-a-list',
+              },
+            },
+          }),
+        ),
+      ),
+      1,
+      'malformed unresolvedToolCalls does not close an unmatched call',
+    );
+    assert.equal(
+      blocked(pool({ ...sealEvent('seal-1', 'run-1', ['call-1']), partial: true })),
+      1,
+      'partial seal does not close an unmatched call',
+    );
+    assert.equal(
+      blocked(pool(sealEvent('seal-1', 'run-2', ['call-1']))),
+      1,
+      'seal from another invocation does not close an unmatched call',
+    );
+    assert.equal(
+      blocked([
+        user('u1', 'turn-1'),
+        call('c1', 'call-1', 'turn-1'),
+        sealEvent('seal-1', 'run-1', ['call-1']),
+        sealEvent('seal-2', 'run-1', ['call-1']),
+        model('m1', 'turn-1'),
+      ]),
+      1,
+      'duplicate seals naming the same call stay ambiguous and blocking',
+    );
+  });
+
+  test('plan reports already_compacted instead of re-recording identical coverage', async () => {
+    const events = [
+      user('u1', 'turn-1'),
+      call('c1', 'call-1', 'turn-1'),
+      result('r1', 'call-1', 'turn-1'),
+      model('m1', 'turn-1'),
+    ];
+    let summarizeCalls = 0;
+    const summarize = (): string => {
+      summarizeCalls += 1;
+      return structuredSummaryText('A faithful summary.');
+    };
+    const baseInput = {
+      sessionId: 'session-1',
+      phase: 'standalone' as const,
+      orderedEvents: events,
+      reserveTailEvents: 0,
+      now: 1_800_000_010_000,
+      summarize,
+    };
+    const first = await planHistoryCompaction(baseInput);
+    assert.equal(first.decision, 'compacted');
+    if (first.decision !== 'compacted') return;
+    const second = await planHistoryCompaction({
+      ...baseInput,
+      previousCheckpoint: first.checkpoint,
+    });
+    assert.equal(second.decision, 'fail_open');
+    if (second.decision !== 'fail_open') return;
+    assert.equal(second.reason, 'already_compacted');
+    assert.equal(summarizeCalls, 1, 'a no-progress fold must not call the summarizer again');
+  });
+});
+
 function base(id: string, turnId: string): Omit<RuntimeEvent, 'role' | 'author' | 'content'> {
   return {
     id,
