@@ -275,6 +275,12 @@ export const conversationMessages = {
   Changes: ['Changes', '更改', '變更'],
   Chat: ['Chat', '对话', '對話'],
   'Check original upload': ['Check original upload', '查询原上传结果', '查詢原上傳結果'],
+  'Maka Bot': ['Maka Bot', 'Maka Bot', 'Maka Bot'],
+  'Open a conversation first; the Bot starts in its workspace.': [
+    'Open a conversation first; the Bot starts in its workspace.',
+    '请先打开一个对话，Bot 会在该对话的工作区中创建。',
+    '請先開啟一個對話，Bot 會在該對話的工作區中建立。',
+  ],
   'Bot could not be opened: {reason}': [
     'Bot could not be opened: {reason}',
     '无法打开 Bot：{reason}',

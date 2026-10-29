@@ -586,12 +586,27 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   };
   // The Bot is one persistent Session per installation; the first open creates it
   // in the current conversation's workspace, later opens return the same Session.
+  const botSession = signal<string | null>(null);
+  const refreshBotSession = async () => {
+    const head = await host.query('agent', 'botOutbox', { limit: 0 });
+    if (alive) botSession.set(head.sessionId ?? null);
+    return head.sessionId ?? null;
+  };
+  void refreshBotSession().catch(() => {});
   const commandBot = (context: ActionContext) => {
     const sessionId = context.sessionId;
-    if (!closeCommand(context) || sessionId === null) return;
+    if (!closeCommand(context)) return;
     void (async () => {
       try {
         error.set('');
+        // An existing Bot opens directly; only its first open needs a workspace.
+        const existing = botSession() ?? (await refreshBotSession().catch(() => null));
+        if (existing !== null) {
+          await switchSession(existing, { sessionId, instance: null });
+          return;
+        }
+        if (sessionId === null)
+          throw new UiError('Open a conversation first; the Bot starts in its workspace.');
         const result = await control('openBot', {
           workspace: { kind: 'session', sessionId },
         });
@@ -600,6 +615,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
           throw new UiError('Bot could not be opened: {reason}', {
             reason: result.reason ?? result.kind,
           });
+        botSession.set(result.sessionId);
         await switchSession(result.sessionId, { sessionId, instance: null });
         if (result.created) await browsing.refresh();
       } catch (reason) {
@@ -751,8 +767,10 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               id: result.session.id,
               title: result.session.title,
             });
-          if (original.method === 'openBot' && result.kind === 'opened')
+          if (original.method === 'openBot' && result.kind === 'opened') {
+            botSession.set(result.sessionId);
             await switchSession(result.sessionId);
+          }
           if (original.method === 'create' && result.kind === 'created') {
             await switchSession(result.session.id);
             if (selected() === result.session.id && !result.session.backend)
@@ -896,6 +914,8 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     changeSession: changeBrowsedSession,
     create,
     newConversation: (sessionId) => invokeCommand({ id: 'new', sessionId }),
+    openBot: (sessionId) => invokeCommand({ id: 'bot', sessionId }),
+    botSession,
     settings: (sessionId) => invokeCommand({ id: 'settings', sessionId }),
     search: (sessionId) => invokeCommand({ id: 'sessions', sessionId }),
   };
@@ -1451,7 +1471,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     enabled(id: string) {
       if (!shell() || reloading()) return false;
       if (id === 'files') return handle() !== null && workspace() !== null;
-      if (id === 'bot') return handle() !== null;
+      if (id === 'bot') return true;
       if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
         return handle() !== null;
       if (id === 'stop') return handle()?.invocation() != null;
