@@ -39,12 +39,14 @@ fn binary_prefix_bounds_preserve_literal_unicode_prefixes() {
 
 async fn append_noise(log: &EventLog, first: i64, last: i64) {
     log.connection.run(move |db| Box::pin(async move {
-        sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT ?1 UNION ALL SELECT n+1 FROM numbers WHERE n<?2)
-            INSERT INTO artifacts(session_id,id,created_at,record_json,content_sha256,payload)
-            SELECT 'session',printf('noise-%08d',n),0,
-                json_object('sessionId','session','id',printf('noise-%08d',n),'createdAt',0,'sizeBytes',0,'source','user_upload'),
-                'test',X'' FROM numbers")
-            .bind(first).bind(last).execute(db).await?;
+        let mut tx=db.begin().await?;
+        for number in first..=last {
+            let id=format!("noise-{number:08}");
+            sqlx::query("INSERT INTO artifacts(session_id,id,created_at,record_json,content_sha256,payload,lookup_digest)
+                VALUES('session',?,0,json_object('sessionId','session','id',?,'createdAt',0,'sizeBytes',0,'source','user_upload'),'test',X'',?)")
+                .bind(&id).bind(&id).bind(crate::artifacts::identity::artifact_lookup_digest("session",&id).as_slice()).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
         Ok(())
     })).await.unwrap();
 }
@@ -95,10 +97,10 @@ async fn literal_prefix_lookup_keeps_index_range_with_fixed_plans() {
         .unwrap();
     append_noise(&log, 1, 128).await;
     log.connection.run(|db| Box::pin(async move {
-        sqlx::query("INSERT INTO artifacts(session_id,id,created_at,record_json,content_sha256,payload)
+        sqlx::query("INSERT INTO artifacts(session_id,id,created_at,record_json,content_sha256,payload,lookup_digest)
             VALUES('session','wanted-resource-literal',0,
                 '{\"sessionId\":\"session\",\"id\":\"wanted-resource-literal\",\"createdAt\":0,\"sizeBytes\":0,\"source\":\"user_upload\"}',
-                'test',X'')").execute(db).await?;
+                'test',X'',?)").bind(crate::artifacts::identity::artifact_lookup_digest("session","wanted-resource-literal").as_slice()).execute(db).await?;
         Ok(())
     })).await.unwrap();
     let (small, small_steps) = resolve_steps(&log, "wanted-resource-").await;
@@ -120,14 +122,34 @@ async fn literal_prefix_lookup_keeps_index_range_with_fixed_plans() {
 }
 
 async fn append_event_noise(log: &EventLog, first: i64, last: i64) {
-    log.connection.run(move |db| Box::pin(async move {
-        sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT ?1 UNION ALL SELECT n+1 FROM numbers WHERE n<?2)
-            INSERT INTO event_log(event_id,invocation_id,kind,event_json)
-            SELECT printf('noise-event-%08d',n),'noise','probe',
-                json_object('invocation',json_object('session_id','session')) FROM numbers")
-            .bind(first).bind(last).execute(db).await?;
-        Ok(())
-    })).await.unwrap();
+    log.connection
+        .run(move |db| {
+            Box::pin(async move {
+                let mut tx = db.begin().await?;
+                crate::connection::worker_query(&mut tx, move |worker| {
+                    Box::pin(async move {
+                        for n in first..=last {
+                            crate::canonical_insert::insert(crate::canonical_insert::Record {
+                                sequence: None,
+                                event_id: &format!("noise-event-{n:08}"),
+                                invocation_id: Some("noise"),
+                                kind: "probe",
+                                operation_id: None,
+                                json: r#"{"invocation":{"session_id":"session"}}"#,
+                            })
+                            .execute(&mut *worker)
+                            .await?;
+                        }
+                        Ok(())
+                    })
+                })
+                .await?;
+                tx.commit().await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -141,12 +163,15 @@ async fn tool_result_prefix_lookup_does_not_scan_owner_history() {
         .unwrap();
     append_event_noise(&log, 1, 128).await;
     log.connection.run(|db| Box::pin(async move {
-        sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json)
-            VALUES('dispatch-target','target','tool_dispatched','target-operation',
-                '{\"invocation\":{\"session_id\":\"session\"},\"fact\":{\"call\":{\"origin\":{\"kind\":\"provider\"}}}}'),
-                ('result-target-literal','target','tool_settled','target-operation',
-                '{\"invocation\":{\"session_id\":\"session\"},\"fact\":{\"outcome\":{\"kind\":\"failed\"}}}')")
-            .execute(db).await?;
+        for (id, kind, json) in [
+            ("dispatch-target", "tool_dispatched", r#"{"invocation":{"session_id":"session"},"fact":{"call":{"origin":{"kind":"provider"}}}}"#),
+            ("result-target-literal", "tool_settled", r#"{"invocation":{"session_id":"session"},"fact":{"outcome":{"kind":"failed"}}}"#),
+        ] {
+            crate::canonical_insert::insert(crate::canonical_insert::Record {
+                sequence: None, event_id: id, invocation_id: Some("target"),
+                kind, operation_id: Some("target-operation"), json,
+            }).execute(&mut *db).await?;
+        }
         Ok(())
     })).await.unwrap();
     let wanted = ResourceAddress::ToolResult("result-target-".into());

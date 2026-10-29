@@ -25,9 +25,9 @@ use maka_event_log::{
 use serde_json::json;
 use std::collections::BTreeMap;
 
-#[path = "../bundle/frames.rs"]
+#[path = "../bundle/export/frames.rs"]
 mod frames;
-#[path = "../bundle/import.rs"]
+#[path = "../bundle/export/import.rs"]
 mod import;
 
 #[tokio::test]

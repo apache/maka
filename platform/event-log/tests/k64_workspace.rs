@@ -155,10 +155,32 @@ async fn complete_structured_history_selectors_keep_deep_and_long_original_keys(
     )
     .await
     .unwrap();
-    let locator = {
-        let raw = rusqlite::Connection::open(&path).unwrap();
-        raw.query_row("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id='original' AND role='tool_call'",[],|row|Ok(maka_agent_facts::history::RowPosition {source_sequence:row.get::<_,i64>(0)? as u64,item_index:row.get::<_,i64>(1)? as u64})).unwrap()
-    };
+    let headers = log
+        .transcript_headers(
+            "original",
+            &maka_event_log::transcript::TranscriptRead {
+                through,
+                position: None,
+                direction: maka_event_log::transcript::TranscriptDirection::Newer,
+                limit: 16,
+            },
+        )
+        .await
+        .unwrap();
+    let mut locator = None;
+    for header in headers {
+        let value: Value = serde_json::from_slice(
+            &log.transcript_fragment("original", header.position, 0, header.total_bytes)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        if value["type"] == "tool_call" {
+            locator = Some(header.position);
+            break;
+        }
+    }
+    let locator = locator.expect("imported tool call must be readable");
     let mut deep = vec![SourceSegment::Key("deep".into())];
     deep.extend((0..16).map(|i| SourceSegment::Key(format!("k{i}"))));
     let mut results = Vec::new();

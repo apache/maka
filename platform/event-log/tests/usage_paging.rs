@@ -28,8 +28,8 @@ use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::model::ModelFinishReason;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::ModelUsage;
+use maka_agent_facts::model::recorded::ModelCompletion;
 use maka_event_log::{EventLog, usage::Query};
 use std::{
     collections::BTreeSet,
@@ -72,15 +72,20 @@ async fn accounting_pages_bound_bytes_without_dropping_records_or_reading_respon
             }),
             event(Fact::ModelCompleted {
                 step_id: format!("step-{i}"),
-                output: ModelStep {
+                output: ModelCompletion {
                     model: None,
                     response_id: None,
                     timestamp: None,
-                    parts: vec![maka_agent_facts::model::ModelPart::Text {
-                        text_kind: maka_agent_facts::model::TextKind::Text,
-                        text: "x".repeat(65536),
-                        provider_options: None,
-                    }],
+                    parts: vec![model_part(
+                        "invocation",
+                        &format!("step-{i}"),
+                        0,
+                        maka_agent_facts::model::ModelPart::Text {
+                            text_kind: maka_agent_facts::model::TextKind::Text,
+                            text: "x".repeat(65536).into(),
+                            provider_options: None,
+                        },
+                    )],
                     finish_reason: ModelFinishReason::Stop,
                     usage: ModelUsage {
                         input_tokens: Some(i),
@@ -190,4 +195,29 @@ fn event(fact: Fact) -> EventWrite {
     );
     event.recorded_at = UNIX_EPOCH + Duration::from_micros(10250);
     EventWrite::plain(event).unwrap()
+}
+
+fn model_part(
+    invocation: &str,
+    step: &str,
+    ordinal: u64,
+    part: maka_agent_facts::model::ModelPart,
+) -> maka_agent_facts::model::recorded::CompletionPart {
+    use maka_agent_facts::model::{
+        ModelPart,
+        recorded::{CompletionPart, ModelPartRecord},
+    };
+    let message_id = match &part {
+        ModelPart::ToolCall { call } => {
+            maka_agent_facts::tool_call::tool_use_id(invocation, &format!("{step}:{}", call.id))
+        }
+        _ => uuid::Uuid::new_v4().to_string(),
+    };
+    CompletionPart::Own(ModelPartRecord {
+        ordinal,
+        message_id,
+        started_at: std::time::SystemTime::now(),
+        provider_part_id: None,
+        part: std::sync::Arc::new(part),
+    })
 }

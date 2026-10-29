@@ -19,7 +19,6 @@
 
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelToolCall;
 use maka_agent_facts::tool_call::{HostSdkParent, ToolOrigin};
 use sqlx::SqliteConnection;
 
@@ -254,26 +253,16 @@ pub(crate) async fn validate(
                             "provider tool operation identity does not match step and call",
                         ));
                     }
-                    let accepted = if let Some(builder) = crate::model_items::read(tx, invocation, step_id).await? {
-                        builder.accepted_parts().find_map(|(_, part)| match part {
-                            maka_agent_facts::model::ModelPart::ToolCall { call: accepted }
-                                if accepted.id == call.tool_call_id && !accepted.provider_executed => Some(accepted.clone()),
-                            _ => None,
-                        })
-                    } else {
-                        // Legacy journals accept calls at whole-response completion.
-                        let accepted: Option<String> = sqlx::query_scalar(
-                            "SELECT json_extract(part.value, '$.call')
-                             FROM runtime_events AS model, json_each(model.event_json, '$.fact.output.parts') AS part
-                             WHERE model.invocation_id = ? AND model.operation_id = ?
-                             AND model.kind = 'model_completed'
-                             AND json_extract(part.value, '$.kind') = 'tool_call'
-                             AND json_extract(part.value, '$.call.id') = ?
-                             AND json_extract(part.value, '$.call.provider_executed') = 0",
-                        ).bind(invocation).bind(step_id).bind(&call.tool_call_id)
-                            .fetch_optional(&mut *tx).await?;
-                        accepted.map(|json| serde_json::from_str::<ModelToolCall>(&json)).transpose()?
-                    }.ok_or_else(|| invalid("provider tool requires an accepted local model call"))?;
+                    let accepted = crate::model_items::accepted_call(
+                        tx,
+                        invocation,
+                        step_id,
+                        &call.tool_call_id,
+                    )
+                    .await?
+                    .ok_or_else(|| {
+                        invalid("provider tool requires an accepted local model call")
+                    })?;
                     let same_input = match &event.fact {
                         Fact::ToolDispatched { input, .. } => matches!(
                             &accepted.input,

@@ -17,14 +17,21 @@
  * under the License.
  */
 
-//! Incremental provider-specific encoding for dirty semantic groups.
-use super::{chat_completions::Projector, media, prompt};
-use crate::prompt::{Message, WireChunk, WireFormat, WireGroup};
+//! Frozen provider policy and source-backed request item compilation.
+use super::prompt;
+use crate::prompt::WireFormat;
 use crate::{ModelError, ProviderConfig, ProviderKind, ToolDefinition};
 use maka_agent_facts::{language::Language, model::PlaintextResponses};
-use maka_provider_protocol::{chat_completions::request as chat, json_stream::JsonChunks};
+use maka_provider_protocol::chat_completions::request as chat;
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::sync::Arc;
+
+mod anthropic;
+mod chat_source;
+mod frozen;
+mod responses;
+pub(super) mod source;
+pub use frozen::{EncodedWire, FrozenWire, SummaryWireBound, WirePlan, WireSink, WireWrite};
 
 fn effective_options(provider: &ProviderConfig, options: &Value) -> Result<Value, ModelError> {
     let mut options = options.clone();
@@ -70,10 +77,11 @@ pub(super) fn chat_codec(language: Language, options: &chat::PromptOptions) -> S
 
 /// Immutable message encoding policy. Tool schemas belong to the request header;
 /// replayable message sources retain only the protocol options they consume.
+#[derive(Clone)]
 pub struct WireEncoding {
     language: Language,
-    codec: String,
-    options: WireOptions,
+    codec: Arc<str>,
+    options: Arc<WireOptions>,
 }
 enum WireOptions {
     Chat(chat::PromptOptions),
@@ -81,7 +89,7 @@ enum WireOptions {
         plaintext: Option<PlaintextResponses>,
         options: Value,
     },
-    Anthropic(maka_provider_protocol::anthropic::prompt::streaming::StreamOptions),
+    Anthropic(Arc<maka_provider_protocol::anthropic::prompt::streaming::StreamOptions>),
 }
 impl WireEncoding {
     pub fn new(
@@ -97,14 +105,18 @@ impl WireEncoding {
                 (chat_codec(language, &options), WireOptions::Chat(options))
             }
             ProviderKind::OpenaiResponses => (
-                super::responses::request::wire_codec(language, None, &options),
+                crate::adapters::responses::request::wire_codec(language, None, &options),
                 WireOptions::Responses {
                     plaintext: None,
                     options,
                 },
             ),
             ProviderKind::OpenResponses(contract) => (
-                super::responses::request::wire_codec(language, Some(*contract), &options),
+                crate::adapters::responses::request::wire_codec(
+                    language,
+                    Some(*contract),
+                    &options,
+                ),
                 WireOptions::Responses {
                     plaintext: Some(*contract),
                     options,
@@ -114,14 +126,14 @@ impl WireEncoding {
                 let options = anthropic_options(&options, tools)?;
                 (
                     anthropic_codec(language, &options),
-                    WireOptions::Anthropic(options),
+                    WireOptions::Anthropic(Arc::new(options)),
                 )
             }
         };
         Ok(Self {
             language,
-            codec,
-            options,
+            codec: codec.into(),
+            options: Arc::new(options),
         })
     }
 
@@ -130,274 +142,92 @@ impl WireEncoding {
     }
 
     pub fn format(&self) -> WireFormat {
-        match self.options {
+        match self.options.as_ref() {
             WireOptions::Chat(_) => WireFormat::ChatCompletions,
             WireOptions::Responses { .. } => WireFormat::Responses,
             WireOptions::Anthropic(_) => WireFormat::Anthropic,
         }
     }
 
-    pub fn prepare_group(&self, messages: Vec<Message>, context: &PreparationContext) -> WireGroup {
-        let message_count = messages.len();
-        let chunks: Box<dyn Iterator<Item = Result<WireChunk, ModelError>> + Send> =
-            match &self.options {
-                WireOptions::Chat(options) => Box::new(Group::new(
-                    messages,
-                    self.language,
-                    Encoder::Chat {
-                        options: options.clone(),
-                        projector: Some(Projector::new(self.language)),
-                    },
-                )),
-                WireOptions::Responses { plaintext, options } => Box::new(Group::new(
-                    messages,
-                    self.language,
-                    Encoder::Responses {
-                        plaintext: *plaintext,
-                        options: options.clone(),
-                    },
-                )),
-                WireOptions::Anthropic(options) => Box::new(AnthropicGroup::new(
-                    messages,
-                    self.language,
-                    options.clone(),
-                    context,
-                )),
-            };
-        WireGroup {
-            format: self.format(),
-            codec: self.codec.clone(),
-            message_count,
-            chunks,
-        }
+    pub async fn count_source(
+        &self,
+        source: Arc<dyn maka_agent_facts::model::prompt_source::source::MessageSource>,
+        resources: crate::ModelPreparationResources,
+    ) -> Result<WirePlan, ModelError> {
+        frozen::count(
+            self.clone(),
+            source,
+            chat_source::Projection::Generated,
+            resources,
+        )
+        .await
     }
-}
-
-#[derive(Default)]
-pub struct PreparationContext {
-    /// Only IDs referenced by this dirty leading assistant run, checked against
-    /// the indexed preceding assistant run by the projection owner.
-    pub anthropic_mcp_ids: Vec<String>,
-}
-pub fn wire_preparation_dependencies(messages: &[Message], provider: &ProviderKind) -> Vec<String> {
-    use crate::prompt::AssistantPart;
-    if !matches!(provider, ProviderKind::Anthropic) {
-        return Vec::new();
-    }
-    let mut local = std::collections::BTreeSet::new();
-    let mut needed = std::collections::BTreeSet::new();
-    for message in messages {
-        let Message::Assistant { content, .. } = message else {
-            break;
+    pub async fn count_prompt(
+        &self,
+        prompt: &crate::prompt::Prompt,
+        resources: crate::ModelPreparationResources,
+    ) -> Result<WirePlan, ModelError> {
+        let source = prompt.recipes().cloned().ok_or_else(|| {
+            ModelError::Adapter("native wire count requires frozen recipes".into())
+        })?;
+        let projection = if matches!(
+            prompt.normalization(),
+            Some(ProviderKind::OpenaiChatCompletions | ProviderKind::OpenaiCompatible { .. })
+        ) {
+            chat_source::Projection::Captured
+        } else {
+            chat_source::Projection::Generated
         };
-        for part in content {
-            match part {
-                AssistantPart::ToolCall {
-                    tool_call_id,
-                    provider_executed: Some(true),
-                    provider_options: Some(options),
-                    ..
-                } if options["anthropic"]["type"] == "mcp-tool-use" => {
-                    local.insert(tool_call_id.clone());
-                }
-                AssistantPart::ToolResult { tool_call_id, .. } if !local.contains(tool_call_id) => {
-                    needed.insert(tool_call_id.clone());
-                }
-                _ => {}
-            }
-        }
+        frozen::count(self.clone(), source, projection, resources).await
     }
-    needed.into_iter().collect()
-}
-enum Encoder {
-    Chat {
-        options: chat::PromptOptions,
-        projector: Option<Projector>,
-    },
-    Responses {
-        plaintext: Option<PlaintextResponses>,
-        options: Value,
-    },
-}
-struct Current {
-    chunks: std::iter::Peekable<JsonChunks>,
-    index: usize,
-    first: bool,
-    metadata: Option<Value>,
-}
-struct Group {
-    messages: std::iter::Enumerate<std::vec::IntoIter<Message>>,
-    language: Language,
-    encoder: Encoder,
-    pending: VecDeque<(usize, Message)>,
-    values: VecDeque<(usize, Value)>,
-    current: Option<Current>,
-    metadata: Option<(usize, Value)>,
-    last_index: usize,
-    ended: bool,
-}
-impl Group {
-    fn new(messages: Vec<Message>, language: Language, encoder: Encoder) -> Self {
-        Self {
-            messages: messages.into_iter().enumerate(),
-            language,
-            encoder,
-            pending: VecDeque::new(),
-            values: VecDeque::new(),
-            current: None,
-            metadata: None,
-            last_index: 0,
-            ended: false,
+    pub async fn count_summary_fit_bound(
+        &self,
+        original: &WirePlan,
+        original_messages: usize,
+        resources: crate::ModelPreparationResources,
+    ) -> Result<SummaryWireBound, ModelError> {
+        if !Arc::ptr_eq(&self.options, &original.encoding.options) {
+            return Err(ModelError::Adapter(
+                "summary bound policy differs from its first counted request".into(),
+            ));
         }
+        original
+            .summary_fit_bound(original_messages, resources)
+            .await
     }
-
-    fn step(&mut self) -> Result<Option<WireChunk>, ModelError> {
-        loop {
-            if let Some(current) = &mut self.current {
-                if let Some(bytes) = current.chunks.next() {
-                    let item_start = std::mem::take(&mut current.first);
-                    return Ok(Some(WireChunk {
-                        bytes,
-                        item_start,
-                        item_end: current.chunks.peek().is_none(),
-                        message_index: current.index,
-                        metadata: if item_start {
-                            current.metadata.take()
-                        } else {
-                            None
-                        },
-                    }));
-                }
-                self.current = None;
-            }
-            if let Some((index, value)) = self.values.pop_front() {
-                self.current = Some(Current {
-                    chunks: JsonChunks::new(value).peekable(),
-                    index,
-                    first: true,
-                    metadata: if self
-                        .metadata
-                        .as_ref()
-                        .is_some_and(|(message_index, _)| *message_index == index)
-                    {
-                        self.metadata.take().map(|(_, value)| value)
-                    } else {
-                        None
-                    },
-                });
-                continue;
-            }
-            if let Some((index, message)) = self.pending.pop_front() {
-                if matches!(self.encoder, Encoder::Responses { .. }) {
-                    self.metadata = Some((index, wire_message_metadata(&message)));
-                }
-                let values = match &self.encoder {
-                    Encoder::Chat { options, .. } => {
-                        chat::messages(&prompt::messages(vec![message])?, options)
-                            .map_err(super::http::failure)?
-                    }
-                    Encoder::Responses { plaintext, options } => {
-                        super::responses::request::encode_message(
-                            &message,
-                            self.language,
-                            *plaintext,
-                            options,
-                        )
-                        .map_err(|error| ModelError::Adapter(error.to_string()))?
-                    }
-                };
-                if values.is_empty()
-                    && let Some((message_index, metadata)) = self.metadata.take()
-                {
-                    return Ok(Some(WireChunk {
-                        bytes: Vec::new(),
-                        item_start: true,
-                        item_end: true,
-                        message_index,
-                        metadata: Some(metadata),
-                    }));
-                }
-                self.values
-                    .extend(values.into_iter().map(|value| (index, value)));
-                continue;
-            }
-            if self.ended {
-                return Ok(None);
-            }
-            match self.messages.next() {
-                Some((index, message)) => match &mut self.encoder {
-                    Encoder::Chat { projector, .. } => {
-                        let mut messages =
-                            crate::prompt::notification_fallback(vec![message], self.language);
-                        media::audio_fallback(&mut messages, self.language, false);
-                        for message in messages {
-                            let projected =
-                                projector.as_mut().expect("active projector").push(message);
-                            let count = projected.len();
-                            self.pending.extend(projected.into_iter().enumerate().map(
-                                |(offset, message)| {
-                                    (
-                                        if count > 1 && offset == 0 {
-                                            self.last_index
-                                        } else {
-                                            index
-                                        },
-                                        message,
-                                    )
-                                },
-                            ));
-                            self.last_index = index;
-                        }
-                    }
-                    Encoder::Responses { .. } => self.pending.push_back((index, message)),
-                },
-                None => {
-                    self.ended = true;
-                    if let Encoder::Chat { projector, .. } = &mut self.encoder {
-                        self.pending.extend(
-                            projector
-                                .take()
-                                .expect("active projector")
-                                .finish()
-                                .map(|message| (self.last_index, message)),
-                        );
-                    }
-                }
-            }
+    pub async fn prepare_source_with_plan(
+        &self,
+        plan: WirePlan,
+        lease: crate::DirectoryLease,
+        resources: crate::ModelPreparationResources,
+    ) -> Result<FrozenWire, ModelError> {
+        if !Arc::ptr_eq(&self.options, &plan.encoding.options) {
+            return Err(ModelError::Adapter(
+                "wire build policy differs from its counted plan".into(),
+            ));
         }
+        frozen::build(plan, lease, resources).await
     }
-}
-impl Iterator for Group {
-    type Item = Result<WireChunk, ModelError>;
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.step() {
-            Ok(chunk) => chunk.map(Ok),
-            Err(error) => {
-                self.ended = true;
-                self.pending.clear();
-                self.values.clear();
-                self.current = None;
-                Some(Err(error))
-            }
-        }
+    /// Explicit generated inputs use the same count/build path with an isolated admission.
+    pub async fn prepare_source(
+        &self,
+        source: Arc<dyn maka_agent_facts::model::prompt_source::source::MessageSource>,
+        resources: crate::ModelPreparationResources,
+    ) -> Result<FrozenWire, ModelError> {
+        let plan = self.count_source(source, resources.clone()).await?;
+        let stage = resources
+            .reserve_staging(plan.allocation())
+            .await
+            .map_err(|error| ModelError::Adapter(error.to_string()))?;
+        let active = stage
+            .promote(plan.allocation())
+            .await
+            .map_err(|error| ModelError::Adapter(error.to_string()))?;
+        let lease = active
+            .directory(plan.allocation())
+            .map_err(|error| ModelError::Adapter(error.to_string()))?;
+        self.prepare_source_with_plan(plan, lease, resources).await
     }
-}
-
-pub fn wire_message_metadata(message: &Message) -> Value {
-    let (role, ids) = match message {
-        Message::System { .. } => ("system", Vec::new()),
-        Message::User { .. } => ("user", Vec::new()),
-        Message::Assistant { .. } => ("assistant", Vec::new()),
-        Message::Tool { content, .. } => (
-            "tool",
-            content
-                .iter()
-                .filter(|result| !result.is_notification())
-                .map(|result| result.tool_call_id.clone())
-                .collect(),
-        ),
-    };
-    serde_json::json!({"kind":"message","role":role,"settledToolCallIds":ids})
 }
 
 pub(super) fn anthropic_options(
@@ -448,113 +278,4 @@ pub(super) fn anthropic_codec(
 ) -> String {
     serde_json::json!({"codec":"maka.anthropic-blocks.v1","language":language,"sendReasoning":options.send_reasoning,
         "cacheNamespace":options.cache_namespace,"toolNames":options.tool_names,"toolsets":options.toolsets}).to_string()
-}
-
-struct AnthropicCurrent {
-    chunks:
-        std::iter::Peekable<maka_provider_protocol::anthropic::prompt::prepared::PreparedChunks>,
-    metadata: Option<Value>,
-    index: usize,
-    first: bool,
-}
-struct AnthropicGroup {
-    messages: std::iter::Enumerate<std::vec::IntoIter<Message>>,
-    language: Language,
-    encoder: maka_provider_protocol::anthropic::prompt::prepared::PreparedEncoder,
-    pending: VecDeque<(usize, maka_provider_protocol::input::Message)>,
-    active: Option<(usize, maka_provider_protocol::input::Message, usize, usize)>,
-    current: Option<AnthropicCurrent>,
-    failed: bool,
-}
-impl AnthropicGroup {
-    fn new(
-        messages: Vec<Message>,
-        language: Language,
-        options: maka_provider_protocol::anthropic::prompt::streaming::StreamOptions,
-        context: &PreparationContext,
-    ) -> Self {
-        let mut encoder =
-            maka_provider_protocol::anthropic::prompt::prepared::PreparedEncoder::new(options);
-        encoder.seed_assistant_mcp(context.anthropic_mcp_ids.clone());
-        Self {
-            messages: messages.into_iter().enumerate(),
-            language,
-            encoder,
-            pending: VecDeque::new(),
-            active: None,
-            current: None,
-            failed: false,
-        }
-    }
-    fn step(&mut self) -> Result<Option<WireChunk>, ModelError> {
-        loop {
-            if let Some(current) = &mut self.current {
-                if let Some(bytes) = current.chunks.next() {
-                    let item_start = std::mem::take(&mut current.first);
-                    return Ok(Some(WireChunk {
-                        bytes,
-                        item_start,
-                        item_end: current.chunks.peek().is_none(),
-                        message_index: current.index,
-                        metadata: if item_start {
-                            current.metadata.take()
-                        } else {
-                            None
-                        },
-                    }));
-                }
-                self.current = None;
-            }
-            if let Some((index, message, part, count)) = &mut self.active {
-                if *part < *count {
-                    let prepared = self
-                        .encoder
-                        .part(message, *part)
-                        .map_err(super::http::failure)?;
-                    *part += 1;
-                    self.current = Some(AnthropicCurrent {
-                        chunks: prepared.chunks.peekable(),
-                        metadata: Some(
-                            serde_json::to_value(prepared.metadata)
-                                .map_err(|error| ModelError::Adapter(error.to_string()))?,
-                        ),
-                        index: *index,
-                        first: true,
-                    });
-                    continue;
-                }
-                self.active = None;
-            }
-            if let Some((index, message)) = self.pending.pop_front() {
-                let count = self.encoder.begin(&message).map_err(super::http::failure)?;
-                self.active = Some((index, message, 0, count));
-                continue;
-            }
-            let Some((index, message)) = self.messages.next() else {
-                return Ok(None);
-            };
-            let mut messages = crate::prompt::notification_fallback(vec![message], self.language);
-            media::audio_fallback(&mut messages, self.language, true);
-            self.pending.extend(
-                prompt::messages(messages)?
-                    .into_iter()
-                    .map(|message| (index, message)),
-            );
-        }
-    }
-}
-impl Iterator for AnthropicGroup {
-    type Item = Result<WireChunk, ModelError>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.failed {
-            return None;
-        }
-        match self.step() {
-            Ok(chunk) => chunk.map(Ok),
-            Err(error) => {
-                self.failed = true;
-                Some(Err(error))
-            }
-        }
-    }
 }

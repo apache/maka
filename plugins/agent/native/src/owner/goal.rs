@@ -248,7 +248,7 @@ impl Owner {
         if runs.closing {
             return Err("agent_closed".into());
         }
-        if runs.controls.contains_key(session) {
+        if runs.busy(session) {
             return Ok(false);
         }
         if !self

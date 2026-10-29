@@ -35,8 +35,13 @@ export type ProcessRow = Pick<
   | 'metadataThrough'
   | 'sequence'
   | 'startSequence'
+  | 'preview'
+  | 'modelPart'
 >;
-export type ProcessActivity = Pick<ToolActivity, 'toolUseId' | 'turnId' | 'startSequence'>;
+export type ProcessActivity = Pick<
+  ToolActivity,
+  'toolUseId' | 'turnId' | 'startSequence' | 'previewOrder'
+>;
 
 export type MemberRef =
   | { kind: 'row'; rowId: string; toolUseId?: string }
@@ -86,6 +91,40 @@ export function sourceSequence(row: ProcessRow): number | undefined {
   return row.position?.sourceSequence ?? row.startSequence ?? row.sequence;
 }
 
+/** A model step occupies its canonical seat while its parts retain provider order. */
+export function orderProcessRows<T extends ProcessRow>(rows: readonly T[]): T[] {
+  const seats = new Map<string, number>();
+  for (const row of rows) {
+    const sequence = sourceSequence(row);
+    if (row.modelPart && sequence !== undefined)
+      seats.set(
+        row.modelPart.stepId,
+        Math.min(seats.get(row.modelPart.stepId) ?? sequence, sequence),
+      );
+  }
+  return rows.toSorted((left, right) => {
+    if (left.modelPart && right.modelPart && left.modelPart.stepId === right.modelPart.stepId)
+      return (
+        left.modelPart.ordinal - right.modelPart.ordinal ||
+        Number(left.field === 'body') - Number(right.field === 'body')
+      );
+    const seat = (row: T) =>
+      row.modelPart ? seats.get(row.modelPart.stepId) : sourceSequence(row);
+    const leftSeat = seat(left);
+    const rightSeat = seat(right);
+    if (leftSeat !== rightSeat) return (leftSeat ?? Infinity) - (rightSeat ?? Infinity);
+    if (left.preview && right.preview)
+      return (
+        left.preview.stepOrder - right.preview.stepOrder ||
+        left.preview.ordinal - right.preview.ordinal
+      );
+    return (
+      (left.position?.itemIndex ?? 0) - (right.position?.itemIndex ?? 0) ||
+      Number(left.field === 'body') - Number(right.field === 'body')
+    );
+  });
+}
+
 /** Compare only the small live set; a text delta keeps its original source seat. */
 export function sameProcessRows(
   left: readonly ProcessRow[],
@@ -102,6 +141,10 @@ export function sameProcessRows(
         row.field === next.field &&
         row.turnId === next.turnId &&
         sourceSequence(row) === sourceSequence(next) &&
+        row.modelPart?.stepId === next.modelPart?.stepId &&
+        row.modelPart?.ordinal === next.modelPart?.ordinal &&
+        row.preview?.stepOrder === next.preview?.stepOrder &&
+        row.preview?.ordinal === next.preview?.ordinal &&
         (row.position?.itemIndex ?? 0) === (next.position?.itemIndex ?? 0) &&
         Boolean(row.tool) === Boolean(next.tool) &&
         row.tool?.toolUseId === next.tool?.toolUseId &&
@@ -126,7 +169,8 @@ export function sameProcessActivity(
       return (
         activity.toolUseId === next.toolUseId &&
         activity.turnId === next.turnId &&
-        activity.startSequence === next.startSequence
+        activity.startSequence === next.startSequence &&
+        activity.previewOrder === next.previewOrder
       );
     })
   );
@@ -252,13 +296,15 @@ export function projectProcessGroups(input: {
   };
   const activities = input.toolActivity
     .filter((activity) => !canonicalTools.has(activity.toolUseId))
-    .toSorted((left, right) => left.startSequence - right.startSequence);
+    .toSorted(
+      (left, right) => (left.startSequence ?? Infinity) - (right.startSequence ?? Infinity),
+    );
   let nextActivity = 0;
   for (const position of positions) {
     while (
       nextActivity < activities.length &&
       (position.sequence === undefined ||
-        activities[nextActivity].startSequence <= position.sequence)
+        (activities[nextActivity].startSequence ?? Infinity) <= position.sequence)
     ) {
       const activity = activities[nextActivity++];
       append(activity.turnId, { kind: 'activity', toolUseId: activity.toolUseId });

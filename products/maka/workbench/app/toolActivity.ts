@@ -24,7 +24,8 @@ export type ToolActivity = {
   turnId: string;
   toolUseId: string;
   stepId?: string;
-  startSequence: number;
+  startSequence?: number;
+  previewOrder?: number;
   name: string;
   title?: DisplayText;
   source: 'native' | 'provider' | 'executor';
@@ -64,19 +65,14 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
   });
   let next: ToolActivity;
   switch (fact.kind) {
-    case 'tool_input_started':
-      next = previous ?? start(fact.providerExecuted ? 'provider' : 'native', 'preparing');
-      break;
-    case 'tool_input_delta':
-      if (!previous || previous.phase !== 'preparing') return active;
-      next = { ...previous, detail: snippet(previous.detail + fact.text) };
-      break;
     case 'tool_input_ready':
       next = {
         ...(previous ?? start(fact.providerExecuted ? 'provider' : 'native', 'preparing')),
         stepId: fact.stepId,
         name: snippet(fact.name),
         source: fact.providerExecuted ? 'provider' : 'native',
+        startSequence: previous?.startSequence ?? event.sequence,
+        previewOrder: undefined,
         inputReady: true,
         phase: fact.providerExecuted ? 'running' : 'preparing',
       };
@@ -85,6 +81,8 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
       next = {
         ...(previous ?? start('native', 'running')),
         source: 'native',
+        previewOrder: undefined,
+        startSequence: previous?.startSequence ?? event.sequence,
         phase: 'running',
         name: snippet(fact.name),
         title: fact.title,
@@ -135,7 +133,14 @@ export function latestToolActivity(
     if (
       tool.invocationId === invocationId &&
       tool.turnId === turnId &&
-      (!latest || tool.startSequence > latest.startSequence)
+      (!latest ||
+        (tool.previewOrder !== undefined && latest.previewOrder === undefined) ||
+        (tool.previewOrder !== undefined &&
+          latest.previewOrder !== undefined &&
+          tool.previewOrder > latest.previewOrder) ||
+        (tool.previewOrder === undefined &&
+          latest.previewOrder === undefined &&
+          tool.startSequence! > latest.startSequence!))
     )
       latest = tool;
   }

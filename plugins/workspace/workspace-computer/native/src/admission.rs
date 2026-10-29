@@ -1000,16 +1000,37 @@ mod tests {
     impl EventSink for FailOutcome {
         fn commit(self: Arc<Self>, write: EventWrite) -> CommitFuture {
             Box::pin(async move {
-                if matches!(&write.event().fact, Fact::ToolSettled { .. }) {
+                self.commit_with_prefix(&[], write)
+                    .await
+                    .map(|receipt| receipt.last_sequence)
+            })
+        }
+
+        fn commit_with_prefix(
+            self: Arc<Self>,
+            prefix: &[EventWrite],
+            last: EventWrite,
+        ) -> maka_agent_facts::event::PrefixCommitFuture {
+            let mut events = prefix.to_vec();
+            events.push(last);
+            Box::pin(async move {
+                if matches!(
+                    &events.last().expect("last event is present").event().fact,
+                    Fact::ToolSettled { .. }
+                ) {
                     Err(CommitError::OutcomeUnknown(
                         "fixture T2 commit was not observed".into(),
                     ))
                 } else {
-                    self.0.clone().commit(write).await
+                    self.0
+                        .append_batch(&events)
+                        .await
+                        .map(maka_agent_facts::event::PrefixReceipt::from_sequences)
                 }
             })
         }
     }
+
     struct DropWitness(Arc<AtomicBool>);
     impl Drop for DropWitness {
         fn drop(&mut self) {
@@ -1043,6 +1064,7 @@ mod tests {
                 ToolCallIdentity::standalone("call".into()),
                 "fixture_dialog".into(),
                 json!({}),
+                None,
                 CancellationToken::new(),
                 PreparedEffect::new(move |_| {
                     Box::pin(async move {
@@ -1113,6 +1135,7 @@ mod tests {
                     ToolCallIdentity::standalone("call".into()),
                     "fixture_dialog".into(),
                     json!({}),
+                    None,
                     CancellationToken::new(),
                     PreparedEffect::new(move |_| {
                         Box::pin(async move {
@@ -1332,6 +1355,7 @@ mod tests {
                 ToolCallIdentity::standalone("call".into()),
                 "fixture_dialog".into(),
                 json!({}),
+                None,
                 CancellationToken::new(),
                 PreparedEffect::new(move |_| {
                     Box::pin(async move {
@@ -1628,6 +1652,7 @@ mod tests {
                 ToolCallIdentity::standalone("checked-call".into()),
                 "fixture_checked_settlement".into(),
                 json!({}),
+                None,
                 CancellationToken::new(),
                 PreparedEffect::new(move |_| {
                     Box::pin(async move {
@@ -1701,6 +1726,7 @@ mod tests {
                 ToolCallIdentity::standalone("checked-call".into()),
                 "fixture_checked_settlement".into(),
                 json!({}),
+                None,
                 CancellationToken::new(),
                 PreparedEffect::new(move |_| {
                     Box::pin(async move {

@@ -21,6 +21,7 @@ use super::*;
 use crate::support::agent_loop;
 use crate::support::store::SessionFixture;
 use maka_agent_engine::Engine;
+use serde_json::json;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
@@ -219,7 +220,8 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
                 let mut commits = log.subscribe_commits();
                 loop {
                     let prefix = log.prefix(200, 512 * 1024).await.unwrap();
-                    if prefix.events.iter().any(|e| matches!(&e.event.fact, Fact::ModelInterrupted { .. })) { break; }
+                    if prefix.events.iter().any(|e| matches!(&e.event.fact,
+                        Fact::ModelInterrupted { partial: None, .. })) { break; }
                     commits.changed().await.unwrap();
                 }
             }
@@ -246,6 +248,20 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
             worker.drain().await;
             server.await.unwrap();
             let prefix = log.prefix(200, 512 * 1024).await.unwrap();
+            let summary_step = prefix.events.iter().find_map(|event| match &event.event.fact {
+                Fact::ModelRequested { step_id, purpose: ModelPurpose::Summary, .. } => Some(step_id),
+                _ => None,
+            }).unwrap();
+            assert!(prefix.events.iter().any(|event| matches!(&event.event.fact,
+                Fact::ModelInterrupted { step_id, partial: None, .. } if step_id == summary_step)),
+                "cancel/drain seals Summary without publishing its private prose");
+            if ending == "summary-tool" {
+                assert!(!prefix.events.iter().any(|event| matches!(&event.event.fact,
+                    Fact::ModelObserved { step_id, event: maka_agent_facts::model::recorded::ModelObservation::Part(_) }
+                        if step_id == summary_step)), "an unexecuted local Summary request stays private");
+                assert!(!prefix.events.iter().any(|event| matches!(&event.event.fact,
+                    Fact::ToolDispatched { .. } if event.event.invocation.invocation_id == "invocation-next")));
+            }
             let mut view = maka_presentation::InvocationView::new();
             let mut rows = Vec::new();
             for event in prefix.events.iter().filter(|e| e.event.invocation.invocation_id == "invocation-next") {
@@ -271,7 +287,7 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejected_local_summary_preserves_main_tool_context_and_next_turn() {
     tokio::time::timeout(Duration::from_secs(20), async {
-        use maka_agent_facts::model::ModelEvent;
+        use maka_agent_facts::model::recorded::ModelObservation;
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.sqlite");
         let log = Arc::new(SessionFixture::open(&path).await.unwrap());
@@ -321,7 +337,7 @@ async fn rejected_local_summary_preserves_main_tool_context_and_next_turn() {
                     _ => None,
                 });
                 if prefix.events.iter().any(|event| matches!(&event.event.fact,
-                    Fact::ModelInterrupted { step_id, .. }
+                    Fact::ModelInterrupted { step_id, partial: None, .. }
                         if Some(step_id) == summary_step)) {
                     break;
                 }
@@ -385,9 +401,9 @@ async fn rejected_local_summary_preserves_main_tool_context_and_next_turn() {
         assert!(!prefix.events.iter().any(|event| matches!(&event.event.fact,
             Fact::ContextCheckpointRecorded { .. })));
         assert!(!prefix.events.iter().any(|event| matches!(&event.event.fact,
-            Fact::ModelObserved { step_id, event } if step_id == summary_step && !matches!(event, ModelEvent::ResponseMetadata { .. } | ModelEvent::Finished { .. }))));
+            Fact::ModelObserved { step_id, event: ModelObservation::Part(_) } if step_id == summary_step)));
         assert!(prefix.events.iter().any(|event| matches!(&event.event.fact,
-            Fact::ModelObserved { step_id, event: ModelEvent::Finished { usage, .. } }
+            Fact::ModelObserved { step_id, event: ModelObservation::Finished { usage, .. } }
                 if step_id == summary_step && usage.input_tokens == Some(13) && usage.output_tokens == Some(7))),
             "failed Summary usage stays accountable without publishing private content");
         assert!(!serde_json::to_string(&prefix.events).unwrap().contains("private rejected summary prose"));

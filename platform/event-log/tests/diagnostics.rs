@@ -119,6 +119,7 @@ async fn diagnostic_pages_preserve_sources_fences_and_operational_copy_scope() {
         &invocation,
         Fact::ModelInterrupted {
             step_id: "step".into(),
+            partial: None,
             status: ModelInterruption::Failed,
             diagnostic: Some("provider-secret-must-not-be-exported".into()),
             model_failure: Some(ModelFailureCause::Http { status: 400 }),

@@ -500,6 +500,7 @@ async fn app_stop_between_completed_calls_preserves_consent_and_new_turn_recover
     assert!(matches!(
         store
             .append_computer_app_dispatch(
+                &[],
                 &native_dispatch(&invocation, "rejected-native"),
                 &[missing_broad],
                 &app,
@@ -514,11 +515,22 @@ async fn app_stop_between_completed_calls_preserves_consent_and_new_turn_recover
         "a rejected T1 must not publish native activity"
     );
     let broad = broad_grant(&store, &invocation, basis, &app).await;
+    let ordinary_prefix = native_dispatch(&invocation, "ordinary-prefix");
     let event = native_dispatch(&invocation, "first-native");
-    store
-        .append_computer_app_dispatch(&event, std::slice::from_ref(&broad), &app, &display, &basis)
+    let sequence = store
+        .append_computer_app_dispatch(
+            std::slice::from_ref(&ordinary_prefix),
+            &event,
+            std::slice::from_ref(&broad),
+            &app,
+            &display,
+            &basis,
+        )
         .await
         .unwrap();
+    assert!(store.append(&ordinary_prefix).await.unwrap() < sequence.last_sequence);
+    assert_eq!(store.append(&event).await.unwrap(), sequence.last_sequence);
+    settle_native(&store, &invocation, "ordinary-prefix").await;
     settle_native(&store, &invocation, "first-native").await;
     let observed = store.computer_apps(store.id()).await.unwrap();
     assert_eq!(observed.len(), 1);
@@ -551,10 +563,12 @@ async fn app_stop_between_completed_calls_preserves_consent_and_new_turn_recover
             .unwrap(),
         "Stop must not revoke remembered consent"
     );
+    let blocked_prefix = native_dispatch(&invocation, "blocked-prefix");
     let blocked = native_dispatch(&invocation, "blocked-native");
     assert!(matches!(
         store
             .append_computer_app_dispatch(
+                std::slice::from_ref(&blocked_prefix),
                 &blocked,
                 std::slice::from_ref(&broad),
                 &app,
@@ -573,6 +587,17 @@ async fn app_stop_between_completed_calls_preserves_consent_and_new_turn_recover
             .await
             .unwrap()
             .is_none()
+    );
+    assert!(
+        store
+            .scoped()
+            .await
+            .unwrap()
+            .execution_event(&invocation, &blocked_prefix.event().id, u64::MAX >> 1)
+            .await
+            .unwrap()
+            .is_none(),
+        "an app fence must roll back the ordinary prefix with its T1"
     );
     store.append(&end(&invocation)).await.unwrap();
     assert!(store.computer_apps(store.id()).await.unwrap().is_empty());
@@ -597,6 +622,7 @@ async fn app_stop_between_completed_calls_preserves_consent_and_new_turn_recover
     );
     store
         .append_computer_app_dispatch(
+            &[],
             &native_dispatch(&next, "new-native"),
             &[broad],
             &app,
@@ -626,6 +652,7 @@ async fn app_stop_closes_matching_pending_consent_and_settlement_still_commits()
     let broad = broad_grant(&store, &invocation, basis, &app).await;
     store
         .append_computer_app_dispatch(
+            &[],
             &native_dispatch(&invocation, "running-native"),
             &[broad],
             &app,
@@ -1265,6 +1292,7 @@ async fn profile_revoke_waits_only_for_accepted_dispatch_t1_and_blocks_following
     let dispatched = tokio::spawn(async move {
         dispatch_store
             .append_computer_app_dispatch(
+                &[],
                 &event,
                 &[dispatch_broad],
                 &dispatch_app,

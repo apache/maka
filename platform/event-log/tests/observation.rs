@@ -21,12 +21,7 @@ use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationOutcome;
-use maka_agent_facts::event::LogScope;
-use maka_agent_facts::event::ModelInterruption;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelEvent;
-use maka_agent_facts::model::ModelStep;
-use maka_agent_facts::model::TextKind;
 use maka_event_log::{EventLog, turns::InvocationState};
 use serde_json::{Value, json};
 
@@ -193,394 +188,7 @@ async fn fenced_bootstrap_and_bounded_catchup_survive_coalescing_and_reopen() {
     assert!(catchup.next_after.is_none());
 }
 
-#[tokio::test]
-async fn active_stream_seeds_preserve_complete_fenced_state_and_survive_reopen() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("streams.sqlite");
-    let mut log = EventLog::open(&path).await.unwrap();
-    log.create_session("session", "create", &json!({}), 1)
-        .await
-        .unwrap();
-    let invocation = Invocation {
-        session_id: "session".into(),
-        turn_id: "turn".into(),
-        run_id: "run".into(),
-        invocation_id: "invocation".into(),
-    };
-    let event = |fact| RuntimeEvent::new(invocation.clone(), fact);
-    log.append(
-        &EventWrite::plain(
-            (event(Fact::InvocationOpened {
-                configuration: None,
-                input: maka_agent_facts::input::InvocationInput::Message {
-                    source_messages: Vec::new(),
-                    content: "".into(),
-                    request_fingerprint: None,
-                },
-            }))
-            .clone(),
-        )
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    let observed = |step: &str, observation| {
-        event(Fact::ModelObserved {
-            step_id: step.into(),
-            event: observation,
-        })
-    };
-    let start = |step: &str, id: &str| {
-        observed(
-            step,
-            ModelEvent::PartStarted {
-                id: id.into(),
-                text_kind: TextKind::Thinking,
-                provider_options: None,
-            },
-        )
-    };
-    let delta = |step: &str, text: &str| {
-        observed(
-            step,
-            ModelEvent::PartDelta {
-                id: "same".into(),
-                text: text.into(),
-                provider_options: None,
-            },
-        )
-    };
-    for step in ["interrupted", "current"] {
-        log.append(
-            &EventWrite::plain(
-                (event(Fact::ModelRequested {
-                    context_breakdown: None,
-                    item_acceptance: false,
-                    purpose: maka_agent_facts::context::ModelPurpose::Main,
-                    context: None,
-                    checkpoint_event_id: None,
-                    step_id: step.into(),
-                    model_id: "test".into(),
-                    source_scope: LogScope::Root,
-                    source_high_water: 0,
-                    source_digest: "fixture".into(),
-                    effective_source_digest: None,
-                    input_digest: "input".into(),
-                    route_identity: "route".into(),
-                }))
-                .clone(),
-            )
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-    }
-    log.append(&EventWrite::plain((start("interrupted", "same")).clone()).unwrap())
-        .await
-        .unwrap();
-    log.append(&EventWrite::plain((delta("interrupted", "excluded")).clone()).unwrap())
-        .await
-        .unwrap();
-    log.append(
-        &EventWrite::plain(
-            (event(Fact::ModelInterrupted {
-                model_failure: None,
-                diagnostic: None,
-                step_id: "interrupted".into(),
-                status: ModelInterruption::Cancelled,
-            }))
-            .clone(),
-        )
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    log.append(&EventWrite::plain((start("current", "finished")).clone()).unwrap())
-        .await
-        .unwrap();
-    log.append(
-        &EventWrite::plain(
-            (observed(
-                "current",
-                ModelEvent::PartFinished {
-                    id: "finished".into(),
-                    provider_options: None,
-                },
-            ))
-            .clone(),
-        )
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    let opening = start("current", "same");
-    log.append(&EventWrite::plain((opening).clone()).unwrap())
-        .await
-        .unwrap();
-    log.append(&EventWrite::plain((delta("current", "a😀")).clone()).unwrap())
-        .await
-        .unwrap();
-    let fence = log
-        .observe_session::<Value>("session")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(fence.active_streams.len(), 2);
-    let seed = fence
-        .active_streams
-        .iter()
-        .find(|seed| seed.part_id == "same")
-        .unwrap();
-    assert_eq!(seed.message_id, opening.id);
-    assert_eq!(seed.step_id, "current");
-    assert_eq!(seed.part_id, "same");
-    assert_eq!(seed.text_kind, TextKind::Thinking);
-    assert!(seed.start_sequence < fence.through_sequence);
-    log.append(&EventWrite::plain((delta("current", "🎉")).clone()).unwrap())
-        .await
-        .unwrap();
-    log.append(
-        &EventWrite::plain(event(Fact::ModelObserved {
-            step_id: "current".into(),
-            event: ModelEvent::PartFinished {
-                id: "same".into(),
-                provider_options: None,
-            },
-        }))
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    log.close().await.unwrap();
-    log = EventLog::open(&path).await.unwrap();
-    let reopened = log
-        .observe_session::<Value>("session")
-        .await
-        .unwrap()
-        .unwrap();
-    let reopened_seed = reopened
-        .active_streams
-        .iter()
-        .find(|stream| stream.part_id == "same")
-        .unwrap();
-    assert_eq!(reopened_seed.message_id, seed.message_id);
-    assert_eq!(
-        reopened_seed.start_sequence, seed.start_sequence,
-        "later commits retain the same replay start"
-    );
-    let catchup = log
-        .session_events(
-            "session",
-            fence.through_sequence,
-            reopened.through_sequence,
-            8,
-            4096,
-        )
-        .await
-        .unwrap();
-    assert_eq!(catchup.events.len(), 2);
-    assert_eq!(
-        reopened.active_streams.len(),
-        2,
-        "closed part still awaits the request verdict"
-    );
-    let mut expected = reopened.active_streams.clone();
-    let mut builder = maka_agent_facts::model::assembly::StepBuilder::for_step("current").unwrap();
-    for index in 0..128 {
-        let id = format!("extra-{index}");
-        builder
-            .push(ModelEvent::PartStarted {
-                id: id.clone(),
-                text_kind: TextKind::Thinking,
-                provider_options: None,
-            })
-            .unwrap();
-        let opening = start("current", &id);
-        let sequence = log
-            .append(&EventWrite::plain(opening.clone()).unwrap())
-            .await
-            .unwrap();
-        expected.push(maka_event_log::observation::AssistantStreamSeed {
-            start_sequence: sequence,
-            step_id: "current".into(),
-            part_id: id,
-            message_id: opening.id,
-            text_kind: TextKind::Thinking,
-        });
-    }
-    let complete = log.observe_session::<Value>("session").await;
-    log.close().await.unwrap();
-    log = EventLog::open(&path).await.unwrap();
-    let complete_reopened = log.observe_session::<Value>("session").await;
-    log.close().await.unwrap();
-    let complete = complete.unwrap().unwrap();
-    let complete_reopened = complete_reopened.unwrap().unwrap();
-    assert_eq!(complete.active_streams, expected);
-    assert_eq!(complete_reopened.active_streams, expected);
-    assert_eq!(
-        complete.through_sequence,
-        complete_reopened.through_sequence
-    );
-    log = EventLog::open(&path).await.unwrap();
-    log.append(
-        &EventWrite::plain(
-            (event(Fact::ModelCompleted {
-                step_id: "current".into(),
-                output: ModelStep {
-                    parts: vec![],
-                    finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
-                    usage: Default::default(),
-                    provider_options: None,
-                    response_id: None,
-                    model: None,
-                    timestamp: None,
-                },
-            }))
-            .clone(),
-        )
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    assert!(
-        log.observe_session::<Value>("session")
-            .await
-            .unwrap()
-            .unwrap()
-            .active_streams
-            .is_empty()
-    );
-    log.append(
-        &EventWrite::plain(
-            (event(Fact::InvocationEnded {
-                outcome: InvocationOutcome::Cancelled {
-                    source: "user".into(),
-                },
-            }))
-            .clone(),
-        )
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    assert!(
-        log.observe_session::<Value>("session")
-            .await
-            .unwrap()
-            .unwrap()
-            .active_streams
-            .is_empty()
-    );
-}
-
-#[tokio::test]
-async fn stream_seed_identities_preserve_complete_original_bytes_and_reopen() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("seed-identities.sqlite");
-    for (index, ids) in [
-        (0, vec!["😀".repeat(4096)]),
-        (1, vec!["😀".repeat(16500)]),
-        (2, vec!["a".repeat(33000), "b".repeat(33000)]),
-    ] {
-        let log = EventLog::open(&path).await.unwrap();
-        let session = format!("budget-{index}");
-        let step = format!("current-{index}");
-        log.create_session(&session, &format!("create-{index}"), &json!({}), 1)
-            .await
-            .unwrap();
-        let invocation = Invocation {
-            session_id: session.clone(),
-            turn_id: format!("turn-{index}"),
-            run_id: format!("run-{index}"),
-            invocation_id: format!("invocation-{index}"),
-        };
-        let event = |fact| RuntimeEvent::new(invocation.clone(), fact);
-        log.append(
-            &EventWrite::plain(event(Fact::InvocationOpened {
-                configuration: None,
-                input: maka_agent_facts::input::InvocationInput::Message {
-                    source_messages: vec![],
-                    content: "".into(),
-                    request_fingerprint: None,
-                },
-            }))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-        log.append(
-            &EventWrite::plain(event(Fact::ModelRequested {
-                context_breakdown: None,
-                item_acceptance: false,
-                purpose: maka_agent_facts::context::ModelPurpose::Main,
-                context: None,
-                checkpoint_event_id: None,
-                step_id: step.clone(),
-                model_id: "test".into(),
-                source_scope: LogScope::Root,
-                source_high_water: 0,
-                source_digest: "fixture".into(),
-                effective_source_digest: None,
-                input_digest: "input".into(),
-                route_identity: "route".into(),
-            }))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-        let mut builder = maka_agent_facts::model::assembly::StepBuilder::for_step(&step).unwrap();
-        let mut expected = Vec::new();
-        for id in &ids {
-            let start = ModelEvent::PartStarted {
-                id: id.clone(),
-                text_kind: TextKind::Text,
-                provider_options: None,
-            };
-            builder.push(start.clone()).unwrap();
-            let opening = event(Fact::ModelObserved {
-                step_id: step.clone(),
-                event: start,
-            });
-            let sequence = log
-                .append(&EventWrite::plain(opening.clone()).unwrap())
-                .await
-                .unwrap();
-            expected.push(maka_event_log::observation::AssistantStreamSeed {
-                start_sequence: sequence,
-                step_id: step.clone(),
-                part_id: id.clone(),
-                message_id: opening.id,
-                text_kind: TextKind::Text,
-            });
-        }
-        let observation = log.observe_session::<Value>(&session).await;
-        log.close().await.unwrap();
-        let log = EventLog::open(&path).await.unwrap();
-        let reopened = log.observe_session::<Value>(&session).await;
-        log.append(
-            &EventWrite::plain(event(Fact::ModelInterrupted {
-                model_failure: None,
-                diagnostic: None,
-                step_id: step.clone(),
-                status: ModelInterruption::Cancelled,
-            }))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-        let ended = log.observe_session::<Value>(&session).await;
-        log.close().await.unwrap();
-        let observation = observation.unwrap().unwrap();
-        let reopened = reopened.unwrap().unwrap();
-        assert_eq!(observation.active_streams, expected);
-        assert_eq!(reopened.active_streams, expected);
-        assert_eq!(observation.through_sequence, reopened.through_sequence);
-        assert!(ended.unwrap().unwrap().active_streams.is_empty());
-    }
-}
-
 async fn complete_active_tool_replay_round_trip(ids: Vec<String>) {
-    use maka_agent_facts::model::assembly::StepBuilder;
     use maka_event_log::observation::ToolStreamSeed;
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("active-tools.sqlite");
@@ -605,59 +213,41 @@ async fn complete_active_tool_replay_round_trip(ids: Vec<String>) {
     }))
     .await
     .unwrap();
-    log.append(&event(Fact::ModelRequested {
-        context_breakdown: None,
-        item_acceptance: false,
-        purpose: maka_agent_facts::context::ModelPurpose::Main,
-        context: None,
-        checkpoint_event_id: None,
-        step_id: "step".into(),
-        model_id: "model".into(),
-        source_scope: LogScope::Root,
-        source_high_water: 0,
-        source_digest: "source".into(),
-        effective_source_digest: None,
-        input_digest: "input".into(),
-        route_identity: "route".into(),
-    }))
-    .await
-    .unwrap();
-    let mut builder = StepBuilder::for_step("step").unwrap();
     let mut expected = Vec::new();
+    let mut operations = Vec::new();
     for id in ids {
-        let start = ModelEvent::ToolInputStarted {
-            id: id.clone(),
-            name: "echo".into(),
-            provider_executed: true,
-        };
-        builder.push(start.clone()).unwrap();
+        let operation = format!("step:{id}");
         let sequence = log
-            .append(&event(Fact::ModelObserved {
-                step_id: "step".into(),
-                event: start,
+            .append(&event(Fact::ToolDispatched {
+                presentation: None,
+                title: None,
+                operation_id: operation.clone(),
+                call: maka_agent_facts::tool_call::ToolCallIdentity::standalone(id),
+                name: "echo".into(),
+                input: json!({}),
             }))
             .await
             .unwrap();
         expected.push(ToolStreamSeed {
-            tool_use_id: maka_agent_facts::tool_call::tool_use_id(
-                "invocation",
-                &format!("step:{id}"),
-            ),
+            tool_use_id: maka_agent_facts::tool_call::tool_use_id("invocation", &operation),
             start_sequence: sequence,
         });
+        operations.push(operation);
     }
     let first = log.observe_session::<Value>("session").await;
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
     let reopened = log.observe_session::<Value>("session").await;
-    log.append(&event(Fact::ModelInterrupted {
-        model_failure: None,
-        diagnostic: None,
-        step_id: "step".into(),
-        status: ModelInterruption::Cancelled,
-    }))
-    .await
-    .unwrap();
+    for operation_id in operations {
+        log.append(&event(Fact::ToolSettled {
+            operation_id,
+            outcome: maka_agent_facts::event::ToolOutcome::Failed {
+                message: "fixture finished".into(),
+            },
+        }))
+        .await
+        .unwrap();
+    }
     let ended = log.observe_session::<Value>("session").await;
     log.close().await.unwrap();
     let first = first.unwrap().unwrap();

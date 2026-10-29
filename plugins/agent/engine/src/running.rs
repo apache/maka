@@ -37,6 +37,7 @@ pub struct RunningInvocation {
     tool_names: Arc<HashSet<String>>,
     cancellation: CancellationToken,
     handoff: Option<crate::HandoffGate>,
+    preview: crate::preview::Reader,
     worker: JoinHandle<RunningCompletion>,
 }
 
@@ -46,6 +47,7 @@ impl RunningInvocation {
         tool_names: Arc<HashSet<String>>,
         cancellation: CancellationToken,
         handoff: Option<crate::HandoffGate>,
+        preview: crate::preview::Reader,
         worker: JoinHandle<RunningCompletion>,
     ) -> Self {
         Self {
@@ -53,6 +55,7 @@ impl RunningInvocation {
             tool_names,
             cancellation,
             handoff,
+            preview,
             worker,
         }
     }
@@ -65,6 +68,14 @@ impl RunningInvocation {
     /// configuration changes and discovery visibility do not replace it.
     pub fn tool_names(&self) -> &Arc<HashSet<String>> {
         &self.tool_names
+    }
+
+    /// Latest visible Main attempt; snapshots remain stable while execution advances.
+    pub fn preview(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>>
+    {
+        self.preview.clone()
     }
 
     pub fn cancel(&self) {

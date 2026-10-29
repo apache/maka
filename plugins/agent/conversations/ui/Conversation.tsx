@@ -67,6 +67,7 @@ import {
   updateHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
 import type { Row, Position, Subscription } from '../../../../products/maka/workbench/app/history';
+import { Preview } from '../../../../products/maka/workbench/app/preview';
 import { thinkingSummary } from '../../../../products/maka/workbench/app/thinkingSummary';
 import type {
   ComposerSession,
@@ -103,7 +104,7 @@ import {
   projectProcessGroups,
   sameProcessActivity,
   sameProcessRows,
-  sourceSequence,
+  orderProcessRows,
   stableRowId,
 } from '../../../../products/maka/workbench/app/processGroups';
 import type {
@@ -276,6 +277,7 @@ export function Conversation(props: ConversationProps) {
   const live = signal<Row[]>([]);
   const toolActivity = signal<ToolActivity[]>([]);
   const parts = signal<LivePart[]>([]);
+  const preview = new Preview();
   const pendingMessages = signal<Row[]>([]);
   const queued = signal<AgentQueue | null>(null);
   const title = signal(sessionId);
@@ -402,6 +404,17 @@ export function Conversation(props: ConversationProps) {
         const sequence = Math.max(part.startSequence, row.sequence ?? 0);
         if (!latest || sequence > latest.sequence) latest = { part, row, sequence };
       }
+      const currentPreview = live()
+        .filter((row) => row.preview && row.invocationId === invocation() && row.closedAt === null)
+        .at(-1);
+      if (currentPreview)
+        return currentPreview.field === 'body'
+          ? { kind: 'response', detail: '', rowId: stableRowId(currentPreview) }
+          : {
+              kind: 'thinking',
+              detail: thinkingSummary(currentPreview.text),
+              rowId: stableRowId(currentPreview),
+            };
       if (!latest) return { kind: 'working', detail: '' };
       if (latest.part.field === 'body')
         return { kind: 'response', detail: '', rowId: stableRowId(latest.row) };
@@ -418,15 +431,9 @@ export function Conversation(props: ConversationProps) {
   );
   let previousGroups: ProcessEntry[] = [];
   const projection = computed(() => {
-    // Canonical position and live PartStarted sequence are source order. A send
-    // echo has no source position yet and stays at the local tail until admitted.
-    const ordered = [...rows(), ...processLive()].sort((left, right) => {
-      return (
-        (sourceSequence(left) ?? 0) - (sourceSequence(right) ?? 0) ||
-        (left.position?.itemIndex ?? 0) - (right.position?.itemIndex ?? 0) ||
-        Number(left.field === 'body') - Number(right.field === 'body')
-      );
-    });
+    // Current model previews have their own attempt/part order; only durable
+    // history and executor streams have a source sequence.
+    const ordered = orderProcessRows([...rows(), ...processLive()]);
     const next = projectProcessGroups({
       rows: [...ordered, ...(atHistoryTail() ? pendingMessages() : [])],
       toolActivity: processActivity(),
@@ -597,6 +604,9 @@ export function Conversation(props: ConversationProps) {
       rows.set(mergeChunks(rows(), chunks, older, through));
       const canonical = canonicalRows().byMessage;
       const currentLive = live();
+      for (const row of currentLive)
+        if (row.preview && canonical.has(`${row.messageId}/${row.field}`))
+          preview.commit(row.invocationId!, row.stepId!, row.messageId);
       const nextLive = currentLive.filter((row) => !canonical.has(`${row.messageId}/${row.field}`));
       if (nextLive.length !== currentLive.length) live.set(nextLive);
       const currentPending = pendingMessages();
@@ -955,12 +965,20 @@ export function Conversation(props: ConversationProps) {
       computerApps.set(page.apps);
       return;
     }
+    if (page.kind === 'preview') {
+      const next = preview.page(page.page, live(), toolActivity(), canonicalRows().byMessage);
+      live.set(next.rows);
+      toolActivity.set(next.tools);
+      return;
+    }
     if (page.kind !== 'events') return;
     latestKnown = Math.max(latestKnown, page.through);
     let changed = false;
     for (const event of page.events) {
       if (event.sequence <= watchLast) continue;
       const fact = event.fact;
+      if (fact.kind === 'tool_input_ready')
+        preview.retireTool(event.invocationId, fact.stepId, fact.toolUseId);
       const nextTools = updateToolActivity(toolActivity(), event);
       if (nextTools !== toolActivity()) toolActivity.set(nextTools);
       const field = (kind: string) => (kind === 'thinking' ? 'thinking' : 'body');
@@ -989,18 +1007,6 @@ export function Conversation(props: ConversationProps) {
           );
           changed = true;
           break;
-        case 'part_started':
-          openParts([
-            {
-              invocationId: event.invocationId,
-              stepId: fact.stepId,
-              partId: fact.partId,
-              messageId: fact.messageId,
-              field: field(fact.textKind),
-              startSequence: event.sequence,
-            },
-          ]);
-          break;
         case 'delta': {
           const part = parts().find(
             (part) =>
@@ -1019,6 +1025,7 @@ export function Conversation(props: ConversationProps) {
             role: part.field === 'thinking' ? 'thinking' : 'assistant',
             turnId: event.turnId,
             text: (previous?.text ?? '') + fact.text,
+            prefix: true,
             sequence: event.sequence,
             closedAt: null,
           };
@@ -1027,18 +1034,12 @@ export function Conversation(props: ConversationProps) {
           );
           break;
         }
-        case 'part_finished':
-          parts.set(
-            parts().filter(
-              (part) =>
-                part.invocationId !== event.invocationId ||
-                part.stepId !== fact.stepId ||
-                part.partId !== fact.partId,
-            ),
-          );
+        case 'part_committed':
+          preview.commit(event.invocationId, fact.stepId, fact.messageId);
           changed = true;
           break;
         case 'step_ended':
+          preview.commit(event.invocationId, fact.stepId);
           closeLive(event.sequence, event.invocationId, fact.stepId);
           parts.set(
             parts().filter(

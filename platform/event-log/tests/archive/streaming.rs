@@ -18,7 +18,10 @@
  */
 
 use super::*;
-use maka_agent_facts::model::{ModelEvent, ModelFinishReason, ModelPart, ModelToolCall};
+use maka_agent_facts::model::recorded::{
+    CompletionPart, ModelCompletion, ModelObservation, RecordedPartRef,
+};
+use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelToolCall};
 use maka_agent_facts::tool_output::DurableToolProjection;
 
 #[tokio::test]
@@ -49,7 +52,17 @@ async fn prune_preserves_streaming_accepted_call() {
         "stream",
         Fact::ModelObserved {
             step_id: "step".into(),
-            event: ModelEvent::ToolCall(call.clone()),
+            event: ModelObservation::Part(
+                match model_part(
+                    "stream",
+                    "step",
+                    0,
+                    ModelPart::ToolCall { call: call.clone() },
+                ) {
+                    CompletionPart::Own(record) => record,
+                    _ => unreachable!(),
+                },
+            ),
         },
     );
     log.append(&accepted).await.unwrap();
@@ -57,7 +70,7 @@ async fn prune_preserves_streaming_accepted_call() {
         "stream",
         Fact::ModelObserved {
             step_id: "step".into(),
-            event: ModelEvent::Finished {
+            event: ModelObservation::Finished {
                 reason: ModelFinishReason::ToolCalls,
                 usage: Default::default(),
                 provider_options: None,
@@ -70,8 +83,11 @@ async fn prune_preserves_streaming_accepted_call() {
         "stream",
         Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall { call }],
+            output: ModelCompletion {
+                parts: vec![CompletionPart::Ref(RecordedPartRef {
+                    event_id: accepted.event().id.clone(),
+                    ordinal: 0,
+                })],
                 finish_reason: ModelFinishReason::ToolCalls,
                 usage: Default::default(),
                 provider_options: None,

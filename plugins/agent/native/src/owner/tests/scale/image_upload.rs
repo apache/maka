@@ -34,7 +34,6 @@ use std::{cell::Cell, io::Read, panic::AssertUnwindSafe};
 const INPUT: &str = "K45 inspect these exact uploaded images";
 const ANSWER: &str = "K45_EXACT_IMAGES_CONFIRMED";
 
-#[path = "image_upload/protocol.rs"]
 mod protocol;
 use protocol::Options;
 
@@ -229,7 +228,9 @@ async fn verify(f: &Fixture, session: &str, invocation: &str, pictures: &[Pictur
     let mut requests = 0;
     let mut completed = 0;
     let mut terminal = 0;
+    let mut recorded_parts = CanonicalModelParts::default();
     for stored in canonical(f, session).await.unwrap() {
+        recorded_parts.observe(&stored);
         assert_eq!(stored.event.invocation.invocation_id, invocation);
         match stored.event.fact {
             Fact::InvocationOpened {
@@ -258,17 +259,17 @@ async fn verify(f: &Fixture, session: &str, invocation: &str, pictures: &[Pictur
                 requests += 1;
             }
             Fact::ModelCompleted { output, .. } => {
-                let text: String = output
-                    .parts
-                    .iter()
+                let text: String = recorded_parts
+                    .parts(&output)
                     .filter_map(|part| match part {
                         ModelPart::Text {
                             text_kind: TextKind::Text,
                             text,
                             ..
-                        } => Some(text.as_str()),
+                        } => Some(text),
                         _ => None,
                     })
+                    .flat_map(|text| text.chunks())
                     .collect();
                 assert_eq!(text, ANSWER);
                 assert_eq!(output.finish_reason, ModelFinishReason::Stop);

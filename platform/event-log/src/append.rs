@@ -78,27 +78,31 @@ impl EventLog {
 
     /// A selected native executor checks all its original capability grants in the
     /// same transaction as T1. Revocation cannot race a separate grant read.
-    /// This compares existing authority; it neither creates a grant nor runs effects.
+    /// Prefix facts use ordinary validation; only the last dispatch checks authority.
+    /// This neither creates a grant nor runs effects.
     pub async fn append_capability_dispatch(
         &self,
+        prefix: &[EventWrite],
         event: &EventWrite,
         targets: &[maka_agent_facts::interaction::GrantTarget],
         basis: &maka_agent_facts::workspace::PermissionBasis,
-    ) -> Result<u64, CommitError> {
-        self.append_granted_dispatch(event, targets, basis, None, ComputerLane::Other)
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
+        self.append_granted_dispatch(prefix, event, targets, basis, None, ComputerLane::Other)
             .await
     }
 
     pub(crate) async fn append_computer_app_dispatch(
         &self,
+        prefix: &[EventWrite],
         event: &EventWrite,
         targets: &[maka_agent_facts::interaction::GrantTarget],
         app: &maka_agent_facts::interaction::GrantTarget,
         display: &maka_agent_facts::interaction::ComputerAppDisplay,
         basis: &maka_agent_facts::workspace::PermissionBasis,
         lane: ComputerLane,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         self.append_granted_dispatch(
+            prefix,
             event,
             targets,
             basis,
@@ -108,21 +112,22 @@ impl EventLog {
         .await
     }
 
-    /// Native-only Computer Use checks the logical-Turn interruption in the
-    /// same transaction as its existing grant admission and T1. Browser/JS
-    /// work continues through the ordinary capability dispatch path.
+    /// Native-only Computer Use checks logical-Turn interruption in the
+    /// same transaction as grant admission, prefix facts and T1.
     pub async fn append_native_computer_dispatch(
         &self,
+        prefix: &[EventWrite],
         event: &EventWrite,
         targets: &[maka_agent_facts::interaction::GrantTarget],
         basis: &maka_agent_facts::workspace::PermissionBasis,
-    ) -> Result<u64, CommitError> {
-        self.append_granted_dispatch(event, targets, basis, None, ComputerLane::Native)
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
+        self.append_granted_dispatch(prefix, event, targets, basis, None, ComputerLane::Native)
             .await
     }
 
     async fn append_granted_dispatch(
         &self,
+        prefix: &[EventWrite],
         event: &EventWrite,
         targets: &[maka_agent_facts::interaction::GrantTarget],
         basis: &maka_agent_facts::workspace::PermissionBasis,
@@ -131,7 +136,7 @@ impl EventLog {
             maka_agent_facts::interaction::ComputerAppDisplay,
         )>,
         lane: ComputerLane,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         if !matches!(event.event().fact, Fact::ToolDispatched { .. }) {
             return Err(CommitError::Rejected(
                 "capability admission requires a tool dispatch".into(),
@@ -143,29 +148,39 @@ impl EventLog {
             ));
         }
         self.append_batch_checked(
-            std::slice::from_ref(event),
-            Some(CapabilityAdmission {
-                lane,
-                targets: targets.to_vec(),
-                basis: *basis,
-                app,
-            }),
+            prefix,
+            Some((
+                event,
+                CapabilityAdmission {
+                    lane,
+                    targets: targets.to_vec(),
+                    basis: *basis,
+                    app,
+                },
+            )),
         )
         .await
-        .map(|sequences| sequences[0])
+        .map(maka_agent_facts::event::PrefixReceipt::from_sequences)
         .map_err(commit_error)
     }
 
     async fn append_batch_checked(
         &self,
         events: &[EventWrite],
-        capability: Option<CapabilityAdmission>,
+        dispatch: Option<(&EventWrite, CapabilityAdmission)>,
     ) -> Result<Vec<u64>, StoreError> {
         for event in events {
             self.check_bound_session(&event.event().invocation.session_id)?;
         }
+        if let Some((last, _)) = &dispatch {
+            self.check_bound_session(&last.event().invocation.session_id)?;
+        }
         self.validate_root()?;
-        let events = events.to_vec();
+        let mut events = events.to_vec();
+        let capability = dispatch.map(|(last, admission)| {
+            events.push(last.clone());
+            admission
+        });
         let commits = self.commits.sessions(
             events
                 .iter()
@@ -177,8 +192,9 @@ impl EventLog {
                     let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await?;
                     let mut sequences = Vec::with_capacity(events.len());
                     let mut last_inserted = None;
-                    for event in &events {
-                        if let Some(admission) = &capability {
+                    for (index, event) in events.iter().enumerate() {
+                        let admission = capability.as_ref().filter(|_| index + 1 == events.len());
+                        if let Some(admission) = admission {
                             let CapabilityAdmission {
                                 lane,
                                 targets,
@@ -218,7 +234,7 @@ impl EventLog {
                         if let Some(CapabilityAdmission {
                             app: Some((target, display)),
                             ..
-                        }) = &capability
+                        }) = admission
                         {
                             crate::root_store::record_computer_app_activity(
                                 &mut transaction,
@@ -358,7 +374,6 @@ impl EventLog {
             crate::sessions::project_execution(transaction, sequence).await?;
             crate::sessions::advance_revision(transaction, &event.invocation.session_id).await?;
         }
-        crate::transcript::directory::record_event(transaction, event, sequence).await?;
         Ok(AppendResult::Inserted(sequence))
     }
 }
@@ -386,6 +401,20 @@ impl EventLog {
 }
 
 impl EventSink for EventLog {
+    fn commit_with_prefix(
+        self: std::sync::Arc<Self>,
+        prefix: &[EventWrite],
+        last: EventWrite,
+    ) -> maka_agent_facts::event::PrefixCommitFuture {
+        let mut events = prefix.to_vec();
+        events.push(last);
+        Box::pin(async move {
+            self.append_batch(&events)
+                .await
+                .map(maka_agent_facts::event::PrefixReceipt::from_sequences)
+        })
+    }
+
     fn commit(self: std::sync::Arc<Self>, event: EventWrite) -> CommitFuture {
         Box::pin(async move { self.append(&event).await })
     }

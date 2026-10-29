@@ -41,7 +41,7 @@ pub(super) const ELIGIBLE: &str = r#"(e.kind = 'context_checkpoint_recorded' OR 
                                 'model_interrupted', 'invocation_ended', 'context_checkpoint_recorded',
                                 'tool_dispatched', 'tool_rejected', 'tool_settled', 'executor_completed')
                        OR (e.kind = 'model_observed'
-                           AND json_extract(e.event_json, '$.fact.event.kind') IN ('part_finished','source','tool_call','provider_tool_result')
+                           AND json_extract(e.event_json, '$.fact.event.kind') = 'part'
                            AND json_type(e.event_json, '$.fact.step_id') = 'text'
                            AND EXISTS (SELECT 1 FROM runtime_events request
                                JOIN runtime_events opening ON opening.invocation_id = request.invocation_id AND opening.kind = 'invocation_opened'
@@ -98,7 +98,7 @@ fn candidate_sql() -> String {
     )
 }
 
-pub(super) fn source_on_handle(
+pub(crate) fn source_on_handle(
     db: &RawConnection,
     session: &str,
     source: i64,

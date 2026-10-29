@@ -95,7 +95,28 @@ pub(super) fn request(id: &str, step: &str, source: Option<&ModelContextSource>)
 }
 pub(super) async fn tool(log: &EventLog, id: &str, step: &str, text: String) -> EventWrite {
     log.append(&request(id, step, None)).await.unwrap();
-    let output:ModelStep=serde_json::from_value(json!({"parts":[{"kind":"tool_call","call":{"id":step,"name":"Read","input":{"kind":"json","data":{"path":"file"}},"provider_executed":false}}],"finish_reason":"tool-calls","usage":{}})).unwrap();
+    let output = ModelCompletion {
+        parts: vec![model_part(
+            id,
+            step,
+            0,
+            maka_agent_facts::model::ModelPart::ToolCall {
+                call: maka_agent_facts::model::ModelToolCall {
+                    id: step.into(),
+                    name: "Read".into(),
+                    input: json!({"path":"file"}).into(),
+                    provider_executed: false,
+                    provider_options: None,
+                },
+            },
+        )],
+        finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
+        usage: Default::default(),
+        provider_options: None,
+        response_id: None,
+        model: None,
+        timestamp: None,
+    };
     log.append(&event(
         id,
         Fact::ModelCompleted {
@@ -171,7 +192,7 @@ pub(super) async fn summary_pair(
     log.append(&request(id, &summary_step, Some(source)))
         .await
         .unwrap();
-    let output:ModelStep=serde_json::from_value(json!({"parts":[{"kind":"text","text_kind":"text","text":SUMMARY}],"finish_reason":"stop","usage":{}})).unwrap();
+    let output = summary_completion(id, &summary_step, SUMMARY);
     log.append(&event(
         id,
         Fact::ModelCompleted {
@@ -189,7 +210,16 @@ pub(super) async fn summary_pair(
                 covered_through: source.source_evidence.high_water,
                 source_digest: source.source_evidence.digest.clone(),
                 previous_checkpoint_id: source.baseline.as_ref().map(|b| b.event_id.clone()),
-                summary: TextSummary::from_model_step(&output).unwrap(),
+                summary: TextSummary::from_parts(
+                    output.finish_reason,
+                    output.parts.iter().filter_map(|part| match part {
+                        maka_agent_facts::model::recorded::CompletionPart::Own(record) => {
+                            Some(record.part.as_ref())
+                        }
+                        _ => None,
+                    }),
+                )
+                .unwrap(),
                 summary_step_id: summary_step,
             },
         },
@@ -205,4 +235,50 @@ pub(super) async fn summary_pair(
         },
     );
     vec![checkpoint, terminal]
+}
+
+pub(super) fn model_part(
+    invocation: &str,
+    step: &str,
+    ordinal: u64,
+    part: maka_agent_facts::model::ModelPart,
+) -> maka_agent_facts::model::recorded::CompletionPart {
+    use maka_agent_facts::model::{
+        ModelPart,
+        recorded::{CompletionPart, ModelPartRecord},
+    };
+    let message_id = match &part {
+        ModelPart::ToolCall { call } => {
+            maka_agent_facts::tool_call::tool_use_id(invocation, &format!("{step}:{}", call.id))
+        }
+        _ => uuid::Uuid::new_v4().to_string(),
+    };
+    CompletionPart::Own(ModelPartRecord {
+        ordinal,
+        message_id,
+        started_at: std::time::SystemTime::now(),
+        provider_part_id: None,
+        part: std::sync::Arc::new(part),
+    })
+}
+
+pub(super) fn summary_completion(invocation: &str, step: &str, text: &str) -> ModelCompletion {
+    ModelCompletion {
+        parts: vec![model_part(
+            invocation,
+            step,
+            0,
+            maka_agent_facts::model::ModelPart::Text {
+                text_kind: maka_agent_facts::model::TextKind::Text,
+                text: text.into(),
+                provider_options: None,
+            },
+        )],
+        finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
+        usage: Default::default(),
+        provider_options: None,
+        response_id: None,
+        model: None,
+        timestamp: None,
+    }
 }

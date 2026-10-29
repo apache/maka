@@ -23,18 +23,32 @@ use maka_agent_facts::event::LogPrefix;
 use maka_model::prompt::Message;
 
 use crate::RunError;
+mod arena_directory;
+pub(super) mod arena_recipes;
+pub(super) mod capture_arena;
+#[cfg(test)]
 mod chat;
+mod chat_source;
+#[cfg(test)]
 mod compatible;
+pub(super) mod frozen;
 mod images;
+mod joined_source;
+pub(super) mod measure_source;
 mod output;
+pub(super) mod preparation;
 mod prepared;
-pub(super) use prepared::{PreparedHistory, capture as prepare_view};
+pub(crate) mod request_backing;
+pub(super) mod serialize_source;
+mod source_projector;
+mod source_reference;
+pub(super) mod source_summary;
+pub(super) use prepared::{FrozenHistory, capture as prepare_view};
 mod user;
 
 mod references;
 mod resources;
 mod semantic;
-pub(super) use semantic::render as render_semantic_group;
 
 /// Only committed semantic facts produce provider input. No UI transcript or
 /// previous isolate state is read, including after process restart.
@@ -64,7 +78,7 @@ pub fn project(
         ));
     }
     use maka_agent_facts::history::semantic::{
-        Fragment, Frontier, PartPayload, Payload, ResolvedRow, SemanticKind, reduce,
+        FragmentSource, Frontier, PartPayload, Payload, ResolvedRow, SemanticKind, reduce,
     };
     use std::collections::{BTreeMap, HashMap};
     let mut frontiers: HashMap<&str, Frontier> = HashMap::new();
@@ -81,7 +95,63 @@ pub fn project(
         let transition = reduce(frontier, stored)
             .map_err(|error| RunError::ReconciliationRequired(error.into()))?;
         for fragment in transition.fragments {
-            fragments.insert(fragment.key, fragment);
+            let payload = match fragment.source {
+                FragmentSource::Payload(payload) => *payload,
+                FragmentSource::CanonicalModelPart { ordinal } => {
+                    use maka_agent_facts::model::recorded::{CompletionPart, ModelObservation};
+                    let records = match &stored.event.fact {
+                        maka_agent_facts::event::Fact::ModelObserved {
+                            event: ModelObservation::Part(record),
+                            ..
+                        } if record.ordinal == ordinal => Some(record),
+                        maka_agent_facts::event::Fact::ModelCompleted { output, .. } => {
+                            output.parts.iter().find_map(|part| match part {
+                                CompletionPart::Own(record) if record.ordinal == ordinal => {
+                                    Some(record)
+                                }
+                                _ => None,
+                            })
+                        }
+                        maka_agent_facts::event::Fact::ModelInterrupted {
+                            partial: Some(partial),
+                            ..
+                        } => partial.parts.iter().find_map(|part| match part {
+                            CompletionPart::Own(record) if record.ordinal == ordinal => {
+                                Some(record)
+                            }
+                            _ => None,
+                        }),
+                        _ => None,
+                    };
+                    Payload::Part(
+                        records
+                            .ok_or_else(|| {
+                                RunError::ReconciliationRequired(
+                                    "canonical model fragment lacks its original part".into(),
+                                )
+                            })?
+                            .part
+                            .as_ref()
+                            .clone(),
+                    )
+                }
+                FragmentSource::CanonicalToolProjection => {
+                    let maka_agent_facts::event::Fact::ToolSettled {
+                        outcome:
+                            maka_agent_facts::event::ToolOutcome::Succeeded {
+                                model_projection, ..
+                            },
+                        ..
+                    } = &stored.event.fact
+                    else {
+                        return Err(RunError::ReconciliationRequired(
+                            "canonical projection marker lacks a successful tool source".into(),
+                        ));
+                    };
+                    Payload::Tool(model_projection.clone())
+                }
+            };
+            fragments.insert(fragment.key, payload);
         }
         for row in transition.rows {
             rows.insert(row.id, row);
@@ -123,45 +193,8 @@ pub fn project(
                     .ok_or_else(|| {
                         RunError::ReconciliationRequired("semantic payload missing".into())
                     })?
-                    .payload
                     .clone(),
             )
-        } else if let SemanticKind::AssistantPart {
-            payload:
-                PartPayload::Text {
-                    part,
-                    end,
-                    text_kind,
-                },
-            ..
-        } = &row.kind
-        {
-            let mut text = String::new();
-            let mut options = None;
-            for Fragment { payload, .. } in fragments
-                .values()
-                .filter(|fragment| fragment.part == *part && fragment.key.source_sequence <= *end)
-            {
-                let Payload::TextDelta {
-                    text: delta,
-                    provider_options,
-                } = payload
-                else {
-                    return Err(RunError::ReconciliationRequired(
-                        "invalid text fragment".into(),
-                    ));
-                };
-                text.push_str(delta);
-                maka_agent_facts::model::merge_provider_options(
-                    &mut options,
-                    provider_options.clone(),
-                );
-            }
-            Some(Payload::Part(maka_agent_facts::model::ModelPart::Text {
-                text_kind: *text_kind,
-                text,
-                provider_options: options,
-            }))
         } else {
             None
         };
@@ -211,7 +244,8 @@ mod tests {
                 item_acceptance: false,
                 effective_source_digest: None,
                 purpose: maka_agent_facts::context::ModelPurpose::Main,
-                context: None, context_breakdown: None,
+                context: None,
+                context_breakdown: None,
                 checkpoint_event_id: None,
                 step_id: "step".into(),
                 model_id: "test".into(),
@@ -223,14 +257,36 @@ mod tests {
             },
             Fact::ModelCompleted {
                 step_id: "step".into(),
-                output: serde_json::from_value(json!({
-                    "parts":[{"kind":"tool_call","call":{
-                        "id":"call","name":"exec","input":{"kind":"json","data":{"code":"return 1"}},
-                        "provider_executed":false
-                    }}],
-                    "finish_reason":"tool-calls","usage":{}
-                }))
-                .unwrap(),
+                output: maka_agent_facts::model::recorded::ModelCompletion {
+                    parts: vec![maka_agent_facts::model::recorded::CompletionPart::Own(
+                        maka_agent_facts::model::recorded::ModelPartRecord {
+                            ordinal: 0,
+                            message_id: maka_agent_facts::tool_call::tool_use_id(
+                                "invocation",
+                                "step:call",
+                            ),
+                            started_at: std::time::SystemTime::now(),
+                            provider_part_id: None,
+                            part: std::sync::Arc::new(
+                                maka_agent_facts::model::ModelPart::ToolCall {
+                                    call: maka_agent_facts::model::ModelToolCall {
+                                        id: "call".into(),
+                                        name: "exec".into(),
+                                        input: json!({"code":"return 1"}).into(),
+                                        provider_executed: false,
+                                        provider_options: None,
+                                    },
+                                },
+                            ),
+                        },
+                    )],
+                    finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
+                    usage: Default::default(),
+                    provider_options: None,
+                    response_id: None,
+                    model: None,
+                    timestamp: None,
+                },
             },
             rejected("hidden", ToolCallIdentity::standalone("hidden".into())),
             rejected(

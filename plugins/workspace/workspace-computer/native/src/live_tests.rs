@@ -498,6 +498,7 @@ impl Run {
                 ToolCallIdentity::standalone(Uuid::new_v4().to_string()),
                 tool.into(),
                 input.clone(),
+                None,
                 cancellation,
                 move |cancel| {
                     Box::pin(async move {

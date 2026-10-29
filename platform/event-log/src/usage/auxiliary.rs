@@ -410,12 +410,17 @@ async fn insert(
     kind: &str,
     record: &impl Serialize,
 ) -> Result<u64, StoreError> {
-    let inserted =
-        sqlx::query("INSERT INTO event_log(event_id, kind, event_json) VALUES (?, ?, ?)")
-            .bind(id.to_string())
-            .bind(kind)
-            .bind(serde_json::to_string(record)?)
-            .execute(connection)
-            .await?;
+    let event_id = id.to_string();
+    let json = serde_json::to_string(record)?;
+    let inserted = crate::canonical_insert::insert(crate::canonical_insert::Record {
+        sequence: None,
+        event_id: &event_id,
+        invocation_id: None,
+        kind,
+        operation_id: None,
+        json: &json,
+    })
+    .execute(connection)
+    .await?;
     crate::sequence_number(inserted.last_insert_rowid())
 }

@@ -88,6 +88,13 @@ pub struct ToolResult {
 }
 #[derive(Debug, Clone)]
 pub enum Source {
+    /// Request-captured document metadata is resolved by the asynchronous adapter.
+    DeferredDocument {
+        id: String,
+        document_index: usize,
+        title: Option<String>,
+        extensions: Extensions,
+    },
     Url {
         id: String,
         url: String,

@@ -434,7 +434,7 @@ impl Owner {
         {
             return Err("graph_session_unavailable".into());
         }
-        if runs.controls.contains_key(&session.id)
+        if runs.busy(&session.id)
             || !self
                 .store
                 .session(&session.id)

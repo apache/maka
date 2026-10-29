@@ -21,8 +21,8 @@ use maka_agent_facts::accounting::Tokens;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::model::ModelFinishReason;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::ModelUsage;
+use maka_agent_facts::model::recorded::ModelCompletion;
 use maka_agent_facts::pricing::Quote;
 use maka_event_log::EventLog;
 use serde_json::json;
@@ -177,7 +177,7 @@ fn completed(
     event(
         Fact::ModelCompleted {
             step_id: id.into(),
-            output: ModelStep {
+            output: ModelCompletion {
                 parts: vec![],
                 finish_reason: ModelFinishReason::Stop,
                 usage: ModelUsage {

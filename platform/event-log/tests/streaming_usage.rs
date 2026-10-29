@@ -31,7 +31,8 @@ use maka_agent_facts::model::ModelFinishReason;
 use maka_agent_facts::model::ModelToolCall;
 use maka_agent_facts::model::ModelUsage;
 use maka_agent_facts::model::TextKind;
-use maka_agent_facts::model::assembly::StepBuilder;
+use maka_agent_facts::model::assembly::{AttemptBinding, AttemptWriter, PartReceipt};
+use maka_agent_facts::model::recorded::{ModelObservation, RecordedPartRef};
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_event_log::EventLog;
 use serde_json::json;
@@ -86,16 +87,50 @@ async fn request(log: &EventLog, step: &str, items: bool) {
         .await
         .unwrap();
 }
-async fn observe(log: &EventLog, step: &str, builder: &mut StepBuilder, observation: ModelEvent) {
-    builder.push(observation.clone()).unwrap();
-    log.append(&event(Fact::ModelObserved {
-        step_id: step.into(),
-        event: observation,
-    }))
-    .await
-    .unwrap();
+fn writer(step: &str) -> AttemptWriter {
+    AttemptWriter::new(
+        AttemptBinding {
+            invocation: Invocation {
+                session_id: "s".into(),
+                turn_id: "t".into(),
+                run_id: "r".into(),
+                invocation_id: "i".into(),
+            },
+            step_id: step.into(),
+            purpose: maka_agent_facts::context::ModelPurpose::Main,
+        },
+        true,
+    )
+    .unwrap()
 }
-async fn complete(log: &EventLog, step: &str, mut builder: StepBuilder, input: u64) {
+async fn observe(log: &EventLog, step: &str, builder: &mut AttemptWriter, observation: ModelEvent) {
+    for observation in builder
+        .push(observation, std::time::SystemTime::now())
+        .unwrap()
+    {
+        let ordinal = match &observation {
+            ModelObservation::Part(record) => Some(record.ordinal),
+            _ => None,
+        };
+        let write = event(Fact::ModelObserved {
+            step_id: step.into(),
+            event: observation,
+        });
+        let sequence = log.append(&write).await.unwrap();
+        if let Some(ordinal) = ordinal {
+            builder.recorded(PartReceipt {
+                part: RecordedPartRef {
+                    event_id: write.event().id.clone(),
+                    ordinal,
+                },
+                sequence,
+            });
+        } else {
+            builder.fenced(sequence);
+        }
+    }
+}
+async fn complete(log: &EventLog, step: &str, mut builder: AttemptWriter, input: u64) {
     observe(
         log,
         step,
@@ -113,7 +148,7 @@ async fn complete(log: &EventLog, step: &str, mut builder: StepBuilder, input: u
     .await;
     log.append(&event(Fact::ModelCompleted {
         step_id: step.into(),
-        output: builder.finish().unwrap(),
+        output: builder.completed().unwrap().completion(),
     }))
     .await
     .unwrap();
@@ -136,7 +171,7 @@ async fn early_tool_results_and_retained_interrupted_items_invalidate_stale_usag
         .await
         .unwrap();
         request(&log, "first", true).await;
-        let mut builder = StepBuilder::for_step("first").unwrap();
+        let mut builder = writer("first");
         if early_tool {
             observe(
                 &log,
@@ -174,7 +209,7 @@ async fn early_tool_results_and_retained_interrupted_items_invalidate_stale_usag
         if !early_tool {
             assert_eq!(log.context_usage("s").await.unwrap().1.unwrap().tokens, 10);
             request(&log, "interrupted", true).await;
-            let mut builder = StepBuilder::for_step("interrupted").unwrap();
+            let mut builder = writer("interrupted");
             for observation in [
                 ModelEvent::PartStarted {
                     id: "text".into(),
@@ -194,6 +229,7 @@ async fn early_tool_results_and_retained_interrupted_items_invalidate_stale_usag
                 observe(&log, "interrupted", &mut builder, observation).await;
             }
             log.append(&event(Fact::ModelInterrupted {
+                partial: builder.partial(),
                 model_failure: None,
                 diagnostic: None,
                 step_id: "interrupted".into(),
@@ -212,7 +248,7 @@ async fn early_tool_results_and_retained_interrupted_items_invalidate_stale_usag
             "unknown additions retain an explicitly last-known baseline"
         );
         request(&log, "fresh", true).await;
-        complete(&log, "fresh", StepBuilder::for_step("fresh").unwrap(), 200).await;
+        complete(&log, "fresh", writer("fresh"), 200).await;
         assert_eq!(log.context_usage("s").await.unwrap().1.unwrap().tokens, 200);
         assert!(!log.context_usage("s").await.unwrap().1.unwrap().last_known);
         log.append(&event(Fact::InvocationEnded {

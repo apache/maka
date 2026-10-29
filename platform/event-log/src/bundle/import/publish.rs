@@ -100,8 +100,7 @@ pub(super) async fn all(
             .await?;
     }
     materials(destination, staged, positions).await?;
-    crate::transcript::directory::index_imported_sessions(destination, &receipt.session_ids)
-        .await?;
+
     crate::bundle::accounting::validate(staged, destination).await
 }
 
@@ -334,11 +333,13 @@ async fn materials(
         else {
             unreachable!()
         };
-        sqlx::query("INSERT INTO session_history_artifacts VALUES(?,?,?,?)")
-            .bind(session)
-            .bind(source_session)
-            .bind(source_artifact)
-            .bind(artifact)
+        sqlx::query("INSERT INTO session_history_artifacts (session_id,source_session_id,source_artifact_id,artifact_id,lookup_digest,target_digest) VALUES(?,?,?,?,?,?)")
+            .bind(&session)
+            .bind(&source_session)
+            .bind(&source_artifact)
+            .bind(&artifact)
+            .bind(crate::artifacts::identity::history_lookup_digest(&session, &source_session, &source_artifact).as_slice())
+            .bind(crate::artifacts::identity::artifact_lookup_digest(&session, &artifact).as_slice())
             .execute(&mut *destination)
             .await?;
         after = number;

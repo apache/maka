@@ -108,7 +108,13 @@ async fn large_child_value_is_consumable_and_complete_cell_emission_remains_dura
             .await
             .unwrap()
             .into_step(&invocation.invocation_id)
-            .invoke(&call, CancellationToken::new())
+            .prepare(call.clone(), CancellationToken::new())
+            .await
+            .unwrap()
+            .publish(&[])
+            .await
+            .unwrap()
+            .completion
             .await
             .unwrap();
         assert_eq!(result["result"]["ok"], true);

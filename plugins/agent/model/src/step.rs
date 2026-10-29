@@ -86,13 +86,13 @@ mod tests {
                             text_kind: TextKind::Thinking,
                             text: "think".into(),
                             provider_options: Some(
-                                json!({"anthropic":{"signature":"signed","other":1}})
+                                json!({"anthropic":{"signature":"signed","other":1}}).into()
                             )
                         },
                         ModelPart::Text {
                             text_kind: TextKind::Text,
                             text: "answer".into(),
-                            provider_options: Some(json!({"openai":{"itemId":"item"}}))
+                            provider_options: Some(json!({"openai":{"itemId":"item"}}).into())
                         },
                     ]
                 );

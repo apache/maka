@@ -71,78 +71,80 @@ impl Engine {
             .execution_scope(crate::permission_basis(&input.configuration))
             .await?;
         let inner = RunContext::new(self.0.clone(), execution.store(), &input.request.invocation)?;
-        self.start_owned(
-            execution,
-            input.request.invocation.clone(),
-            Arc::default(),
-            None,
-            cancellation,
-            move |cancellation, admitted, effects| async move {
-                if cancellation.is_cancelled() {
-                    return Err(RunError::Cancelled);
-                }
-                let invocation = input.request.invocation;
-                // The durable backend identity precedes every external effect, in
-                // the same transaction as the invocation admission.
-                let writes = [
-                    Fact::InvocationOpened {
-                        configuration: Some(Box::new(input.configuration)),
-                        input: InvocationInput::Message {
-                            content: input.request.content,
-                            request_fingerprint: input.request_fingerprint,
-                            source_messages: input.source_messages,
-                        },
-                    },
-                    Fact::ExecutorStarted {
-                        binding: identity,
-                        settings: input.request.settings,
-                    },
-                ]
-                .into_iter()
-                .map(|fact| EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)))
-                .collect::<Result<Vec<_>, _>>()?;
-                inner.log.append_batch(&writes).await?;
-                let _ = admitted.send(());
-                let output = Arc::new(output::Recorder::new(
-                    inner.log.clone(),
-                    invocation.clone(),
-                    cancellation.clone(),
-                ));
-                let settlement = call
-                    .execute(
-                        inner.log.execution_custody()?,
-                        output.clone(),
-                        cancellation.clone(),
-                    )
-                    .await;
-                if matches!(&settlement.result, Err(Error::CleanupUnconfirmed)) {
-                    crate::cleanup::unconfirmed();
-                }
-                let outcome = match effects.settle().await {
-                    Ok(()) => outcome(&settlement.result, &cancellation),
-                    Err(error) => {
-                        crate::cleanup::unconfirmed();
-                        InvocationOutcome::Failed {
-                            class: "outcome_unknown".into(),
-                            model_failure: None,
-                            message: Some(error.to_string().chars().take(2048).collect()),
-                        }
+        inner
+            .clone()
+            .start_owned(
+                execution,
+                input.request.invocation.clone(),
+                Arc::default(),
+                None,
+                cancellation,
+                move |cancellation, admitted, effects| async move {
+                    if cancellation.is_cancelled() {
+                        return Err(RunError::Cancelled);
                     }
-                };
-                let committed = output.finish(&settlement.result, &outcome).await;
-                drop(settlement); // the terminal fact owns the lease through its commit
-                committed?;
-                match outcome {
-                    InvocationOutcome::Completed => Ok(invocation),
-                    InvocationOutcome::Cancelled { .. } => Err(RunError::Cancelled),
-                    InvocationOutcome::Failed { message, .. } => Err(RunError::Internal(
-                        message.unwrap_or_else(|| "external executor failed".into()),
-                    )),
-                    _ => unreachable!("executor outcomes"),
-                }
-            },
-        )
-        .await
+                    let invocation = input.request.invocation;
+                    // The durable backend identity precedes every external effect, in
+                    // the same transaction as the invocation admission.
+                    let writes = [
+                        Fact::InvocationOpened {
+                            configuration: Some(Box::new(input.configuration)),
+                            input: InvocationInput::Message {
+                                content: input.request.content,
+                                request_fingerprint: input.request_fingerprint,
+                                source_messages: input.source_messages,
+                            },
+                        },
+                        Fact::ExecutorStarted {
+                            binding: identity,
+                            settings: input.request.settings,
+                        },
+                    ]
+                    .into_iter()
+                    .map(|fact| EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                    inner.log.append_batch(&writes).await?;
+                    let _ = admitted.send(());
+                    let output = Arc::new(output::Recorder::new(
+                        inner.log.clone(),
+                        invocation.clone(),
+                        cancellation.clone(),
+                    ));
+                    let settlement = call
+                        .execute(
+                            inner.log.execution_custody()?,
+                            output.clone(),
+                            cancellation.clone(),
+                        )
+                        .await;
+                    if matches!(&settlement.result, Err(Error::CleanupUnconfirmed)) {
+                        crate::cleanup::unconfirmed();
+                    }
+                    let outcome = match effects.settle().await {
+                        Ok(()) => outcome(&settlement.result, &cancellation),
+                        Err(error) => {
+                            crate::cleanup::unconfirmed();
+                            InvocationOutcome::Failed {
+                                class: "outcome_unknown".into(),
+                                model_failure: None,
+                                message: Some(error.to_string().chars().take(2048).collect()),
+                            }
+                        }
+                    };
+                    let committed = output.finish(&settlement.result, &outcome).await;
+                    drop(settlement); // the terminal fact owns the lease through its commit
+                    committed?;
+                    match outcome {
+                        InvocationOutcome::Completed => Ok(invocation),
+                        InvocationOutcome::Cancelled { .. } => Err(RunError::Cancelled),
+                        InvocationOutcome::Failed { message, .. } => Err(RunError::Internal(
+                            message.unwrap_or_else(|| "external executor failed".into()),
+                        )),
+                        _ => unreachable!("executor outcomes"),
+                    }
+                },
+            )
+            .await
     }
 }
 

@@ -391,7 +391,7 @@ async fn run(count: usize, deltas: usize, prompt: String, delta: String) -> Valu
         "admission_ms":distribution(admissions),"model_arrival_ms":distribution(requests),
         "foreground_query_ms":distribution(probes),"stream_and_settle_ms":streaming_ms,
         "elapsed_ms":elapsed_ms,"cpu_seconds":cpu_end-cpu_start,"peak_rss_bytes":peak_rss_bytes,
-        "durable_input_deltas_per_second":count as f64*deltas as f64/(streaming_ms/1000.0)})
+        "provider_emissions_per_second":count as f64*deltas as f64/(streaming_ms/1000.0)})
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -431,11 +431,8 @@ async fn real_host_agent_scale() {
     println!("MAKA_AGENT_SCALE {result}");
 }
 
-#[path = "scale/flowing.rs"]
 mod flowing;
 
-#[path = "scale/compaction.rs"]
 pub(in crate::owner::tests) mod compaction;
 
-#[path = "scale/image_upload.rs"]
 pub(in crate::owner::tests) mod image_upload;

@@ -189,12 +189,30 @@ struct NativeJournal {
 impl EventSink for NativeJournal {
     fn commit(self: Arc<Self>, event: EventWrite) -> CommitFuture {
         Box::pin(async move {
+            self.commit_with_prefix(&[], event)
+                .await
+                .map(|receipt| receipt.last_sequence)
+        })
+    }
+
+    fn commit_with_prefix(
+        self: Arc<Self>,
+        prefix: &[EventWrite],
+        event: EventWrite,
+    ) -> maka_agent_facts::event::PrefixCommitFuture {
+        let prefix = prefix.to_vec();
+        Box::pin(async move {
             if matches!(event.event().fact, Fact::ToolDispatched { .. }) {
                 self.log
-                    .append_native_computer_dispatch(&event, &[target()], &self.basis)
+                    .append_native_computer_dispatch(&prefix, &event, &[target()], &self.basis)
                     .await
             } else {
-                self.log.append(&event).await
+                let mut events = prefix;
+                events.push(event);
+                self.log
+                    .append_batch(&events)
+                    .await
+                    .map(maka_agent_facts::event::PrefixReceipt::from_sequences)
             }
         })
     }
@@ -216,6 +234,7 @@ async fn completed_source_idle_escape_survives_legal_b_then_a_new_vm_but_keeps_b
     grant(&log, &a.invocation, basis_a, "grant-a").await;
     cell(&log, &a.invocation, "cell-a1").await;
     log.append_native_computer_dispatch(
+        &[],
         &dispatch(&a.invocation, "native-a1", Some(("cell-a1", "epoch-a1"))),
         &[target()],
         &basis_a,
@@ -229,6 +248,7 @@ async fn completed_source_idle_escape_survives_legal_b_then_a_new_vm_but_keeps_b
     grant(&log, &b.invocation, basis_b, "grant-b").await;
     cell(&log, &b.invocation, "cell-b").await;
     log.append_native_computer_dispatch(
+        &[],
         &dispatch(&b.invocation, "native-b", Some(("cell-b", "epoch-b"))),
         &[target()],
         &basis_b,
@@ -273,6 +293,7 @@ async fn completed_source_idle_escape_survives_legal_b_then_a_new_vm_but_keeps_b
         call,
         name,
         input,
+        None,
         CancellationToken::new(),
         PreparedEffect::new(move |_| {
             Box::pin(async move {
@@ -294,6 +315,7 @@ async fn completed_source_idle_escape_survives_legal_b_then_a_new_vm_but_keeps_b
     no_new_t1(&log, &a.invocation, "native-a2").await;
     // Browser remains a real admitted operation under the unchanged CU grant.
     log.append_capability_dispatch(
+        &[],
         &dispatch(&a.invocation, "browser-a", Some(("cell-a2", "epoch-a2"))),
         &[target()],
         &basis_a,
@@ -303,6 +325,7 @@ async fn completed_source_idle_escape_survives_legal_b_then_a_new_vm_but_keeps_b
     settle(&log, &a.invocation, "browser-a").await;
     settle(&log, &a.invocation, "cell-a2").await;
     log.append_native_computer_dispatch(
+        &[],
         &dispatch(&b.invocation, "native-b2", Some(("cell-b", "epoch-b"))),
         &[target()],
         &basis_b,
@@ -316,6 +339,7 @@ async fn completed_source_idle_escape_survives_legal_b_then_a_new_vm_but_keeps_b
     append(&log, &fresh).await;
     cell(&log, &fresh.invocation, "cell-fresh").await;
     log.append_native_computer_dispatch(
+        &[],
         &dispatch(
             &fresh.invocation,
             "native-fresh",
@@ -379,6 +403,7 @@ async fn late_source_event_after_real_handoff_pause_reopen_fences_its_same_turn_
     };
     cell(&log, &source.invocation, "cell").await;
     log.append_native_computer_dispatch(
+        &[],
         &dispatch(
             &source.invocation,
             "native",
@@ -465,6 +490,7 @@ async fn late_source_event_after_real_handoff_pause_reopen_fences_its_same_turn_
     cell(&log, &successor.invocation, "successor-cell").await;
     interrupted(
         log.append_native_computer_dispatch(
+            &[],
             &dispatch(
                 &successor.invocation,
                 "successor-native",
@@ -478,6 +504,7 @@ async fn late_source_event_after_real_handoff_pause_reopen_fences_its_same_turn_
     );
     no_new_t1(&log, &successor.invocation, "successor-native").await;
     log.append_capability_dispatch(
+        &[],
         &dispatch(
             &successor.invocation,
             "successor-browser",
@@ -505,6 +532,7 @@ async fn forged_binding_and_terminal_old_turn_cannot_poison_another_live_turn() 
     grant(&log, &a.invocation, basis, "grant").await;
     cell(&log, &a.invocation, "cell-a").await;
     log.append_native_computer_dispatch(
+        &[],
         &dispatch(&a.invocation, "native-a", Some(("cell-a", "epoch-a"))),
         &[target()],
         &basis,
@@ -537,6 +565,7 @@ async fn forged_binding_and_terminal_old_turn_cannot_poison_another_live_turn() 
     );
     cell(&log, &b.invocation, "cell-b").await;
     log.append_native_computer_dispatch(
+        &[],
         &dispatch(&b.invocation, "native-b", Some(("cell-b", "epoch-b"))),
         &[target()],
         &basis,

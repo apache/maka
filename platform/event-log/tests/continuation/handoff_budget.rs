@@ -19,7 +19,8 @@
 
 use super::*;
 use maka_agent_facts::handoff::{HandoffIntent, HandoffPause};
-use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelStep, ModelUsage, TextKind};
+use maka_agent_facts::model::recorded::ModelCompletion;
+use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelUsage, TextKind};
 use maka_event_log::{StoreError, context::ContextEvent, turns::InvocationState};
 
 #[tokio::test]
@@ -63,12 +64,17 @@ async fn handoff_above_the_former_replay_allowance_can_be_sealed_and_cancelled_a
         source.invocation.clone(),
         Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::Text {
-                    text_kind: TextKind::Text,
-                    text: "x".repeat(9 * 1024 * 1024),
-                    provider_options: None,
-                }],
+            output: ModelCompletion {
+                parts: vec![model_part(
+                    &source.invocation.invocation_id,
+                    "step",
+                    0,
+                    ModelPart::Text {
+                        text_kind: TextKind::Text,
+                        text: "x".repeat(9 * 1024 * 1024).into(),
+                        provider_options: None,
+                    },
+                )],
                 finish_reason: ModelFinishReason::Stop,
                 usage: ModelUsage::default(),
                 provider_options: None,
@@ -216,4 +222,29 @@ async fn handoff_above_the_former_replay_allowance_can_be_sealed_and_cancelled_a
         .await
         .unwrap();
     log.close().await.unwrap();
+}
+
+fn model_part(
+    invocation: &str,
+    step: &str,
+    ordinal: u64,
+    part: maka_agent_facts::model::ModelPart,
+) -> maka_agent_facts::model::recorded::CompletionPart {
+    use maka_agent_facts::model::{
+        ModelPart,
+        recorded::{CompletionPart, ModelPartRecord},
+    };
+    let message_id = match &part {
+        ModelPart::ToolCall { call } => {
+            maka_agent_facts::tool_call::tool_use_id(invocation, &format!("{step}:{}", call.id))
+        }
+        _ => uuid::Uuid::new_v4().to_string(),
+    };
+    CompletionPart::Own(ModelPartRecord {
+        ordinal,
+        message_id,
+        started_at: std::time::SystemTime::now(),
+        provider_part_id: None,
+        part: std::sync::Arc::new(part),
+    })
 }

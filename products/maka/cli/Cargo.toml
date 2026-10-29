@@ -17,6 +17,7 @@
 
 
 [package]
+build = "build/main.rs"
 name = "maka-cli"
 default-run = "maka"
 version.workspace = true
@@ -40,7 +41,7 @@ test = false
 
 [[test]]
 name = "terminal_real_host"
-path = "../terminal-shell/tests/real_host.rs"
+path = "../terminal-shell/tests/real_host/main.rs"
 
 [dependencies]
 maka-ui-build.workspace = true

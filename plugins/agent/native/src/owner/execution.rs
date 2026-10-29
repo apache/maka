@@ -188,7 +188,7 @@ impl Owner {
         if session.archived {
             return Ok(parked(Reason::Archived));
         }
-        if runs.controls.contains_key(&input.session_id)
+        if runs.busy(&input.session_id)
             || !self
                 .store
                 .session(&input.session_id)
@@ -316,7 +316,7 @@ impl Owner {
         if current.configuration != session.configuration || current.archived {
             return Ok(parked(Reason::WorkspaceChanged));
         }
-        if runs.controls.contains_key(&input.session_id) {
+        if runs.busy(&input.session_id) {
             return Ok(parked(Reason::Busy));
         }
         if self
@@ -457,6 +457,7 @@ impl Owner {
         runs.controls.insert(
             input.session_id,
             Control {
+                preview: running.preview(),
                 compacting: false,
                 invocation: invocation.clone(),
                 basis,

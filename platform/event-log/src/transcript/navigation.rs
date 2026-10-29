@@ -82,7 +82,7 @@ impl EventLog {
         self.connection
             .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::check_read(tx, &session, through).await?;
+                    super::directory::ensure(tx, &session, through).await?;
                     let rows = sqlx::query(queries::ROWS)
                         .bind(&session)
                         .bind(through_sql)
@@ -193,7 +193,7 @@ impl EventLog {
         self.connection
             .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::check_read(tx, &session, through).await?;
+                    super::directory::ensure(tx, &session, through).await?;
                     if let Some(turn) = turn {
                         let bounds: Option<(i64, i64, i64, i64)> = sqlx::query_as(queries::BOUNDS)
                             .bind(&session).bind(&turn).bind(through_sql).fetch_optional(&mut *tx).await?;

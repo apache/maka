@@ -21,7 +21,6 @@ use super::support::preflight as fixture;
 use maka_agent_facts::{
     event::{EventWrite, Fact, Invocation, InvocationInput, LogScope, RuntimeEvent},
     language::Language,
-    model::{ModelFinishReason, ModelPart, ModelStep},
     tools::ToolError,
 };
 use maka_code_runtime::CellLimits;
@@ -90,15 +89,7 @@ async fn selected_session_sink_rejects_foreign_tool_before_effect_and_accepts_it
         },
         Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall { call: call.clone() }],
-                finish_reason: ModelFinishReason::ToolCalls,
-                usage: Default::default(),
-                provider_options: None,
-                response_id: None,
-                model: None,
-                timestamp: None,
-            },
+            output: fixture::completion(&invocation, "step", std::slice::from_ref(&call)),
         },
     ];
     b.append_batch(
@@ -117,13 +108,20 @@ async fn selected_session_sink_rejects_foreign_tool_before_effect_and_accepts_it
             CodeExecutor::new(CellLimits::default()).unwrap(),
             LoadedTools::temporary().unwrap(),
         );
-        let result = tools
-            .capture(".", CancellationToken::new())
-            .await
-            .unwrap()
-            .into_step("step")
-            .invoke(&call, CancellationToken::new())
-            .await;
+        let result = async {
+            tools
+                .capture(".", CancellationToken::new())
+                .await
+                .unwrap()
+                .into_step("step")
+                .prepare(call.clone(), CancellationToken::new())
+                .await?
+                .publish(&[])
+                .await?
+                .completion
+                .await
+        }
+        .await;
         if foreign {
             assert!(matches!(result, Err(ToolError::Persistence(_))));
             assert_eq!(effect.0.load(Ordering::SeqCst), 0);
@@ -167,15 +165,7 @@ async fn accepted_scoped(
         },
         Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall { call: call.clone() }],
-                finish_reason: ModelFinishReason::ToolCalls,
-                usage: Default::default(),
-                provider_options: None,
-                response_id: None,
-                model: None,
-                timestamp: None,
-            },
+            output: fixture::completion(invocation, "step", std::slice::from_ref(call)),
         },
     ];
     store
@@ -331,7 +321,13 @@ async fn direct_and_nested_tools_carry_selected_execution_into_spawned_host_work
             .await
             .unwrap()
             .into_step("step")
-            .invoke(&call, CancellationToken::new())
+            .prepare(call.clone(), CancellationToken::new())
+            .await
+            .unwrap()
+            .publish(&[])
+            .await
+            .unwrap()
+            .completion
             .await
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1, "{result}");

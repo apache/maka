@@ -17,9 +17,8 @@
  * under the License.
  */
 
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::InvocationOutcome;
-use maka_agent_facts::model::ModelEvent;
+use maka_agent_facts::event::{Fact, InvocationOutcome};
+use maka_agent_facts::model::{ModelEvent, TextKind};
 use maka_event_log::recovery::recover_invocations as recover;
 use maka_event_log::{EventLog, StoreError};
 
@@ -33,19 +32,29 @@ async fn recovery_excludes_large_stream_history_and_validates_execution_identity
     {
         let log = EventLog::open(&path).await.unwrap();
         opening(&log).await;
-        request(&log).await;
-        append(
-            &log,
-            Fact::ModelObserved {
-                step_id: "step".into(),
-                event: ModelEvent::PartDelta {
+        recovery::item_request(&log).await;
+        let mut writer = crate::support::model_records::writer(invocation(), "step", true);
+        let writes = crate::support::model_records::observations(
+            &mut writer,
+            [
+                ModelEvent::PartStarted {
+                    id: "part".into(),
+                    text_kind: TextKind::Text,
+                    provider_options: None,
+                },
+                ModelEvent::PartDelta {
                     id: "part".into(),
                     text: "x".repeat(8 * 1024 * 1024),
                     provider_options: None,
                 },
-            },
-        )
-        .await;
+                ModelEvent::PartFinished {
+                    id: "part".into(),
+                    provider_options: None,
+                },
+            ],
+        );
+        let sequences = log.append_batch(&writes).await.unwrap();
+        crate::support::model_records::receipts(&mut writer, &writes, &sequences);
         log.close().await.unwrap();
     }
     let log = EventLog::open(&path).await.unwrap();
@@ -91,7 +100,7 @@ async fn recovery_excludes_large_stream_history_and_validates_execution_identity
 
 #[tokio::test]
 async fn recovery_reads_all_pending_calls_and_large_original_arguments() {
-    use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelStep, ModelToolCall};
+    use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelToolCall};
     let directory = tempfile::tempdir().unwrap();
     let log = EventLog::open(&directory.path().join("events.sqlite"))
         .await
@@ -111,15 +120,12 @@ async fn recovery_reads_all_pending_calls_and_large_original_arguments() {
         &log,
         Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
+            output: crate::support::model_records::completion(
+                invocation(),
+                "step",
                 parts,
-                finish_reason: ModelFinishReason::ToolCalls,
-                usage: Default::default(),
-                provider_options: None,
-                response_id: None,
-                model: None,
-                timestamp: None,
-            },
+                ModelFinishReason::ToolCalls,
+            ),
         },
     )
     .await;

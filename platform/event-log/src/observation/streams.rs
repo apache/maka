@@ -22,15 +22,14 @@ use crate::{
     turns::{InvocationState, TurnBoundary},
 };
 use maka_agent_facts::model::TextKind;
-use sqlx::Row;
 
-/// Active stream identity and replay start, without reading accumulated text.
+/// Active executor stream identity and replay start.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssistantStreamSeed {
     pub start_sequence: u64,
     pub step_id: String,
     pub part_id: String,
-    /// Canonical PartStarted event ID; provider IDs may repeat across steps.
+    /// Canonical executor start event ID.
     pub message_id: String,
     pub text_kind: TextKind,
 }
@@ -72,58 +71,7 @@ pub(super) async fn read(
             })
             .collect());
     }
-    // Select only identities. Neither finished output bodies nor accumulated text
-    // cross the SQL boundary. The invocation_sequence index scopes scans.
-    let rows = sqlx::query(
-        "WITH seeds AS MATERIALIZED (
-         SELECT s.sequence, json_extract(s.event_json, '$.fact.step_id') AS step_id, s.event_id,
-                json_extract(s.event_json, '$.fact.event.data.id') AS part_id,
-                json_extract(s.event_json, '$.fact.event.data.text_kind') AS text_kind
-         FROM runtime_events s WHERE s.invocation_id = ?1 AND s.kind = 'model_observed'
-         AND EXISTS (SELECT 1 FROM runtime_events request
-             JOIN runtime_events opening ON opening.invocation_id = request.invocation_id
-             AND opening.kind = 'invocation_opened'
-             WHERE request.kind = 'model_requested' AND request.invocation_id = s.invocation_id
-             AND request.operation_id = json_extract(s.event_json, '$.fact.step_id')
-                     AND json_extract(opening.event_json, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
-             AND json_extract(request.event_json, '$.fact.purpose') = 'main')
-         AND json_extract(s.event_json, '$.fact.event.kind') = 'part_started'
-         AND NOT EXISTS (
-             SELECT 1 FROM runtime_events e
-             WHERE e.invocation_id = s.invocation_id
-             AND json_extract(e.event_json, '$.fact.step_id') = json_extract(s.event_json, '$.fact.step_id')
-             AND (e.kind IN ('model_interrupted', 'model_completed') OR
-                 (e.sequence > s.sequence AND e.kind = 'model_observed'
-                  AND json_extract(e.event_json, '$.fact.event.kind') = 'part_started'
-                  AND json_extract(e.event_json, '$.fact.event.data.id') =
-                      json_extract(s.event_json, '$.fact.event.data.id'))))
-         ORDER BY s.sequence)
-         SELECT sequence, step_id, event_id, part_id, text_kind
-         FROM seeds ORDER BY sequence",
-    ).bind(&root.invocation.invocation_id).fetch_all(&mut *connection).await?;
-    let mut result = Vec::new();
-    for row in rows {
-        let sequence: i64 = row.try_get(0)?;
-        let step_id: String = row.try_get(1)?;
-        let part_id: String = row.try_get(3)?;
-        let text_kind = match row.try_get::<String, _>(4)?.as_str() {
-            "text" => TextKind::Text,
-            "thinking" => TextKind::Thinking,
-            _ => {
-                return Err(StoreError::InvalidTransition(
-                    "invalid stored text kind".into(),
-                ));
-            }
-        };
-        result.push(AssistantStreamSeed {
-            start_sequence: crate::sequence_number(sequence)?,
-            step_id,
-            part_id,
-            message_id: row.try_get(2)?,
-            text_kind,
-        });
-    }
-    Ok(result)
+    Ok(Vec::new())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

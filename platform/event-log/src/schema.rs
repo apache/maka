@@ -85,6 +85,18 @@ pub(crate) async fn initialize_connection_with_control(
             return Err(StoreError::UnsupportedDatabase);
         }
     }
+    // Blob offsets address the canonical serializer's UTF-8 bytes.
+    if tables == 0 {
+        sqlx::query("PRAGMA encoding = 'UTF-8'")
+            .execute(&mut *connection)
+            .await?;
+    }
+    let encoding: String = sqlx::query_scalar("PRAGMA main.encoding")
+        .fetch_one(&mut *connection)
+        .await?;
+    if encoding != "UTF-8" {
+        return Err(StoreError::UnsupportedDatabase);
+    }
     // A fresh file needs pointer-map pages before SQLx creates its first table.
     // Reclamation can then return space in small steps without a full VACUUM.
     if tables == 0 {

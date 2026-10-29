@@ -32,7 +32,7 @@ mod journal;
 mod preparation;
 mod provider;
 use crate::tool_call::ToolCallIdentity;
-pub use journal::ToolJournal;
+pub use journal::{PublishedTool, ToolJournal};
 pub use preparation::{
     EffectAdmission, ExecutionCustody, PreparationFuture, PreparedEffect, ToolCallContext,
     ToolHandler, ToolNesting, ToolPreparer, ToolRegistration, ToolSemantics,
@@ -140,6 +140,7 @@ impl ToolExecutor for JournaledTools {
             ToolCallIdentity::standalone(Uuid::new_v4().to_string()),
             name,
             input,
+            None,
             cancellation,
             move |cancellation| executor.invoke(effect_name, effect_input, cancellation),
         )

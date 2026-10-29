@@ -83,10 +83,17 @@ mod tests {
         .unwrap();
         assert!(retained.upgrade().is_some());
         owner.run(|_| Box::pin(async { Ok(()) })).await.unwrap();
+        owner.read(|_| Box::pin(async { Ok(()) })).await.unwrap();
         std::fs::remove_file(path.join(ROOT_MARKER)).unwrap();
         assert!(matches!(
             owner
                 .run::<()>(|_| Box::pin(async { panic!("invalid root must not execute a job") }))
+                .await,
+            Err(StoreError::Io(_))
+        ));
+        assert!(matches!(
+            owner
+                .read::<()>(|_| Box::pin(async { panic!("invalid root must not execute a read") }))
                 .await,
             Err(StoreError::Io(_))
         ));

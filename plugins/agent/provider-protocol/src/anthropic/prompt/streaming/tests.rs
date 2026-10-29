@@ -507,47 +507,6 @@ fn persisted_fragment_metadata_does_not_retain_giant_text_and_overlay_trims_incr
 }
 
 #[test]
-fn indexed_mcp_dependency_seeds_a_dirty_append_without_old_body() {
-    use super::prepared::*;
-    let earlier = Message::Assistant {
-        parts: vec![call(
-            "mcp",
-            "web_search",
-            true,
-            json!({"type":"mcp-tool-use","serverName":"remote"}),
-        )],
-        extensions: None,
-    };
-    let mut first = PreparedEncoder::new(stream_options());
-    first.begin(&earlier).unwrap();
-    let first = first.part(&earlier, 0).unwrap();
-    // The store answers only the new result's ID dependency from its index.
-    let seed = first.metadata.mcp_id.clone().unwrap();
-    drop(first);
-    drop(earlier);
-    let result = Message::Assistant {
-        parts: vec![AssistantPart::ToolResult(ToolResult {
-            id: "mcp".into(),
-            name: "web_search".into(),
-            output: ToolOutput {
-                value: ToolValue::Json(json!({"opaque":"unchanged"})),
-                extensions: None,
-            },
-            extensions: None,
-        })],
-        extensions: None,
-    };
-    let mut dirty = PreparedEncoder::new(stream_options());
-    dirty.seed_assistant_mcp([seed]);
-    dirty.begin(&result).unwrap();
-    let prepared = dirty.part(&result, 0).unwrap();
-    let wire =
-        serde_json::from_slice::<Value>(&prepared.chunks.flatten().collect::<Vec<_>>()).unwrap();
-    assert_eq!(wire["type"], "mcp_tool_result");
-    assert_eq!(wire["content"], json!({"opaque":"unchanged"}));
-}
-
-#[test]
 fn metadata_preparation_preserves_prompt_before_tools_cache_and_request_fields() {
     use crate::anthropic::{FunctionTool, Tool, request};
     fn input(messages: &[Message]) -> request::Request<'_> {
@@ -625,4 +584,64 @@ fn metadata_preparation_preserves_prompt_before_tools_cache_and_request_fields()
         json!({"type":"ephemeral"})
     );
     assert!(actual["tools"][1].get("cache_control").is_none());
+}
+
+#[test]
+fn overlay_backpressure_preserves_dynamic_field_order_and_unicode_trim() {
+    use super::prepared::*;
+    let message = Message::Assistant {
+        parts: vec![AssistantPart::Text {
+            text: "\u{2003}\n中\"\\\u{00a0}".into(),
+            extensions: extensions(json!({
+                "cacheControl": {"type":"ephemeral"},
+                "citations":[{"type":"char_location","cited_text":"中"}]
+            })),
+        }],
+        extensions: None,
+    };
+    let mut encoder = PreparedEncoder::new(stream_options());
+    encoder.begin(&message).unwrap();
+    let part = encoder.part(&message, 0).unwrap();
+    let mut prepass = MetadataPrepass::new(stream_options());
+    prepass.push(0, &part.metadata).unwrap();
+    let mut replay = Replay::new(prepass.finish().context);
+    replay.begin(0, &part.metadata.message);
+    let decision = replay.part(&part.metadata, Selection::Normal).unwrap();
+    let mut overlay = Overlay::new(&part.metadata, &decision);
+    let mut output = Vec::new();
+    for chunk in part.chunks {
+        let mut consumed = 0;
+        loop {
+            let mut single = [0];
+            let (read, written) = overlay.write(&chunk[consumed..], &mut single);
+            consumed += read;
+            output.extend_from_slice(&single[..written]);
+            if read == 0 && written == 0 {
+                break;
+            }
+        }
+        assert_eq!(consumed, chunk.len());
+    }
+    overlay.finish().unwrap();
+    let actual: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(actual["text"], "中\"\\");
+    assert_eq!(actual["cache_control"], json!({"type":"ephemeral"}));
+    assert_eq!(serde_json::to_vec(&actual).unwrap(), output);
+}
+
+#[test]
+fn frozen_cache_validation_preserves_unused_invalid_fallbacks() {
+    use super::prepared::{CacheProgram, FrozenCacheCandidate};
+    let valid = FrozenCacheCandidate::Valid(CacheDirective::Ephemeral { ttl: None });
+    let program = CacheProgram::new(
+        vec![valid, FrozenCacheCandidate::Invalid],
+        CacheSite::Text,
+        None,
+    );
+    assert_eq!(
+        program.apply(&mut CacheBudget::default()).unwrap(),
+        Some(CacheDirective::Ephemeral { ttl: None })
+    );
+    let invalid = CacheProgram::new(vec![FrozenCacheCandidate::Invalid], CacheSite::Text, None);
+    assert!(invalid.apply(&mut CacheBudget::default()).is_err());
 }

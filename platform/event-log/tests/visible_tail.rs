@@ -26,11 +26,12 @@ use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::ModelInterruption;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::StoredEvent;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelFinishReason;
 use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::TextKind;
+use maka_agent_facts::model::recorded::{
+    CompletionPart, ModelCompletion, ModelPartRecord, ModelPartial,
+};
 use maka_event_log::EventLog;
 use maka_presentation::{Content, InvocationView};
 use rusqlite::Connection;
@@ -72,13 +73,6 @@ async fn append(
     );
 }
 
-fn observed(event: ModelEvent) -> Fact {
-    Fact::ModelObserved {
-        step_id: "step".into(),
-        event,
-    }
-}
-
 fn projected(db: &Connection) -> Vec<String> {
     db.prepare(
         "SELECT message_id FROM catalog_messages WHERE session_id = 'a' ORDER BY sequence, ordinal",
@@ -101,7 +95,7 @@ fn canonical(db: &Connection) -> Vec<String> {
 
 #[tokio::test]
 async fn visible_ids_match_presentation_for_accepted_and_partial_parts_across_cache_rebuild() {
-    // Completed, explicit interruption, and terminal failure fallback share IDs.
+    // Successful, cancelled and failed attempt seals preserve the same original IDs.
     for seal in ["completed", "interrupted", "failed"] {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("events.sqlite");
@@ -152,51 +146,25 @@ async fn visible_ids_match_presentation_for_accepted_and_partial_parts_across_ca
         )
         .await;
         let mut parts = Vec::new();
-        for (id, kind, text, time) in [
+        for (ordinal, (id, kind, text, time)) in [
             ("answer", TextKind::Text, "answer", 2000),
             ("empty", TextKind::Text, "", 2000),
             ("thinking", TextKind::Thinking, "private", 500),
-        ] {
-            append(
-                &log,
-                &mut view,
-                &mut ids,
-                observed(ModelEvent::PartStarted {
-                    id: id.into(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            parts.push(CompletionPart::Own(ModelPartRecord {
+                ordinal: ordinal as u64,
+                message_id: id.into(),
+                started_at: UNIX_EPOCH + Duration::from_millis(time),
+                provider_part_id: Some(id.into()),
+                part: std::sync::Arc::new(ModelPart::Text {
                     text_kind: kind,
-                    provider_options: None,
-                }),
-                time,
-            )
-            .await;
-            append(
-                &log,
-                &mut view,
-                &mut ids,
-                observed(ModelEvent::PartDelta {
-                    id: id.into(),
                     text: text.into(),
                     provider_options: None,
                 }),
-                time,
-            )
-            .await;
-            append(
-                &log,
-                &mut view,
-                &mut ids,
-                observed(ModelEvent::PartFinished {
-                    id: id.into(),
-                    provider_options: None,
-                }),
-                time,
-            )
-            .await;
-            parts.push(ModelPart::Text {
-                text_kind: kind,
-                text: text.into(),
-                provider_options: None,
-            });
+            }));
         }
         assert_eq!(
             projected(&db).len(),
@@ -211,7 +179,7 @@ async fn visible_ids_match_presentation_for_accepted_and_partial_parts_across_ca
                     &mut ids,
                     Fact::ModelCompleted {
                         step_id: "step".into(),
-                        output: ModelStep {
+                        output: ModelCompletion {
                             parts,
                             finish_reason: ModelFinishReason::Stop,
                             usage: Default::default(),
@@ -225,7 +193,7 @@ async fn visible_ids_match_presentation_for_accepted_and_partial_parts_across_ca
                 )
                 .await
             }
-            "interrupted" => {
+            "interrupted" | "failed" => {
                 append(
                     &log,
                     &mut view,
@@ -234,13 +202,24 @@ async fn visible_ids_match_presentation_for_accepted_and_partial_parts_across_ca
                         model_failure: None,
                         diagnostic: None,
                         step_id: "step".into(),
-                        status: ModelInterruption::Cancelled,
+                        status: if seal == "interrupted" {
+                            ModelInterruption::Cancelled
+                        } else {
+                            ModelInterruption::Failed
+                        },
+                        partial: Some(ModelPartial {
+                            parts,
+                            tool_inputs: Vec::new(),
+                            response_id: None,
+                            model: None,
+                            timestamp: None,
+                        }),
                     },
                     600,
                 )
                 .await
             }
-            _ => (),
+            _ => unreachable!(),
         }
         append(
             &log,

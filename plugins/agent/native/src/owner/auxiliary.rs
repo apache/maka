@@ -165,7 +165,7 @@ impl Auxiliary {
             Ok(ModelGeneration {
                 text: step
                     .parts
-                    .into_iter()
+                    .iter()
                     .filter_map(|part| match part {
                         ModelPart::Text {
                             text_kind: TextKind::Text,
@@ -174,6 +174,7 @@ impl Auxiliary {
                         } => Some(text),
                         _ => None,
                     })
+                    .flat_map(|text| text.chunks())
                     .collect(),
                 model_id,
                 finish_reason: step.finish_reason,

@@ -463,7 +463,9 @@ async fn selected_copy_reuses_original_target_and_shared_source_binding_custody(
 async fn cross_partition_image_freezes_at_target_consumption_and_survives_bundle() {
     use maka_agent_facts::{
         event::{EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent},
-        model::{ModelEvent, ModelFinishReason, ModelPart, ModelStep, ModelToolCall, ModelUsage},
+        model::{
+            ModelFinishReason, ModelPart, ModelToolCall, ModelUsage, recorded::ModelCompletion,
+        },
         tool_call::ToolCallIdentity,
         tool_output::{ImageOutput, ToolContent, ToolOutput, ToolSuccess},
     };
@@ -504,12 +506,12 @@ async fn cross_partition_image_freezes_at_target_consumption_and_survives_bundle
         })
         .await
         .unwrap();
-    // Five ordinary facts in this partition put the target's own dispatch at
+    // Six ordinary facts in this partition put the target's own dispatch at
     // sequence 10, independently of the source partition's much higher freeze.
     let padding = (0..1000)
         .map(|n| format!("padding-{n}"))
         .filter(|id| partition_for(b"session", id) == partition_for(b"session", target.id()))
-        .take(5);
+        .take(6);
     for id in padding {
         let session = root.create_session(&id, &id, &json!({}), 1).await.unwrap();
         session
@@ -588,17 +590,14 @@ async fn cross_partition_image_freezes_at_target_consumption_and_survives_bundle
         provider_executed: false,
     };
     target
-        .append(&event(Fact::ModelObserved {
-            step_id: "step".into(),
-            event: ModelEvent::ToolCall(call.clone()),
-        }))
-        .await
-        .unwrap();
-    target
         .append(&event(Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall { call }],
+            output: ModelCompletion {
+                parts: owned_parts(
+                    &invocation.invocation_id,
+                    "step",
+                    vec![ModelPart::ToolCall { call }],
+                ),
                 finish_reason: ModelFinishReason::ToolCalls,
                 usage: ModelUsage::default(),
                 provider_options: None,
@@ -725,4 +724,35 @@ async fn cross_partition_image_freezes_at_target_consumption_and_survives_bundle
     staged.validate_history().await.unwrap();
     staged.close().await.unwrap();
     root.close().await.unwrap();
+}
+
+fn owned_parts(
+    invocation: &str,
+    step: &str,
+    parts: Vec<maka_agent_facts::model::ModelPart>,
+) -> Vec<maka_agent_facts::model::recorded::CompletionPart> {
+    use maka_agent_facts::model::{
+        ModelPart,
+        recorded::{CompletionPart, ModelPartRecord},
+    };
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, part)| {
+            let message_id = match &part {
+                ModelPart::ToolCall { call } => maka_agent_facts::tool_call::tool_use_id(
+                    invocation,
+                    &format!("{step}:{}", call.id),
+                ),
+                _ => uuid::Uuid::new_v4().to_string(),
+            };
+            CompletionPart::Own(ModelPartRecord {
+                ordinal: ordinal as u64,
+                message_id,
+                started_at: std::time::UNIX_EPOCH,
+                provider_part_id: None,
+                part: std::sync::Arc::new(part),
+            })
+        })
+        .collect()
 }

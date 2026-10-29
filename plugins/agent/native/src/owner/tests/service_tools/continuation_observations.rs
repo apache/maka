@@ -20,12 +20,11 @@
 use super::*;
 use maka_agent_facts::{
     event::{InvocationOutcome, StoredEvent},
-    model::ModelEvent,
+    model::{ModelPart, TextKind},
 };
 use maka_event_log::root_store::SessionStore;
 
-// Read each committed Session interval once, including pages that end between
-// observations. A commit wakeup alone does not prove this delta was persisted.
+// Read each committed Session interval once, including page boundaries.
 async fn catch_up(
     store: &SessionStore,
     session: &str,
@@ -64,7 +63,7 @@ fn settled_prompt(prompt: &Value, assembled: &str) -> Value {
 }
 
 #[tokio::test]
-async fn resume_many_observations_preserves_settled_effects() {
+async fn resume_many_provider_emissions_preserves_full_body_and_settled_effects() {
     tokio::time::timeout(Duration::from_secs(120), async {
         let assembled = "x".repeat(10_050);
         for observations in [16usize, 10_050] {
@@ -88,10 +87,14 @@ async fn resume_many_observations_preserves_settled_effects() {
                 )]));
             })
             .await;
-            let session = fixture.create("Resume individually committed observations").await;
+            let session = fixture.create("Resume provider emissions").await;
             let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
             let sent = fixture.send(&session).await.unwrap();
             let source_id = sent["invocationId"].as_str().unwrap();
+            let mut watch = fixture.app.client().subscribe(
+                fixture.binding(2).await, "watch".into(), json!({"sessionId":session,"after":0}),
+                scope(&fixture.issuer, true), Attachments::new().into(),
+            ).await.unwrap();
             let (mut first, _) = listener.accept().await.unwrap();
             first.set_nodelay(true).unwrap();
             request(&mut first).await;
@@ -123,30 +126,25 @@ async fn resume_many_observations_preserves_settled_effects() {
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 observations * delta("").len() + assembled.len() + tail.len(),
             ).as_bytes()).await.unwrap();
-            let mut committed = 0;
-            for expected in 1..=observations {
-                // Hold assembled output fixed; only provider chunk granularity changes.
-                let text = &assembled[(expected - 1) * assembled.len() / observations
-                    ..expected * assembled.len() / observations];
+            for index in 1..=observations {
+                let text = &assembled[(index - 1) * assembled.len() / observations
+                    ..index * assembled.len() / observations];
                 first.write_all(delta(text).as_bytes()).await.unwrap();
-                loop {
-                    let through = *commits.borrow_and_update();
-                    for stored in catch_up(&fixture.session(&session).await, &session, &mut after, through).await {
-                        if stored.event.invocation.invocation_id == source_id
-                            && let Fact::ModelObserved { step_id, event: ModelEvent::PartDelta { text: observed, .. } } = stored.event.fact
-                            && step_id == *step
-                        {
-                            assert_eq!(observed, text, "separate durable deltas must not coalesce");
-                            committed += 1;
-                        }
-                    }
-                    if committed == expected {
-                        break;
-                    }
-                    assert!(committed < expected);
-                    commits.changed().await.unwrap();
+            }
+            let mut visible = String::new();
+            while visible.len() < assembled.len() {
+                let page = watch.recv().await.expect("preview must remain observable");
+                if page["kind"] != "preview" || page["page"]["kind"] != "cut" { continue; }
+                let page = &page["page"];
+                if page["invocationId"] != source_id || page["stepId"] != *step { continue; }
+                for part in page["parts"].as_array().unwrap() {
+                    if part["field"]["kind"] != "text" || part["field"]["textKind"] != "text" { continue; }
+                    assert_eq!(part["offset"], visible.len());
+                    visible.push_str(part["text"].as_str().unwrap());
                 }
             }
+            assert_eq!(visible, assembled);
+            drop(watch);
             first.write_all(tail.as_bytes()).await.unwrap();
             drop(first);
             let (mut next, _) = listener.accept().await.unwrap();
@@ -175,14 +173,17 @@ async fn resume_many_observations_preserves_settled_effects() {
                 &fixture.session(&session).await, &session, &mut source_after, source.last.sequence,
             ).await.into_iter().filter(|stored| stored.event.invocation == source.boundary.invocation).collect();
             assert_eq!(source_events.len() as u64, high_water);
-            assert_eq!(committed, observations);
-            let deltas: Vec<_> = source_events.iter().filter_map(|stored| match &stored.event.fact {
-                Fact::ModelObserved { step_id, event: ModelEvent::PartDelta { text, .. } }
-                    if step_id == step => Some(text.as_str()),
+            let mut recorded_parts = CanonicalModelParts::default();
+            for stored in &source_events { recorded_parts.observe(stored); }
+            let completed = source_events.iter().find_map(|stored| match &stored.event.fact {
+                Fact::ModelCompleted { step_id, output } if step_id == step => Some(output),
                 _ => None,
-            }).collect();
-            assert_eq!(deltas.len(), observations);
-            assert_eq!(deltas.concat(), assembled);
+            }).expect("the original completed step remains canonical");
+            let complete: String = recorded_parts.parts(completed).filter_map(|part| match part {
+                ModelPart::Text { text_kind: TextKind::Text, text, .. } => Some(text),
+                _ => None,
+            }).flat_map(|text| text.chunks()).collect();
+            assert_eq!(complete, assembled);
             assert_eq!(source_events.iter().filter(|stored| matches!(stored.event.fact,
                 Fact::InvocationEnded { outcome: InvocationOutcome::Cancelled { .. } }
             )).count(), 1);
@@ -195,7 +196,6 @@ async fn resume_many_observations_preserves_settled_effects() {
             let bytes: usize = source_events.iter()
                 .map(|stored| serde_json::to_vec(&stored.event).unwrap().len()).sum();
             assert!(bytes < 8 * 1024 * 1024);
-            assert_eq!(high_water > 10_000, observations == 10_050);
             let context = fixture.session(&session).await.capture_model_context(&session, None, 1_000, 1024 * 1024)
                 .await.unwrap();
             let prompt_bytes = serde_json::to_vec(&pending_prompt).unwrap().len();
@@ -209,7 +209,7 @@ async fn resume_many_observations_preserves_settled_effects() {
             eprintln!("{}", json!({"observations":observations,"assembled_bytes":assembled.len(),"raw_events":high_water,
                 "serialized_event_bytes":bytes,"context_events":context.tail.len(),
                 "prompt_bytes":prompt_bytes,"resume":resumed}));
-            assert_eq!(resumed["kind"], "started", "{observations} committed observations: {resumed}");
+            assert_eq!(resumed["kind"], "started", "{observations} provider emissions: {resumed}");
             let (mut replay, _) = listener.accept().await.unwrap();
             let prompt = request(&mut replay).await;
             assert_eq!(settled_prompt(&prompt, &assembled), original_result);

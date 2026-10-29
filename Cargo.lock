@@ -7310,6 +7310,7 @@ name = "maka-agent-engine"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
+ "bytes",
  "fastrand",
  "futures-util",
  "hex",
@@ -7321,6 +7322,7 @@ dependencies = [
  "maka-model",
  "maka-plugin-core",
  "maka-presentation",
+ "maka-provider-protocol",
  "maka-session-state",
  "maka-tools",
  "rusqlite",
@@ -7340,10 +7342,13 @@ name = "maka-agent-facts"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
+ "bytes",
  "hex",
  "maka-plugin-core",
+ "maka-provider-protocol",
  "maka-sandbox",
  "regress",
+ "ropey",
  "ryu-js",
  "schemars 1.2.3",
  "serde",
@@ -8091,6 +8096,7 @@ name = "maka-model"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
+ "bytes",
  "futures-util",
  "hyper",
  "jiff",

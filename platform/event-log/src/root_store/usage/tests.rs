@@ -43,7 +43,10 @@ async fn admit(log: &EventLog, model: String, tokens: u64) {
             (Uuid::new_v4(), "auxiliary_model_settled", json!({"request_id":id,"outcome":"success","completed_at":{"secs_since_epoch":2,"nanos_since_epoch":0}})),
         ];
         for (id, kind, event) in records {
-            sqlx::query("INSERT INTO event_log(event_id,kind,event_json) VALUES(?,?,?)").bind(id.to_string()).bind(kind).bind(event.to_string()).execute(&mut *tx).await?;
+            crate::canonical_insert::insert(crate::canonical_insert::Record {
+                sequence: None, event_id: &id.to_string(), invocation_id: None,
+                kind, operation_id: None, json: &event.to_string(),
+            }).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())

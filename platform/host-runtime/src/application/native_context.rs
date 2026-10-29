@@ -76,11 +76,20 @@ pub struct NativeServices {
     pub(super) imports: Arc<BTreeMap<String, Vec<Binding>>>,
     pub(super) dispatch: Weak<Dispatch>,
     pub(super) issuer: Issuer,
+    pub(super) preparation_resources:
+        maka_capabilities::model_preparation::ModelPreparationResources,
 }
 /// Private origin evidence can only be created through the Host's native factory
 /// context. Public Identity remains observation and is never an authorization.
 pub(super) struct NativeOrigin(pub Activation);
 impl NativeServices {
+    /// Shared Host allocation admission for model capture and streaming uploads.
+    pub fn model_preparation_resources(
+        &self,
+    ) -> maka_capabilities::model_preparation::ModelPreparationResources {
+        self.preparation_resources.clone()
+    }
+
     pub fn imports(&self) -> impl Iterator<Item = (&str, &[Binding])> {
         self.imports
             .iter()

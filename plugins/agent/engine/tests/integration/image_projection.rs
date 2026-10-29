@@ -63,10 +63,8 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
             Fact::ModelRequested { item_acceptance: false, effective_source_digest: None, purpose: maka_agent_facts::context::ModelPurpose::Main, context: None, context_breakdown: None, checkpoint_event_id: None, step_id: "prior-step".into(), model_id: "test".into(),
                 source_scope: maka_agent_facts::event::LogScope::Session { id: "session".into() },
                 source_high_water: 1, source_digest: "fixture".into(), input_digest: "fixture".into(), route_identity: "fixture".into() },
-            Fact::ModelCompleted { step_id: "prior-step".into(), output: serde_json::from_value(json!({
-                "parts":[{"kind":"tool_call","call":{"id":"read","name":"Read","input":{"kind":"json","data":{}},"provider_executed":false}},
-                    {"kind":"tool_call","call":{"id":"read-large","name":"Read","input":{"kind":"json","data":{}},"provider_executed":false}}],
-                "finish_reason":"tool-calls", "usage":{}})).unwrap() },
+            Fact::ModelCompleted { step_id: "prior-step".into(), output: crate::support::model_records::completion(prior.clone(), "prior-step", serde_json::from_value::<Vec<maka_agent_facts::model::ModelPart>>(json!([{"kind":"tool_call","call":{"id":"read","name":"Read","input":{"kind":"json","data":{}},"provider_executed":false}},
+                    {"kind":"tool_call","call":{"id":"read-large","name":"Read","input":{"kind":"json","data":{}},"provider_executed":false}}])).unwrap(), maka_agent_facts::model::ModelFinishReason::ToolCalls) },
             Fact::ToolDispatched { presentation: None,
         title: None, operation_id: "prior-step:read".into(), call: ToolCallIdentity::provider("prior-step".into(), "read".into()), name: "Read".into(), input: json!({}) },
             Fact::ToolDispatched { presentation: None, title: None, operation_id: "prior-step:read-large".into(), call: ToolCallIdentity::provider("prior-step".into(), "read-large".into()), name: "Read".into(), input: json!({}) },
@@ -311,9 +309,7 @@ async fn prepared_context_breakdown_measures_projected_roles_and_freezes_literal
                 source_scope: maka_agent_facts::event::LogScope::Session { id: "session".into() },
                 source_high_water: 1, source_digest: "fixture".into(), input_digest: "fixture".into(), route_identity: "fixture".into(),
             },
-            Fact::ModelCompleted { step_id: "prior-step".into(), output: serde_json::from_value(json!({
-                "parts":[{"kind":"tool_call","call":{"id":"read","name":"Read","input":{"kind":"json","data":{}},"provider_executed":false}}],
-                "finish_reason":"tool-calls", "usage":{}})).unwrap() },
+            Fact::ModelCompleted { step_id: "prior-step".into(), output: crate::support::model_records::completion(prior.clone(), "prior-step", serde_json::from_value::<Vec<maka_agent_facts::model::ModelPart>>(json!([{"kind":"tool_call","call":{"id":"read","name":"Read","input":{"kind":"json","data":{}},"provider_executed":false}}])).unwrap(), maka_agent_facts::model::ModelFinishReason::ToolCalls) },
             Fact::ToolDispatched { presentation: None, title: None,
                 operation_id: "prior-step:read".into(), call: ToolCallIdentity::provider("prior-step".into(), "read".into()),
                 name: "Read".into(), input: json!({}),
@@ -531,7 +527,7 @@ async fn summary_overflow_keeps_media_multipart_and_checkpoint_corrections_as_ev
     let facts = [
         Fact::InvocationOpened { input: InvocationInput::Message { source_messages: Vec::new(), content: message, request_fingerprint: None }, configuration: None },
         Fact::ModelRequested { item_acceptance: false, effective_source_digest: None, purpose: maka_agent_facts::context::ModelPurpose::Main, context: None, context_breakdown: None, checkpoint_event_id: None, step_id: "media-step".into(), model_id: "test".into(), source_scope: maka_agent_facts::event::LogScope::Session { id: "session".into() }, source_high_water, source_digest: "fixture".into(), input_digest: "fixture".into(), route_identity: "fixture".into() },
-        Fact::ModelCompleted { step_id: "media-step".into(), output: serde_json::from_value(json!({"parts":[{"kind":"text","text_kind":"text","text":"large historical log ".repeat(4000)},{"kind":"tool_call","call":{"id":"screenshot","name":"Read","input":{"kind":"json","data":{}},"provider_executed":false}}],"finish_reason":"tool-calls","usage":{}})).unwrap() },
+        Fact::ModelCompleted { step_id: "media-step".into(), output: crate::support::model_records::completion(historical.clone(), "media-step", serde_json::from_value::<Vec<maka_agent_facts::model::ModelPart>>(json!([{"kind":"text","text_kind":"text","text":"large historical log ".repeat(4000)},{"kind":"tool_call","call":{"id":"screenshot","name":"Read","input":{"kind":"json","data":{}},"provider_executed":false}}])).unwrap(), maka_agent_facts::model::ModelFinishReason::ToolCalls) },
         Fact::ToolDispatched { presentation: None, title: None, operation_id: "media-step:screenshot".into(), call: ToolCallIdentity::provider("media-step".into(), "screenshot".into()), name: "Read".into(), input: json!({}) },
     ];
     for fact in facts {

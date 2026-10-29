@@ -19,16 +19,20 @@
 
 //! Pure write-time history reduction. Payload fragments are persisted separately
 //! from the small relationship frontier; no completed transcript is retained.
+pub mod directory;
+
 use super::RowPosition;
 use crate::{
     event::{Fact, Invocation, StoredEvent, ToolOutcome},
     input::{InvocationInput, MessageInput},
-    model::{ModelEvent, ModelPart, TextKind},
+    model::{
+        ModelPart,
+        recorded::{CompletionPart, ModelObservation},
+    },
     tool_call::ToolOrigin,
     tool_output::DurableToolProjection,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub type PayloadKey = RowPosition;
@@ -103,21 +107,20 @@ pub enum SemanticKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PartPayload {
     Complete(PayloadKey),
-    /// Read the ordered fragments with this part key through `end`. Text and
-    /// provider metadata are accumulated only when the consumer renders it.
-    Text {
-        part: PayloadKey,
-        end: u64,
-        text_kind: TextKind,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Fragment {
     pub key: PayloadKey,
-    /// For streamed text, all deltas use the start's key as their part identity.
-    pub part: PayloadKey,
-    pub payload: Payload,
+    pub source: FragmentSource,
+}
+
+/// The semantic writer either stores an owned payload or locates this event's projection.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum FragmentSource {
+    Payload(Box<Payload>),
+    CanonicalToolProjection,
+    CanonicalModelPart { ordinal: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -126,10 +129,6 @@ pub enum Payload {
     Text(String),
     Part(ModelPart),
     Tool(DurableToolProjection),
-    TextDelta {
-        text: String,
-        provider_options: Option<Value>,
-    },
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -168,14 +167,40 @@ pub struct RequestFrontier {
     pub route_identity: String,
     pub main: bool,
     pub item_acceptance: bool,
-    pub next_index: u64,
-    pub open_text: BTreeMap<String, OpenText>,
+    pub recorded: BTreeMap<u64, RecordedFrontier>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OpenText {
-    pub part: PayloadKey,
-    pub index: u64,
-    pub text_kind: TextKind,
+pub struct RecordedFrontier {
+    pub event_id: String,
+    pub key: PayloadKey,
+    pub kind: RecordedKind,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum RecordedKind {
+    Source,
+    Text,
+    Call(Option<CallFrontier>),
+    Result,
+}
+impl RecordedKind {
+    fn from_part(part: &ModelPart) -> Self {
+        match part {
+            ModelPart::Source { .. } => Self::Source,
+            ModelPart::Text { .. } => Self::Text,
+            ModelPart::ToolResult { .. } => Self::Result,
+            ModelPart::ToolCall { call } => Self::Call((!call.provider_executed).then(|| {
+                CallFrontier {
+                    call_id: call.id.clone(),
+                    name: call.name.clone(),
+                    custom: call
+                        .provider_options
+                        .as_ref()
+                        .is_some_and(|value| value["openai"]["toolKind"] == "custom"),
+                    dispatched_at: None,
+                }
+            })),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -206,8 +231,8 @@ fn position(sequence: u64, item_index: u64) -> RowPosition {
 fn fragment(transition: &mut Transition, key: PayloadKey, payload: Payload) {
     transition.fragments.push(Fragment {
         key,
-        part: key,
-        payload,
+
+        source: FragmentSource::Payload(Box::new(payload)),
     });
 }
 
@@ -350,8 +375,7 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                     route_identity: route_identity.clone(),
                     main: *purpose == crate::context::ModelPurpose::Main,
                     item_acceptance: *item_acceptance,
-                    next_index: 0,
-                    open_text: BTreeMap::new(),
+                    recorded: BTreeMap::new(),
                 },
             );
             if *purpose == crate::context::ModelPurpose::Main {
@@ -363,125 +387,48 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
             }
         }
         Fact::ModelObserved { step_id, event } => {
-            let Some(request) = frontier.requests.get_mut(step_id) else {
-                return Err("model observation lacks request");
-            };
-            if request.item_acceptance && request.main {
-                match event {
-                    ModelEvent::PartStarted {
-                        id,
-                        text_kind,
-                        provider_options,
-                    } => {
-                        let index = request.next_index;
-                        request.next_index += 1;
-                        request.open_text.insert(
-                            id.clone(),
-                            OpenText {
-                                part: key,
-                                index,
-                                text_kind: *text_kind,
-                            },
-                        );
-                        fragment(
-                            &mut out,
-                            key,
-                            Payload::TextDelta {
-                                text: String::new(),
-                                provider_options: provider_options.clone(),
-                            },
-                        );
-                    }
-                    ModelEvent::PartDelta {
-                        id,
-                        text,
-                        provider_options,
-                    } => {
-                        let open = request
-                            .open_text
-                            .get(id)
-                            .ok_or("model delta lacks open text")?;
-                        out.fragments.push(Fragment {
-                            key,
-                            part: open.part,
-                            payload: Payload::TextDelta {
-                                text: text.clone(),
-                                provider_options: provider_options.clone(),
-                            },
-                        });
-                    }
-                    ModelEvent::PartFinished {
-                        id,
-                        provider_options,
-                    } => {
-                        let open = request
-                            .open_text
-                            .remove(id)
-                            .ok_or("model finish lacks open text")?;
-                        out.fragments.push(Fragment {
-                            key,
-                            part: open.part,
-                            payload: Payload::TextDelta {
-                                text: String::new(),
-                                provider_options: provider_options.clone(),
-                            },
-                        });
-                        out.rows.push(assistant_row(
-                            stored,
-                            step_id,
-                            request,
-                            open.index,
-                            PartPayload::Text {
-                                part: open.part,
-                                end: stored.sequence,
-                                text_kind: open.text_kind,
-                            },
-                        ));
-                    }
-                    ModelEvent::Source(_) => {
-                        request.next_index += 1;
-                    }
-                    ModelEvent::ToolCall(call) => {
-                        let part = ModelPart::ToolCall { call: call.clone() };
-                        let index = request.next_index;
-                        request.next_index += 1;
-                        fragment(&mut out, key, Payload::Part(part.clone()));
-                        out.rows.push(assistant_row(
-                            stored,
-                            step_id,
-                            request,
-                            index,
-                            PartPayload::Complete(key),
-                        ));
-                        register_call(&mut frontier.calls, step_id, &part)?;
-                    }
-                    ModelEvent::ProviderToolResult {
-                        id,
-                        name,
-                        output,
-                        is_error,
-                        provider_options,
-                    } => {
-                        let part = ModelPart::ToolResult {
-                            id: id.clone(),
-                            name: name.clone(),
-                            output: output.clone(),
-                            is_error: *is_error,
-                            provider_options: provider_options.clone(),
-                        };
-                        let index = request.next_index;
-                        request.next_index += 1;
-                        fragment(&mut out, key, Payload::Part(part));
-                        out.rows.push(assistant_row(
-                            stored,
-                            step_id,
-                            request,
-                            index,
-                            PartPayload::Complete(key),
-                        ));
-                        frontier.stable(&mut out, position(stored.sequence, END_INDEX));
-                    }
-                    _ => {}
+            let request = frontier
+                .requests
+                .get_mut(step_id)
+                .ok_or("model observation lacks request")?;
+            if let ModelObservation::Part(record) = event {
+                let part_key = position(stored.sequence, record.ordinal);
+                let kind = RecordedKind::from_part(&record.part);
+                out.fragments.push(Fragment {
+                    key: part_key,
+
+                    source: FragmentSource::CanonicalModelPart {
+                        ordinal: record.ordinal,
+                    },
+                });
+                if request.item_acceptance && request.main {
+                    accept_part(
+                        &mut out,
+                        &mut frontier.calls,
+                        stored,
+                        step_id,
+                        request,
+                        AcceptedPart {
+                            ordinal: record.ordinal,
+                            key: part_key,
+                            kind: &kind,
+                        },
+                        false,
+                    )?;
+                }
+                if request
+                    .recorded
+                    .insert(
+                        record.ordinal,
+                        RecordedFrontier {
+                            event_id: stored.event.id.clone(),
+                            key: part_key,
+                            kind,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err("duplicate recorded model ordinal");
                 }
             }
         }
@@ -490,36 +437,71 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                 .requests
                 .get(step_id)
                 .ok_or("model completion lacks request")?;
-            if !request.item_acceptance && request.main {
-                for (index, part) in output.parts.iter().enumerate() {
-                    let index = index as u64;
-                    if matches!(part, ModelPart::Source { .. }) {
-                        continue;
+            for part in &output.parts {
+                let (ordinal, part_key, kind) = match part {
+                    CompletionPart::Own(record) => {
+                        let part_key = position(stored.sequence, record.ordinal);
+                        out.fragments.push(Fragment {
+                            key: part_key,
+
+                            source: FragmentSource::CanonicalModelPart {
+                                ordinal: record.ordinal,
+                            },
+                        });
+                        (
+                            record.ordinal,
+                            part_key,
+                            RecordedKind::from_part(&record.part),
+                        )
                     }
-                    let part_key = position(stored.sequence, index);
-                    fragment(&mut out, part_key, Payload::Part(part.clone()));
-                    let mut item = assistant_row(
+                    CompletionPart::Ref(reference) => {
+                        let recorded = request
+                            .recorded
+                            .get(&reference.ordinal)
+                            .ok_or("completion reference lacks recorded part")?;
+                        if recorded.event_id != reference.event_id {
+                            return Err("completion reference event differs");
+                        }
+                        (reference.ordinal, recorded.key, recorded.kind.clone())
+                    }
+                };
+                if !request.item_acceptance && request.main {
+                    accept_part(
+                        &mut out,
+                        &mut frontier.calls,
                         stored,
                         step_id,
                         request,
-                        index,
-                        PartPayload::Complete(part_key),
-                    );
-                    // Non-streaming output historically belongs at completion.
-                    item.order.source_sequence = stored.sequence;
-                    out.rows.push(item);
-                    register_call(&mut frontier.calls, step_id, part)?;
-                    if matches!(part, ModelPart::ToolResult { .. }) {
-                        let cut = position(stored.sequence, index + 1);
-                        frontier.stable_cut =
-                            Some(frontier.stable_cut.map_or(cut, |old| old.max(cut)));
-                        out.stable_cut = frontier.stable_cut;
+                        AcceptedPart {
+                            ordinal,
+                            key: part_key,
+                            kind: &kind,
+                        },
+                        true,
+                    )?;
+                }
+            }
+            frontier.close_request(step_id);
+        }
+        Fact::ModelInterrupted {
+            step_id, partial, ..
+        } => {
+            if let Some(partial) = partial {
+                for part in &partial.parts {
+                    if let CompletionPart::Own(record) = part {
+                        let part_key = position(stored.sequence, record.ordinal);
+                        out.fragments.push(Fragment {
+                            key: part_key,
+
+                            source: FragmentSource::CanonicalModelPart {
+                                ordinal: record.ordinal,
+                            },
+                        });
                     }
                 }
             }
             frontier.close_request(step_id);
         }
-        Fact::ModelInterrupted { step_id, .. } => frontier.close_request(step_id),
         Fact::ToolDispatched {
             operation_id,
             call,
@@ -604,15 +586,16 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                 if pending.dispatched_at.is_none() {
                     return Err("provider result lacks dispatch");
                 }
-                let (payload, is_error) = match outcome {
-                    ToolOutcome::Succeeded {
-                        model_projection, ..
-                    } => (Payload::Tool(model_projection.clone()), false),
-                    ToolOutcome::Failed { message } | ToolOutcome::Unknown { message, .. } => {
-                        (Payload::Text(message.clone()), true)
+                let (source, is_error) = match outcome {
+                    ToolOutcome::Succeeded { .. } => {
+                        (FragmentSource::CanonicalToolProjection, false)
                     }
+                    ToolOutcome::Failed { message } | ToolOutcome::Unknown { message, .. } => (
+                        FragmentSource::Payload(Box::new(Payload::Text(message.clone()))),
+                        true,
+                    ),
                 };
-                fragment(&mut out, key, payload);
+                out.fragments.push(Fragment { key, source });
                 out.rows
                     .push(tool_row(stored, operation_id, pending, key, is_error));
                 frontier.stable(&mut out, position(stored.sequence, END_INDEX));
@@ -660,6 +643,9 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
         }
         _ => {}
     }
+    if let Some(cut) = out.stable_cut {
+        frontier.stable(&mut out, cut);
+    }
     frontier.flush(stored.sequence, &mut out);
     Ok(out)
 }
@@ -686,32 +672,44 @@ fn assistant_row(
     )
 }
 
-fn register_call(
+struct AcceptedPart<'part> {
+    ordinal: u64,
+    key: PayloadKey,
+    kind: &'part RecordedKind,
+}
+
+fn accept_part(
+    out: &mut Transition,
     calls: &mut BTreeMap<String, CallFrontier>,
+    stored: &StoredEvent,
     step: &str,
-    part: &ModelPart,
+    request: &RequestFrontier,
+    part: AcceptedPart<'_>,
+    at_completion: bool,
 ) -> Result<(), &'static str> {
-    if let ModelPart::ToolCall { call } = part
-        && !call.provider_executed
-    {
-        let custom = call
-            .provider_options
-            .as_ref()
-            .is_some_and(|value| value["openai"]["toolKind"] == "custom");
-        if calls
-            .insert(
-                format!("{step}:{}", call.id),
-                CallFrontier {
-                    call_id: call.id.clone(),
-                    name: call.name.clone(),
-                    custom,
-                    dispatched_at: None,
-                },
-            )
+    let AcceptedPart { ordinal, key, kind } = part;
+    if matches!(kind, RecordedKind::Source) {
+        return Ok(());
+    }
+    let mut item = assistant_row(stored, step, request, ordinal, PartPayload::Complete(key));
+    if at_completion {
+        item.order.source_sequence = stored.sequence;
+    }
+    out.rows.push(item);
+    if let RecordedKind::Call(Some(call)) = kind
+        && calls
+            .insert(format!("{step}:{}", call.call_id), call.clone())
             .is_some()
-        {
-            return Err("duplicate accepted tool call");
-        }
+    {
+        return Err("duplicate accepted tool call");
+    }
+    if matches!(kind, RecordedKind::Result) {
+        let cut = if at_completion {
+            position(stored.sequence, ordinal + 1)
+        } else {
+            position(stored.sequence, END_INDEX)
+        };
+        out.stable_cut = Some(out.stable_cut.map_or(cut, |old| old.max(cut)));
     }
     Ok(())
 }
@@ -771,85 +769,50 @@ mod tests {
                     route_identity: "route".into(),
                     main: true,
                     item_acceptance: true,
-                    next_index: 0,
-                    open_text: BTreeMap::new(),
+                    recorded: BTreeMap::new(),
                 },
             )]),
             ..Frontier::default()
         }
     }
 
-    fn observed(sequence: u64, event: ModelEvent) -> StoredEvent {
-        self::event(
-            sequence,
-            Fact::ModelObserved {
-                step_id: "step".into(),
-                event,
-            },
-        )
-    }
-
     #[test]
-    fn text_payload_never_accumulates_in_frontier_and_acceptance_retains_start_order() {
+    fn complete_parts_keep_original_ordinal_order_and_no_frontier_body() {
+        use crate::model::{TextKind, recorded::ModelPartRecord};
         let mut frontier = frontier();
-        for (sequence, id) in [(3, "first"), (4, "second")] {
-            reduce(
-                &mut frontier,
-                &observed(
-                    sequence,
-                    ModelEvent::PartStarted {
-                        id: id.into(),
-                        text_kind: TextKind::Text,
-                        provider_options: None,
-                    },
-                ),
-            )
-            .unwrap();
-        }
-        let frontier_bytes = serde_json::to_vec(&frontier).unwrap();
-        for sequence in 5..105 {
-            let out = reduce(
-                &mut frontier,
-                &observed(
-                    sequence,
-                    ModelEvent::PartDelta {
-                        id: "first".into(),
-                        text: "large incoming text".repeat(1000),
-                        provider_options: None,
-                    },
-                ),
-            )
-            .unwrap();
-            assert_eq!(out.fragments.len(), 1);
-            assert!(out.rows.is_empty());
-            assert_eq!(out.fragments[0].part, position(3, 0));
-        }
-        assert_eq!(serde_json::to_vec(&frontier).unwrap(), frontier_bytes);
-        let second = reduce(
-            &mut frontier,
-            &observed(
-                105,
-                ModelEvent::PartFinished {
-                    id: "second".into(),
-                    provider_options: None,
+        let body = "visible text".repeat(20_000);
+        for (sequence, ordinal) in [(3, 1), (4, 0)] {
+            let observed = event(
+                sequence,
+                Fact::ModelObserved {
+                    step_id: "step".into(),
+                    event: ModelObservation::Part(ModelPartRecord {
+                        ordinal,
+                        message_id: format!("message-{ordinal}"),
+                        started_at: std::time::SystemTime::UNIX_EPOCH,
+                        provider_part_id: None,
+                        part: std::sync::Arc::new(ModelPart::Text {
+                            text_kind: TextKind::Text,
+                            text: body.clone().into(),
+                            provider_options: None,
+                        }),
+                    }),
                 },
-            ),
-        )
-        .unwrap();
-        let first = reduce(
-            &mut frontier,
-            &observed(
-                106,
-                ModelEvent::PartFinished {
-                    id: "first".into(),
-                    provider_options: None,
-                },
-            ),
-        )
-        .unwrap();
-        assert_eq!(first.rows[0].order, position(2, 0));
-        assert_eq!(second.rows[0].order, position(2, 1));
-        assert!(frontier.requests["step"].open_text.is_empty());
+            );
+            let out = reduce(&mut frontier, &observed).unwrap();
+            assert_eq!(out.rows[0].order, position(2, ordinal));
+            assert!(
+                matches!(out.rows[0].kind, SemanticKind::AssistantPart { accepted_at, payload: PartPayload::Complete(key), .. } if accepted_at == sequence && key == position(sequence, ordinal))
+            );
+            assert!(
+                matches!(out.fragments[0].source, FragmentSource::CanonicalModelPart { ordinal: actual } if actual == ordinal)
+            );
+        }
+        assert!(
+            !serde_json::to_string(&frontier)
+                .unwrap()
+                .contains("visible text")
+        );
     }
 
     #[test]
@@ -893,6 +856,7 @@ mod tests {
                     status: crate::event::ModelInterruption::Cancelled,
                     diagnostic: None,
                     model_failure: None,
+                    partial: None,
                 },
             ),
         )

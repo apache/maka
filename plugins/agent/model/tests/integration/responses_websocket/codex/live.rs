@@ -101,9 +101,10 @@ async fn live_luna_subscription_streams_and_confirms_canonical_ws_continuation()
                         text_kind: TextKind::Text,
                         text,
                         ..
-                    } => Some(text.as_str()),
+                    } => Some(text.chunks()),
                     _ => None,
                 })
+                .flatten()
                 .collect();
             assert_eq!(
                 text.trim(),
@@ -192,9 +193,10 @@ async fn live_luna_subscription_http_decodes_the_stream_without_a_content_type_h
                     text_kind: TextKind::Text,
                     text,
                     ..
-                } => Some(text.as_str()),
+                } => Some(text.chunks()),
                 _ => None,
             })
+            .flatten()
             .collect();
         assert_eq!(text.trim(), "HTTP-OK");
     })

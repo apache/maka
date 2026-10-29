@@ -23,7 +23,7 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::ToolOutcome;
-use maka_agent_facts::model::ModelEvent;
+use maka_agent_facts::model::recorded::ModelObservation;
 use maka_agent_facts::tool_call::RejectionKind;
 use maka_agent_facts::tool_call::ToolRejection;
 use serde_json::{Value, json};
@@ -67,7 +67,6 @@ impl EventLog {
     ) -> Result<MaterialCollection, StoreError> {
         self.validate_root()?;
         let after = after.map(str::to_owned);
-        let prepared = self.prepared_store()?.cleanup();
         let observations = self.connection.observations();
         self.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
@@ -105,12 +104,7 @@ impl EventLog {
             // No live owner remains. Retained facts/membership, not UI metadata,
             // remain the material-collection authority; descendants were checked above.
             // Also covers imported owners that never had a local retirement.
-            prepared.retire_owner(session.clone()).await?;
             crate::context::semantic::gc::retire_owner(&mut tx,&session).await?;
-            for table in ["transcript_directory", "transcript_failures"] {
-                let sql = format!("DELETE FROM {table} WHERE session_id=?");
-                sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(&session).execute(&mut *tx).await?;
-            }
             let rows: Vec<(i64, String, String)> = sqlx::query_as(
                 "SELECT sequence,event_id,event_json FROM event_log WHERE event_session=?
                  AND event_json IS NOT NULL ORDER BY sequence LIMIT 8"
@@ -119,6 +113,8 @@ impl EventLog {
                 let event: RuntimeEvent = serde_json::from_str(&body)?;
                 let proof = retained(&event);
                 crate::context::semantic::gc::collect_event(&mut tx,crate::sequence_number(sequence)?).await?;
+                sqlx::query("DELETE FROM model_part_records WHERE source_sequence=?")
+                    .bind(sequence).execute(&mut *tx).await?;
                 sqlx::query("DELETE FROM tool_result_payloads WHERE event_id=?")
                     .bind(&id).execute(&mut *tx).await?;
                 let surface: Option<String> = sqlx::query_scalar(
@@ -162,6 +158,7 @@ fn retained(event: &RuntimeEvent) -> Value {
             status,
             diagnostic,
             model_failure,
+            ..
         } => {
             let mut material = json!({"step_id":step_id,"status":status});
             if let Some(diagnostic) = diagnostic {
@@ -174,7 +171,7 @@ fn retained(event: &RuntimeEvent) -> Value {
         }
         Fact::ModelObserved {
             step_id,
-            event: ModelEvent::Finished { usage, .. },
+            event: ModelObservation::Finished { usage, .. },
         } => json!({"step_id":step_id,"event":{"kind":"finished","data":{"usage":usage}}}),
         Fact::ToolDispatched { call, name, .. } => json!({"call":call,"name":name}),
         Fact::ToolRejected {
@@ -280,13 +277,23 @@ mod cursor_tests {
             .unwrap(),
             [1, 2]
         );
+        let published_at = ended
+            .recorded_at
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            * 1000.0;
         // Exercise the query boundary independently of collection's traversal
         // order: the newest own fact has proof but no live body.
         let proof = serde_json::to_string(&retained(&ended)).unwrap();
         let digest = content_digest(serde_json::to_string(&ended).unwrap().as_bytes());
         log.connection.run(move |db| Box::pin(async move {
             sqlx::query("UPDATE event_log SET retained_json=?,body_digest=?,event_json=NULL WHERE sequence=2")
-                .bind(proof).bind(digest).execute(db).await?;
+                .bind(proof).bind(digest).execute(&mut *db).await?;
+            let publication: (f64, String) = sqlx::query_as("SELECT accounting_at,event_session FROM event_log WHERE sequence=2")
+                .fetch_one(&mut *db).await?;
+            assert!((publication.0 - published_at).abs() < 0.001);
+            assert_eq!(publication.1, "source", "collection retains the publication owner");
             Ok(())
         })).await.unwrap();
         for _ in 0..2 {

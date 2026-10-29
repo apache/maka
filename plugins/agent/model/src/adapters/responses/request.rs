@@ -372,13 +372,13 @@ pub fn encode_message(
     .map_err(Error::from)
 }
 
-/// Persisted pieces are valid for this language, reasoning and reference policy.
+/// Fingerprint frozen language, reasoning and effective reference policy.
 pub fn wire_codec(
     language: Language,
     plaintext: Option<PlaintextResponses>,
     options: &Value,
 ) -> String {
-    json!({"responses":3,"language":language,"plaintext":plaintext,"store":options[namespace(plaintext)]["store"] != false}).to_string()
+    json!({"responses":1,"language":language,"plaintext":plaintext,"store":options[namespace(plaintext)]["store"] != false}).to_string()
 }
 
 #[cfg(test)]

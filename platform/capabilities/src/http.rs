@@ -69,6 +69,24 @@ impl RequestBody {
         self.replay.as_ref().map(ReplaySource::open)
     }
 
+    /// Observe each pulled chunk without reopening the current stream or changing
+    /// its declared length. Replayed streams retain the same observer.
+    pub fn inspect(
+        self,
+        inspect: impl Fn(&Result<Bytes, Error>) + Clone + Send + Sync + 'static,
+    ) -> Self {
+        let replay_inspect = inspect.clone();
+        Self {
+            stream: self.stream.inspect(inspect).boxed(),
+            length: self.length,
+            replay: self.replay.map(|replay| {
+                ReplaySource(Arc::new(move || {
+                    replay.open().inspect(replay_inspect.clone())
+                }))
+            }),
+        }
+    }
+
     pub fn stream(stream: impl Stream<Item = Result<Bytes, Error>> + Send + 'static) -> Self {
         Self {
             stream: stream.boxed(),

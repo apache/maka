@@ -36,7 +36,7 @@ use maka_agent_facts::message::TurnOrchestrationSource;
 use maka_event_log::{EventLog, message_resolution::MessageExecution};
 use serde_json::json;
 
-#[path = "support/transcript.rs"]
+#[path = "../src/transcript_cache.rs"]
 mod support;
 
 fn source(id: &str, text: &str) -> RootSourceMessage {

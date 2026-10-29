@@ -22,7 +22,6 @@ use crate::{EventLog, context};
 use maka_agent_facts::{
     context::{CheckpointMode, CompactOutcome, ContextCheckpoint, ModelPurpose, TextSummary},
     event::{EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent},
-    model::ModelStep,
 };
 use serde_json::json;
 use sqlx::Connection;
@@ -37,6 +36,57 @@ fn event(id: &str, fact: Fact) -> EventWrite {
         },
         fact,
     ))
+    .unwrap()
+}
+
+fn model_output(
+    invocation: &str,
+    step: &str,
+    mut value: serde_json::Value,
+) -> maka_agent_facts::model::recorded::ModelCompletion {
+    use maka_agent_facts::model::{
+        ModelPart,
+        recorded::{CompletionPart, ModelPartRecord},
+    };
+    let parts = value["parts"]
+        .as_array_mut()
+        .unwrap()
+        .drain(..)
+        .enumerate()
+        .map(|(ordinal, value)| {
+            let part: ModelPart = serde_json::from_value(value).unwrap();
+            let message_id = match &part {
+                ModelPart::ToolCall { call } => maka_agent_facts::tool_call::tool_use_id(
+                    invocation,
+                    &format!("{step}:{}", call.id),
+                ),
+                _ => uuid::Uuid::now_v7().to_string(),
+            };
+            CompletionPart::Own(ModelPartRecord {
+                ordinal: ordinal as u64,
+                message_id,
+                started_at: std::time::UNIX_EPOCH,
+                provider_part_id: None,
+                part: std::sync::Arc::new(part),
+            })
+        })
+        .collect();
+    value["parts"] = serde_json::json!([]);
+    let mut output: maka_agent_facts::model::recorded::ModelCompletion =
+        serde_json::from_value(value).unwrap();
+    output.parts = parts;
+    output
+}
+
+fn output_summary(output: &maka_agent_facts::model::recorded::ModelCompletion) -> TextSummary {
+    use maka_agent_facts::model::recorded::CompletionPart;
+    TextSummary::from_parts(
+        output.finish_reason,
+        output.parts.iter().map(|part| match part {
+            CompletionPart::Own(record) => record.part.as_ref(),
+            CompletionPart::Ref(_) => panic!("summary fixture owns its result"),
+        }),
+    )
     .unwrap()
 }
 
@@ -93,10 +143,13 @@ async fn prepared_checkpoint(log: &EventLog, id: &str) -> Vec<EventWrite> {
         .baseline
         .as_ref()
         .map(|baseline| baseline.event_id.clone());
-    let output: ModelStep = serde_json::from_value(json!({
+    let output = model_output(
+        id,
+        id,
+        json!({
         "parts":[{"kind":"text","text_kind":"text","text":"literal retained summary"}],
-        "finish_reason":"stop","usage":{}}))
-    .unwrap();
+        "finish_reason":"stop","usage":{}}),
+    );
     log.append(&event(
         id,
         Fact::ModelRequested {
@@ -134,7 +187,7 @@ async fn prepared_checkpoint(log: &EventLog, id: &str) -> Vec<EventWrite> {
                 covered_through: source.source_evidence.high_water,
                 source_digest: source.source_evidence.digest,
                 previous_checkpoint_id: previous,
-                summary: TextSummary::from_model_step(&output).unwrap(),
+                summary: output_summary(&output),
                 summary_step_id: id.into(),
             },
         },
@@ -253,9 +306,13 @@ async fn opening_only_then_same_invocation_progress_and_cold_reads_keep_exact_hi
         ))
         .await
         .unwrap();
-        let output = serde_json::from_value(json!({"parts":[{"kind":"tool_call","call":{
+        let output = model_output(
+            "active",
+            step,
+            json!({"parts":[{"kind":"tool_call","call":{
             "id":step,"name":"Read","input":{"kind":"json","data":{"path":"file"}},"provider_executed":false
-        }}],"finish_reason":"tool-calls","usage":{}})).unwrap();
+        }}],"finish_reason":"tool-calls","usage":{}}),
+        );
         log.append(&event(
             "active",
             Fact::ModelCompleted {

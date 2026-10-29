@@ -58,11 +58,13 @@ impl Projection {
                     .meta(metadata),
             ),
         };
+        let canonical = previous.is_some_and(|message| message.canonical);
         self.streams.insert(
             key,
             Message {
                 text: next.to_owned(),
                 meta,
+                canonical,
             },
         );
         vec![update]
@@ -72,6 +74,89 @@ impl Projection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn preview_page(revision: u64, offset: u64, total_bytes: u64, text: &str) -> PreviewPage {
+        PreviewPage::Cut {
+            host_epoch: "epoch".into(),
+            invocation_id: "invocation".into(),
+            turn_id: "turn".into(),
+            step_id: "step".into(),
+            revision,
+            depends_on: 17,
+            first: offset == 0,
+            last: offset + text.len() as u64 == total_bytes,
+            parts: vec![maka_agent_api::contract::PreviewPart {
+                ordinal: Some(0),
+                message_id: "message".into(),
+                provider_part_id: Some("part".into()),
+                started_at: 0.0,
+                field: PreviewField::Text {
+                    text_kind: ContentKind::Text,
+                },
+                offset,
+                total_bytes,
+                text: text.into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn paginated_preview_seed_replaces_once_then_suffix_appends_without_duplication() {
+        let mut projection = Projection::default();
+        assert!(
+            projection
+                .preview(&preview_page(1, 0, 8, "🦀"))
+                .unwrap()
+                .is_empty()
+        );
+        let seed = projection.preview(&preview_page(1, 4, 8, "中!")).unwrap();
+        let seed = serde_json::to_value(&seed[0]).unwrap();
+        assert_eq!(seed["sessionUpdate"], "agent_message");
+        assert_eq!(seed["content"][0]["text"], "🦀中!");
+        let suffix = projection.preview(&preview_page(2, 8, 9, "?")).unwrap();
+        let suffix = serde_json::to_value(&suffix[0]).unwrap();
+        assert_eq!(suffix["sessionUpdate"], "agent_message_chunk");
+        assert_eq!(suffix["content"]["text"], "?");
+        assert!(
+            projection
+                .preview(&preview_page(2, 0, 9, "🦀中!?"))
+                .unwrap()
+                .is_empty(),
+            "reconnect seed must replace the same ID without replaying its prefix"
+        );
+    }
+
+    #[test]
+    fn committed_message_and_closed_step_discard_unfinished_old_seed() {
+        let mut projection = Projection::default();
+        assert!(
+            projection
+                .preview(&preview_page(1, 0, 8, "🦀"))
+                .unwrap()
+                .is_empty()
+        );
+        projection.commit_preview("invocation", "step", Some("message"));
+        assert!(
+            projection
+                .preview(&preview_page(1, 4, 8, "中!"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            projection
+                .preview(&preview_page(2, 0, 9, "🦀中!?"))
+                .unwrap()
+                .is_empty()
+        );
+        let mut projection = Projection::default();
+        projection.commit_preview("invocation", "step", None);
+        assert!(
+            projection
+                .preview(&preview_page(1, 0, 8, "🦀中!"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     #[test]
     fn long_sessions_keep_every_message_instead_of_rejecting_total_history_size() {
         let mut projection = Projection::default();
@@ -92,6 +177,7 @@ mod tests {
         assert_eq!(update["content"]["text"], "尾");
         let canonical = format!("{text}尾");
         let chunk = HistoryChunk {
+            model_part: None,
             final_output: false,
             has_references: false,
             model: None,
@@ -129,6 +215,7 @@ mod tests {
             "!"
         );
         let mut chunk = HistoryChunk {
+            model_part: None,
             final_output: false,
             has_references: false,
             model: None,
@@ -184,6 +271,7 @@ mod tests {
     fn missing_history_fragment_is_rejected() {
         let mut projection = Projection::default();
         let chunk = HistoryChunk {
+            model_part: None,
             final_output: false,
             has_references: false,
             model: None,
@@ -211,6 +299,7 @@ mod tests {
     fn attachment_only_user_message_keeps_safe_descriptions_during_replay() {
         let mut projection = Projection::default();
         let chunk = HistoryChunk {
+            model_part: None,
             final_output: false,
             has_references: false,
             model: None,
@@ -264,6 +353,7 @@ mod tests {
     fn diagnostic_history_replays_as_marked_text_without_tool_metadata() {
         let mut projection = Projection::default();
         let mut chunk = HistoryChunk {
+            model_part: None,
             final_output: false,
             has_references: false,
             model: None,

@@ -19,10 +19,12 @@
 
 use serde::{Deserialize, Serialize};
 pub mod assembly;
+pub mod body;
 pub mod budget;
 pub mod error;
 pub mod prompt;
 pub mod prompt_source;
+pub mod recorded;
 pub mod request;
 mod tool_input;
 use serde_json::Value;
@@ -135,8 +137,8 @@ pub enum ModelPart {
     },
     Text {
         text_kind: TextKind,
-        text: String,
-        provider_options: Option<Value>,
+        text: body::TextBody,
+        provider_options: Option<std::sync::Arc<Value>>,
     },
     ToolCall {
         call: ModelToolCall,
@@ -212,20 +214,6 @@ pub struct ModelStep {
     pub response_id: Option<String>,
     pub model: Option<String>,
     pub timestamp: Option<String>,
-}
-
-impl ModelEvent {
-    /// Summary prose and unexecuted local requests remain private until validation.
-    /// Only accounting, response metadata and actual provider effects are journaled.
-    pub fn is_summary_observation(&self) -> bool {
-        matches!(self, Self::ToolCall(call) if call.provider_executed)
-            || matches!(
-                self,
-                Self::ProviderToolResult { .. }
-                    | Self::ResponseMetadata { .. }
-                    | Self::Finished { .. }
-            )
-    }
 }
 
 /// Citation evidence, distinct from model prose and replayable tool results.

@@ -283,32 +283,24 @@ impl InvocationView {
                             .as_mut()
                             .ok_or(ProjectionError::Invalid("observation without request"))?;
                         step.check_id(step_id)?;
-                        step.observe(event, ts, observation)?;
-                        if step.item_acceptance {
-                            match observation {
-                                maka_agent_facts::model::ModelEvent::PartFinished {
-                                    id, ..
-                                } => {
-                                    messages.extend(step.deliver_text(id));
+                        if let maka_agent_facts::model::recorded::ModelObservation::Part(record) =
+                            observation
+                        {
+                            step.observe(event, record);
+                            if step.item_acceptance {
+                                if let Some(text) = step.text(event, record, false)? {
+                                    messages.push(text);
+                                } else {
+                                    messages.extend(self.tools.accept_item(
+                                        event,
+                                        message::capture_time(record.started_at)?,
+                                        step_id,
+                                        &record.message_id,
+                                        record.part.as_ref(),
+                                        step.anchor(),
+                                        step.model(),
+                                    )?);
                                 }
-                                maka_agent_facts::model::ModelEvent::Source(_)
-                                | maka_agent_facts::model::ModelEvent::ToolCall(_)
-                                | maka_agent_facts::model::ModelEvent::ProviderToolResult {
-                                    ..
-                                } => {
-                                    if let Some((index, part)) = step.accepted_tool() {
-                                        messages.extend(self.tools.accept_item(
-                                            event,
-                                            ts,
-                                            step_id,
-                                            index,
-                                            part,
-                                            step.anchor(),
-                                            step.model(),
-                                        )?);
-                                    }
-                                }
-                                _ => {}
                             }
                         }
                     }
@@ -317,12 +309,43 @@ impl InvocationView {
                             .take()
                             .ok_or(ProjectionError::Invalid("completion without request"))?;
                         completed.check_id(step_id)?;
-                        let streaming = completed.item_acceptance;
-                        let text = completed.complete(output)?;
-                        if streaming {
-                            messages.extend(text);
-                        } else {
-                            messages.extend(self.tools.accept(event, ts, step_id, output, text)?);
+                        let parts = output
+                            .parts
+                            .iter()
+                            .map(|part| completed.resolve(part))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let anchor = parts
+                            .iter()
+                            .rev()
+                            .find(|part| {
+                                matches!(
+                                    part.part.as_ref(),
+                                    maka_agent_facts::model::ModelPart::Text { .. }
+                                )
+                            })
+                            .map(|part| part.message_id.as_str());
+                        for (source, part) in output.parts.iter().zip(&parts) {
+                            if completed.item_acceptance
+                                && matches!(
+                                    source,
+                                    maka_agent_facts::model::recorded::CompletionPart::Ref(_)
+                                )
+                            {
+                                continue;
+                            }
+                            if let Some(text) = completed.text(event, part, false)? {
+                                messages.push(text);
+                            } else {
+                                messages.extend(self.tools.accept_item(
+                                    event,
+                                    message::capture_time(part.started_at)?,
+                                    step_id,
+                                    &part.message_id,
+                                    part.part.as_ref(),
+                                    anchor,
+                                    completed.model(),
+                                )?);
+                            }
                         }
                         if let (Some(input), Some(output_tokens)) =
                             (output.usage.input_tokens, output.usage.output_tokens)
@@ -345,15 +368,32 @@ impl InvocationView {
                         step_id,
                         status,
                         diagnostic,
+                        partial,
                         ..
                     } => {
                         let interrupted = step
                             .take()
                             .ok_or(ProjectionError::Invalid("interruption without request"))?;
                         interrupted.check_id(step_id)?;
-                        messages.extend(interrupted.partial(
-                            *status != maka_agent_facts::event::ModelInterruption::Cancelled,
-                        ));
+                        if let Some(partial) = partial {
+                            for source in &partial.parts {
+                                let part = interrupted.resolve(source)?;
+                                if interrupted.item_acceptance
+                                    && matches!(
+                                        source,
+                                        maka_agent_facts::model::recorded::CompletionPart::Ref(_)
+                                    )
+                                {
+                                    continue;
+                                }
+                                messages.extend(interrupted.text(
+                                    event,
+                                    part,
+                                    *status
+                                        != maka_agent_facts::event::ModelInterruption::Cancelled,
+                                )?);
+                            }
+                        }
                         if let Some(message) = diagnostic
                             && *status != maka_agent_facts::event::ModelInterruption::Cancelled
                         {
@@ -371,22 +411,16 @@ impl InvocationView {
                         if let Some(executor) = self.executor.take() {
                             messages.extend(executor.finish(event, ts));
                         }
-                        if let Some(unfinished) = step.take() {
-                            if matches!(
+                        if step.take().is_some()
+                            && matches!(
                                 outcome,
                                 maka_agent_facts::event::InvocationOutcome::Completed
                                     | maka_agent_facts::event::InvocationOutcome::HandoffPaused { .. }
-                            ) {
-                                return Err(ProjectionError::Invalid(
-                                    "completion with unfinished model",
-                                ));
-                            }
-                            // Failure seals observation evidence, not accepted
-                            // model history. Never invent a completed response.
-                            messages.extend(unfinished.partial(matches!(
-                                outcome,
-                                maka_agent_facts::event::InvocationOutcome::Failed { .. }
-                            )));
+                            )
+                        {
+                            return Err(ProjectionError::Invalid(
+                                "completion with unfinished model",
+                            ));
                         }
                         if let Some(state) = TurnState::from_outcome(outcome, ts) {
                             messages.push(Message {
@@ -416,18 +450,13 @@ impl InvocationView {
         rows(stored.sequence, messages)
     }
 
-    /// Frozen caller-owned copies of observed text, including closed parts whose
-    /// model completion has not committed. These are overlay, not durable rows.
+    /// Current executor output. Model preview is supplied by the active attempt,
+    /// independently of this committed-fact projection.
     pub fn overlay(&self) -> Vec<Message> {
         if let Some(executor) = &self.executor {
             return executor.overlay();
         }
-        match &self.state {
-            State::Active {
-                step: Some(step), ..
-            } => step.partial(false),
-            _ => Vec::new(),
-        }
+        Vec::new()
     }
 }
 

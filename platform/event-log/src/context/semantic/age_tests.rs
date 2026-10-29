@@ -42,14 +42,42 @@ async fn database() -> SqliteConnection {
             unsafe { rusqlite::Connection::from_handle(handle.as_raw_handle().as_ptr()) }.unwrap();
         crate::context::evidence::register(&borrowed).unwrap();
     }
+    super::directory::register_fixture_function(&mut db)
+        .await
+        .unwrap();
     db
 }
 
 async fn append_rows(db: &mut SqliteConnection, first: i64, last: i64) {
-    sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT ?1 UNION ALL SELECT n+1 FROM numbers WHERE n<?2)
+    let row = SemanticRow {
+        id: RowPosition {
+            source_sequence: 1,
+            item_index: 0,
+        },
+        revision: 1,
+        invocation: maka_agent_facts::event::Invocation {
+            session_id: "session".into(),
+            turn_id: "turn".into(),
+            run_id: "run".into(),
+            invocation_id: "lineage-0".into(),
+        },
+        order: RowPosition {
+            source_sequence: 1,
+            item_index: 0,
+        },
+        kind: SemanticKind::User {
+            payload: RowPosition {
+                source_sequence: 1,
+                item_index: 0,
+            },
+            steering: false,
+        },
+    };
+    sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT ?1 UNION ALL SELECT n+1 FROM numbers WHERE n<?2),
+        metadata AS (SELECT n,json_set(?3,'$.id.sourceSequence',n,'$.revision',n,'$.order.sourceSequence',n) AS row_json FROM numbers)
         INSERT INTO context_semantic_rows SELECT 'session',n,0,n,n,0,'lineage-0','lineage-0',CAST(n AS TEXT),
-          'user',0,0,1,0,CAST(n AS TEXT) FROM numbers")
-        .bind(first).bind(last).execute(db).await.unwrap();
+          'user',0,0,1,0,row_json,semantic_directory(row_json) FROM metadata")
+        .bind(first).bind(last).bind(serde_json::to_string(&row).unwrap()).execute(db).await.unwrap();
 }
 
 async fn count_steps(db: &mut SqliteConnection) -> Arc<AtomicU64> {
@@ -70,9 +98,9 @@ async fn page(
     after: i64,
     through: i64,
     lineage: Option<String>,
-) -> (Vec<String>, u64) {
+) -> (Vec<u64>, u64) {
     let steps = count_steps(db).await;
-    let result = sqlx::query_scalar(sqlx::AssertSqlSafe(rows_query(false)))
+    let result = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(rows_query(false)))
         .bind("session")
         .bind(after)
         .bind(through)
@@ -91,7 +119,16 @@ async fn page(
         .await
         .unwrap();
     db.lock_handle().await.unwrap().remove_progress_handler();
-    (result, steps.load(Ordering::Relaxed))
+    let positions = result
+        .into_iter()
+        .map(|json| {
+            serde_json::from_str::<SemanticRow>(&json)
+                .unwrap()
+                .id
+                .source_sequence
+        })
+        .collect();
+    (positions, steps.load(Ordering::Relaxed))
 }
 
 #[tokio::test]
@@ -99,10 +136,7 @@ async fn fixed_source_window_does_not_scan_compacted_history() {
     let mut db = database().await;
     append_rows(&mut db, 1, 128).await;
     let (small, small_steps) = page(&mut db, 112, 128, None).await;
-    assert_eq!(
-        small,
-        (113..=128).map(|n| n.to_string()).collect::<Vec<_>>()
-    );
+    assert_eq!(small, (113..=128).collect::<Vec<_>>());
     append_rows(&mut db, 129, 16_384).await;
     // A late source can sort before the cutoff. Never equate source and order.
     sqlx::query("UPDATE context_semantic_rows SET order_sequence=2 WHERE source_sequence=16384")
@@ -110,14 +144,7 @@ async fn fixed_source_window_does_not_scan_compacted_history() {
         .await
         .unwrap();
     let (large, large_steps) = page(&mut db, 16_368, 16_384, None).await;
-    assert_eq!(
-        large,
-        [
-            vec!["16384".into()],
-            (16_369..16_384).map(|n| n.to_string()).collect()
-        ]
-        .concat()
-    );
+    assert_eq!(large, [vec![16_384], (16_369..16_384).collect()].concat());
     eprintln!("source window VM steps: H=128 {small_steps}, H=16384 {large_steps}");
     assert!(
         large_steps <= small_steps * 2,
@@ -140,7 +167,7 @@ async fn lineage_membership_grows_logarithmically_and_excludes_sibling_branches(
     let (small, small_steps) = page(&mut db, 0, 16, descriptor(63)).await;
     append_lineage(&mut db, 64, 4095).await;
     let (large, large_steps) = page(&mut db, 0, 16, descriptor(4095)).await;
-    assert_eq!(small, (1..=16).map(|n| n.to_string()).collect::<Vec<_>>());
+    assert_eq!(small, (1..=16).collect::<Vec<_>>());
     assert_eq!(large, small);
     eprintln!("lineage VM steps: D=63 {small_steps}, D=4095 {large_steps}");
     assert!(

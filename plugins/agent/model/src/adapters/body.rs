@@ -176,7 +176,7 @@ pub(super) fn prepared(fields: Value, wire: PreparedWire, key: &'static str) -> 
     struct State {
         fields: Option<std::iter::Peekable<JsonChunks>>,
         cursor: Box<dyn crate::prompt::WireCursor>,
-        pending: Option<Vec<u8>>,
+        pending: Option<http::Bytes>,
         first: bool,
         finished: bool,
         key: &'static str,
@@ -197,7 +197,7 @@ pub(super) fn prepared(fields: Value, wire: PreparedWire, key: &'static str) -> 
                     return Ok(None);
                 }
                 if let Some(bytes) = state.pending.take() {
-                    return Ok(Some((http::Bytes::from(bytes), state)));
+                    return Ok(Some((bytes, state)));
                 }
                 if let Some(fields) = &mut state.fields
                     && let Some(mut bytes) = fields.next()
@@ -236,7 +236,7 @@ pub(super) fn prepared(fields: Value, wire: PreparedWire, key: &'static str) -> 
                             }
                             state.first = false;
                         }
-                        return Ok(Some((http::Bytes::from(chunk.bytes), state)));
+                        return Ok(Some((chunk.bytes, state)));
                     }
                     None => {
                         state.finished = true;
@@ -378,7 +378,8 @@ mod tests {
                             bytes: serde_json::to_vec(&serde_json::json!({
                                 "role": "user", "content": text
                             }))
-                            .unwrap(),
+                            .unwrap()
+                            .into(),
                             item_start: true,
                             item_end: true,
                             message_index,

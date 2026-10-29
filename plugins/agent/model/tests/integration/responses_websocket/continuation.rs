@@ -124,8 +124,8 @@ async fn idle_close_reconnect_and_upgrade_fallback_preserve_accepted_metadata() 
             let lane = Conversation::default();
             let step = generate_step(&executor, &lane, request(&base, "first")).await;
             assert_eq!(step.parts.len(), 3);
-            assert!(matches!(&step.parts[0], ModelPart::Text { text_kind: TextKind::Thinking, text, .. } if text == "Check the file."));
-            assert!(matches!(&step.parts[1], ModelPart::Text { text_kind: TextKind::Text, text, .. } if text == "Checking 😀"));
+            assert!(matches!(&step.parts[0], ModelPart::Text { text_kind: TextKind::Thinking, text, .. } if text.chunks().collect::<String>() == "Check the file."));
+            assert!(matches!(&step.parts[1], ModelPart::Text { text_kind: TextKind::Text, text, .. } if text.chunks().collect::<String>() == "Checking 😀"));
             // Confirm exactly the adapter-observed history, not a hand-written
             // semantic prefix that could conceal lost reasoning or text.
             let content: Vec<_> = step.parts.iter().map(|part| match part {

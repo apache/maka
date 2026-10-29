@@ -76,6 +76,7 @@ async fn journal(connection: Connection, name: &str, input: Value) -> Value {
             ToolCallIdentity::standalone("call".into()),
             name.clone(),
             input,
+            None,
             CancellationToken::new(),
             move |cancel| Box::pin(async move { connection.call(name, argument, cancel).await }),
         )

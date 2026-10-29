@@ -130,7 +130,7 @@ async fn responses_http_preserves_complete_ordered_output_items() {
         .parts
         .iter()
         .map(|part| match part {
-            ModelPart::Text { text, .. } => text.clone(),
+            ModelPart::Text { text, .. } => text.chunks().collect::<String>(),
             other => panic!("unexpected provider part {other:?}"),
         })
         .collect();
@@ -246,7 +246,7 @@ async fn responses_http_preserves_reasoning_and_raw_tool_identity_across_steps()
             assert_eq!(step.usage.reasoning_tokens, Some(4));
             if index == 1 {
                 assert_eq!(step.finish_reason, ModelFinishReason::Stop);
-                assert!(matches!(&step.parts[..], [ModelPart::Text { text, .. }] if text == "Echoed 你好😀"));
+                assert!(matches!(&step.parts[..], [ModelPart::Text { text, .. }] if text.chunks().collect::<String>() == "Echoed 你好😀"));
                 continue;
             }
             assert_eq!(step.finish_reason, ModelFinishReason::ToolCalls);
@@ -259,7 +259,7 @@ async fn responses_http_preserves_reasoning_and_raw_tool_identity_across_steps()
             assert_eq!(step.parts.len(), 3);
             let ModelPart::Text { text_kind, text, provider_options } = &step.parts[0] else { panic!("reasoning missing") };
             assert_eq!(*text_kind, TextKind::Thinking);
-            assert_eq!(text, "Check the echo tool.");
+            assert_eq!(text.chunks().collect::<String>(), "Check the echo tool.");
             let metadata = &provider_options.as_ref().unwrap()["openai"];
             assert_eq!(metadata["itemId"], "rs_1");
             assert_eq!(metadata["reasoningEncryptedContent"], "opaque-reasoning");
@@ -477,9 +477,9 @@ async fn plaintext_responses_replays_only_its_declared_carrier_after_a_tool_step
                 // Only serializable canonical parts survive to a fresh model request.
                 let parts: Vec<ModelPart> = serde_json::from_slice(&serde_json::to_vec(&output.parts).unwrap()).unwrap();
                 if index == 1 {
-                    assert!(matches!(&parts[..], [ModelPart::Text { text, .. }] if text == "done")); continue;
+                    assert!(matches!(&parts[..], [ModelPart::Text { text, .. }] if text.chunks().collect::<String>() == "done")); continue;
                 }
-                assert!(matches!(&parts[0], ModelPart::Text { text, text_kind: TextKind::Thinking, .. } if text == "想😀好"));
+                assert!(matches!(&parts[0], ModelPart::Text { text, text_kind: TextKind::Thinking, .. } if text.chunks().collect::<String>() == "想😀好"));
                 let content: Vec<Value> = parts.iter().map(|part| match part {
                     ModelPart::Text { text, provider_options, .. } => json!({"type":"reasoning","text":text,"providerOptions":provider_options}),
                     ModelPart::ToolCall { call } => json!({"type":"tool-call","toolCallId":call.id,"toolName":call.name,"input":call.input,"providerOptions":call.provider_options}),

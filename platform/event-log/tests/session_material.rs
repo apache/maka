@@ -21,9 +21,12 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::LogScope;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelFinishReason;
 use maka_agent_facts::model::ModelUsage;
+use maka_agent_facts::model::recorded::{
+    CompletionPart, ModelObservation, ModelPartRecord, ModelPartial,
+};
+use maka_agent_facts::model::{ModelPart, TextKind};
 use maka_agent_facts::session::CopyPurpose;
 use maka_event_log::{
     EventLog, StoreError,
@@ -58,25 +61,10 @@ async fn collection_waits_for_the_last_history_owner_and_preserves_frozen_accoun
     log.append(&request("observed", 1000)).await.unwrap();
     let mut frozen = query();
     frozen.through = Some(log.model_attempts(query(), 0, 100).await.unwrap().through);
-    for i in 0..12 {
-        log.append(&event(
-            Fact::ModelObserved {
-                step_id: "observed".into(),
-                event: ModelEvent::PartDelta {
-                    id: "part".into(),
-                    text: "private-response".repeat(1000),
-                    provider_options: None,
-                },
-            },
-            1100 + i,
-        ))
-        .await
-        .unwrap();
-    }
     log.append(&event(
         Fact::ModelObserved {
             step_id: "observed".into(),
-            event: ModelEvent::Finished {
+            event: ModelObservation::Finished {
                 reason: ModelFinishReason::Stop,
                 usage: ModelUsage {
                     input_tokens: Some(100),
@@ -92,6 +80,23 @@ async fn collection_waits_for_the_last_history_owner_and_preserves_frozen_accoun
     .unwrap();
     log.append(&event(
         Fact::ModelInterrupted {
+            partial: Some(ModelPartial {
+                parts: vec![CompletionPart::Own(ModelPartRecord {
+                    ordinal: 0,
+                    message_id: "private-response-part".into(),
+                    started_at: std::time::UNIX_EPOCH,
+                    provider_part_id: Some("part".into()),
+                    part: std::sync::Arc::new(ModelPart::Text {
+                        text_kind: TextKind::Text,
+                        text: "private-response".repeat(12_000).into(),
+                        provider_options: None,
+                    }),
+                })],
+                tool_inputs: Vec::new(),
+                response_id: None,
+                model: None,
+                timestamp: None,
+            }),
             model_failure: Some(
                 maka_agent_facts::model::error::ModelFailureCause::Provider {
                     reason: maka_agent_facts::model::error::ProviderFailureReason::Network,

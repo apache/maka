@@ -467,13 +467,15 @@ impl SessionStore {
     /// exact T1, then is released before potentially long native execution.
     pub async fn append_computer_app_dispatch(
         &self,
+        prefix: &[EventWrite],
         event: &EventWrite,
         targets: &[GrantTarget],
         app: &GrantTarget,
         display: &maka_agent_facts::interaction::ComputerAppDisplay,
         basis: &PermissionBasis,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         self.append_app_dispatch_in_lane(
+            prefix,
             event,
             targets,
             app,
@@ -486,13 +488,15 @@ impl SessionStore {
 
     pub async fn append_native_computer_app_dispatch(
         &self,
+        prefix: &[EventWrite],
         event: &EventWrite,
         targets: &[GrantTarget],
         app: &GrantTarget,
         display: &maka_agent_facts::interaction::ComputerAppDisplay,
         basis: &PermissionBasis,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         self.append_app_dispatch_in_lane(
+            prefix,
             event,
             targets,
             app,
@@ -505,13 +509,14 @@ impl SessionStore {
 
     async fn append_app_dispatch_in_lane(
         &self,
+        prefix: &[EventWrite],
         event: &EventWrite,
         targets: &[GrantTarget],
         app: &GrantTarget,
         display: &maka_agent_facts::interaction::ComputerAppDisplay,
         basis: &PermissionBasis,
         lane: crate::append::ComputerLane,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         let Fact::ToolDispatched { operation_id, .. } = &event.event().fact else {
             return Err(CommitError::Rejected(
                 "app admission requires a native tool dispatch".into(),
@@ -535,7 +540,7 @@ impl SessionStore {
             .await
             .map_err(super::session_store::commit_error)?;
         log.scoped(Arc::new(pin))
-            .append_computer_app_dispatch(event, targets, app, display, basis, lane)
+            .append_computer_app_dispatch(prefix, event, targets, app, display, basis, lane)
             .await
     }
 

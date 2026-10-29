@@ -17,15 +17,26 @@
  * under the License.
  */
 
+use super::body::TextBuilder;
 use super::error::ModelError;
 use super::merge_provider_options as merge;
+use super::{ModelEvent, ModelFinishReason, ModelPart, ModelStep, ModelUsage};
+use serde_json::Value;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+
+mod attempt;
+mod identity;
+pub use attempt::{
+    AttemptBinding, AttemptCut, AttemptWriter, CompletedAttempt, PartReceipt, PreviewPart,
+};
+
 fn invalid(message: &str) -> ModelError {
     ModelError::Adapter(message.into())
 }
-use super::{ModelEvent, ModelFinishReason, ModelPart, ModelStep, ModelUsage};
-use serde_json::Value;
-use std::collections::{HashMap, HashSet};
-mod identity;
+
 #[derive(Default)]
 enum StepState {
     #[default]
@@ -33,22 +44,83 @@ enum StepState {
     Finished {
         reason: ModelFinishReason,
         usage: ModelUsage,
-        provider_options: Option<Value>,
+        provider_options: Option<Arc<Value>>,
     },
     Poisoned,
+}
+
+struct OptionsPatch {
+    previous: Option<Arc<OptionsPatch>>,
+    value: Arc<Value>,
+}
+impl Drop for OptionsPatch {
+    fn drop(&mut self) {
+        let mut previous = self.previous.take();
+        while let Some(node) = previous {
+            match Arc::try_unwrap(node) {
+                Ok(mut node) => previous = node.previous.take(),
+                Err(_) => break,
+            }
+        }
+    }
+}
+fn append_options(target: &mut Option<Arc<OptionsPatch>>, value: Arc<Value>) {
+    *target = Some(Arc::new(OptionsPatch {
+        previous: target.take(),
+        value,
+    }));
+}
+fn merged_options(patches: &Option<Arc<OptionsPatch>>) -> Option<Arc<Value>> {
+    let mut reversed = Vec::new();
+    let mut next = patches.as_deref();
+    while let Some(patch) = next {
+        reversed.push(&patch.value);
+        next = patch.previous.as_deref();
+    }
+    let mut result = None;
+    for value in reversed.into_iter().rev() {
+        merge(&mut result, Some(value.as_ref().clone()));
+    }
+    result.map(Arc::new)
+}
+
+enum PartSlot {
+    Text {
+        text_kind: super::TextKind,
+        text: TextBuilder,
+        options: Option<Arc<OptionsPatch>>,
+    },
+    Closed(Arc<ModelPart>),
+}
+impl PartSlot {
+    fn snapshot(&self) -> Arc<ModelPart> {
+        match self {
+            Self::Text {
+                text_kind,
+                text,
+                options,
+            } => Arc::new(ModelPart::Text {
+                text_kind: *text_kind,
+                text: text.snapshot(),
+                provider_options: merged_options(options),
+            }),
+            Self::Closed(part) => part.clone(),
+        }
+    }
 }
 
 struct PendingToolInput {
     name: String,
     provider_executed: bool,
     finished: bool,
+    text: TextBuilder,
 }
 
-/// Shared validation and assembly for Host ingress, durable acceptance proofs
-/// and history projection. Only closed items can authorize streaming execution.
+/// Raw ingress assembly used by provider adapters and the attempt writer.
+/// Only closed items can authorize streaming execution.
 #[derive(Default)]
 pub struct StepBuilder {
-    parts: Vec<ModelPart>,
+    parts: Vec<PartSlot>,
     accepted: Option<usize>,
     open: HashMap<String, usize>,
     seen: HashSet<String>,
@@ -62,34 +134,49 @@ pub struct StepBuilder {
 }
 impl StepBuilder {
     pub fn push(&mut self, event: ModelEvent) -> Result<(), ModelError> {
+        self.push_shared(event, None)
+    }
+    fn push_shared(
+        &mut self,
+        event: ModelEvent,
+        options: Option<Arc<Value>>,
+    ) -> Result<(), ModelError> {
         self.accepted = None;
-        let result = self.apply(event);
+        let result = self.apply(event, options);
         if result.is_err() {
             self.state = StepState::Poisoned;
         }
         result
     }
-    /// The complete item admitted by the most recent valid observation. Its
-    /// index is allocated when it starts, independent of completion order.
     pub fn accepted_item(&self) -> Option<(usize, &ModelPart)> {
-        self.accepted.map(|index| (index, &self.parts[index]))
+        let index = self.accepted?;
+        let PartSlot::Closed(part) = &self.parts[index] else {
+            return None;
+        };
+        Some((index, part))
     }
-
     pub fn accepted_parts(&self) -> impl Iterator<Item = (usize, &ModelPart)> {
         self.parts
             .iter()
             .enumerate()
-            .filter(|(index, _)| !self.open.values().any(|open| open == index))
+            .filter_map(|(index, slot)| match slot {
+                PartSlot::Closed(part) => Some((index, part.as_ref())),
+                _ => None,
+            })
     }
-
-    fn apply(&mut self, event: ModelEvent) -> Result<(), ModelError> {
+    fn apply(
+        &mut self,
+        event: ModelEvent,
+        shared_options: Option<Arc<Value>>,
+    ) -> Result<(), ModelError> {
         if !matches!(self.state, StepState::Assembling) {
             return Err(invalid("event after failed or finished step"));
         }
         match event {
             ModelEvent::Source(source) => {
                 self.accepted = Some(self.parts.len());
-                self.parts.push(ModelPart::Source { source });
+                self.parts
+                    .push(PartSlot::Closed(Arc::new(ModelPart::Source { source })));
             }
             ModelEvent::PartStarted {
                 id,
@@ -100,10 +187,14 @@ impl StepBuilder {
                     return Err(invalid("duplicate model part"));
                 }
                 self.open.insert(id, self.parts.len());
-                self.parts.push(ModelPart::Text {
+                let mut options = None;
+                if let Some(value) = shared_options.or_else(|| provider_options.map(Arc::new)) {
+                    append_options(&mut options, value);
+                }
+                self.parts.push(PartSlot::Text {
                     text_kind,
-                    text: String::new(),
-                    provider_options,
+                    text: TextBuilder::new(),
+                    options,
                 });
             }
             ModelEvent::PartDelta {
@@ -115,14 +206,16 @@ impl StepBuilder {
                     .open
                     .get(&id)
                     .ok_or_else(|| invalid("delta without open part"))?;
-                if let ModelPart::Text {
+                if let PartSlot::Text {
                     text: accumulated,
-                    provider_options: metadata,
+                    options,
                     ..
                 } = &mut self.parts[index]
                 {
-                    accumulated.push_str(&text);
-                    merge(metadata, provider_options);
+                    accumulated.push(&text);
+                    if let Some(value) = shared_options.or_else(|| provider_options.map(Arc::new)) {
+                        append_options(options, value);
+                    }
                 }
             }
             ModelEvent::PartFinished {
@@ -133,13 +226,12 @@ impl StepBuilder {
                     .open
                     .remove(&id)
                     .ok_or_else(|| invalid("end without open part"))?;
-                if let ModelPart::Text {
-                    provider_options: metadata,
-                    ..
-                } = &mut self.parts[index]
+                if let PartSlot::Text { options, .. } = &mut self.parts[index]
+                    && let Some(value) = shared_options.or_else(|| provider_options.map(Arc::new))
                 {
-                    merge(metadata, provider_options);
+                    append_options(options, value);
                 }
+                self.parts[index] = PartSlot::Closed(self.parts[index].snapshot());
                 self.accepted = Some(index);
             }
             ModelEvent::ToolInputStarted {
@@ -148,30 +240,28 @@ impl StepBuilder {
                 provider_executed,
             } => {
                 self.validate_tool_identity(&id, &name)?;
-                if self.calls.contains_key(&id)
-                    || self
-                        .tool_inputs
-                        .insert(
-                            id,
-                            PendingToolInput {
-                                name,
-                                provider_executed,
-                                finished: false,
-                            },
-                        )
-                        .is_some()
-                {
+                if self.calls.contains_key(&id) || self.tool_inputs.contains_key(&id) {
                     return Err(invalid("duplicate tool input"));
                 }
+                self.tool_inputs.insert(
+                    id,
+                    PendingToolInput {
+                        name,
+                        provider_executed,
+                        finished: false,
+                        text: TextBuilder::new(),
+                    },
+                );
             }
-            ModelEvent::ToolInputDelta { id, .. } => {
+            ModelEvent::ToolInputDelta { id, text } => {
                 let input = self
                     .tool_inputs
-                    .get(&id)
+                    .get_mut(&id)
                     .ok_or_else(|| invalid("delta without open tool input"))?;
                 if input.finished {
                     return Err(invalid("delta after tool input end"));
                 }
+                input.text.push(&text);
             }
             ModelEvent::ToolInputFinished { id } => {
                 let input = self
@@ -185,21 +275,23 @@ impl StepBuilder {
             }
             ModelEvent::ToolCall(call) => {
                 self.validate_call(&call)?;
-                if let Some(input) = self.tool_inputs.remove(&call.id)
+                if self.calls.contains_key(&call.id) {
+                    return Err(invalid("duplicate tool call"));
+                }
+                if let Some(input) = self.tool_inputs.get(&call.id)
                     && (input.name != call.name
                         || input.provider_executed != call.provider_executed)
                 {
                     return Err(invalid("complete tool call differs from input identity"));
                 }
-                if self
-                    .calls
-                    .insert(call.id.clone(), (call.name.clone(), call.provider_executed))
-                    .is_some()
-                {
-                    return Err(invalid("duplicate tool call"));
+                if let Some(input) = self.tool_inputs.get_mut(&call.id) {
+                    input.finished = true;
                 }
+                self.calls
+                    .insert(call.id.clone(), (call.name.clone(), call.provider_executed));
                 self.accepted = Some(self.parts.len());
-                self.parts.push(ModelPart::ToolCall { call });
+                self.parts
+                    .push(PartSlot::Closed(Arc::new(ModelPart::ToolCall { call })));
             }
             ModelEvent::ProviderToolResult {
                 id,
@@ -216,13 +308,14 @@ impl StepBuilder {
                     ));
                 }
                 self.accepted = Some(self.parts.len());
-                self.parts.push(ModelPart::ToolResult {
-                    id,
-                    name,
-                    output,
-                    is_error,
-                    provider_options,
-                });
+                self.parts
+                    .push(PartSlot::Closed(Arc::new(ModelPart::ToolResult {
+                        id,
+                        name,
+                        output,
+                        is_error,
+                        provider_options,
+                    })));
             }
             ModelEvent::ResponseMetadata {
                 id,
@@ -244,7 +337,12 @@ impl StepBuilder {
                 usage,
                 provider_options,
             } => {
-                if !self.open.is_empty() || !self.tool_inputs.is_empty() {
+                if !self.open.is_empty()
+                    || self
+                        .tool_inputs
+                        .keys()
+                        .any(|id| !self.calls.contains_key(id))
+                {
                     return Err(invalid("incomplete model step"));
                 }
                 if self
@@ -257,7 +355,7 @@ impl StepBuilder {
                 self.state = StepState::Finished {
                     reason,
                     usage,
-                    provider_options,
+                    provider_options: shared_options.or_else(|| provider_options.map(Arc::new)),
                 };
             }
         }
@@ -274,10 +372,17 @@ impl StepBuilder {
             } => (reason, usage, provider_options),
         };
         Ok(ModelStep {
-            parts: self.parts,
+            parts: self
+                .parts
+                .into_iter()
+                .map(|slot| match slot {
+                    PartSlot::Closed(part) => Arc::unwrap_or_clone(part),
+                    PartSlot::Text { .. } => unreachable!("finished step has no open text"),
+                })
+                .collect(),
             finish_reason,
             usage,
-            provider_options,
+            provider_options: provider_options.map(Arc::unwrap_or_clone),
             response_id: self.response_id,
             model: self.model,
             timestamp: self.timestamp,

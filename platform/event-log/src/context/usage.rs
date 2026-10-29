@@ -25,8 +25,8 @@ use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::ToolOutcome;
 use maka_agent_facts::input::InvocationInput;
 use maka_agent_facts::input::MessageInput;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ToolInput;
+use maka_agent_facts::model::{ModelPart, recorded::ModelObservation};
 use maka_agent_facts::tool_output::DurableToolProjection;
 use maka_agent_facts::tool_output::ProjectionPart;
 use sqlx::{Connection, Row, SqliteConnection};
@@ -129,7 +129,7 @@ async fn additions(
            JOIN runtime_events o ON o.invocation_id=i.invocation_id AND o.kind='model_observed'
              AND json_extract(o.event_json,'$.fact.step_id')=i.operation_id AND o.sequence<i.sequence
            WHERE i.kind='model_interrupted' AND i.sequence>?1 AND json_extract(i.event_json,'$.invocation.session_id')=?2
-             AND json_extract(o.event_json,'$.fact.event.kind') IN ('source','part_finished','tool_call','provider_tool_result'))",
+             AND json_extract(o.event_json,'$.fact.event.kind')='part')",
     ).bind(basis.sequence as i64).bind(session).fetch_one(&mut *connection).await?;
     if unobserved_progress {
         return Ok(None);
@@ -252,17 +252,19 @@ fn increment(fact: &Fact, basis: &AcceptedMainContext) -> Option<u64> {
             }
             0
         }
-        Fact::ModelObserved { event, .. } => match event {
-            ModelEvent::PartStarted { .. } => 12,
-            ModelEvent::PartDelta { text, .. } => text_units(text),
-            ModelEvent::ToolCall(call) => {
+        Fact::ModelObserved {
+            event: ModelObservation::Part(record),
+            ..
+        } => match record.part.as_ref() {
+            ModelPart::Text { text, .. } => 12 + text.chunks().map(text_units).sum::<u64>(),
+            ModelPart::ToolCall { call } => {
                 let input_units = match &call.input {
                     ToolInput::Json(value) => text_units(&value.to_string()),
                     ToolInput::InvalidJson { raw } => text_units(raw),
                 };
                 text_units(&call.name) + input_units + 12
             }
-            ModelEvent::ProviderToolResult { output, .. } => text_units(&output.to_string()) + 12,
+            ModelPart::ToolResult { output, .. } => text_units(&output.to_string()) + 12,
             _ => 0,
         },
         Fact::ToolSettled { outcome, .. } => {

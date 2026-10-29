@@ -30,7 +30,6 @@ pub(crate) mod read;
 mod report;
 mod request;
 pub use report::{ContextReport, ContextRequest, ContextRequestState};
-pub mod prepared;
 pub(crate) mod safety;
 pub(crate) mod selection;
 pub mod semantic;

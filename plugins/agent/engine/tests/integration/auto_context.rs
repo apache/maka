@@ -25,7 +25,6 @@ use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::context::ModelRequestContext;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
-use serde_json::json;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -33,7 +32,6 @@ use std::sync::{
 use tokio::{net::TcpListener, sync::Barrier};
 use tokio_util::sync::CancellationToken;
 
-#[path = "auto_context/background.rs"]
 mod background;
 
 fn context(window: Option<u64>) -> Option<ModelRequestContext> {

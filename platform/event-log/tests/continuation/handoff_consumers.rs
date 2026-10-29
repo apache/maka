@@ -22,10 +22,9 @@ use maka_agent_facts::input::DeliveredMessage;
 use maka_agent_facts::message::MessageDisposition;
 use maka_agent_facts::message::Placement;
 use maka_agent_facts::message::RootSourceMessage;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::TextKind;
+use maka_agent_facts::model::recorded::{CompletionPart, ModelCompletion};
 use maka_event_log::{
     message_resolution::{MessageExecution, MessageResolution},
     observation::StreamFact,
@@ -201,46 +200,23 @@ async fn handoff_output_keeps_one_public_identity_and_all_physical_evidence_afte
             ),
         )
         .await;
-        for event in [
-            ModelEvent::PartStarted {
-                id: "part".into(),
-                text_kind: TextKind::Text,
-                provider_options: None,
-            },
-            ModelEvent::PartDelta {
-                id: "part".into(),
-                text: text.into(),
-                provider_options: None,
-            },
-            ModelEvent::PartFinished {
-                id: "part".into(),
-                provider_options: None,
-            },
-        ] {
-            append(
-                &log,
-                &RuntimeEvent::new(
-                    current.invocation.clone(),
-                    Fact::ModelObserved {
-                        step_id: step_id.clone(),
-                        event,
-                    },
-                ),
-            )
-            .await;
-        }
         append(
             &log,
             &RuntimeEvent::new(
                 current.invocation.clone(),
                 Fact::ModelCompleted {
-                    step_id,
-                    output: ModelStep {
-                        parts: vec![ModelPart::Text {
-                            text_kind: TextKind::Text,
-                            text: text.into(),
-                            provider_options: None,
-                        }],
+                    step_id: step_id.clone(),
+                    output: ModelCompletion {
+                        parts: vec![model_part(
+                            &current.invocation.invocation_id,
+                            &step_id,
+                            0,
+                            ModelPart::Text {
+                                text_kind: TextKind::Text,
+                                text: text.into(),
+                                provider_options: None,
+                            },
+                        )],
                         finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
                         usage: Default::default(),
                         provider_options: None,
@@ -297,7 +273,7 @@ async fn handoff_output_keeps_one_public_identity_and_all_physical_evidence_afte
         "control must follow the physical owner"
     );
     let mut after = 0;
-    let mut texts = Vec::new();
+    let mut part_ids = Vec::new();
     loop {
         let page = log
             .session_stream_events("session", after, terminal, 2, 4096)
@@ -305,9 +281,44 @@ async fn handoff_output_keeps_one_public_identity_and_all_physical_evidence_afte
             .unwrap();
         for event in page.events {
             assert_eq!(event.root_run_id, root.invocation.run_id);
-            if let StreamFact::PartDelta { text, .. } = event.fact {
+            if let StreamFact::StepEnded {
+                step_id,
+                completed: true,
+                ..
+            } = event.fact
+            {
                 assert_ne!(event.invocation.run_id, root.invocation.run_id);
-                texts.push(text);
+                let source = log
+                    .session_events("session", event.sequence - 1, event.sequence, 1, 4096)
+                    .await
+                    .unwrap();
+                let [stored] = source.events.as_slice() else {
+                    panic!("one original completion source")
+                };
+                assert_eq!(stored.event.id, event.id);
+                assert_eq!(stored.event.invocation, event.invocation);
+                let Fact::ModelCompleted {
+                    step_id: original_step,
+                    output,
+                } = &stored.event.fact
+                else {
+                    panic!("model step delivery must identify its canonical completion")
+                };
+                assert_eq!(original_step, &step_id);
+                for part in &output.parts {
+                    let CompletionPart::Own(record) = part else {
+                        panic!("completion-only fixture owns its text")
+                    };
+                    assert_eq!(record.ordinal, 0);
+                    assert!(matches!(
+                        record.part.as_ref(),
+                        ModelPart::Text {
+                            text_kind: TextKind::Text,
+                            ..
+                        }
+                    ));
+                    part_ids.push(record.message_id.clone());
+                }
             }
         }
         let Some(next) = page.next_after else {
@@ -316,8 +327,18 @@ async fn handoff_output_keeps_one_public_identity_and_all_physical_evidence_afte
         assert!(next > after);
         after = next;
     }
-    assert_eq!(texts, ["first answer", "second answer"]);
     let rows = transcript(&log, "session").await;
+    let texts: Vec<_> = part_ids
+        .iter()
+        .map(|id| {
+            rows.iter()
+                .find(|row| row["id"].as_str() == Some(id.as_str()))
+                .unwrap()["text"]
+                .as_str()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(texts, ["first answer", "second answer"]);
     for text in ["root", "first answer", "second answer"] {
         assert_eq!(
             rows.iter().filter(|row| row["text"] == text).count(),
@@ -373,4 +394,29 @@ async fn transcript(log: &EventLog, session: &str) -> Vec<Value> {
         );
     }
     rows
+}
+
+fn model_part(
+    invocation: &str,
+    step: &str,
+    ordinal: u64,
+    part: maka_agent_facts::model::ModelPart,
+) -> maka_agent_facts::model::recorded::CompletionPart {
+    use maka_agent_facts::model::{
+        ModelPart,
+        recorded::{CompletionPart, ModelPartRecord},
+    };
+    let message_id = match &part {
+        ModelPart::ToolCall { call } => {
+            maka_agent_facts::tool_call::tool_use_id(invocation, &format!("{step}:{}", call.id))
+        }
+        _ => uuid::Uuid::new_v4().to_string(),
+    };
+    CompletionPart::Own(ModelPartRecord {
+        ordinal,
+        message_id,
+        started_at: std::time::SystemTime::now(),
+        provider_part_id: None,
+        part: std::sync::Arc::new(part),
+    })
 }

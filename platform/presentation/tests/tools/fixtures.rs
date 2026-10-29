@@ -23,12 +23,13 @@ use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::StoredEvent;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelFinishReason;
 use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::ModelToolCall;
 use maka_agent_facts::model::TextKind;
+use maka_agent_facts::model::recorded::{
+    CompletionPart, ModelCompletion, ModelObservation, ModelPartRecord, RecordedPartRef,
+};
 use serde_json::json;
 use std::time::{Duration, UNIX_EPOCH};
 pub(super) fn opening() -> Fact {
@@ -61,27 +62,6 @@ pub(super) fn step(facts: &mut Vec<Fact>, id: &str, text: bool, native: bool) {
     });
     let mut parts = Vec::new();
     if text {
-        for event in [
-            ModelEvent::PartStarted {
-                id: "text".into(),
-                text_kind: TextKind::Text,
-                provider_options: None,
-            },
-            ModelEvent::PartDelta {
-                id: "text".into(),
-                text: "Reading".into(),
-                provider_options: None,
-            },
-            ModelEvent::PartFinished {
-                id: "text".into(),
-                provider_options: None,
-            },
-        ] {
-            facts.push(Fact::ModelObserved {
-                step_id: id.into(),
-                event,
-            });
-        }
         parts.push(ModelPart::Text {
             text_kind: TextKind::Text,
             text: "Reading".into(),
@@ -95,22 +75,8 @@ pub(super) fn step(facts: &mut Vec<Fact>, id: &str, text: bool, native: bool) {
         provider_options: Some(json!({"vendor":{"signature":"proof"}})),
         provider_executed: native,
     };
-    facts.push(Fact::ModelObserved {
-        step_id: id.into(),
-        event: ModelEvent::ToolCall(call.clone()),
-    });
     parts.push(ModelPart::ToolCall { call });
     if native {
-        facts.push(Fact::ModelObserved {
-            step_id: id.into(),
-            event: ModelEvent::ProviderToolResult {
-                id: "raw".into(),
-                name: "exec".into(),
-                output: json!({"native":true}),
-                is_error: false,
-                provider_options: None,
-            },
-        });
         parts.push(ModelPart::ToolResult {
             id: "raw".into(),
             name: "exec".into(),
@@ -119,9 +85,41 @@ pub(super) fn step(facts: &mut Vec<Fact>, id: &str, text: bool, native: bool) {
             provider_options: None,
         });
     }
+    let parts = parts
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, part)| {
+            let message_id = match &part {
+                ModelPart::ToolCall { call } => {
+                    maka_presentation::tool_message_id("invocation", &format!("{id}:{}", call.id))
+                }
+                _ => format!("{id}:part:{ordinal}"),
+            };
+            let record = ModelPartRecord {
+                ordinal: ordinal as u64,
+                message_id,
+                started_at: UNIX_EPOCH + Duration::from_millis(1000 + facts.len() as u64),
+                provider_part_id: None,
+                part: std::sync::Arc::new(part),
+            };
+            if native && !matches!(record.part.as_ref(), ModelPart::Text { .. }) {
+                let event_id = format!("event_{}", facts.len());
+                facts.push(Fact::ModelObserved {
+                    step_id: id.into(),
+                    event: ModelObservation::Part(record.clone()),
+                });
+                CompletionPart::Ref(RecordedPartRef {
+                    event_id,
+                    ordinal: record.ordinal,
+                })
+            } else {
+                CompletionPart::Own(record)
+            }
+        })
+        .collect();
     facts.push(Fact::ModelCompleted {
         step_id: id.into(),
-        output: ModelStep {
+        output: ModelCompletion {
             parts,
             finish_reason: ModelFinishReason::ToolCalls,
             usage: Default::default(),
