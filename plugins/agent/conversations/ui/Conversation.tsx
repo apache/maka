@@ -84,6 +84,7 @@ import {
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
+import { MessageEdit } from '../../../../products/maka/workbench/app/MessageEdit';
 import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
@@ -180,6 +181,10 @@ type ConversationProps = {
   client: ScopedHost;
   control: Control;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
+  /** Edit and resend a user message (desktop): fork before its turn with its text. */
+  edit?(action: Extract<SessionAction, { kind: 'fork' }>, text: string): Promise<boolean>;
+  /** Text for an empty draft once it loads, taken once (a fork made to edit a message). */
+  takePrefill?(): string | null;
   commands(): void;
   visible(): boolean;
   foreground(): boolean;
@@ -240,6 +245,17 @@ export function Conversation(props: ConversationProps) {
   const client = props.client;
   const sessionId = client.sessionId;
   const rows = signal<Row[]>([]);
+  // The first user message of a turn opened it; later ones in the same turn steered it.
+  const opensTurn = (row: Row) => {
+    const first = rows().find(
+      (other) => other.role === 'user' && other.field === 'body' && other.turnId === row.turnId,
+    );
+    return (
+      first === undefined ||
+      (first.position?.sourceSequence === row.position?.sourceSequence &&
+        first.position?.itemIndex === row.position?.itemIndex)
+    );
+  };
   const live = signal<Row[]>([]);
   const toolActivity = signal<ToolActivity[]>([]);
   const parts = signal<LivePart[]>([]);
@@ -2121,6 +2137,11 @@ export function Conversation(props: ConversationProps) {
         draft.set(stored.text);
         attachments.restore(stored.attachments);
         draftReady.set(true);
+        const prefill = props.takePrefill?.() ?? null;
+        if (prefill && stored.text === '' && stored.attachments.length === 0) {
+          changeDraft(prefill);
+          props.focusComposer();
+        }
         void attachments.start();
         const operations = await pendingSends(client);
         if (!alive) return;
@@ -2443,6 +2464,20 @@ export function Conversation(props: ConversationProps) {
                             fork={props.fork}
                           />
                         )}
+                        editMessage={
+                          !platform.isTerminal && props.edit
+                            ? (row, ownerKey) => (
+                                <MessageEdit
+                                  row={row}
+                                  ownerKey={ownerKey}
+                                  sessionId={sessionId}
+                                  through={() => latestKnown}
+                                  opensTurn={() => opensTurn(row())}
+                                  edit={props.edit!}
+                                />
+                              )
+                            : undefined
+                        }
                       />
                     );
                   }}
