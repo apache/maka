@@ -565,6 +565,29 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   const commandNew = (context: ActionContext) => {
     if (closeCommand(context)) newConversation(context.sessionId);
   };
+  // The Bot is one persistent Session per installation; the first open creates it
+  // in the current conversation's workspace, later opens return the same Session.
+  const commandBot = (context: ActionContext) => {
+    const sessionId = context.sessionId;
+    if (!closeCommand(context) || sessionId === null) return;
+    void (async () => {
+      try {
+        error.set('');
+        const result = await control('openBot', {
+          workspace: { kind: 'session', sessionId },
+        });
+        if (!alive) return;
+        if (result.kind !== 'opened')
+          throw new UiError('Bot could not be opened: {reason}', {
+            reason: result.reason ?? result.kind,
+          });
+        await switchSession(result.sessionId, { sessionId, instance: null });
+        if (result.created) await browsing.refresh();
+      } catch (reason) {
+        report(reason);
+      }
+    })();
+  };
   const commandWorkspace = (context: ActionContext) => {
     if (closeCommand(context)) open({ kind: 'workspaces', sessionId: context.sessionId });
   };
@@ -1356,6 +1379,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     enabled(id: string) {
       if (!shell() || reloading()) return false;
       if (id === 'files') return handle() !== null && workspace() !== null;
+      if (id === 'bot') return handle() !== null;
       if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
         return handle() !== null;
       if (id === 'stop') return handle()?.invocation() != null;
@@ -1375,6 +1399,8 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
           return commandSessions(source);
         case 'new':
           return commandNew(source);
+        case 'bot':
+          return commandBot(source);
         case 'workspace':
           return commandWorkspace(source);
         case 'models':
@@ -1441,6 +1467,9 @@ function projectComposerSession(
       read: (offset) => host.query('agent', 'checklist', { sessionId: owner.sessionId, offset }),
       watch: (offset) =>
         host.subscribe('agent', 'watchChecklist', { sessionId: owner.sessionId, offset }),
+    },
+    bot: {
+      watch: () => host.subscribe('agent', 'watchBotOutbox', { after: 0 }),
     },
     queue: {
       sessionId: owner.queue.sessionId,

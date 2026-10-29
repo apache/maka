@@ -28,6 +28,7 @@ import { platform, windowSize } from 'nsh';
 import { keymap } from 'nsh';
 import { DraftAttachments } from '../../../../products/maka/workbench/app/Attachments';
 import { Checklist } from '../../../../products/maka/workbench/app/Checklist';
+import { BotMessages } from '../../../../products/maka/workbench/app/BotMessages';
 import { QueueDock } from '../../../../products/maka/workbench/app/QueueDock';
 import { SessionPermissionsSelect } from '../../../../products/maka/workbench/app/SessionPermissionsSelect';
 import type { ComposerViewInput } from '../../../../packages/plugin-sdk/src/composer-view.js';
@@ -260,6 +261,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             return (
               <View>
                 <ProjectMcp owner={owner.projectMcp} />
+                <If when={owner.bot !== undefined}>
+                  <BotMessages sessionId={owner.sessionId} source={owner.bot!} />
+                </If>
                 {/* On the desktop the todo dock joins the composer, so the queue goes above it. */}
                 <If when={!platform.isTerminal}>
                   <QueueDock session={owner.queue} />

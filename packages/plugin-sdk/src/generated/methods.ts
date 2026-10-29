@@ -34,6 +34,7 @@ export type AgentCompactOutput_AgentCompactRejection =
   | 'archived'
   | 'backend_unavailable'
   | 'workspace_changed';
+export type AgentOpenBotOutput_AgentBotRejection = 'disabled' | 'creation_rejected';
 /**
  * All parts are subscription items; only End admits a complete preview.
  * Offsets and byte counts refer to original bytes, not Base64 or UTF-16 lengths.
@@ -298,6 +299,32 @@ export interface ServiceMethods {
       input: Runtime.AgentAttachmentImageRead;
       output: Runtime.AgentAttachmentImagePage;
     };
+    botOutbox: {
+      mode: 'query';
+      input: {
+        /**
+         * Return messages with a sequence greater than this value. When more than
+         * 100 match, the newest 100 are returned and `truncated` is set.
+         */
+        after?: number;
+      };
+      output: {
+        enabled: boolean;
+        sessionId?: string | null;
+        /**
+         * Highest sequence recorded so far; 0 when empty.
+         */
+        through: number;
+        /**
+         * @maxItems 100
+         */
+        messages: AgentBotOutboxOutput_AgentBotMessage[];
+        /**
+         * True when older matching messages were omitted to stay within 100.
+         */
+        truncated: boolean;
+      };
+    };
     catalog: {
       mode: 'subscription';
       input: Runtime.AgentList;
@@ -508,6 +535,26 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentSessionRead;
       output: Runtime.AgentObservation;
+    };
+    openBot: {
+      mode: 'mutation';
+      /**
+       * Open this installation's Bot Session, creating it on first use.
+       */
+      input: {
+        workspace: Runtime.AgentWorkspaceSelection;
+        title?: string | null;
+      };
+      output:
+        | {
+            kind: 'opened';
+            sessionId: string;
+            created: boolean;
+          }
+        | {
+            kind: 'rejected';
+            reason: AgentOpenBotOutput_AgentBotRejection;
+          };
     };
     pendingInteractions: {
       mode: 'query';
@@ -733,6 +780,32 @@ export interface ServiceMethods {
       mode: 'subscription';
       input: Runtime.AgentWatch;
       output: Runtime.AgentDeliveryPage;
+    };
+    watchBotOutbox: {
+      mode: 'subscription';
+      input: {
+        /**
+         * Return messages with a sequence greater than this value. When more than
+         * 100 match, the newest 100 are returned and `truncated` is set.
+         */
+        after?: number;
+      };
+      output: {
+        enabled: boolean;
+        sessionId?: string | null;
+        /**
+         * Highest sequence recorded so far; 0 when empty.
+         */
+        through: number;
+        /**
+         * @maxItems 100
+         */
+        messages: AgentWatchBotOutboxOutput_AgentBotMessage[];
+        /**
+         * True when older matching messages were omitted to stay within 100.
+         */
+        truncated: boolean;
+      };
     };
     watchChecklist: {
       mode: 'subscription';
@@ -1196,6 +1269,28 @@ export interface ServiceMethods {
   };
 }
 /**
+ * One message the Bot deliberately sent to its user.
+ */
+export interface AgentBotOutboxOutput_AgentBotMessage {
+  /**
+   * Monotonic position in the outbox, starting at 1.
+   */
+  sequence: number;
+  /**
+   * The model-chosen idempotency key of the `SendUser` call.
+   */
+  messageId: string;
+  /**
+   * Position of this message within its `SendUser` call.
+   */
+  index: number;
+  text: string;
+  /**
+   * Milliseconds since the Unix epoch when the message was recorded.
+   */
+  at: number;
+}
+/**
  * Canonical physical execution receipt, independent of the current Session tip.
  */
 export interface AgentCompactOutput_AgentExecution {
@@ -1246,6 +1341,28 @@ export interface AgentSkillCandidatesOutput_AgentSkillCandidate {
   description: string;
   invocation: string;
   [k: string]: unknown | undefined;
+}
+/**
+ * One message the Bot deliberately sent to its user.
+ */
+export interface AgentWatchBotOutboxOutput_AgentBotMessage {
+  /**
+   * Monotonic position in the outbox, starting at 1.
+   */
+  sequence: number;
+  /**
+   * The model-chosen idempotency key of the `SendUser` call.
+   */
+  messageId: string;
+  /**
+   * Position of this message within its `SendUser` call.
+   */
+  index: number;
+  text: string;
+  /**
+   * Milliseconds since the Unix epoch when the message was recorded.
+   */
+  at: number;
 }
 export interface SettingsUpdateInput_ConnectionVersionBasis {
   connectionId: string;

@@ -42,6 +42,7 @@ mod plan;
 mod preferences;
 mod projects;
 pub(crate) use notifications::ReturnRoute;
+mod bot;
 mod git;
 mod global_instructions;
 mod mcp;
@@ -176,6 +177,7 @@ pub(crate) struct Owner {
     pub recall: Arc<recall::Recall>,
     scheduler: Arc<scheduler::Scheduler>,
     todo: Arc<todo::Todo>,
+    bot: Arc<bot::Bot>,
     goals: Arc<goal::Goals>,
     plans: Arc<plan::Plans>,
     recap_storage: Arc<maka_host_runtime::storage::Storage>,
@@ -384,6 +386,10 @@ impl Owner {
         if settings.todo {
             additional.extend(todo.tools());
         }
+        let bot = Arc::new(bot::Bot::new(persistence.store().clone(), prefix.clone()));
+        if settings.bot {
+            additional.extend(bot.tools());
+        }
         let mut mcp = match crate::mcp::Servers::open(
             &mcp_configurations,
             persistence.store().clone(),
@@ -516,6 +522,7 @@ impl Owner {
             goals,
             auxiliary,
             todo,
+            bot,
             recap_storage,
             scheduler,
             recall,
@@ -652,7 +659,7 @@ impl Owner {
     ) -> Result<Created, String> {
         let operation = operation.clone();
         self.resource_work(scope, move |owner, scope| {
-            Box::pin(async move { owner.create_inner(input, &operation, &scope).await })
+            Box::pin(async move { owner.create_inner(input, &operation, &scope, false).await })
         })
         .await
     }
@@ -661,6 +668,7 @@ impl Owner {
         input: Create,
         operation: &maka_plugin_core::operation::RecoveryRef,
         scope: &maka_capabilities::call::Scope,
+        bot: bool,
     ) -> Result<Created, String> {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(Created::Rejected { reason });
@@ -673,6 +681,12 @@ impl Owner {
             });
         }
         let mut tools = input.tools;
+        // Only the Bot Session may hold SendUser; ordinary creation cannot request it.
+        if !bot && bot::is_bot(tools.as_deref()) {
+            return Ok(Created::Rejected {
+                reason: Rejection::ToolsUnavailable,
+            });
+        }
         if let Some(names) = &mut tools {
             names.sort();
             if names.windows(2).any(|pair| pair[0] == pair[1]) {
@@ -745,7 +759,9 @@ impl Owner {
                         reason: Rejection::WorkspaceUnavailable,
                     });
                 }
-                if let Some(parent) = session.configuration.tools {
+                if let Some(mut parent) = session.configuration.tools {
+                    // A Session derived from the Bot never inherits its voice.
+                    parent.retain(|name| name != bot::SEND_USER);
                     tools = Some(match tools {
                         None => parent,
                         Some(names) => names
@@ -975,7 +991,8 @@ impl Owner {
             selected.excluding(crate::workhub::tasks::graph::NAMES)
         };
         let selected = match basis.allowed_tools.as_deref() {
-            None => selected.clone(),
+            // SendUser is granted only by the Bot Session's explicit allow-list.
+            None => selected.excluding(&[bot::SEND_USER]),
             Some(allowed) => {
                 let names = selected.names();
                 let excluded: Vec<_> = names
@@ -1396,6 +1413,7 @@ impl Owner {
             owner.engine.drain().await;
             let scheduler = owner.scheduler.finish().await;
             let todo = owner.todo.finish().await;
+            let bot = owner.bot.finish().await;
             let goals = owner.goals.finish().await;
             let plans = owner.plans.finish().await;
             let graph = match &owner.graphs {
@@ -1420,6 +1438,7 @@ impl Owner {
             mcp?;
             scheduler?;
             todo?;
+            bot?;
             goals?;
             plans?;
             graph?;

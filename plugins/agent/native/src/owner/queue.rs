@@ -42,6 +42,7 @@ impl Owner {
         self.recover_removed_sessions();
         self.scheduler.bind(self);
         self.todo.bind(self);
+        self.bot.bind(self);
         self.goals.bind(self);
         self.plans.bind(self);
         self.start_plans();
@@ -423,8 +424,11 @@ impl Owner {
                 configuration.editing_tools = source.accepted.editing_tools;
                 let tools =
                     self.selected_tools(&basis, basis.tool_discovery, configuration.editing_tools)?;
-                let allow_prior_unknown =
-                    basis.background.is_none() && delivered.message.origin.is_none();
+                // The Bot Session lives across crashes: its wakes and delegated results must
+                // continue after an unknown tool outcome, with the model told, not replayed.
+                let allow_prior_unknown = (basis.background.is_none()
+                    && delivered.message.origin.is_none())
+                    || super::bot::is_bot(basis.allowed_tools.as_deref());
                 PreparedRun::Model(Box::new(RunInput {
                     model_source: Some(Arc::new(source)),
                     model_revision: Some(prepared.revision),

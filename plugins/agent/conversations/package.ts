@@ -120,6 +120,22 @@ export default {
           shortcut: 'mod+n',
           trigger: 'new',
         },
+        bot: {
+          kind: 'command',
+          title: {
+            fallback: 'Open Bot',
+            translations: { 'zh-CN': '打开 Bot', 'zh-TW': '開啟 Bot' },
+          },
+          description: {
+            fallback: 'Your persistent Bot conversation, created on first use',
+            translations: {
+              'zh-CN': '常驻的 Bot 对话，首次使用时创建',
+              'zh-TW': '常駐的 Bot 對話，首次使用時建立',
+            },
+          },
+          order: 25,
+          trigger: 'bot',
+        },
         workspace: {
           kind: 'command',
           title: {

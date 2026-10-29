@@ -35,6 +35,9 @@ mod title_tests;
 #[path = "tests/todo.rs"]
 mod todo_tests;
 
+#[path = "tests/bot.rs"]
+mod bot_tests;
+
 #[path = "tests/computer_controls.rs"]
 mod computer_controls;
 
@@ -722,6 +725,7 @@ impl Fixture {
             goals: false,
             plans: false,
             todo: false,
+            bot: false,
             automatic_titles: false,
             recaps: false,
             recall: false,
