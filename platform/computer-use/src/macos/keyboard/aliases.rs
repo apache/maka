@@ -44,7 +44,7 @@ enum Alias {
 
 #[derive(Debug)]
 enum ParseError<'a> {
-    UnknownAlias { _token: &'a str },
+    UnknownAlias { token: &'a str },
     UnsupportedKey { _group: &'a str },
     OrdinaryBeforeFinal { _group: &'a str },
     MissingOrdinary { _group: &'a str },
@@ -74,13 +74,97 @@ impl SynthesizedEventError {
 impl ParseError<'_> {
     fn into_tool_error(self) -> ToolError {
         let (domain, code) = match self {
-            Self::UnknownAlias { .. } => ("ComputerUse.XKeysym.Error", 0),
+            Self::UnknownAlias { token } => {
+                return crate::macos::server_error(format_args!(
+                    "keyNotFound({})",
+                    quoted_alias(token)
+                ));
+            }
             Self::UnsupportedKey { .. } => ("ComputerUse.XKeysymString.Error", 0),
             Self::OrdinaryBeforeFinal { .. } => ("ComputerUse.XKeysymString.Error", 1),
             Self::MissingOrdinary { .. } => ("ComputerUse.XKeysymString.Error", 2),
         };
         default_swift_error(domain, code)
     }
+}
+
+fn quoted_alias(token: &str) -> String {
+    fn has_grapheme_break(left: char, right: char) -> bool {
+        let mut bytes = [0; 8];
+        let left_len = left.encode_utf8(&mut bytes).len();
+        let right_len = right.encode_utf8(&mut bytes[left_len..]).len();
+        let pair = std::str::from_utf8(&bytes[..left_len + right_len])
+            .expect("encoded Unicode scalars form valid UTF-8");
+        pair.graphemes(true).nth(1).is_some()
+    }
+
+    fn push_hex_escape(output: &mut String, scalar: char) {
+        use std::fmt::Write;
+        let width = if scalar.is_ascii() {
+            2
+        } else if u32::from(scalar) <= 0xffff {
+            4
+        } else {
+            8
+        };
+        write!(output, "\\u{{{:0width$X}}}", u32::from(scalar))
+            .expect("writing into a String cannot fail");
+    }
+
+    let mut quoted = String::from("\"");
+    let mut needs_break = true;
+    for scalar in token.chars() {
+        let escape = match scalar {
+            '\\' => Some("\\\\"),
+            '\'' => Some("\\'"),
+            '"' => Some("\\\""),
+            '\0' => Some("\\0"),
+            '\n' => Some("\\n"),
+            '\r' => Some("\\r"),
+            '\t' => Some("\\t"),
+            _ => None,
+        };
+        if let Some(escape) = escape {
+            quoted.push_str(escape);
+            needs_break = true;
+            continue;
+        }
+        let nonprintable_ascii = scalar.is_ascii() && !(' '..='~').contains(&scalar);
+        let combines_with_escape = needs_break
+            && !has_grapheme_break(
+                quoted
+                    .chars()
+                    .next_back()
+                    .expect("quoted alias has an opening quote"),
+                scalar,
+            );
+        if nonprintable_ascii || combines_with_escape {
+            push_hex_escape(&mut quoted, scalar);
+            needs_break = true;
+        } else {
+            quoted.push(scalar);
+            needs_break = false;
+        }
+    }
+
+    // A trailing prepend scalar must not absorb the closing quote or an escape.
+    let mut tail_start = quoted.len();
+    let mut next = '"';
+    for (index, scalar) in quoted.char_indices().rev() {
+        if has_grapheme_break(scalar, next) {
+            break;
+        }
+        tail_start = index;
+        next = '\\';
+    }
+    if tail_start < quoted.len() {
+        let tail = quoted.split_off(tail_start);
+        for scalar in tail.chars() {
+            push_hex_escape(&mut quoted, scalar);
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 // Swift.Error domains use the qualified type name and enum tag. Foundation
@@ -118,12 +202,12 @@ fn parse(input: &str) -> Result<Vec<ParsedKeyPress>, ParseError<'_>> {
                 .into_iter()
                 .map(|token| {
                     if token.is_ascii() {
-                        lookup(token).ok_or(ParseError::UnknownAlias { _token: token })
+                        lookup(token).ok_or(ParseError::UnknownAlias { token: token })
                     } else {
                         let normalized = NSString::from_str(token)
                             .precomposedStringWithCanonicalMapping()
                             .to_string();
-                        lookup(&normalized).ok_or(ParseError::UnknownAlias { _token: token })
+                        lookup(&normalized).ok_or(ParseError::UnknownAlias { token: token })
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
