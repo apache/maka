@@ -227,7 +227,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   sessionId={owner.sessionId}
                   source={owner.checklist}
                   tuck={platform.isTerminal ? undefined : compact() ? 16 : 24}
-                  joined={platform.isTerminal ? undefined : joined.set}
+                  joined={platform.isTerminal ? undefined : (shown) => joined.set(shown)}
                 />
                 <If when={platform.isTerminal}>
                   <QueueDock session={owner.queue} />
