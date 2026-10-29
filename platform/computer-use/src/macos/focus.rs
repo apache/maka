@@ -45,6 +45,7 @@ use std::{
 use tokio::sync::watch;
 
 type Completion = watch::Receiver<Option<Result<(), ToolError>>>;
+type InputRetirement = Arc<dyn Fn() -> Result<(), ToolError> + Send + Sync>;
 const COMMAND_FLAG: u64 = 1 << 20;
 
 /// A stable, non-serialized use of one real controller by one Host epoch.
@@ -60,6 +61,7 @@ pub(crate) struct Resource {
     retained_runtime: Mutex<Option<Arc<Runtime>>>,
     pending: Mutex<usize>,
     drained: Condvar,
+    input_retirement: Mutex<Option<InputRetirement>>,
 }
 
 enum UseState {
@@ -92,7 +94,30 @@ impl Resource {
             retained_runtime: Mutex::new(None),
             pending: Mutex::new(0),
             drained: Condvar::new(),
+            input_retirement: Mutex::new(None),
         })
+    }
+
+    pub(crate) fn set_input_retirement(&self, callback: InputRetirement) {
+        *self
+            .input_retirement
+            .lock()
+            .expect("native input retirement poisoned") = Some(callback.clone());
+        if self.is_sealed() {
+            self.retire_inputs(callback);
+        }
+    }
+
+    fn retire_inputs(&self, callback: InputRetirement) {
+        if let Err(error) = callback() {
+            let mut failure = self
+                .callback_failure
+                .lock()
+                .expect("native callback failure poisoned");
+            if failure.is_none() {
+                *failure = Some(error);
+            }
+        }
     }
 
     /// Called only after the Host has attached this exact resource successfully.
@@ -365,11 +390,23 @@ impl Resource {
 
 impl NativeMonitorResource for Resource {
     fn seal_admission(&self) {
-        let _pending = self
-            .pending
-            .lock()
-            .expect("native monitor pending work poisoned");
-        self.sealed.store(true, Ordering::Release);
+        let first = {
+            let _pending = self
+                .pending
+                .lock()
+                .expect("native monitor pending work poisoned");
+            !self.sealed.swap(true, Ordering::AcqRel)
+        };
+        if first {
+            let callback = self
+                .input_retirement
+                .lock()
+                .expect("native input retirement poisoned")
+                .clone();
+            if let Some(callback) = callback {
+                self.retire_inputs(callback);
+            }
+        }
     }
     fn close(&self) -> NativeMonitorFuture {
         let mut pending = self.completion();

@@ -235,6 +235,9 @@ enum Command {
     CancelKeyboard {
         token: KeyboardId,
     },
+    CancelResourceInputs {
+        resource: std::sync::Weak<super::focus::Resource>,
+    },
     ClearApplication {
         slot: u64,
     },
@@ -529,6 +532,27 @@ impl Controller {
                 }
             }
         };
+        let weak_owner = Arc::downgrade(&self.inner);
+        let weak_resource = Arc::downgrade(&resource);
+        resource.set_input_retirement(Arc::new(move || {
+            let Some(owner) = weak_owner.upgrade() else {
+                return Ok(());
+            };
+            let transport = {
+                let state = owner
+                    .lifecycle
+                    .lock()
+                    .expect("AX controller lifecycle poisoned");
+                match &*state {
+                    Lifecycle::Running(transport) => Some(transport.clone()),
+                    _ => None,
+                }
+            };
+            if let Some(transport) = transport {
+                transport.cancel_resource_inputs(weak_resource.clone())?;
+            }
+            Ok(())
+        }));
         authority.attach(resource.clone()).await?;
         let setup = resource.clone();
         tokio::task::spawn_blocking(move || objc2::rc::autoreleasepool(|_| setup.start()))
@@ -547,6 +571,10 @@ impl Controller {
             .cloned();
         if let Some(resource) = resource {
             crate::NativeMonitorResource::seal_admission(resource.as_ref());
+            self.retire(Command::CancelResourceInputs {
+                resource: Arc::downgrade(&resource),
+            })
+            .await?;
             crate::NativeMonitorResource::close(resource.as_ref()).await?;
         }
         Ok(())
@@ -1081,6 +1109,26 @@ impl Application {
 }
 
 impl Transport {
+    fn cancel_resource_inputs(
+        &self,
+        resource: std::sync::Weak<super::focus::Resource>,
+    ) -> Result<(), ToolError> {
+        let (reply, _completion) = oneshot::channel();
+        {
+            let sender = self.sender.lock().expect("AX controller sender poisoned");
+            let Some(sender) = sender.as_ref() else {
+                return Ok(());
+            };
+            sender
+                .send(Envelope {
+                    command: Command::CancelResourceInputs { resource },
+                    reply,
+                })
+                .map_err(cleanup_error)?;
+        }
+        wake(&self.wake)
+    }
+
     async fn start(
         pid: i32,
         generation: String,
@@ -1534,6 +1582,7 @@ impl WorkerState {
                 | Command::SetPosition { .. }
                 | Command::CancelIndexed { .. }
                 | Command::CancelKeyboard { .. }
+                | Command::CancelResourceInputs { .. }
                 | Command::ReleaseResolve { .. }
                 | Command::Stop
         ) {
@@ -1670,6 +1719,12 @@ impl WorkerState {
                     .remove(&token)
                     .ok_or_else(|| failed("native keyboard preparation has retired"))?;
                 pending.preparation.finish(self.pid, layout)?;
+                Ok(Response::Unit)
+            }
+            Command::CancelResourceInputs { resource } => {
+                if let Some(resource) = resource.upgrade() {
+                    self.cancel_keyboards(|pending| pending.preparation.uses_resource(&resource));
+                }
                 Ok(Response::Unit)
             }
             Command::CancelKeyboard { token } => {

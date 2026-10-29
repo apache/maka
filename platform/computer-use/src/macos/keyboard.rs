@@ -64,6 +64,10 @@ pub(super) struct PendingText {
 }
 
 impl PendingText {
+    pub(super) fn uses_resource(&self, resource: &Arc<Resource>) -> bool {
+        Arc::ptr_eq(&self.focus, resource)
+    }
+
     pub(super) fn finish(
         mut self,
         pid: i32,
