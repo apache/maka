@@ -59,8 +59,7 @@ pub trait ReadResource: Send + Sync + 'static {
 /// the execution adapter owns capacity and retains these values through cleanup.
 pub type Attachments = BTreeMap<String, Arc<dyn ReadResource>>;
 
-// Append to existing capabilities/src/call/attachments.rs; re-export
-// immutable_bytes from capabilities/src/call.rs. No authority/native custody.
+// No authority/native custody.
 struct FrozenBytes {
     name: String,
     bytes: Arc<[u8]>,

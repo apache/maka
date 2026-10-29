@@ -89,6 +89,75 @@ impl Session {
                 .map(str::to_owned)
                 .ok_or_else(|| failed(format!("{name} is required")))
         };
+        if matches!(operation, NativeComputerMethod::Click)
+            && input.get("element_index").is_none_or(Value::is_null)
+        {
+            let point = [
+                input::finite(input.get("x"), "x")?,
+                input::finite(input.get("y"), "y")?,
+            ];
+            let button = input::mac_mouse_button(&input["mouse_button"])?;
+            let count: i64 =
+                serde_json::from_value(input["click_count"].clone()).map_err(failed)?;
+            let key = self
+                .raw_mac_application(&approved, cancellation, language)
+                .await?;
+            let handle = self
+                .raw_mac_window(
+                    &key,
+                    &approved,
+                    MacWindowSelection::Retained,
+                    invocation,
+                    cancellation,
+                    language,
+                )
+                .await?;
+            if self.targets.get(&handle).unwrap().page_frame.is_none() {
+                let window = self
+                    .verify(&handle, invocation.session(), cancellation, language)
+                    .await?;
+                self.prepare_page_frame(&handle, &window, cancellation)
+                    .await?;
+            }
+            let frame = self
+                .targets
+                .get(&handle)
+                .unwrap()
+                .page_frame
+                .clone()
+                .expect("native geometry preparation retains its frame");
+            let record = self
+                .raw_computer
+                .mac_targets
+                .get(&key)
+                .ok_or_else(|| failed("native app target unavailable"))?;
+            let application = record.application.clone();
+            let controller = record.controller.clone();
+            let authority = invocation
+                .native_monitor_authority()
+                .ok_or_else(|| failed("native input requires its current Host monitor lease"))?;
+            if authority.subject() != &approved {
+                return Err(failed("native monitor lease belongs to a different app"));
+            }
+            let focus = controller.attach_focus(self.epoch, authority).await?;
+            let request = crate::macos::mouse::CoordinateClick {
+                application,
+                controller,
+                epoch: self.epoch,
+                frame,
+                input: crate::macos::mouse::Input {
+                    point,
+                    button,
+                    count,
+                },
+                cursor: self.owner.cursor(),
+                cancellation: cancellation.clone(),
+                focus,
+            };
+            let result = request.run(self.native.clone()).await;
+            self.targets.get_mut(&handle).unwrap().capture = None;
+            return result.map(|()| Value::Null);
+        }
         let action = match operation {
             NativeComputerMethod::Click => Action::Click {
                 target: position()?,

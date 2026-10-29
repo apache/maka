@@ -45,6 +45,7 @@ use std::{
 use tokio::sync::watch;
 
 type Completion = watch::Receiver<Option<Result<(), ToolError>>>;
+const COMMAND_FLAG: u64 = 1 << 20;
 
 /// A stable, non-serialized use of one real controller by one Host epoch.
 /// The Controller retains this even after a failed close; it cannot be reopened.
@@ -266,6 +267,31 @@ impl Resource {
         })();
         permit.complete(result.clone());
         result
+    }
+
+    pub(crate) fn coordinate_click_focus(
+        &self,
+        has_hit: bool,
+        window: impl FnOnce() -> Option<FocusActivationWindow>,
+    ) -> Result<(u64, bool), ToolError> {
+        let enforcer = match &*self.state.lock().expect("native monitor use poisoned") {
+            UseState::Running(enforcer) => enforcer.clone(),
+            _ => return Err(failed("native monitor is unavailable")),
+        };
+        if enforcer
+            .state
+            .lock()
+            .expect("native focus state poisoned")
+            .believes_focus
+        {
+            return Ok((0, false));
+        }
+        if has_hit {
+            self.enforce_with_window(window)?;
+            Ok((0, true))
+        } else {
+            Ok((COMMAND_FLAG, false))
+        }
     }
 
     fn completion(&self) -> Completion {

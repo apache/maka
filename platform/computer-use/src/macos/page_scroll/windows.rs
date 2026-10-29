@@ -19,8 +19,7 @@
 
 //! The controller thread's retained window table and AX notifications.
 //!
-//! Source provenance is the private mac-controller-window-map-source-closure
-//! record. No application input or AppKit operations run in this component.
+//! No application input or AppKit operations run in this component.
 
 use super::target::{
     actual_pid, ax_window_id, element_attribute, ensure_actual_pid_available, string_attribute,

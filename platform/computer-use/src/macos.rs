@@ -22,6 +22,7 @@
 pub(crate) mod controller;
 pub(crate) mod focus;
 pub(crate) mod keyboard;
+pub(crate) mod mouse;
 pub(crate) mod page_scroll;
 pub(crate) mod pasteboard;
 pub(crate) mod permission_subject;

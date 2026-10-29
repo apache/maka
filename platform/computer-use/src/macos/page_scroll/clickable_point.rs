@@ -17,9 +17,7 @@
  * under the License.
  */
 
-//! Read-only AX page anchors. Source provenance is recorded in the private
-//! mac-page-wiring-source-closure, mac-pages-chess-source-closure and
-//! mac-clickable-point-clipping-followup records.
+//! Read-only AX page anchors.
 
 use super::target::{
     action_names, element_attribute, element_frame, frame_attribute, string_attribute,
