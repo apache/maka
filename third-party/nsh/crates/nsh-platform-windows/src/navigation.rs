@@ -1014,9 +1014,15 @@ impl Nav {
         let Some(view) = m.view.clone() else { return };
         match modal_motion(m.config.animation, reduce_motion(surface)) {
             Some((duration, fade)) => {
+                if !fade {
+                    set_fade(&view, 1.0);
+                }
                 self.start(surface, duration, Motion::ModalIn { view, fade });
             }
-            None => surface.event(id, EventKind::Show, EventPayload::None),
+            None => {
+                set_fade(&view, 1.0);
+                surface.event(id, EventKind::Show, EventPayload::None);
+            }
         }
     }
 
@@ -1506,6 +1512,20 @@ pub(crate) fn end_batch(surface: &Rc<Surface>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modal_without_animation_is_visible_when_config_arrives_after_insertion() {
+        let surface = Surface::new(Default::default());
+        let modal = NshView::new(2, ViewKind::Modal);
+        present(&surface, &modal);
+        let config = ModalConfig {
+            animation: ModalAnimation::None,
+            ..Default::default()
+        };
+        modal_config(&surface, &modal, &config);
+        end_batch(&surface);
+        assert_eq!(modal.state().fade, 1.0);
+    }
 
     #[test]
     fn back_keys() {
