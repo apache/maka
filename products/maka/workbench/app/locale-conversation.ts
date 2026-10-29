@@ -485,7 +485,16 @@ export const conversationMessages = {
     '分支對話已建立，可在對話清單中開啟。',
   ],
   'Fork from this turn': ['Fork from this turn', '从本轮创建分支', '從本輪建立分支'],
-  'Edit and resend': ['Edit and resend', '编辑后重新发送', '編輯後重新傳送'],
+  'Edit and resend in a fork': [
+    'Edit and resend in a fork',
+    '在分支中编辑后重发',
+    '在分支中編輯後重新傳送',
+  ],
+  'Send or clear the draft first.': [
+    'Send or clear the draft first.',
+    '请先发送或清空草稿。',
+    '請先傳送或清空草稿。',
+  ],
   'Regenerate in a fork': ['Regenerate in a fork', '在分支中重新生成', '在分支中重新產生'],
   'This message has no text to edit.': [
     'This message has no text to edit.',
