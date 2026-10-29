@@ -881,11 +881,19 @@ export function InteractionComposer({
                               focusStyle={controlFocusStyle()}
                               disabledStyle={controlDisabledStyle}
                             >
-                              <ChoiceIndicator
-                                kind="radio"
-                                checked={answers()[index()]?.value === option().label}
-                                disabled={blocked()}
-                              />
+                              {/* As tall as the label's line, so the mark centres on it. */}
+                              <View
+                                style={{
+                                  height: bodyTextStyle.lineHeight,
+                                  justifyContent: 'center',
+                                }}
+                              >
+                                <ChoiceIndicator
+                                  kind="radio"
+                                  checked={answers()[index()]?.value === option().label}
+                                  disabled={blocked()}
+                                />
+                              </View>
                               <View
                                 style={[
                                   { flex: 1, minWidth: 0, gap: 4 },
