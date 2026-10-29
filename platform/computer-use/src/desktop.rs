@@ -397,6 +397,10 @@ impl Session {
                 Command::Observe { handle, .. }
                 | Command::Action { handle, .. }
                 | Command::BrowserRead { handle, .. }
+                | Command::BrowserEvaluate { handle, .. }
+                | Command::TabPageAssetsList { handle }
+                | Command::TabPageAssetsBundle { handle, .. }
+                | Command::BrowserCua { handle, .. }
                 | Command::BrowserWait { handle, .. }
                 | Command::BrowserMutation { handle, .. }
                 | Command::ClipboardRead { handle }
@@ -627,9 +631,10 @@ impl Session {
                     epoch: self.native_epoch.to_string(),
                     session: invocation.session().into(),
                     turn: invocation.turn().into(),
+                    native_observer_available: false,
                     operation_id: invocation.operation_id().map(str::to_owned),
                     browsers: browsers.clone(),
-                    command,
+                    command: Box::new(command),
                     language,
                 };
                 let connection = prepare_windows(&self.driver, cancellation).await?;
@@ -690,9 +695,10 @@ impl Session {
                     epoch: self.native_epoch.to_string(),
                     session: session.into(),
                     turn: turn.into(),
+                    native_observer_available: false,
                     operation_id: invocation.operation_id().map(str::to_owned),
                     browsers: browsers.clone(),
-                    command,
+                    command: Box::new(command),
                     language,
                 };
                 let connection = prepare_windows(&self.driver, cancellation).await?;

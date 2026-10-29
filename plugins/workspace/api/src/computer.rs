@@ -182,6 +182,19 @@ pub fn is_browser_target(candidate: &maka_agent_facts::interaction::GrantTarget)
     )
 }
 
+/// Match independent browsing-history consent for the actual selected profile.
+pub fn is_browser_history_target(candidate: &maka_agent_facts::interaction::GrantTarget) -> bool {
+    use maka_agent_facts::interaction::{GrantCapability, GrantScope};
+    let mut expected = target();
+    expected.capability = GrantCapability::BrowserHistory;
+    expected.scope = candidate.scope.clone();
+    candidate == &expected
+        && matches!(&candidate.scope,
+        GrantScope::BrowserProfile { browser_id, generation }
+            if !browser_id.is_empty() && !generation.is_empty())
+        && candidate.validate().is_ok()
+}
+
 /// Recognize file download consent from the original Computer Use producer.
 pub fn is_browser_download_target(candidate: &maka_agent_facts::interaction::GrantTarget) -> bool {
     is_browser_origin_target(
@@ -420,5 +433,39 @@ mod tests {
         }
         download.scope = GrantScope::Capability {};
         assert!(!is_browser_download_target(&download));
+    }
+}
+
+#[cfg(test)]
+mod browser_history_target_tests {
+    use super::*;
+    use maka_agent_facts::interaction::{GrantCapability, GrantScope};
+    #[test]
+    fn history_consent_cannot_alias_site_or_capability_consent() {
+        let mut history = target();
+        history.capability = GrantCapability::BrowserHistory;
+        history.scope = GrantScope::BrowserProfile {
+            browser_id: "maka:instance".to_owned(),
+            generation: "generation".to_owned(),
+        };
+        assert!(is_browser_history_target(&history));
+        assert!(!is_browser_target(&history));
+        assert!(!is_browser_download_target(&history));
+        let mut foreign = history.clone();
+        foreign.scope = GrantScope::BrowserOrigin {
+            origin: "https://example.test".to_owned(),
+        };
+        assert!(!is_browser_history_target(&foreign));
+        foreign.scope = GrantScope::Capability {};
+        assert!(!is_browser_history_target(&foreign));
+        foreign = history.clone();
+        foreign.tool_name = "other_tool".to_owned();
+        assert!(!is_browser_history_target(&foreign));
+        let mut next_profile = history.clone();
+        next_profile.scope = GrantScope::BrowserProfile {
+            browser_id: "maka:instance".to_owned(),
+            generation: "other-generation".to_owned(),
+        };
+        assert_ne!(history, next_profile);
     }
 }

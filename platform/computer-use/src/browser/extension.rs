@@ -44,6 +44,245 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+// Add beside the existing CallScope and Host implementations in extension.rs.
+struct UserContextReader<'call, 'invocation> {
+    scope: CallScope,
+    host: Arc<tokio::sync::Mutex<Host>>,
+    document: crate::BrowserDocument,
+    invocation: &'call crate::InvocationContext<'invocation>,
+    cancellation: &'call CancellationToken,
+}
+impl UserContextReader<'_, '_> {
+    async fn check(&self) -> Result<(), ToolError> {
+        check_input(self.cancellation)?;
+        self.host
+            .lock()
+            .await
+            .user_context_current(&self.scope, &self.document)?;
+        let authorization = self
+            .invocation
+            .browser_authorization()
+            .ok_or_else(|| failed("Browser site access requires Host authorization"))?;
+        for access in [
+            crate::BrowserAccess::Metadata {
+                document: self.document.clone(),
+            },
+            crate::BrowserAccess::Read {
+                document: self.document.clone(),
+            },
+        ] {
+            authorization
+                .check(access, self.cancellation.clone())
+                .await?;
+        }
+        self.host
+            .lock()
+            .await
+            .user_context_current(&self.scope, &self.document)?;
+        check_input(self.cancellation)
+    }
+}
+impl super::context::UserTabReader for UserContextReader<'_, '_> {
+    async fn read(
+        &self,
+        request: cua_driver_core::browser::BrowserUserTabRead,
+    ) -> Result<Value, ToolError> {
+        self.check().await?;
+        let tab_id = cua_driver_core::browser::parse_browser_tab_id(&self.document.tab_id)
+            .ok_or_else(|| failed("extension tab ID must convert to a positive safe integer"))?;
+        let value =
+            self.scope
+                .dispatch(
+                    self.scope
+                        .control
+                        .read_user_tab(tab_id, &self.document.url, request),
+                )
+                .await
+                .map_err(|error| match error.as_ref() {
+                    cua_driver_core::browser::ExtensionProviderError::ChromeRejected {
+                        message,
+                        ..
+                    }
+                    | cua_driver_core::browser::ExtensionProviderError::Refused {
+                        message, ..
+                    } if message == "The selected tab changed while being read" => failed(message),
+                    cua_driver_core::browser::ExtensionProviderError::OutcomeUnknown {
+                        details: Some(details),
+                        ..
+                    } if details.get("remoteMessage").and_then(Value::as_str)
+                        == Some("The selected tab changed while being read") =>
+                    {
+                        // Preserve the source error for export fallback decisions.
+                        // This does not erase the scope's logical Finish obligation.
+                        failed("The selected tab changed while being read")
+                    }
+                    error => provider::extension_error(error),
+                })?;
+        self.check().await?;
+        Ok(value)
+    }
+}
+impl Host {
+    fn user_context_current(
+        &self,
+        scope: &CallScope,
+        document: &crate::BrowserDocument,
+    ) -> Result<(), ToolError> {
+        let extension = scope
+            .provider
+            .extension()
+            .ok_or_else(|| failed("extension provider required"))?;
+        let browser = BrowserIdentity::of(&scope.provider, &extension.identity().generation)?;
+        self.known(&browser)?;
+        let tab = browser.tab(&document.tab_id);
+        if scope.purpose != CallPurpose::UserContext
+            || scope.target.as_deref() != Some(document.tab_id.as_str())
+            || extension.is_closed()
+            || document.browser_id != scope.provider.id()
+            || document.generation != extension.identity().generation
+            || !self.visible(&tab, scope.owner)
+        {
+            return Err(failed(
+                "user-tab context is outside its current visible provider scope",
+            ));
+        }
+        let state = self
+            .extension
+            .get(&(scope.owner, browser))
+            .ok_or_else(|| failed("user-tab context provider retired"))?;
+        let call = state
+            .calls
+            .get(&scope.context.operation_id)
+            .ok_or_else(|| failed("user-tab context lost its original Host operation"))?;
+        if state.current_turn.as_deref() != Some(scope.context.turn_id.as_str())
+            || state.retiring_turn.is_some()
+            || state.headers_unknown
+            || call.epoch != scope.epoch
+            || call.turn != scope.context.turn_id
+            || !call.purposes.contains(&CallPurpose::UserContext)
+            || call.controls.is_sealed()
+            || !Arc::ptr_eq(&call.issuing, &scope.issuing)
+            || !Arc::ptr_eq(&call.activation, &scope.activation)
+            || !Arc::ptr_eq(&call.controls, &scope.controls)
+        {
+            return Err(ToolError::CleanupUnconfirmed(
+                "user-tab context call is no longer current".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+impl Browsers {
+    pub(super) async fn user_tab_context(
+        &self,
+        browser_id: &str,
+        raw_id: &str,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Value, ToolError> {
+        let provider = self
+            .providers(Some(browser_id))?
+            .pop()
+            .ok_or_else(|| failed("requested browser provider is unavailable"))?;
+        let extension = provider.extension().cloned().ok_or_else(|| {
+            failed("browser.user.getTabContext requires a connected extension adapter")
+        })?;
+        if !extension
+            .capabilities()
+            .map_err(provider::extension_error)?
+            .user_tab_context_read
+        {
+            return Err(failed(
+                "selected browser extension does not support browser.user.getTabContext",
+            ));
+        }
+        let id = cua_driver_core::browser::parse_browser_tab_id(raw_id)
+            .ok_or_else(|| failed("extension tab ID must convert to a positive safe integer"))?;
+        // Match the selected Original security path: the authorized URL comes
+        // from actual user inventory, never a model argument or a bound-tab URL.
+        let rows = extension
+            .list_user_tabs()
+            .await
+            .map_err(provider::extension_error)?;
+        let browser = BrowserIdentity::of(&provider, &extension.identity().generation)?;
+        let host = self.host().await;
+        let url = {
+            let ledger = host.lock().await;
+            ledger.known(&browser)?;
+            if !ledger.visible(&browser.tab(&id.to_string()), self.owner) {
+                return Err(failed("selected user tab is not visible to this session"));
+            }
+            rows.iter()
+                .find(|tab| tab.id == id)
+                .and_then(|tab| tab.url.as_deref())
+                .filter(|url| !url.trim().is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| failed("Missing authorized user tab URL"))?
+        };
+        let parsed = reqwest::Url::parse(&url)
+            .map_err(|_| failed("Tab reads require an HTTP or HTTPS URL"))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(failed("Tab reads require an HTTP or HTTPS URL"));
+        }
+        let document = crate::BrowserDocument {
+            browser_id: provider.id().to_owned(),
+            generation: extension.identity().generation.clone(),
+            tab_id: id.to_string(),
+            url,
+        };
+        invocation
+            .authorize_browser(
+                crate::BrowserAccess::Metadata {
+                    document: document.clone(),
+                },
+                cancellation,
+            )
+            .await?;
+        invocation
+            .authorize_browser(
+                crate::BrowserAccess::Read {
+                    document: document.clone(),
+                },
+                cancellation,
+            )
+            .await?;
+        let scope = host.lock().await.extension_context(
+            self.owner,
+            &provider,
+            operation(invocation)?,
+            self.epoch,
+            CallTarget::UserContext {
+                tab: document.tab_id.clone(),
+            },
+            true,
+        )?;
+        let reader = UserContextReader {
+            scope,
+            host,
+            document,
+            invocation,
+            cancellation,
+        };
+        reader.check().await?;
+        let context = super::context::read_context(&reader, &reader.document.url).await?;
+        reader.check().await?;
+        let services = invocation
+            .prepare_browser_services(
+                crate::BrowserAccess::Read {
+                    document: reader.document.clone(),
+                },
+                cancellation,
+            )
+            .await?;
+        if let Some(files) = services.files {
+            reader.check().await?;
+            super::context::publish_document(context, files.as_ref(), cancellation).await
+        } else {
+            Ok(context)
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ClaimIntent {
     Implicit,
@@ -532,12 +771,18 @@ impl CallContext {
 enum CallPurpose {
     Tab(Origin),
     SessionInventory,
+    UserContext,
+    SessionPresentation,
+    SessionHistory,
     FixedConfiguration,
     Retirement,
 }
 enum CallTarget {
     Tab { origin: Origin, tab: Option<String> },
     SessionInventory,
+    UserContext { tab: String },
+    SessionPresentation,
+    SessionHistory,
     FixedConfiguration { tab: String },
     Retirement,
 }
@@ -613,7 +858,32 @@ pub(super) struct TransportCall {
     _agent: Option<AgentTransportCall>,
 }
 
+/// Lifetime of one already admitted owned-input sequence. Holding this is not
+/// a release acknowledgement; failed cleanup keeps it on the canonical lease.
+pub(super) struct OwnedInputAdmission {
+    _transport: Option<TransportCall>,
+    _control: Option<ControlPermit>,
+}
+
 impl PreparationTransport {
+    pub(super) async fn before_owned_input(&self) -> Result<OwnedInputAdmission, ToolError> {
+        let transport = self.before_request().await?;
+        let control = transport
+            .as_ref()
+            .and_then(|call| call._agent.as_ref())
+            .map(|call| {
+                call._scope
+                    .controls
+                    .enter()
+                    .map_err(provider::extension_error)
+            })
+            .transpose()?;
+        Ok(OwnedInputAdmission {
+            _transport: transport,
+            _control: control,
+        })
+    }
+
     pub(super) fn with_effect_scope(&self, scope: Arc<dyn crate::BrowserEffectScope>) -> Self {
         match self {
             Self::NotRequired => Self::NotRequired,
@@ -892,7 +1162,7 @@ impl SessionMetadataCall {
     pub(super) fn generation(&self) -> &str {
         &self.request.generation
     }
-    async fn check(&self) -> Result<(), ToolError> {
+    pub(super) async fn check(&self) -> Result<(), ToolError> {
         self.host
             .lock()
             .await
@@ -947,7 +1217,7 @@ impl SessionMetadataCall {
     }
 }
 
-async fn session_metadata_call(
+pub(super) async fn session_metadata_call(
     host: Arc<tokio::sync::Mutex<Host>>,
     owner: uuid::Uuid,
     provider: &Provider,
@@ -1001,6 +1271,54 @@ async fn session_metadata_call(
     })
 }
 
+async fn session_surface_call(
+    host: Arc<tokio::sync::Mutex<Host>>,
+    owner: uuid::Uuid,
+    provider: &Provider,
+    epoch: crate::desktop::NativeEpochId,
+    call: BrowserCall<'_>,
+    history: bool,
+) -> Result<SessionMetadataCall, ToolError> {
+    check_input(call.cancellation)?;
+    register(&host, owner, provider).await?;
+    let scope = host.lock().await.extension_context(
+        owner,
+        provider,
+        operation(call.invocation)?,
+        epoch,
+        if history {
+            CallTarget::SessionHistory
+        } else {
+            CallTarget::SessionPresentation
+        },
+        true,
+    )?;
+    let request = scope
+        .authorize_preparation(
+            &host,
+            call.invocation,
+            if history {
+                crate::BrowserPreparationTarget::SessionHistory
+            } else {
+                crate::BrowserPreparationTarget::SessionPresentation
+            },
+            call.cancellation,
+        )
+        .await?;
+    let authorization = call
+        .invocation
+        .browser_authorization()
+        .ok_or_else(|| failed("browser session surface requires current Host authorization"))?;
+    Ok(SessionMetadataCall {
+        host,
+        scope,
+        request,
+        authorization,
+        cancellation: call.cancellation.clone(),
+        history: Vec::new(),
+    })
+}
+
 enum FinishPhase {
     Required,
     Pending,
@@ -1010,9 +1328,11 @@ enum FinishPhase {
 }
 pub(super) struct ProviderState {
     provider: Provider,
-    current_turn: Option<String>,
+    pub(super) current_turn: Option<String>,
+    pub(super) pending_viewport: Option<capability::viewport::Pending>,
     retiring_turn: Option<String>,
     logical_active: Option<String>,
+    session_group_title: Option<String>,
     calls: HashMap<String, CallContext>,
     applied: HashSet<u64>,
     finish_phases: HashMap<String, FinishPhase>,
@@ -1139,26 +1459,30 @@ fn context_operation(turn: &str) -> ExtensionHostOperation {
 pub(super) fn tab_info(tab: &cua_driver_core::browser::ExtensionTabInfo) -> Value {
     let mut result = json!({"id":tab.id.to_string()});
     for (key, value) in [
-        ("title", tab.title.as_ref()),
-        ("url", tab.url.as_ref()),
-        ("tabGroup", tab.group_title.as_ref()),
+        ("titleJson", tab.title.as_ref()),
+        ("tabGroupJson", tab.group_title.as_ref()),
     ] {
         if let Some(value) = value {
             result[key] = json!(value);
         }
     }
-    if let Some(value) = &tab.last_opened {
-        result["lastOpened"] = json!(value);
-    }
-    if let Some(value) = &tab.provider_tab_id {
-        result["providerTabId"] = json!(value);
+    for (key, value) in [
+        ("url", tab.url.as_ref()),
+        ("lastOpened", tab.last_opened.as_ref()),
+        ("providerTabId", tab.provider_tab_id.as_ref()),
+    ] {
+        if let Some(value) = value {
+            result[key] = json!(value);
+        }
     }
     result
 }
 fn managed_tab_info(tab: &cua_driver_core::browser::ExtensionTabInfo) -> Value {
     let mut result = json!({"id":tab.id.to_string()});
+    if let Some(value) = &tab.title {
+        result["titleJson"] = json!(value);
+    }
     for (key, value) in [
-        ("title", tab.title.as_ref()),
         ("url", tab.url.as_ref()),
         ("providerTabId", tab.provider_tab_id.as_ref()),
     ] {
@@ -1299,6 +1623,17 @@ impl Host {
         Ok(lease.origin)
     }
 
+    /// The logical session active tab; this never consults operating-system focus.
+    pub(super) fn logical_active(
+        &self,
+        owner: uuid::Uuid,
+        browser: &BrowserIdentity,
+    ) -> Option<String> {
+        self.extension
+            .get(&(owner, browser.clone()))
+            .and_then(|state| state.logical_active.clone())
+    }
+
     fn extension_preparation_current(
         &self,
         scope: &CallScope,
@@ -1359,11 +1694,25 @@ impl Host {
                 }
                 scope.target.as_ref()
             }
-            crate::BrowserPreparationTarget::SessionInventory => {
-                if scope.target.is_some() || !call.purposes.contains(&CallPurpose::SessionInventory)
+            crate::BrowserPreparationTarget::SessionInventory
+            | crate::BrowserPreparationTarget::SessionPresentation
+            | crate::BrowserPreparationTarget::SessionHistory => {
+                let purpose = match &request.target {
+                    crate::BrowserPreparationTarget::SessionInventory => {
+                        CallPurpose::SessionInventory
+                    }
+                    crate::BrowserPreparationTarget::SessionPresentation => {
+                        CallPurpose::SessionPresentation
+                    }
+                    crate::BrowserPreparationTarget::SessionHistory => CallPurpose::SessionHistory,
+                    _ => unreachable!(),
+                };
+                if scope.target.is_some()
+                    || scope.purpose != purpose
+                    || !call.purposes.contains(&purpose)
                 {
                     return Err(failed(
-                        "extension session metadata has no current inventory call",
+                        "extension session surface has no current exact-purpose call",
                     ));
                 }
                 None
@@ -1952,6 +2301,9 @@ impl Host {
         let (purpose, target) = match target {
             CallTarget::Tab { origin, tab } => (CallPurpose::Tab(origin), tab),
             CallTarget::SessionInventory => (CallPurpose::SessionInventory, None),
+            CallTarget::UserContext { tab } => (CallPurpose::UserContext, Some(tab)),
+            CallTarget::SessionPresentation => (CallPurpose::SessionPresentation, None),
+            CallTarget::SessionHistory => (CallPurpose::SessionHistory, None),
             CallTarget::FixedConfiguration { tab } => (CallPurpose::FixedConfiguration, Some(tab)),
             CallTarget::Retirement => (CallPurpose::Retirement, None),
         };
@@ -1961,6 +2313,20 @@ impl Host {
         let identity = BrowserIdentity::of(provider, &extension.identity().generation)?;
         if activate {
             self.known(&identity)?;
+            // A new logical turn would invalidate an older retained input's
+            // actual wire context, including when claiming a sibling tab.
+            // Same-turn body preparation still uses the original admission.
+            for lease in self
+                .tabs
+                .values()
+                .filter(|lease| lease.creator.owner == owner && lease.creator.provider == *provider)
+            {
+                if let Some(input) = &lease.input
+                    && !input.belongs(Some(&context.turn_id), None)
+                {
+                    input.check_settled()?;
+                }
+            }
         }
         if activate
             && self.tabs.values().any(|lease| {
@@ -2111,6 +2477,8 @@ impl Host {
         self.tabs.insert(
             identity,
             Lease {
+                viewport: None,
+                input: None,
                 extension_sequence: None,
                 creator: Creator {
                     owner,
@@ -2466,6 +2834,7 @@ impl Host {
         browser: &BrowserIdentity,
         turn: &str,
     ) {
+        self.clear_pending_viewport(owner, browser, turn);
         if let Some(state) = self.extension.get_mut(&(owner, browser.clone())) {
             for call in state.calls.values_mut().filter(|call| call.turn == turn) {
                 call.activation.store(false, Ordering::SeqCst);
@@ -2573,6 +2942,14 @@ impl Host {
             ExtensionRecoveredOperation::NotDispatched { .. }
         );
         match recovered {
+            ExtensionRecoveredOperation::UserHistory => {}
+            ExtensionRecoveredOperation::SessionNamed { name } => {
+                let state = self
+                    .extension
+                    .get_mut(&(owner, browser.clone()))
+                    .ok_or_else(|| unknown("session-name owner retired"))?;
+                state.session_group_title = Some(name);
+            }
             ExtensionRecoveredOperation::SessionHeaders(proof) => {
                 let call = call
                     .as_ref()
@@ -2675,6 +3052,8 @@ impl Host {
                 self.tabs.insert(
                     identity,
                     Lease {
+                        viewport: None,
+                        input: None,
                         extension_sequence: Some(sequence),
                         creator: Creator {
                             owner,
@@ -2985,6 +3364,8 @@ impl Host {
                     let identity = browser.tab(&created.tab.id.to_string());
                     let sequence = self.allocate_extension_sequence()?;
                     self.tabs.entry(identity).or_insert(Lease {
+                        viewport: None,
+                        input: None,
                         extension_sequence: Some(sequence),
                         creator: Creator {
                             owner,
@@ -3846,8 +4227,10 @@ async fn register(
         ProviderState {
             provider: provider.clone(),
             current_turn: None,
+            pending_viewport: None,
             retiring_turn: None,
             logical_active: None,
+            session_group_title: None,
             calls: HashMap::new(),
             applied: HashSet::new(),
             finish_phases: HashMap::new(),
@@ -4093,7 +4476,44 @@ impl Browsers {
             self.acquisition_history(provider),
         )
         .await?;
-        let rows = pending.list().await?;
+        let mut rows = pending.list().await?;
+        let source_active = provider
+            .extension()
+            .expect("extension provider")
+            .capabilities()
+            .map_err(provider::extension_error)?
+            .session_logical_active;
+        let identity = BrowserIdentity::of(provider, &generation)?;
+        let host = self.host().await;
+        let mut ledger = host.lock().await;
+        let state = ledger
+            .extension
+            .get_mut(&(self.owner, identity))
+            .ok_or_else(|| failed("session metadata owner retired"))?;
+        let active = if source_active {
+            rows.iter()
+                .find(|row| row.active == Some(true))
+                .map(|row| row.id.to_string())
+        } else {
+            state
+                .logical_active
+                .as_ref()
+                .filter(|active| rows.iter().any(|row| row.id.to_string() == active.as_str()))
+                .cloned()
+                .or_else(|| {
+                    rows.iter()
+                        .find(|row| row.active == Some(true))
+                        .map(|row| row.id.to_string())
+                })
+                .or_else(|| rows.first().map(|row| row.id.to_string()))
+        };
+        state.logical_active = active.clone();
+        if let Some(active) = active {
+            for row in &mut rows {
+                row.active = Some(row.id.to_string() == active);
+            }
+        }
+        drop(ledger);
         // ChatGPT SID rows absent from Main history remain metadata only.
         // Listing never constructs a lease, acquisition, sequence or grant.
         Ok((
@@ -4121,6 +4541,201 @@ impl Browsers {
             })?;
         Ok((generation, tab))
     }
+    pub(super) async fn extension_user_history(
+        &self,
+        browser_id: &str,
+        options: BrowserHistoryOptions,
+        call: BrowserCall<'_>,
+    ) -> Result<Value, ToolError> {
+        let provider = self
+            .providers(Some(browser_id))?
+            .pop()
+            .expect("selected provider");
+        let extension = provider
+            .extension()
+            .ok_or_else(|| failed("selected browser does not support browser-wide history"))?;
+        if !extension
+            .capabilities()
+            .map_err(provider::extension_error)?
+            .user_history
+        {
+            return Err(failed(
+                "selected browser does not support browser-wide history",
+            ));
+        }
+        let pending = session_surface_call(
+            self.host().await,
+            self.owner,
+            &provider,
+            self.epoch,
+            call,
+            true,
+        )
+        .await?;
+        pending
+            .authorization
+            .authorize_history(pending.request.clone(), pending.cancellation.clone())
+            .await?;
+        pending.check().await?;
+        pending
+            .authorization
+            .check_history(pending.request.clone(), pending.cancellation.clone())
+            .await?;
+        let mut params = serde_json::to_value(options).map_err(failed)?;
+        params
+            .as_object_mut()
+            .expect("history options object")
+            .retain(|_, value| !value.is_null());
+        let result = pending
+            .scope
+            .dispatch(pending.scope.control.user_history(params))
+            .await;
+        pending
+            .host
+            .lock()
+            .await
+            .reconcile_provider(self.owner, &provider)
+            .await?;
+        let result = result.map_err(provider::extension_error)?;
+        pending.check().await?;
+        pending
+            .authorization
+            .check_history(pending.request.clone(), pending.cancellation.clone())
+            .await?;
+        Ok(result)
+    }
+
+    pub(super) async fn name_session(
+        &self,
+        browser_id: &str,
+        name: &str,
+        call: BrowserCall<'_>,
+    ) -> Result<Value, ToolError> {
+        let name = name.trim_matches(|character| {
+            matches!(character,
+            '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' |
+            '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' |
+            '\u{205f}' | '\u{3000}' | '\u{feff}')
+        });
+        if name.is_empty() {
+            return Err(failed("name_session requires a name"));
+        }
+        let provider = self
+            .providers(Some(browser_id))?
+            .pop()
+            .expect("selected provider");
+        let extension = provider
+            .extension()
+            .ok_or_else(|| failed("selected browser does not support sessionName"))?;
+        let capabilities = extension
+            .capabilities()
+            .map_err(provider::extension_error)?;
+        if capabilities.created_presentation_owner != ExtensionEffectOwner::Host
+            && !capabilities.session_naming
+        {
+            return Err(failed("selected browser does not support sessionName"));
+        }
+        let pending = session_surface_call(
+            self.host().await,
+            self.owner,
+            &provider,
+            self.epoch,
+            call,
+            false,
+        )
+        .await?;
+        pending.check().await?;
+        if capabilities.created_presentation_owner == ExtensionEffectOwner::Provider {
+            let result = pending
+                .scope
+                .dispatch(pending.scope.control.name_session(name))
+                .await;
+            pending
+                .host
+                .lock()
+                .await
+                .reconcile_provider(self.owner, &provider)
+                .await?;
+            result.map_err(provider::extension_error)?;
+            pending.check().await?;
+            return Ok(Value::Null);
+        }
+        let browser = BrowserIdentity::of(&provider, &extension.identity().generation)?;
+        let groups = {
+            let mut host = pending.host.lock().await;
+            check_input(call.cancellation)?;
+            host.extension_preparation_current(&pending.scope, &pending.request)?;
+            host.extension
+                .get_mut(&(self.owner, browser.clone()))
+                .ok_or_else(|| failed("session presentation owner retired"))?
+                .session_group_title = Some(name.to_owned());
+            host.tabs
+                .iter()
+                .filter(|(identity, lease)| {
+                    identity.browser == browser
+                        && lease.creator.owner == self.owner
+                        && lease.creator.provider == provider
+                        && lease.origin == Origin::AgentCreated
+                        && matches!(lease.disposition, Disposition::Live)
+                })
+                .filter_map(|(_, lease)| {
+                    let state = lease.extension.as_ref()?;
+                    Some((
+                        lease.extension_sequence?,
+                        state.creation.clone()?,
+                        state.group.clone()?,
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        // Source behavior persists the requested title before a best-effort
+        // existing-group update. Lifetime/uncertain transport failures remain
+        // visible to the Host rather than becoming false cleanup proof.
+        let mut groups = groups;
+        groups.sort_by_key(|(sequence, _, _)| *sequence);
+        let mut updated = HashSet::new();
+        for (_, creation, group) in groups {
+            if !updated.insert(group.group_id()) {
+                continue;
+            }
+            pending.check().await?;
+            let result = pending
+                .scope
+                .dispatch(pending.scope.control.update_created_tab_group(
+                    &creation,
+                    &group,
+                    &ExtensionGroupPresentation {
+                        title: Some(name.to_owned()),
+                        color: None,
+                    },
+                ))
+                .await;
+            pending
+                .host
+                .lock()
+                .await
+                .reconcile_provider(self.owner, &provider)
+                .await?;
+            match result.as_ref().map_err(|error| error.as_ref()) {
+                Ok(_)
+                | Err(cua_driver_core::browser::ExtensionProviderError::ChromeRejected {
+                    ..
+                }) => break,
+                Err(cua_driver_core::browser::ExtensionProviderError::Refused { kind, .. })
+                    if matches!(
+                        kind.as_str(),
+                        "group_unavailable" | "tab_unavailable" | "creation_unavailable"
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(provider::extension_error(error)),
+            }
+        }
+        pending.check().await?;
+        Ok(Value::Null)
+    }
+
     pub(super) async fn managed_tabs(
         &self,
         browser_id: &str,
@@ -4150,7 +4765,13 @@ impl Browsers {
         let selected = match command {
             Command::BrowserTab { browser_id, .. }
             | Command::BrowserManagedTabs { browser_id }
+            | Command::BrowserSelectedTab { browser_id }
+            | Command::BrowserNameSession { browser_id, .. }
+            | Command::BrowserHistory { browser_id, .. }
+            | Command::BrowserViewportSet { browser_id, .. }
+            | Command::BrowserViewportReset { browser_id }
             | Command::BrowserUserOpenTabs { browser_id }
+            | Command::BrowserUserGetTabContext { browser_id, .. }
             | Command::BrowserUserClaimTab { browser_id, .. }
             | Command::CreateBrowserTab { browser_id, .. } => {
                 self.providers(Some(browser_id))?.pop()
@@ -4170,7 +4791,11 @@ impl Browsers {
             | Command::ClipboardWriteText { handle, .. }
             | Command::GetJsDialog { handle }
             | Command::HandleJsDialog { handle, .. }
+            | Command::BrowserEvaluate { handle, .. }
             | Command::BrowserRead { handle, .. }
+            | Command::TabPageAssetsList { handle }
+            | Command::TabPageAssetsBundle { handle, .. }
+            | Command::BrowserCua { handle, .. }
             | Command::BrowserWait { handle, .. }
             | Command::BrowserMutation { handle, .. } => match handle {
                 Handle::Tab(id) => self.targets.get(id).map(|tab| tab.provider.clone()),
@@ -4536,7 +5161,7 @@ impl Browsers {
         validate_url(&request.url)?;
         let browser = BrowserIdentity::of(&provider, &request.generation)?;
         let host = self.host().await;
-        let (scope, opener, source) = {
+        let (scope, opener, source, viewport) = {
             let mut ledger = host.lock().await;
             let completion = extension
                 .pending_operations()
@@ -4584,6 +5209,10 @@ impl Browsers {
                     "extension popup was not issued by its prepared source lease",
                 ));
             }
+            let viewport = ledger
+                .tabs
+                .get(&browser.tab(&request.opener_tab_id.to_string()))
+                .and_then(|lease| lease.viewport);
             let opener = actual.opener(&ledger, self.owner, &provider)?;
             // Only the real service InvocationContext supplies this operation;
             // the popup metadata and old preparation scope supply no cause ID.
@@ -4598,7 +5227,7 @@ impl Browsers {
                 },
                 true,
             )?;
-            (scope, opener, actual.clone())
+            (scope, opener, actual.clone(), viewport)
         };
         let preparation = scope
             .authorize_preparation(&host, invocation, source.preparation_target(), cancellation)
@@ -4640,6 +5269,12 @@ impl Browsers {
                 "extension popup source expired after child creation",
             ));
         }
+        host.lock()
+            .await
+            .tabs
+            .get_mut(&browser.tab(&created.tab.id.to_string()))
+            .ok_or_else(|| unknown("extension popup child lost its issued lease"))?
+            .viewport = viewport;
         let BoundExtensionCreated {
             response,
             handle,
@@ -4675,6 +5310,9 @@ impl Browsers {
             // under current global policy. It grants no destination Site read.
             child
                 .authorize(None, invocation, cancellation, language)
+                .await?;
+            child
+                .apply_pending_viewport(BrowserCall::new(invocation, cancellation, language))
                 .await?;
             origin.check_current(child).await?;
         }
@@ -4830,7 +5468,14 @@ impl Browsers {
                             .and_then(|state| state.group.clone())
                     });
                 let presentation = ExtensionGroupPresentation {
-                    title: Some("Maka".into()),
+                    title: Some(
+                        host.lock()
+                            .await
+                            .extension
+                            .get(&(self.owner, identity.browser.clone()))
+                            .and_then(|state| state.session_group_title.clone())
+                            .unwrap_or_else(|| "Maka".into()),
+                    ),
                     color: Some(ExtensionGroupColor::Blue),
                 };
                 scope
@@ -5164,6 +5809,15 @@ impl Tab {
         point: Option<[f64; 2]>,
         operation: &str,
     ) -> Result<Option<Value>, ToolError> {
+        self.extension_cursor_presentation_with_arrival(point, operation, None)
+            .await
+    }
+    pub(in crate::browser) async fn extension_cursor_presentation_with_arrival(
+        &mut self,
+        point: Option<[f64; 2]>,
+        operation: &str,
+        wait_for_arrival: Option<bool>,
+    ) -> Result<Option<Value>, ToolError> {
         let Some(extension) = self.provider.extension().cloned() else {
             return Ok(None);
         };
@@ -5217,7 +5871,11 @@ impl Tab {
             false,
         )?;
         let shown = scope
-            .dispatch(scope.control.move_mouse_presentation(&claim, x, y, None))
+            .dispatch(
+                scope
+                    .control
+                    .move_mouse_presentation(&claim, x, y, wait_for_arrival),
+            )
             .await;
         self.cursor_host
             .lock()
@@ -6980,7 +7638,7 @@ mod tests {
         );
         assert_eq!(
             managed_tab_info(&tab),
-            json!({"id":"17","title":"Observed title","url":"https://fixture.test/","providerTabId":"actual-provider-id"})
+            json!({"id":"17","titleJson":"\"Observed title\"","url":"https://fixture.test/","providerTabId":"actual-provider-id"})
         );
         assert_eq!(managed_tab_info(&row(18, json!({}))), json!({"id":"18"}));
         assert!(is_internal_url("chrome://settings"));
@@ -7166,6 +7824,8 @@ mod control_lifetime_tests {
             ProviderState {
                 provider,
                 current_turn: Some("old-turn".into()),
+                pending_viewport: None,
+                session_group_title: None,
                 retiring_turn: None,
                 logical_active: None,
                 calls: HashMap::new(),
@@ -7423,3 +8083,98 @@ mod control_lifetime_tests {
 #[cfg(all(test, unix))]
 #[path = "extension/inventory_tests.rs"]
 mod inventory_tests;
+
+// Append in browser/extension.rs. This reuses the same metadata operation
+// registration, session ownership and current Host session-preparation check.
+impl Browsers {
+    pub(super) async fn set_browser_viewport(
+        &mut self,
+        browser_id: &str,
+        value: Option<crate::protocol::BrowserViewport>,
+        call: BrowserCall<'_>,
+    ) -> Result<Value, ToolError> {
+        let value = value
+            .map(crate::protocol::BrowserViewport::validate)
+            .transpose()
+            .map_err(failed)?;
+        let provider = self
+            .providers(Some(browser_id))?
+            .pop()
+            .expect("selected provider");
+        self.extension_session_metadata(&provider, call).await?;
+        let pending = session_metadata_call(
+            self.host().await,
+            self.owner,
+            &provider,
+            self.epoch,
+            call,
+            self.acquisition_history(&provider),
+        )
+        .await?;
+        pending.check().await?;
+        let browser = BrowserIdentity::of(&provider, pending.generation())?;
+        let identity = self.host().await.lock().await.set_viewport(
+            self.owner,
+            &browser,
+            call.invocation.turn(),
+            value,
+        )?;
+        let Some(identity) = identity else {
+            return Ok(Value::Null);
+        };
+        let row = pending.resolve(&identity.target).await?;
+        let bound = self
+            .bind(
+                TabSource {
+                    provider,
+                    generation: pending.generation().to_owned(),
+                    info: provider::extension_tab(row),
+                },
+                InitialState::Deferred,
+                call.invocation,
+                call.cancellation,
+                call.language,
+            )
+            .await?;
+        let Handle::Tab(handle) =
+            serde_json::from_value(bound["handle"].clone()).map_err(failed)?
+        else {
+            unreachable!()
+        };
+        let tab = self
+            .targets
+            .get_mut(&handle)
+            .expect("viewport active tab bound");
+        tab.prepare_origin_transport(
+            call.invocation,
+            call.cancellation,
+            call.language,
+            ClaimIntent::Implicit,
+        )
+        .await?;
+        pending.check().await?;
+        super::capability::viewport::apply(tab, value).await?;
+        Ok(Value::Null)
+    }
+}
+
+#[cfg(test)]
+mod encoded_title_tests {
+    use super::*;
+
+    #[test]
+    fn title_and_group_use_only_encoded_text_until_the_facade() {
+        let tab: cua_driver_core::browser::ExtensionTabInfo = serde_json::from_value(json!({
+            "id":17,"titleJson":r#""\ud800""#,"groupTitleJson":r#""\udc00""#,"url":"about:blank"
+        }))
+        .unwrap();
+        assert_eq!(
+            tab_info(&tab),
+            json!({"id":"17","titleJson":r#""\ud800""#,"tabGroupJson":r#""\udc00""#,"url":"about:blank"})
+        );
+        assert_eq!(
+            managed_tab_info(&tab),
+            json!({"id":"17","titleJson":r#""\ud800""#,"url":"about:blank"})
+        );
+    }
+}

@@ -103,6 +103,8 @@ pub(super) struct UncertainCreation {
 }
 
 pub(super) struct Lease {
+    pub(super) viewport: Option<Option<crate::protocol::BrowserViewport>>,
+    pub(super) input: Option<std::sync::Arc<super::owned_input::Resource>>,
     pub(super) extension_sequence: Option<u64>,
     pub(super) origin: Origin,
     pub(super) extension: Option<super::extension::ClaimState>,
@@ -157,10 +159,84 @@ impl Host {
                     "the tab's previous close has not settled".into(),
                 ));
             }
+            if let Some(input) = &lease.input {
+                input.check_settled()?;
+            }
             // Extension cleanup ownership comes from an actual preparation or
             // creation receipt. Selecting metadata cannot move that obligation.
             if lease.extension.is_none() {
                 lease.creator.turn = turn.to_owned();
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_owned_input(&self, identity: &TabIdentity) -> Result<(), ToolError> {
+        if let Some(input) = self
+            .tabs
+            .get(identity)
+            .and_then(|lease| lease.input.as_ref())
+        {
+            input.check_settled()?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn reserve_owned_input(
+        &mut self,
+        identity: TabIdentity,
+        owner: uuid::Uuid,
+        turn: &str,
+        provider: Provider,
+        generation: String,
+        input: std::sync::Arc<super::owned_input::Resource>,
+    ) -> Result<(), ToolError> {
+        self.use_tab(&identity, owner, turn)?;
+        match self.tabs.entry(identity) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().input = Some(input);
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                if provider.extension().is_some() {
+                    return Err(failed("owned input lost its actual extension lease"));
+                }
+                // Configured-CDP existing user tabs had no cleanup lease before
+                // input. Record this admitted physical resource on the SAME
+                // canonical map; Stop must preserve the user's physical tab.
+                entry.insert(Lease {
+                    viewport: None,
+                    input: Some(input),
+                    extension_sequence: None,
+                    origin: Origin::UserClaimed,
+                    extension: None,
+                    creator: Creator {
+                        owner,
+                        turn: turn.to_owned(),
+                        provider,
+                        generation,
+                    },
+                    disposition: Disposition::Live,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_owned_inputs(
+        &self,
+        owner: uuid::Uuid,
+        turn: Option<&str>,
+        epoch: Option<crate::desktop::NativeEpochId>,
+    ) -> Result<(), ToolError> {
+        for lease in self
+            .tabs
+            .values()
+            .filter(|lease| lease.creator.owner == owner)
+        {
+            if let Some(input) = &lease.input
+                && input.belongs(turn, epoch)
+            {
+                input.check_settled()?;
             }
         }
         Ok(())
@@ -178,6 +254,8 @@ impl Host {
         match self.tabs.entry(identity) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(Lease {
+                    viewport: None,
+                    input: None,
                     extension_sequence: None,
                     origin: Origin::AgentCreated,
                     extension: None,
@@ -238,6 +316,7 @@ impl Host {
         owner: uuid::Uuid,
         turn: Option<&str>,
     ) -> Result<Vec<TabIdentity>, ToolError> {
+        self.check_owned_inputs(owner, turn, None)?;
         let extension_finished = self.finish_extension(owner, turn).await?;
         let belongs = |creator: &Creator| {
             creator.owner == owner && turn.is_none_or(|turn| creator.turn == turn)
@@ -259,6 +338,23 @@ impl Host {
             }
             self.uncertain_creations.remove(&(owner, identity));
         }
+        let user_inputs: Vec<_> = self
+            .tabs
+            .iter()
+            .filter(|(_, lease)| {
+                belongs(&lease.creator)
+                    && lease.extension.is_none()
+                    && lease.origin == Origin::UserClaimed
+                    && matches!(lease.disposition, Disposition::Live)
+            })
+            .map(|(identity, _)| identity.clone())
+            .collect();
+        // A Live user input resource needs no physical tab close. Closing user
+        // leases instead follow the existing inventory/gone-proof path below:
+        // input UP completion cannot erase an earlier explicit-close debt.
+        for identity in &user_inputs {
+            self.tabs.remove(identity);
+        }
         let mut groups: HashMap<BrowserIdentity, Vec<TabIdentity>> = HashMap::new();
         for (identity, lease) in &self.tabs {
             if belongs(&lease.creator) && lease.extension.is_none() {
@@ -269,6 +365,7 @@ impl Host {
             }
         }
         let mut finished = extension_finished;
+        finished.extend(user_inputs);
         for (browser, identities) in groups {
             let creator = self.tabs[&identities[0]].creator.clone();
             let (generation, tabs) = creator.provider.inventory().await.map_err(cleanup)?;

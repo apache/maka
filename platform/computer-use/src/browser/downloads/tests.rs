@@ -32,6 +32,7 @@ fn response(mime: &str, disposition: Option<&str>) -> CdpEvent {
         method: "Fetch.requestPaused".into(),
         session_id: None,
         source_target_id: None,
+        params_json: None,
         params: json!({
             "requestId":"actual-fetch-id","resourceType":"Document","request":{"url":"https://fixture.test/file"},
             "responseStatusCode":200,"responseStatusText":"OK","responseHeaders":headers,

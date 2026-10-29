@@ -22,6 +22,8 @@ mod callbacks;
 mod connection;
 #[cfg(feature = "native-desktop")]
 mod epochs;
+#[cfg(all(target_os = "windows", feature = "native-desktop"))]
+pub(crate) mod native_owner;
 pub(in crate::desktop) use connection::{AudioObservation, Connection};
 #[cfg(feature = "native-desktop")]
 use epochs::serve;
@@ -72,6 +74,24 @@ struct Hello {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Request {
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    NativeInvoke {
+        key: native_owner::NativeKey,
+        operation: native_owner::NativeOperation,
+        operation_id: Option<String>,
+        arguments: Value,
+        native_window_pixels: bool,
+        language: maka_agent_facts::language::Language,
+    },
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    NativeDiscardAudio {
+        key: native_owner::NativeKey,
+        output: Option<PathBuf>,
+    },
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    NativeRetire {
+        key: native_owner::NativeKey,
+    },
     Invoke {
         owner: String,
         epoch: String,
@@ -79,10 +99,12 @@ pub(crate) enum Request {
         turn: String,
         #[serde(default)]
         operation_id: Option<String>,
+        #[serde(default)]
+        native_observer_available: bool,
         browsers: Vec<BrowserConnection>,
         #[serde(default, skip_serializing_if = "no_preparation_policy")]
         preparation_policy: crate::BrowserPreparationPolicy,
-        command: Command,
+        command: Box<Command>,
         language: maka_agent_facts::language::Language,
     },
     LeaseChild {
@@ -182,6 +204,16 @@ enum ParentFrame {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum WorkerFrame {
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    NativeInterruption {
+        key: native_owner::NativeKey,
+        operation_id: Option<String>,
+    },
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    NativeRetired {
+        key: native_owner::NativeKey,
+        result: Result<(), Failure>,
+    },
     BrowserCallback {
         message: callbacks::WorkerMessage,
     },
@@ -281,6 +313,10 @@ pub(crate) struct Worker {
 struct Process {
     child: Child,
     pipes: Option<(ChildStdin, BufReader<ChildStdout>)>,
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    native_exit: Option<tokio::sync::watch::Sender<Option<native_owner::NativeExit>>>,
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    native_forced: bool,
 }
 impl Worker {
     pub(crate) fn with_audio(audio_enabled: bool) -> Self {
@@ -351,12 +387,68 @@ impl Process {
                 BufReader::new(child.stdout.take().unwrap()),
             )),
             child,
+            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+            native_exit: None,
+            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+            native_forced: false,
         }
         .handshake(audio_enabled)
         .await
     }
 
-    async fn handshake(mut self, expected_audio: bool) -> Result<Self, ToolError> {
+    async fn handshake(self, expected_audio: bool) -> Result<Self, ToolError> {
+        self.handshake_for(expected_audio, "windows").await
+    }
+
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    async fn start_native(
+        executable: PathBuf,
+        audio_enabled: bool,
+        native_exit: tokio::sync::watch::Sender<Option<native_owner::NativeExit>>,
+    ) -> Result<Self, ToolError> {
+        let mut command = tokio::process::Command::new(executable);
+        command
+            .arg(native_owner::ENTRY)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true);
+        // Win32 CREATE_NO_WINDOW: this private transport owns no console UI.
+        command.creation_flags(0x08000000);
+        if audio_enabled {
+            command.arg("--audio");
+        }
+        // Do not create or terminate a process group/job: a launched user app
+        // is not a helper resource. This Child handle owns only the native SDK.
+        let mut child = command
+            .spawn()
+            .map_err(|error| failed(format!("start native-only Windows owner: {error}")))?;
+        Self {
+            pipes: Some((
+                child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| failed("native child stdin unavailable"))?,
+                BufReader::new(
+                    child
+                        .stdout
+                        .take()
+                        .ok_or_else(|| failed("native child stdout unavailable"))?,
+                ),
+            )),
+            child,
+            native_exit: Some(native_exit),
+            native_forced: false,
+        }
+        .handshake_for(audio_enabled, "windows-native")
+        .await
+    }
+
+    async fn handshake_for(
+        mut self,
+        expected_audio: bool,
+        expected_platform: &str,
+    ) -> Result<Self, ToolError> {
         let hello = tokio::time::timeout(
             STARTUP_TIMEOUT,
             read::<_, Hello>(&mut self.pipes.as_mut().unwrap().1),
@@ -367,7 +459,9 @@ impl Process {
                 protocol: PROTOCOL,
                 platform,
                 audio_enabled,
-            })) if platform == "windows" && audio_enabled == expected_audio => return Ok(self),
+            })) if platform == expected_platform && audio_enabled == expected_audio => {
+                return Ok(self);
+            }
             Ok(Ok(_)) => {
                 "incompatible desktop worker; install a matching Windows Maka build".to_owned()
             }
@@ -384,6 +478,32 @@ impl Process {
         // Close both directions so a peer writing a failed response cannot
         // stay blocked on its output while we wait for its cleanup.
         self.pipes.take();
+        #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+        if let Some(observation) = &self.native_exit {
+            // The parent owns a directly spawned Windows Child here. Its
+            // exact-process hard-stop path runs independently of IPC drain.
+            // Actual wait is completion evidence; a timeout is not.
+            return match self.child.wait().await {
+                Ok(status) => {
+                    observation.send_replace(Some(native_owner::NativeExit::Exited {
+                        code: status.code(),
+                    }));
+                    if status.success() || status.code() == Some(130) || self.native_forced {
+                        Ok(())
+                    } else {
+                        Err(io::Error::other(format!(
+                            "native owner exited with {status}; cleanup is unconfirmed"
+                        )))
+                    }
+                }
+                Err(error) => {
+                    observation.send_replace(Some(native_owner::NativeExit::WaitFailed(
+                        error.to_string(),
+                    )));
+                    Err(error)
+                }
+            };
+        }
         // WSL's interop process represents a Windows process, so killing the
         // Linux PID alone does not prove that native work has stopped.
         let status = tokio::time::timeout(EXIT_TIMEOUT, self.child.wait())
@@ -394,6 +514,23 @@ impl Process {
                 "Windows desktop worker exited with {status}; native cleanup was not confirmed"
             )));
         }
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    async fn stop_native(&mut self) -> io::Result<()> {
+        if self.native_exit.is_none() {
+            return Err(io::Error::other(
+                "hard stop requires an actual native-only child",
+            ));
+        }
+        if self.child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        self.child.kill().await?;
+        // Set only after kill+wait of this exact Child succeeded. The caller
+        // requires an owned-input ACK before requesting this control path.
+        self.native_forced = true;
         Ok(())
     }
 }
@@ -479,6 +616,10 @@ async fn windows_executable() -> Result<PathBuf, ToolError> {
 
 /// Invoke after cursor bootstrap and before starting the embedding application.
 pub fn bootstrap() -> Option<ExitCode> {
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    if let Some(result) = native_owner::bootstrap() {
+        return Some(result);
+    }
     if std::env::args_os().nth(1).as_deref() != Some(std::ffi::OsStr::new(ENTRY)) {
         return None;
     }
@@ -631,6 +772,7 @@ mod tests {
             epoch: "fixture-epoch".into(),
             session: session.into(),
             turn: "fixture-turn".into(),
+            native_observer_available: false,
             operation_id: None,
             browsers: Vec::new(),
             preparation_policy: Default::default(),
@@ -658,10 +800,11 @@ mod tests {
                 epoch: "fixture-epoch".into(),
                 session: "same-session".into(),
                 turn: "fixture-turn".into(),
+                native_observer_available: false,
                 operation_id: None,
                 browsers: Vec::new(),
                 preparation_policy: Default::default(),
-                command: Command::Documentation,
+                command: Box::new(Command::Documentation),
                 language,
             };
             let framed = encode(&ParentFrame::Request {
@@ -682,6 +825,7 @@ mod tests {
                         "session": "same-session",
                         "turn": "fixture-turn",
                         "operation_id": null,
+                        "native_observer_available": false,
                         "browsers": [],
                         "command": { "method": "documentation" },
                         "language": tag,
@@ -708,10 +852,11 @@ mod tests {
                     epoch: "fixture-epoch".into(),
                     session: "same-session".into(),
                     turn: "fixture-turn".into(),
+                    native_observer_available: false,
                     operation_id: None,
                     browsers: Vec::new(),
                     preparation_policy: Default::default(),
-                    command,
+                    command: Box::new(command),
                     language: Language::En,
                 }),
             };
@@ -737,7 +882,7 @@ mod tests {
                 (id, session.as_str(), turn.as_str()),
                 (42, "same-session", "fixture-turn")
             );
-            command
+            *command
         };
         let [amount, x, y] = expected.map(f64::from_bits);
         for pixels in [false, true] {
@@ -1018,10 +1163,11 @@ mod tests {
                 epoch: "fixture-epoch".into(),
                 session: "same-session".into(),
                 turn: "fixture-turn".into(),
+                native_observer_available: false,
                 operation_id: None,
                 browsers: Vec::new(),
                 preparation_policy: Default::default(),
-                command: Command::Documentation,
+                command: Box::new(Command::Documentation),
                 language,
             };
             // Exercise the helper's real framed serializer/deserializer before

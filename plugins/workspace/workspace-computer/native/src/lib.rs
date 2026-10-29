@@ -22,6 +22,7 @@ mod access;
 mod admission;
 mod app_access;
 mod browser_access;
+mod browser_files;
 mod browser_popup;
 mod evaluate;
 #[cfg(all(test, target_os = "linux"))]

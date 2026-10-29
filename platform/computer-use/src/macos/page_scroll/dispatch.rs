@@ -25,7 +25,9 @@ use crate::{
     cursor::Spec,
     desktop::NativeEpochId,
     driver::Driver,
-    macos::controller::{Controller, IndexedStep, ResolveId, ResolveStep, TargetData, Window},
+    macos::controller::{
+        Application, Controller, IndexedStep, ResolveId, ResolveStep, TargetData, Window,
+    },
     protocol::{Direction, Position},
 };
 use maka_agent_facts::{capability::CallResult, language::Language, tools::ToolError};
@@ -42,9 +44,17 @@ pub(crate) struct PointerAction {
     pub(crate) pid: i32,
     pub(crate) generation: String,
     pub(crate) frame: PageFrame,
-    pub(crate) accessibility: Option<Window>,
+    pub(crate) accessibility: Option<AccessibilityTarget>,
     pub(crate) position: Position,
     pub(crate) operation: Operation,
+}
+
+pub(crate) enum AccessibilityTarget {
+    Window(Window),
+    Application {
+        application: Application,
+        window_id: u32,
+    },
 }
 
 impl PointerAction {
@@ -61,13 +71,30 @@ impl PointerAction {
         let (destination, element_frame) = match self.position {
             Position::Point(point) => (Some(controller_position(point)?), None),
             Position::Element(index) => {
-                let window = self.accessibility.as_ref().ok_or_else(|| {
+                let accessibility = self.accessibility.as_ref().ok_or_else(|| {
                     failed("indexed native input requires a retained accessibility window")
                 })?;
-                let selected = match controller
-                    .begin_indexed(window, index, cancellation.clone())
-                    .await?
-                {
+                let step = match accessibility {
+                    AccessibilityTarget::Window(window) => {
+                        controller
+                            .begin_indexed(window, index, cancellation.clone())
+                            .await?
+                    }
+                    AccessibilityTarget::Application {
+                        application,
+                        window_id,
+                    } => {
+                        controller
+                            .begin_application_indexed(
+                                application,
+                                *window_id,
+                                index,
+                                cancellation.clone(),
+                            )
+                            .await?
+                    }
+                };
+                let selected = match step {
                     IndexedStep::Ready(selected) => selected,
                     IndexedStep::NeedChess { token } => {
                         let result = async {

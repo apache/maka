@@ -52,6 +52,11 @@ pub(super) type Retirement =
 #[derive(Default)]
 struct TurnCleanup {
     pending: Mutex<Option<Retirement>>,
+    // Actual observation-write custody, not a second permission flag. Native
+    // admission always checks the canonical logical-Turn fact in its T1.
+    native_interruption: Mutex<Option<Retirement>>,
+    // Actual input-release/child-wait proof, not success of the interrupted action.
+    native_drained: Mutex<Option<maka_computer_use::NativeInterruptionDrain>>,
 }
 
 impl TurnCleanup {
@@ -90,9 +95,201 @@ impl TurnCleanup {
     }
 }
 
+/// The observer may outlive its initiating evaluation/JS epoch. It owns no
+/// Agent Run, grant or model-supplied identifier, only the original source identity.
+pub(super) struct NativeInterruptionObserver {
+    owner: std::sync::Weak<Computer>,
+    cleanup: Arc<TurnCleanup>,
+    invocation: Invocation,
+    epoch: String,
+    operation: String,
+}
+
+pub(super) fn native_interruption_observer(
+    owner: &Arc<Computer>,
+    entry: &Interaction,
+    invocation: &Invocation,
+    epoch: &Epoch,
+    operation: &str,
+) -> Result<Arc<NativeInterruptionObserver>, ToolError> {
+    let cleanup = entry
+        .turns
+        .lock()
+        .unwrap()
+        .get(&invocation.turn_id)
+        .cloned()
+        .ok_or_else(|| failed("Native interruption source Turn is unavailable"))?;
+    Ok(Arc::new(NativeInterruptionObserver {
+        owner: Arc::downgrade(owner),
+        cleanup,
+        invocation: invocation.clone(),
+        epoch: epoch.id.clone(),
+        operation: operation.to_owned(),
+    }))
+}
+impl maka_computer_use::NativeInterruptionObserver for NativeInterruptionObserver {
+    fn interrupted(
+        &self,
+        observed: maka_computer_use::NativeInterruption,
+    ) -> maka_computer_use::InterruptionFuture {
+        // Only the lower bound native-event producer can construct this sealed
+        // value. An exit code, transport diagnostic or arbitrary JSON cannot.
+        if observed.session() != self.invocation.session_id
+            || observed.turn() != self.invocation.turn_id
+            || observed.native_epoch() != self.epoch
+            || observed.operation_id() != self.operation
+        {
+            return Box::pin(async {
+                Err(failed("Native interruption producer binding mismatch"))
+            });
+        }
+        let Some(owner) = self.owner.upgrade() else {
+            return Box::pin(async { Err(failed("Native interruption Host is closed")) });
+        };
+        let mut pending = self.cleanup.native_interruption.lock().unwrap();
+        if let Some(original) = pending.as_ref() {
+            let original = original.clone();
+            return Box::pin(original);
+        }
+        let mut ticket = match owner.resources.reserve() {
+            Ok(ticket) => ticket,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
+        let record = maka_event_log::native_computer::NativeInterruption {
+            opening: self.invocation.clone(),
+            operation_id: self.operation.clone(),
+            native_epoch: self.epoch.clone(),
+            native_generation: observed.generation().to_owned(),
+        };
+        let (completed, result) = tokio::sync::oneshot::channel::<Result<(), ToolError>>();
+        let original = async move {
+            result.await.map_err(|error| {
+                ToolError::CleanupUnconfirmed(format!(
+                    "Native interruption writer disappeared: {error}"
+                ))
+            })?
+        }
+        .boxed()
+        .shared();
+        *pending = Some(original.clone());
+        ticket.start();
+        let tasks = owner.tasks.clone();
+        tasks.spawn(async move {
+            let result = AssertUnwindSafe(async {
+                let store = match owner.store.session(&record.opening.session_id).await {
+                    Ok(store) => store,
+                    // The sealed event still belongs to its removed original
+                    // Session. It cannot fence a newer Session/Turn or revive A.
+                    Err(
+                        maka_event_log::StoreError::SessionNotFound
+                        | maka_event_log::StoreError::SessionRetired,
+                    ) => return Ok(()),
+                    Err(error) => return Err(ToolError::Persistence(message(error))),
+                };
+                match store.record_native_turn_interruption(record).await {
+                    Ok(_) | Err(maka_event_log::StoreError::SessionRetired) => Ok(()),
+                    Err(error) => Err(ToolError::Persistence(message(error))),
+                }
+            })
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| {
+                Err(ToolError::CleanupUnconfirmed(
+                    "Native interruption writer panicked".into(),
+                ))
+            });
+            // The same accepted SQL future has settled. A failing observation
+            // remains visible to native admission/final close; it never requests
+            // cancellation of the Agent, browser or JS producer.
+            ticket.complete(result.as_ref().map(|_| ()).map_err(message));
+            let _ = completed.send(result);
+        });
+        Box::pin(original)
+    }
+
+    fn drained(
+        &self,
+        observed: maka_computer_use::NativeInterruptionDrain,
+    ) -> maka_computer_use::InterruptionFuture {
+        // Source operation may be an earlier completed call that installed this
+        // monitor. The affected operation is this actual interrupted request.
+        if observed.session() != self.invocation.session_id
+            || observed.turn() != self.invocation.turn_id
+            || observed.native_epoch() != self.epoch
+            || observed.affected_operation_id() != self.operation
+        {
+            return Box::pin(async { Err(failed("Native interruption drain binding mismatch")) });
+        }
+        let mut retained = self.cleanup.native_drained.lock().unwrap();
+        if let Some(original) = retained.as_ref() {
+            if original.generation() != observed.generation()
+                || original.affected_operation_id() != observed.affected_operation_id()
+            {
+                return Box::pin(async {
+                    Err(ToolError::CleanupUnconfirmed(
+                        "Native Turn drain differs from its retained physical owner".into(),
+                    ))
+                });
+            }
+        } else {
+            *retained = Some(observed);
+        }
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A canonical action may remain Unknown after its exact native owner is fully
+/// drained. This proof does not change T2 or authorize another native call.
+impl NativeInterruptionObserver {
+    /// Read the same captured logical-Turn record, even if its completed
+    /// watcher has since removed it from Interaction.turns. This is physical
+    /// cleanup proof for one original operation, never new native authority.
+    pub(super) async fn native_drain(
+        &self,
+    ) -> Result<Option<maka_computer_use::NativeInterruptionDrain>, ToolError> {
+        let proof = self
+            .cleanup
+            .native_drained
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|observed| {
+                observed.session() == self.invocation.session_id
+                    && observed.turn() == self.invocation.turn_id
+                    && observed.native_epoch() == self.epoch
+                    && observed.affected_operation_id() == self.operation
+            })
+            .cloned();
+        if proof.is_some() {
+            // Clone the original writer receipt and release every Turn lock
+            // before awaiting it. Physical input cleanup cannot substitute for
+            // the canonical fence, and this SQL future never needs native/T2.
+            let write = self.cleanup.native_interruption.lock().unwrap().clone();
+            confirm_native_interruption(write).await?;
+        }
+        Ok(proof)
+    }
+}
+
+/// Both prerequisites are required for the native-only Unknown exception:
+/// real physical drain and successful custody of the original canonical write.
+/// This observes the same accepted future, never starts a replacement write.
+pub(super) async fn confirm_native_interruption(
+    write: Option<Retirement>,
+) -> Result<(), ToolError> {
+    write
+        .ok_or_else(|| {
+            ToolError::CleanupUnconfirmed(
+                "Native input drained without its canonical interruption writer".into(),
+            )
+        })?
+        .await
+}
+
 /// Actual physical resources of one VM binding. The list of these owners
 /// preserves custody and revocation coverage; it is not a permission cache.
 pub(super) struct Epoch {
+    pub files: Arc<super::browser_files::SessionFiles>,
     pub id: String,
     pub native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
     audio: Mutex<Option<Arc<AudioReceipt>>>,
@@ -390,6 +587,7 @@ impl Epoch {
     async fn close_native(&self) -> Result<(), ToolError> {
         let result = self.native.lock().await.close_native().await;
         if result.is_ok() {
+            self.files.close().await?;
             self.clear_audio();
             self.browser_preparations
                 .lock()
@@ -504,6 +702,7 @@ impl Interaction {
         }
         let native = self.native_owner.new_epoch()?;
         let epoch = Arc::new(Epoch {
+            files: Arc::default(),
             id: native.native_epoch().to_string(),
             native: Arc::new(tokio::sync::Mutex::new(native)),
             audio: Default::default(),
@@ -652,6 +851,12 @@ impl Interaction {
         let cleanup_owner = cleanup.clone();
         cleanup.start(&self.tasks, async move {
             let mut failures = Vec::new();
+            let interruption = cleanup_owner.native_interruption.lock().unwrap().clone();
+            if let Some(original) = interruption
+                && let Err(error) = original.await
+            {
+                failures.push(message(error));
+            }
             for epoch in &epochs {
                 let mut native = epoch.native.lock().await;
                 let windows = native.platform() == "windows";

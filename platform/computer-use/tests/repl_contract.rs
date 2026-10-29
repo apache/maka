@@ -30,6 +30,7 @@ struct Fixture {
     row_reads: Arc<std::sync::atomic::AtomicUsize>,
     app_action_error: Option<ToolError>,
     action_errors: Arc<std::sync::Mutex<Vec<ToolError>>>,
+    dom_snapshot_json: Option<String>,
 }
 struct NativeCommands(Arc<std::sync::Mutex<Vec<Value>>>);
 impl ToolExecutor for NativeCommands {
@@ -59,6 +60,7 @@ impl ToolExecutor for Fixture {
         let row_reads = self.row_reads.clone();
         let app_action_error = self.app_action_error.clone();
         let action_errors = self.action_errors.clone();
+        let dom_snapshot_json = self.dom_snapshot_json.clone();
         Box::pin(async move {
             if input["method"] == "action"
                 && input["handle"]["kind"] == "app"
@@ -121,6 +123,12 @@ impl ToolExecutor for Fixture {
                         "new" => json!({"title":"New fixture","url":"about:blank"}),
                         other => panic!("unexpected tab metadata handle {other}"),
                     }
+                }
+                "browserCua" => {
+                    assert_eq!(input["operation"]["kind"], "domSnapshot");
+                    serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
+                        .expect("DOM snapshot uses the real command schema");
+                    json!({"json":dom_snapshot_json.expect("DOM fixture has escaped JSON text")})
                 }
                 "browserRead" => {
                     assert_eq!(input["handle"]["kind"], "tab");
@@ -1073,4 +1081,221 @@ async fn persistent_repl_uses_each_evaluations_language_without_rewriting_user_o
     repl.close().await.unwrap();
     native.lock().await.close().await.unwrap();
     driver.lock().await.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dom_snapshot_preserves_utf16_through_rust_and_the_real_repl_facade() {
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+    let context =
+        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+    let result = repl.evaluate(
+        r#"
+            const tab = await cua.createBrowserTab('fixture');
+            const saved = JSON.parse;
+            JSON.parse = () => { throw Error('model-replaced parser must not run'); };
+            try {
+                const value = await tab.dom_cua.get_visible_dom();
+                const expected = '<button node_id=17>' + '\ud83d' + '</button>\n<input node_id=18 title="' + '\udc00' + '\\ud800" />';
+                if (value !== expected || typeof value !== 'string') throw Error('DOM UTF-16 text changed');
+                if (value.charCodeAt(value.indexOf('>') + 1) !== 0xd83d) throw Error('high surrogate lost');
+                if (!value.includes('\udc00') || !value.includes('\\ud800')) throw Error('low surrogate or literal escape lost');
+                nodeRepl.write('DOM UTF-16 preserved');
+            } finally { JSON.parse = saved; }
+        "#.into(),
+        Arc::new(Fixture {
+            dom_snapshot_json: Some(r#""<button node_id=17>\ud83d</button>\n<input node_id=18 title=\"\udc00\\ud800\" />""#.into()),
+            ..Fixture::default()
+        }),
+        CancellationToken::new(), context.clone(), Duration::from_secs(5),
+    ).await.unwrap();
+    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+    assert!(
+        context
+            .take_output()
+            .iter()
+            .any(|part| matches!(part, CellOutput::Text {text} if text == "DOM UTF-16 preserved"))
+    );
+    repl.close().await.unwrap();
+}
+
+#[cfg(feature = "native-desktop")]
+struct EncodedTitleFixture {
+    title: cua_driver_core::browser::JsonStringLiteral,
+    group: cua_driver_core::browser::JsonStringLiteral,
+}
+#[cfg(feature = "native-desktop")]
+impl ToolExecutor for EncodedTitleFixture {
+    fn names(&self) -> Vec<String> {
+        vec!["cua".into()]
+    }
+
+    fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
+        let title = self.title.clone();
+        let group = self.group.clone();
+        Box::pin(async move {
+            serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
+                .expect("title fixture uses the actual command schema");
+            let row = json!({"id":"fixture:existing","titleJson":title,"tabGroupJson":group,"url":"about:blank"});
+            Ok(match input["method"].as_str().unwrap() {
+                "listTabs" | "browserUserOpenTabs" => json!([row]),
+                "browserManagedTabs" => {
+                    let mut row = row;
+                    row.as_object_mut().unwrap().remove("tabGroupJson");
+                    json!([row])
+                }
+                "getState" => {
+                    json!({"apps":[{"title":"Native title untouched"}],"browsers":[{"id":"fixture","tabs":[row]}],"errors":[]})
+                }
+                "tabMetadata" => row,
+                _ => return Fixture::default().invoke(name, input, cancellation).await,
+            })
+        })
+    }
+}
+
+#[cfg(feature = "native-desktop")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn encoded_titles_reach_every_repl_surface_before_observation_output() {
+    use cua_driver_core::browser::JsonStringLiteral;
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+    let context =
+        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+    let result = repl.evaluate(r#"
+        const browser = await cua.getBrowser({id:'fixture'});
+        const tab = await browser.tabs.get('fixture:existing');
+        const expected = '\ud800 title \udc00 \\ud800 😀';
+        const group = '\udc00 group';
+        const originalParser = JSON.parse;
+        JSON.parse = () => { throw Error('model parser must not be called'); };
+        try {
+            const check = (row, withGroup) => {
+                if (row.title !== expected || typeof row.title !== 'string') throw Error('title changed');
+                if (withGroup && row.tabGroup !== group) throw Error('group changed');
+                if (!withGroup && Object.hasOwn(row,'tabGroup')) throw Error('managed inventory leaked user group');
+                if (Object.hasOwn(row,'titleJson') || Object.hasOwn(row,'tabGroupJson')) throw Error('encoded fields escaped');
+            };
+            if (await tab.title() !== expected) throw Error('tab.title changed');
+            check((await browser.tabs.list())[0], false);
+            check((await browser.user.openTabs())[0], true);
+            check((await cua.listTabs())[0], true);
+            const state = await cua.getState();
+            check(state.browsers[0].tabs[0], true);
+            if (state.apps[0].title !== 'Native title untouched') throw Error('native app data changed');
+            nodeRepl.write('Lossless titles preserved');
+        } finally { JSON.parse = originalParser; }
+    "#.into(), Arc::new(EncodedTitleFixture {
+        title: JsonStringLiteral::parse(r#""\ud800 title \udc00 \\ud800 😀""#.into()).unwrap(),
+        group: JsonStringLiteral::parse(r#""\udc00 group""#.into()).unwrap(),
+    }), CancellationToken::new(), context.clone(), Duration::from_secs(5)).await.unwrap();
+    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+    let output = context.take_output();
+    assert!(
+        output.iter().any(
+            |part| matches!(part, CellOutput::Text{text} if text == "Lossless titles preserved")
+        )
+    );
+    let observations: Vec<_> = output
+        .iter()
+        .filter_map(|part| match part {
+            CellOutput::Text { text } if text.starts_with('[') || text.starts_with("{\"apps\"") => {
+                Some(text)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(observations.len(), 2);
+    for text in observations {
+        assert!(
+            text.contains(r#""title":"\ud800 title \udc00 \\ud800 😀""#),
+            "{text}"
+        );
+        assert!(text.contains(r#""tabGroup":"\udc00 group""#), "{text}");
+        assert!(
+            !text.contains("titleJson") && !text.contains("tabGroupJson"),
+            "{text}"
+        );
+    }
+    repl.close().await.unwrap();
+}
+
+// The matching native unit keeper renders this exact six-row AX grammar with
+// the real Projection. This fixture checks its existing String/REPL boundary.
+struct DialogAxTitleFixture;
+impl DialogAxTitleFixture {
+    fn state() -> String {
+        concat!(
+            "Tab 17: https://fixture.example/\n",
+            r#"0 RootWebArea "\ud800 title \udc00 \\ud800 A 😀""#,
+            "\n  1 alertdialog \"fixture.example says\"\n    2 StaticText \"Fixture message\"\n    3 textbox \"Response\" value=\"Default response\" [focused]\n    4 button \"Cancel\"\n    5 button \"OK\""
+        )
+        .into()
+    }
+}
+impl ToolExecutor for DialogAxTitleFixture {
+    fn names(&self) -> Vec<String> {
+        vec!["cua".into()]
+    }
+
+    fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
+        Box::pin(async move {
+            serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
+                .expect("dialog AX fixture uses the actual command schema");
+            if input["method"] == "observe" {
+                return Ok(json!({
+                    "state":Self::state(),
+                    "screenshotUnavailable":"Screenshot unavailable while a JavaScript prompt dialog is open. Use getAXState() and its dialog controls."
+                }));
+            }
+            Fixture::default().invoke(name, input, cancellation).await
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dialog_ax_quoted_utf16_name_crosses_the_actual_repl_as_one_string() {
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+    let context =
+        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+    let result = repl.evaluate(r#"
+        const tab = await (await cua.getBrowser({id:'fixture'})).tabs.get('fixture:existing');
+        const expected = '\ud800 title \udc00 \\ud800 A 😀';
+        const parse = JSON.parse;
+        const stringify = JSON.stringify;
+        const check = (state) => {
+            if (typeof state !== 'string' || state.split('\n').length !== 7) throw Error('AX String/rows changed');
+            const root = state.split('\n')[1];
+            const prefix = '0 RootWebArea ';
+            if (!root.startsWith(prefix)) throw Error('AX root grammar changed');
+            const quotedName = root.slice(prefix.length);
+            const actual = parse(quotedName);
+            if (actual !== expected || actual.charCodeAt(0) !== 0xd800) throw Error('UTF16 code units changed');
+            if (quotedName !== stringify(expected)) throw Error('AX name spelling is not canonical');
+            if (!actual.includes('\\ud800') || actual.includes('\ufffd')) throw Error('literal escape or lone unit was replaced');
+            if (!state.includes('    3 textbox "Response" value="Default response" [focused]') ||
+                !state.endsWith('    4 button "Cancel"\n    5 button "OK"')) throw Error('dialog controls changed');
+        };
+        JSON.parse = () => { throw Error('facade must not reparse AX text'); };
+        try {
+            check(await tab.getAXState({emit:false}));
+            check(await tab.getAXState());
+            const both = await tab.getAXStateAndScreenshot({emit:false});
+            check(both.state);
+            if (Object.hasOwn(both,'screenshot')) throw Error('dialog screenshot invented');
+            nodeRepl.write('Dialog AX literal preserved');
+        } finally { JSON.parse = parse; }
+    "#.into(), Arc::new(DialogAxTitleFixture), CancellationToken::new(), context.clone(), Duration::from_secs(5)).await.unwrap();
+    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+    let output = context.take_output();
+    assert!(output.iter().any(|part| matches!(part,
+        CellOutput::Text { text } if text == "Dialog AX literal preserved")));
+    let observations: Vec<_> = output
+        .iter()
+        .filter_map(|part| match part {
+            CellOutput::Text { text } if text.starts_with("Tab 17: ") => Some(text),
+            _ => None,
+        })
+        .collect();
+    let expected = DialogAxTitleFixture::state();
+    assert_eq!(observations, vec![&expected]);
+    repl.close().await.unwrap();
 }

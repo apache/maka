@@ -156,6 +156,25 @@ impl Access {
         Ok(())
     }
 
+    async fn history_current(
+        &self,
+        request: &BrowserSessionPreparation,
+        cancellation: &CancellationToken,
+    ) -> Result<ResolvedConfiguration, ToolError> {
+        if request.target != maka_computer_use::BrowserPreparationTarget::SessionHistory {
+            return Err(failed(
+                "Browser history requires its exact session-history purpose",
+            ));
+        }
+        self.session_preparation(request, cancellation, false)
+            .await?;
+        let (configuration, _) = access::current(&self.owner, &self.call, "cua_repl").await?;
+        if configuration.permission_basis() != self.basis {
+            return Err(failed("Browser history permission boundary changed"));
+        }
+        Ok(configuration)
+    }
+
     async fn download_targets(
         &self,
         document: &BrowserDocument,
@@ -293,6 +312,59 @@ impl BrowserAuthorization for Access {
         })
     }
 
+    fn authorize_history(
+        &self,
+        request: BrowserSessionPreparation,
+        cancellation: CancellationToken,
+    ) -> AuthorizationFuture {
+        let access = self.clone();
+        Box::pin(async move {
+            let child = cancellation.child_token();
+            let authorization = async {
+                let configuration = access.history_current(&request, &child).await?;
+                access::approve_target(
+                    &access.owner,
+                    &access.call,
+                    &configuration,
+                    &child,
+                    history_target(&request),
+                    Some(&access.cell),
+                )
+                .await?;
+                access.history_current(&request, &child).await?;
+                access::granted_target(
+                    &access.owner,
+                    &access.call,
+                    access.basis,
+                    &history_target(&request),
+                )
+                .await
+            };
+            tokio::pin!(authorization);
+            tokio::select! {
+                result = &mut authorization => result,
+                () = access.producer.cancelled() => { child.cancel(); authorization.await },
+            }
+        })
+    }
+    fn check_history(
+        &self,
+        request: BrowserSessionPreparation,
+        cancellation: CancellationToken,
+    ) -> AuthorizationFuture {
+        let access = self.clone();
+        Box::pin(async move {
+            access.history_current(&request, &cancellation).await?;
+            access::granted_target(
+                &access.owner,
+                &access.call,
+                access.basis,
+                &history_target(&request),
+            )
+            .await
+        })
+    }
+
     fn attachment(&self) -> Option<Arc<dyn BrowserAttachmentAuthorization>> {
         Some(self.attachment.clone())
     }
@@ -306,6 +378,31 @@ impl BrowserAuthorization for Access {
         Box::pin(async move {
             let child = cancellation.child_token();
             let authorization = async {
+                match &browser {
+                    BrowserAccess::PageAssetDownload {
+                        document,
+                        source_origin,
+                    } => {
+                        return access
+                            .approve_download(document, source_origin, &document.url, &child)
+                            .await;
+                    }
+                    BrowserAccess::PageAssetFallbackFetch {
+                        document,
+                        source_origin,
+                        url,
+                    } => {
+                        return access
+                            .approve_download(
+                                document,
+                                source_origin,
+                                &asset_fallback_url(document, url)?,
+                                &child,
+                            )
+                            .await;
+                    }
+                    _ => {}
+                }
                 if let BrowserAccess::Download {
                     document,
                     source_origin,
@@ -363,6 +460,31 @@ impl BrowserAuthorization for Access {
     ) -> AuthorizationFuture {
         let access = self.clone();
         Box::pin(async move {
+            match &browser {
+                BrowserAccess::PageAssetDownload {
+                    document,
+                    source_origin,
+                } => {
+                    return access
+                        .check_download(document, source_origin, &document.url, &cancellation)
+                        .await;
+                }
+                BrowserAccess::PageAssetFallbackFetch {
+                    document,
+                    source_origin,
+                    url,
+                } => {
+                    return access
+                        .check_download(
+                            document,
+                            source_origin,
+                            &asset_fallback_url(document, url)?,
+                            &cancellation,
+                        )
+                        .await;
+                }
+                _ => {}
+            }
             if let BrowserAccess::Download {
                 document,
                 source_origin,
@@ -627,11 +749,34 @@ pub(super) fn target(origin: String) -> GrantTarget {
     }
 }
 
+fn history_target(request: &BrowserSessionPreparation) -> GrantTarget {
+    GrantTarget {
+        capability: GrantCapability::BrowserHistory,
+        scope: GrantScope::BrowserProfile {
+            browser_id: request.browser_id.clone(),
+            generation: request.generation.clone(),
+        },
+        ..api::target()
+    }
+}
+
 fn download_target(origin: String) -> GrantTarget {
     GrantTarget {
         capability: GrantCapability::BrowserDownload,
         scope: GrantScope::BrowserOrigin { origin },
         ..api::target()
+    }
+}
+
+// Same-origin and non-network page fetches reuse the initial page decision.
+// Cross-origin HTTP(S) fallback requires its independent destination download.
+fn asset_fallback_url(document: &BrowserDocument, url: &str) -> Result<String, ToolError> {
+    match url::Url::parse(url).ok().as_ref().map(url::Url::scheme) {
+        Some("http" | "https") => Ok(url.to_owned()),
+        Some("file") => Err(failed(
+            "The current Host browser policy does not allow file asset transfers",
+        )),
+        _ => Ok(document.url.clone()),
     }
 }
 

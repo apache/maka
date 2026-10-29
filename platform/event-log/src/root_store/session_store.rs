@@ -373,6 +373,32 @@ impl SessionStore {
             .await
     }
 
+    pub async fn record_native_turn_interruption(
+        &self,
+        observed: crate::native_computer::NativeInterruption,
+    ) -> Result<crate::native_computer::InterruptionCommit, StoreError> {
+        self.check_session(&observed.opening.session_id)?;
+        self.scoped()
+            .await?
+            .record_native_turn_interruption(observed)
+            .await
+    }
+
+    pub async fn append_native_computer_dispatch(
+        &self,
+        event: &EventWrite,
+        targets: &[maka_agent_facts::interaction::GrantTarget],
+        basis: &maka_agent_facts::workspace::PermissionBasis,
+    ) -> Result<u64, CommitError> {
+        self.check_session(&event.event().invocation.session_id)
+            .map_err(commit_error)?;
+        self.scoped()
+            .await
+            .map_err(commit_error)?
+            .append_native_computer_dispatch(event, targets, basis)
+            .await
+    }
+
     pub async fn append_capability_dispatch(
         &self,
         event: &EventWrite,
@@ -1131,6 +1157,7 @@ pub(super) fn commit_error(error: StoreError) -> CommitError {
         StoreError::OperationUnknown => CommitError::OutcomeUnknown(error.to_string()),
         StoreError::SessionRetired => CommitError::Retired,
         StoreError::PermissionRevoked => CommitError::PermissionRevoked,
+        StoreError::NativeTurnInterrupted => CommitError::NativeTurnInterrupted,
         other => CommitError::Rejected(other.to_string()),
     }
 }

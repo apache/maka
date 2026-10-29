@@ -26,6 +26,8 @@ use super::{
     AuthorizationMode, BrowserAuthorizationRequest, Failure, ParentFrame, Process, Request,
     WorkerFrame, authorization_cleanup, connection_error, failed, read, write,
 };
+#[cfg(all(target_os = "windows", feature = "native-desktop"))]
+use crate::native_interruption::own_observation as own_native_observation;
 use crate::{BrowserAuthorization, protocol::Command};
 use maka_agent_facts::tools::ToolError;
 use serde_json::Value;
@@ -59,12 +61,71 @@ struct Invocation {
     capabilities: ParentCapabilities,
     cancellation: CancellationToken,
     reply: oneshot::Sender<Result<Reply, ToolError>>,
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    native_admission: Option<tokio::sync::OwnedMutexGuard<()>>,
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    native_source: Option<NativeCallSource>,
 }
 
 struct Pending {
+    native_observer: Option<Arc<dyn crate::NativeInterruptionObserver>>,
     frames: mpsc::UnboundedSender<Result<WorkerFrame, ToolError>>,
     response_received: bool,
     identity: Option<ScopeIdentity>,
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    native_retirement: Option<NativeRetirement>,
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    native_call: bool,
+}
+
+#[cfg(all(target_os = "windows", feature = "native-desktop"))]
+#[derive(Clone)]
+pub(super) struct NativeCallSource {
+    pub key: super::native_owner::NativeKey,
+    pub operation_id: Option<String>,
+    pub observer: Option<Arc<dyn crate::NativeInterruptionObserver>>,
+    pub binding: Option<crate::NativeBindingSource>,
+}
+#[cfg(all(target_os = "windows", feature = "native-desktop"))]
+struct NativeRetirement {
+    key: super::native_owner::NativeKey,
+    source: Option<Arc<NativeCallSource>>,
+}
+#[cfg(all(target_os = "windows", feature = "native-desktop"))]
+impl NativeRetirement {
+    fn covers(&self, native: &NativeConnection) -> bool {
+        self.key == native.key
+            && match (&self.source, &native.observation.borrow().source) {
+                (Some(retired), Some(current)) => Arc::ptr_eq(retired, current),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+#[cfg(all(target_os = "windows", feature = "native-desktop"))]
+struct NativeConnection {
+    key: super::native_owner::NativeKey,
+    observation: watch::Sender<super::native_owner::NativeObservation>,
+    generation: super::native_owner::NativeGeneration,
+    interruption: Option<crate::NativeInterruption>,
+    pending_observer: Option<crate::InterruptionFuture>,
+    deferred: Option<Settled>,
+    affected_request: Option<u64>,
+}
+
+struct NativeProxyBinding {
+    invocation_id: u64,
+    identity: ScopeIdentity,
+    inner: crate::native_interruption::WireNativeSource,
+    observer: Arc<dyn crate::NativeInterruptionObserver>,
+}
+enum CustodianSettlement {
+    Request(Settled),
+    NativeNotice {
+        id: u64,
+        identity: ScopeIdentity,
+        result: Completion,
+    },
 }
 
 struct AudioCapture {
@@ -76,22 +137,195 @@ struct Settled {
     id: u64,
     result: Result<Reply, ToolError>,
     reply: oneshot::Sender<Result<Reply, ToolError>>,
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    _native_admission: Option<tokio::sync::OwnedMutexGuard<()>>,
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    native_source: Option<NativeCallSource>,
+}
+
+fn combine_connection_completion(transport: Completion, remainders: Completion) -> Completion {
+    match (transport, remainders) {
+        (Ok(()), result) | (result, Ok(())) => result,
+        (Err(original), Err(cleanup)) => Err(preserve_operation_observation(
+            ToolError::CleanupUnconfirmed(format!("{original}; {cleanup}")),
+            original,
+        )),
+    }
 }
 
 impl Connection {
-    pub(super) fn start(mut process: Process) -> Self {
+    pub(super) fn start(process: Process) -> Self {
+        Self::start_inner(
+            process,
+            None,
+            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+            None,
+        )
+    }
+
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    pub(super) fn start_native(
+        process: Process,
+        stop: CancellationToken,
+        key: super::native_owner::NativeKey,
+        generation: super::native_owner::NativeGeneration,
+        observation: watch::Sender<super::native_owner::NativeObservation>,
+    ) -> Self {
+        Self::start_inner(
+            process,
+            Some(stop),
+            Some(NativeConnection {
+                key,
+                observation,
+                generation,
+                interruption: None,
+                pending_observer: None,
+                deferred: None,
+                affected_request: None,
+            }),
+        )
+    }
+
+    fn start_inner(
+        mut process: Process,
+        native_stop: Option<CancellationToken>,
+        #[cfg(all(target_os = "windows", feature = "native-desktop"))] native: Option<
+            NativeConnection,
+        >,
+    ) -> Self {
         let (input, output) = process
             .pipes
             .take()
             .expect("handshaken process owns its pipes");
         let (connection, mut task) = Self::channel();
+        #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+        {
+            task.native = native;
+        }
         tokio::spawn(async move {
-            let transport = task.run(input, output).await;
-            let cleanup = process.disconnect().await.map_err(|error| {
+            let mut kill_failure: Option<std::io::Error> = None;
+            let transport = {
+                let run = task.run_wire(input, output);
+                tokio::pin!(run);
+                #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                {
+                    match native_stop {
+                        Some(stop) => tokio::select! {
+                            result = &mut run => result,
+                            _ = stop.cancelled() => {
+                                kill_failure = process.stop_native().await.err();
+                                // Keep the original IPC request custodians;
+                                // child exit releases their real response pipe.
+                                run.await
+                            },
+                        },
+                        None => run.await,
+                    }
+                }
+                #[cfg(not(all(target_os = "windows", feature = "native-desktop")))]
+                {
+                    let _ = native_stop;
+                    run.await
+                }
+            };
+            let physical_wait = process.disconnect();
+            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+            let pending_observer = task
+                .native
+                .as_mut()
+                .and_then(|native| native.pending_observer.take());
+            #[cfg(not(all(target_os = "windows", feature = "native-desktop")))]
+            let pending_observer: Option<crate::InterruptionFuture> = None;
+            let (cleanup, remainders, observed) =
+                tokio::join!(physical_wait, task.finish_requests(), async {
+                    match pending_observer {
+                        Some(future) => Some(future.await),
+                        None => None,
+                    }
+                });
+            let transport = combine_connection_completion(transport, remainders);
+            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+            if let (Some(native), Some(observed)) = (task.native.as_mut(), observed) {
+                native
+                    .observation
+                    .send_modify(|state| state.persisted = Some(observed));
+            }
+            #[cfg(not(all(target_os = "windows", feature = "native-desktop")))]
+            let _ = observed;
+            let cleanup = cleanup.map_err(|error| {
                 ToolError::CleanupUnconfirmed(format!(
                     "Windows desktop worker exit was not confirmed: {error}"
                 ))
             });
+            let cleanup = match kill_failure.take() {
+                Some(error) => Err(ToolError::CleanupUnconfirmed(format!(
+                    "native-only child stop failed: {error}; process settlement: {cleanup:?}"
+                ))),
+                None => cleanup,
+            };
+            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+            let cleanup = if let Some(native) = task.native.as_ref() {
+                let retired = native
+                    .observation
+                    .borrow()
+                    .retired
+                    .clone()
+                    .unwrap_or_else(|| {
+                        Err(ToolError::CleanupUnconfirmed(
+                            "native owner exited without owned-input retirement proof".into(),
+                        ))
+                    });
+                match (cleanup, retired) {
+                    (Ok(()), result) | (result, Ok(())) => result,
+                    (Err(process), Err(inputs)) => Err(ToolError::CleanupUnconfirmed(format!(
+                        "{inputs}; {process}"
+                    ))),
+                }
+            } else {
+                cleanup
+            };
+            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+            if let Some(native) = task.native.as_mut() {
+                if let Some(mut settled) = native.deferred.take() {
+                    if cleanup.is_ok() {
+                        if let (Some(interruption), Some(source)) =
+                            (native.interruption.clone(), settled.native_source.take())
+                        {
+                            if source.key == native.key {
+                                if let (Some(operation), Some(observer)) =
+                                    (source.operation_id, source.observer)
+                                {
+                                    match crate::NativeInterruptionDrain::from_drained_native(
+                                        interruption,
+                                        operation,
+                                    ) {
+                                        Ok(observed) => {
+                                            // Await the original Host drain future before delivering
+                                            // this same action's original Unknown result.
+                                            if let Err(error) = own_native_observation(|| {
+                                                observer.drained(observed)
+                                            })
+                                            .await
+                                            {
+                                                native.observation.send_modify(|state| {
+                                                    state.persisted = Some(Err(error))
+                                                });
+                                            }
+                                        }
+                                        Err(error) => {
+                                            native.observation.send_modify(|state| {
+                                                state.persisted = Some(Err(error))
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    drop(settled._native_admission);
+                    let _ = settled.reply.send(settled.result);
+                }
+            }
             let settlement = CloseSettlement {
                 transport,
                 process: cleanup,
@@ -104,6 +338,39 @@ impl Connection {
             task.closed.send_replace(Some(settlement));
         });
         connection
+    }
+
+    #[cfg(all(test, target_os = "windows", feature = "native-desktop"))]
+    pub(super) fn native_retirement_fixture(
+        key: super::native_owner::NativeKey,
+        generation: super::native_owner::NativeGeneration,
+        observation: watch::Sender<super::native_owner::NativeObservation>,
+    ) -> (Self, tokio::io::DuplexStream) {
+        let (parent, peer) = tokio::io::duplex(8192);
+        let (input, output) = tokio::io::split(parent);
+        let (connection, mut task) = Self::channel();
+        task.native = Some(NativeConnection {
+            key,
+            observation,
+            generation,
+            interruption: None,
+            pending_observer: None,
+            deferred: None,
+            affected_request: None,
+        });
+        tokio::spawn(async move {
+            let transport = task.run(output, input).await;
+            task.closed.send_replace(Some(CloseSettlement {
+                transport,
+                process: Ok(()),
+            }));
+        });
+        (connection, peer)
+    }
+
+    #[cfg(all(test, target_os = "windows", feature = "native-desktop"))]
+    pub(super) fn native_fixture_without_process() -> Self {
+        Self::channel().0
     }
 
     fn channel() -> (Self, ConnectionTask) {
@@ -123,6 +390,11 @@ impl Connection {
                 sealed,
                 fault,
                 closed,
+                #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                native: None,
+                native_proxy: None,
+                requests: JoinSet::new(),
+                callback_custody: None,
             },
         )
     }
@@ -176,6 +448,13 @@ impl Connection {
             }
             _ => {}
         }
+        if let Request::Invoke {
+            native_observer_available,
+            ..
+        } = &mut request
+        {
+            *native_observer_available = invocation.native_interruption_observer().is_some();
+        }
         let authorization = invocation.browser_authorization();
         self.begin_capabilities(
             request,
@@ -184,8 +463,10 @@ impl Connection {
                     .as_ref()
                     .and_then(|authority| authority.attachment()),
                 authorization,
+                files: invocation.browser_asset_files(),
                 effects: invocation.browser_host_effects(),
                 settlement: invocation.operation_settlement(),
+                native_interruption: invocation.native_interruption_observer(),
             },
             cancellation,
         )
@@ -201,11 +482,52 @@ impl Connection {
             .await
     }
 
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    pub(super) async fn invoke_native(
+        &self,
+        request: Request,
+        cancellation: CancellationToken,
+        admission: tokio::sync::OwnedMutexGuard<()>,
+        source: NativeCallSource,
+    ) -> Result<Reply, ToolError> {
+        self.begin_capabilities_with_native(
+            request,
+            ParentCapabilities::default(),
+            cancellation,
+            Some(admission),
+            Some(source),
+        )?
+        .await
+    }
+
     fn begin_capabilities(
         &self,
         request: Request,
         capabilities: ParentCapabilities,
         cancellation: CancellationToken,
+    ) -> Result<maka_agent_facts::tools::ToolFuture<Reply>, ToolError> {
+        self.begin_capabilities_with_native(
+            request,
+            capabilities,
+            cancellation,
+            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+            None,
+            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+            None,
+        )
+    }
+
+    fn begin_capabilities_with_native(
+        &self,
+        request: Request,
+        capabilities: ParentCapabilities,
+        cancellation: CancellationToken,
+        #[cfg(all(target_os = "windows", feature = "native-desktop"))] native_admission: Option<
+            tokio::sync::OwnedMutexGuard<()>,
+        >,
+        #[cfg(all(target_os = "windows", feature = "native-desktop"))] native_source: Option<
+            NativeCallSource,
+        >,
     ) -> Result<maka_agent_facts::tools::ToolFuture<Reply>, ToolError> {
         if let Some(error) = self.fault() {
             return Err(error);
@@ -223,6 +545,10 @@ impl Connection {
                 capabilities,
                 cancellation,
                 reply,
+                #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                native_admission,
+                #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                native_source,
             })
             .map_err(|_| {
                 self.fault()
@@ -285,6 +611,46 @@ impl Connection {
     pub(in crate::desktop) async fn close(&self) -> Completion {
         self.sealed.cancel();
         self.settlement().await?.cleanup()
+    }
+
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    pub(super) async fn retire_native(&self, key: super::native_owner::NativeKey) -> Completion {
+        if self.sealed.is_cancelled() {
+            return Err(ToolError::CleanupUnconfirmed(
+                "native control channel sealed before guard retirement".into(),
+            ));
+        }
+        let (reply, receive) = oneshot::channel();
+        self.requests
+            .send(Invocation {
+                request: Request::NativeRetire { key },
+                capabilities: ParentCapabilities::default(),
+                cancellation: CancellationToken::new(),
+                reply,
+                native_admission: None,
+                native_source: None,
+            })
+            .map_err(|_| {
+                ToolError::CleanupUnconfirmed(
+                    "native guard-retirement control channel is closed".into(),
+                )
+            })?;
+        // A failed guard ACK must keep its owner available for actual cleanup
+        // retry. It does not auto-seal or declare the older action settled.
+        receive.await.map_err(|error| {
+            ToolError::CleanupUnconfirmed(format!(
+                "native guard-retirement observation was lost: {error}"
+            ))
+        })??;
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    pub(super) async fn native_process_cleanup(&self) -> Completion {
+        self.settlement()
+            .await?
+            .native_cleanup_error()
+            .map_or(Ok(()), Err)
     }
 
     async fn settlement(&self) -> Result<CloseSettlement, ToolError> {
@@ -358,6 +724,11 @@ impl CloseSettlement {
 }
 
 struct ConnectionTask {
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    native: Option<NativeConnection>,
+    native_proxy: Option<NativeProxyBinding>,
+    requests: JoinSet<CustodianSettlement>,
+    callback_custody: Option<ParentCallbacks>,
     receive: mpsc::UnboundedReceiver<Invocation>,
     sealed: CancellationToken,
     fault: watch::Sender<Option<ToolError>>,
@@ -365,7 +736,140 @@ struct ConnectionTask {
 }
 
 impl ConnectionTask {
+    fn native_notice(
+        &mut self,
+        invocation_id: u64,
+        identity: &ScopeIdentity,
+        notice: crate::native_interruption::WireNativeNotice,
+        pending: &HashMap<u64, Pending>,
+    ) -> crate::InterruptionFuture {
+        use crate::native_interruption::{WireNativeNotice, own_observation};
+        let rejected = |message: &str| -> crate::InterruptionFuture {
+            let message = message.to_owned();
+            Box::pin(async move { Err(failed(message)) })
+        };
+        #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+        if self.native.is_some() {
+            return rejected("native-only executor refuses outer observer proxy notices");
+        }
+        let mapped_source =
+            |outer: &ScopeIdentity, inner: &crate::native_interruption::WireNativeSource| {
+                // inner epoch is an actual Windows-local counter; public Host
+                // observations use the exact original Parent epoch binding.
+                crate::NativeBindingSource::from_bound_native(
+                    outer.session.clone(),
+                    outer.turn.clone(),
+                    outer.epoch.clone(),
+                    inner.generation.clone(),
+                    inner.operation_id.clone(),
+                )
+            };
+        match notice {
+            WireNativeNotice::Bound(inner) => {
+                let Some(request) = pending.get(&invocation_id).filter(|request| {
+                    !request.response_received && request.identity.as_ref() == Some(identity)
+                }) else {
+                    return rejected("native observer binding is not an original admitted Invoke");
+                };
+                let Some(observer) = request.native_observer.clone() else {
+                    return rejected(
+                        "native observer is unavailable for this actual Host invocation",
+                    );
+                };
+                if inner.session != identity.session
+                    || inner.turn != identity.turn
+                    || inner.operation_id != identity.operation_id
+                    || inner.native_epoch.is_empty()
+                    || uuid::Uuid::parse_str(&inner.generation)
+                        .map_or(true, |generation| generation.is_nil())
+                {
+                    return rejected("native observer binding changed actual source identity");
+                }
+                let source = match mapped_source(identity, &inner) {
+                    Ok(source) => source,
+                    Err(error) => return Box::pin(async move { Err(error) }),
+                };
+                self.native_proxy = Some(NativeProxyBinding {
+                    invocation_id,
+                    identity: identity.clone(),
+                    inner,
+                    observer: observer.clone(),
+                });
+                own_observation(|| observer.bound(source))
+            }
+            WireNativeNotice::Interrupted(inner) => {
+                let Some(binding) = self.native_proxy.as_ref().filter(|binding| {
+                    binding.invocation_id == invocation_id
+                        && binding.identity == *identity
+                        && binding.inner == inner
+                }) else {
+                    return rejected(
+                        "native interruption does not match the retained actual binding",
+                    );
+                };
+                let source = match mapped_source(&binding.identity, &inner) {
+                    Ok(source) => source,
+                    Err(error) => return Box::pin(async move { Err(error) }),
+                };
+                let observer = binding.observer.clone();
+                own_observation(|| {
+                    observer.interrupted(crate::NativeInterruption::from_bound_native(source))
+                })
+            }
+            WireNativeNotice::Drained {
+                source: inner,
+                affected_operation_id,
+            } => {
+                let Some(binding) = self.native_proxy.as_ref().filter(|binding| {
+                    binding.inner == inner
+                        && binding.identity.owner == identity.owner
+                        && binding.identity.epoch == identity.epoch
+                        && binding.identity.session == identity.session
+                        && binding.identity.turn == identity.turn
+                }) else {
+                    return rejected(
+                        "native drain does not match the retained executor generation",
+                    );
+                };
+                let Some(request) = pending.get(&invocation_id).filter(|request| {
+                    !request.response_received
+                        && request.identity.as_ref() == Some(identity)
+                        && identity.operation_id == affected_operation_id
+                }) else {
+                    return rejected("native drain has no exact affected original operation");
+                };
+                let Some(observer) = request.native_observer.clone() else {
+                    return rejected(
+                        "native drain observer is unavailable for the actual affected operation",
+                    );
+                };
+                let source = match mapped_source(&binding.identity, &inner) {
+                    Ok(source) => source,
+                    Err(error) => return Box::pin(async move { Err(error) }),
+                };
+                let drained = match crate::NativeInterruptionDrain::from_drained_native(
+                    crate::NativeInterruption::from_bound_native(source),
+                    affected_operation_id,
+                ) {
+                    Ok(drained) => drained,
+                    Err(error) => return Box::pin(async move { Err(error) }),
+                };
+                own_observation(|| observer.drained(drained))
+            }
+        }
+    }
+
+    #[cfg(test)]
     async fn run(
+        &mut self,
+        input: impl AsyncWrite + Unpin + Send + 'static,
+        output: impl AsyncRead + Unpin + Send + 'static,
+    ) -> Completion {
+        let transport = self.run_wire(input, output).await;
+        combine_connection_completion(transport, self.finish_requests().await)
+    }
+
+    async fn run_wire(
         &mut self,
         input: impl AsyncWrite + Unpin + Send + 'static,
         output: impl AsyncRead + Unpin + Send + 'static,
@@ -420,7 +924,6 @@ impl ConnectionTask {
         );
         let mut pending = HashMap::<u64, Pending>::new();
         let mut audio = HashMap::<u64, AudioCapture>::new();
-        let mut requests = JoinSet::<Settled>::new();
         let mut last_request = 0_u64;
         let mut last_authorization = 0_u64;
         let mut shutdown = None;
@@ -465,6 +968,49 @@ impl ConnectionTask {
                         }
                     };
                     match frame {
+                        #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                        WorkerFrame::NativeInterruption { key, operation_id } => {
+                            let Some(native) = self.native.as_mut().filter(|native| native.key == key && native.interruption.is_none()) else {
+                                terminal.get_or_insert(ToolError::OutcomeUnknown("native interruption producer scope mismatch".into())); break;
+                            };
+                            native.affected_request = pending.iter().find(|(_, request)| request.native_call && !request.response_received).map(|(id, _)| *id);
+                            native.observation.send_modify(|observed| observed.interrupted = true);
+                            let source = native.observation.borrow().source.clone();
+                            let producer = source.as_ref().and_then(|source| source.binding.as_ref().zip(source.observer.as_ref())).filter(|(binding, _)| {
+                                Some(binding.operation_id()) == operation_id.as_deref()
+                                    && binding.session() == key.session
+                                    && binding.turn() == key.turn
+                                    && binding.native_epoch() == key.epoch
+                                    && binding.generation() == native.generation.observed()
+                            });
+                            if let Some((binding, observer)) = producer {
+                                let observed = crate::NativeInterruption::from_bound_native(binding.clone());
+                                native.interruption = Some(observed.clone());
+                                native.pending_observer = Some(own_native_observation(|| observer.interrupted(observed)));
+                            } else {
+                                native.observation.send_modify(|observed| observed.persisted = Some(Err(ToolError::Failed("native interruption has no actual retained Host producer".into()))));
+                            }
+                        },
+                        #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                        WorkerFrame::NativeRetired { key, result } => {
+                            let Some(native) = self.native.as_mut().filter(|native| native.key == key && native.observation.borrow().interrupted) else {
+                                terminal.get_or_insert(ToolError::OutcomeUnknown("native retirement producer scope mismatch".into())); break;
+                            };
+                            let released = result.map_err(ToolError::from);
+                            native.observation.send_modify(|observed| observed.retired = Some(released.clone()));
+                            if released.is_err() {
+                                if let Some(settled) = native.deferred.take() {
+                                    drop(settled._native_admission);
+                                    let _ = settled.reply.send(settled.result);
+                                }
+                            }
+                        },
+                        WorkerFrame::BrowserCallback { message: WorkerMessage::NativeObserver { invocation_id, id, identity, notice } } => {
+                            let future = self.native_notice(invocation_id, &identity, notice, &pending);
+                            self.requests.spawn(async move {
+                                CustodianSettlement::NativeNotice { id, identity, result: future.await }
+                            });
+                        },
                         WorkerFrame::BrowserCallback { message: WorkerMessage::Prepare { invocation_id, ref key, .. } } => {
                             let Some(request)=pending.get(&invocation_id).filter(|request|!request.response_received && request.identity.as_ref()==Some(&key.identity)) else {
                                 terminal.get_or_insert(ToolError::OutcomeUnknown("desktop browser-service invocation identity mismatch".into()));break;
@@ -498,6 +1044,15 @@ impl ConnectionTask {
                                 break;
                             }
                             request.response_received = true;
+                            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                            if let Some(retirement) = request.native_retirement.as_ref() {
+                                let Some(native) = self.native.as_ref() else {
+                                    terminal.get_or_insert(ToolError::OutcomeUnknown("foreign native retirement response".into())); break;
+                                };
+                                if retirement.covers(native) {
+                                    native.observation.send_modify(|observed| observed.retired = Some(result.as_ref().map(|_| ()).map_err(|error| ToolError::from(error.clone()))));
+                                }
+                            }
                             if let Some(capture) = audio.get_mut(&id) {
                                 if result.is_ok() {
                                     capture.start_acknowledged = true;
@@ -536,15 +1091,41 @@ impl ConnectionTask {
                     let _ = terminal.get_or_insert(ToolError::OutcomeUnknown(format!("Windows desktop write failed: {}", error.map_or_else(|| "writer closed".into(), |error| error.to_string()))));
                     break;
                 }
-                result = requests.join_next(), if !requests.is_empty() => {
+                observed = async {
+                    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                    if let Some(future) = self.native.as_mut().and_then(|native| native.pending_observer.as_mut()) {
+                        return future.as_mut().await;
+                    }
+                    std::future::pending::<Completion>().await
+                } => {
+                    let _ = &observed;
+                    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                    if let Some(native) = self.native.as_mut() {
+                        native.pending_observer = None;
+                        native.observation.send_modify(|state| state.persisted = Some(observed));
+                    }
+                }
+                result = self.requests.join_next(), if !self.requests.is_empty() => {
                     let result = match result.expect("guarded nonempty request set") {
-                        Ok(result) => result,
+                        Ok(CustodianSettlement::Request(result)) => result,
+                        Ok(CustodianSettlement::NativeNotice { id, identity, result }) => {
+                            let _ = send.send(ParentFrame::BrowserCallback { message: Box::new(super::callbacks::ParentMessage::NativeObserved { id, identity, result: result.map_err(Into::into) }) });
+                            continue;
+                        },
                         Err(error) => {
                             let _ = terminal.get_or_insert(ToolError::CleanupUnconfirmed(format!("desktop request custodian failed: {error}")));
                             break;
                         }
                     };
                     pending.remove(&result.id);
+                    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                    if let Some(native) = self.native.as_mut().filter(|native| native.interruption.is_some() && !matches!(native.observation.borrow().retired, Some(Err(_)))) {
+                        if native.affected_request == Some(result.id) {
+                            if native.deferred.is_some() { terminal.get_or_insert(ToolError::CleanupUnconfirmed("multiple native inputs escaped single-owner custody".into())); break; }
+                            native.deferred = Some(result);
+                            continue;
+                        }
+                    }
                     let result_value = match result.result {
                         Ok(reply) => Ok(reply),
                         Err(error) => {
@@ -560,6 +1141,8 @@ impl ConnectionTask {
                             Err(error)
                         }
                     };
+                    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                    drop(result._native_admission);
                     let _ = result.reply.send(result_value);
                 }
                 _ = self.sealed.cancelled(), if !closing => {
@@ -572,17 +1155,60 @@ impl ConnectionTask {
                         continue;
                     };
                     if invocation.cancellation.is_cancelled() {
+                        #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                        drop(invocation.native_admission);
                         let _ = invocation.reply.send(Err(failed("Computer Use cancelled before dispatch")));
                         continue;
                     }
                     let Some(id) = last_request.checked_add(1) else {
+                        #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                        drop(invocation.native_admission);
                         let _ = invocation.reply.send(Err(failed("desktop request identity exhausted")));
                         closing = true;
                         continue;
                     };
                     last_request = id;
+                    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                    if let Request::NativeInvoke { ref key, ref operation_id, .. } = invocation.request {
+                        let valid = self.native.as_ref().is_some_and(|native| {
+                            (native.key == *key && !native.observation.borrow().interrupted) || (native.key.session == key.session && !native.observation.borrow().interrupted && matches!(native.observation.borrow().retired, Some(Ok(()))))
+                        });
+                        if !valid {
+                            drop(invocation.native_admission);
+                            let _ = invocation.reply.send(Err(ToolError::CleanupUnconfirmed("native binding was not retired by this process connection".into()))); continue;
+                        }
+                        let native = self.native.as_mut().expect("validated native process connection");
+                        let Some(source) = invocation.native_source.as_ref().filter(|source| source.key == *key && source.operation_id == *operation_id) else {
+                            drop(invocation.native_admission);
+                            let _ = invocation.reply.send(Err(ToolError::CleanupUnconfirmed("native call source changed before wire admission".into()))); continue;
+                        };
+                        if let Some(binding) = source.binding.as_ref() {
+                            if source.observer.is_none() || binding.session() != key.session || binding.turn() != key.turn || binding.native_epoch() != key.epoch || binding.generation() != native.generation.observed() || Some(binding.operation_id()) != operation_id.as_deref() {
+                                drop(invocation.native_admission);
+                                let _ = invocation.reply.send(Err(ToolError::CleanupUnconfirmed("native binding source changed before wire admission".into()))); continue;
+                            }
+                        }
+                        let observed = native.observation.borrow().clone();
+                        let replacement = native.key != *key || (source.binding.is_some() && matches!(observed.retired, Some(Ok(()))));
+                        if source.binding.is_some() && observed.source.is_some() && !replacement {
+                            drop(invocation.native_admission);
+                            let _ = invocation.reply.send(Err(ToolError::CleanupUnconfirmed("native physical producer was not joined before observer replacement".into()))); continue;
+                        }
+                        if replacement {
+                            native.key = key.clone();
+                            native.observation.send_replace(super::native_owner::NativeObservation { key: Some(key.clone()), ..Default::default() });
+                            native.interruption = None;
+                        }
+                        if native.observation.borrow().source.is_none() {
+                            native.observation.send_modify(|state| state.source = Some(Arc::new(source.clone())));
+                        }
+                    }
                     let cancel_native = matches!(&invocation.request, Request::Invoke { .. } | Request::LeaseChild { .. });
-                    let is_audio = matches!(&invocation.request, Request::Invoke { command: Command::StartAudioRecording { .. }, .. });
+                    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                    let cancel_native = cancel_native || matches!(&invocation.request, Request::NativeInvoke { .. });
+                    let is_audio = matches!(&invocation.request, Request::Invoke { command, .. } if matches!(command.as_ref(), Command::StartAudioRecording { .. }));
+                    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                    let is_audio = is_audio || matches!(&invocation.request, Request::NativeInvoke { operation: super::native_owner::NativeOperation::StartAudioRecording, .. });
                     let observation = if is_audio {
                         let (completion, observation) = watch::channel(None);
                         audio.insert(id, AudioCapture { completion, start_acknowledged: false });
@@ -592,12 +1218,21 @@ impl ConnectionTask {
                     };
                     let (frames, response) = mpsc::unbounded_channel();
                     let identity=super::callback_identity(&invocation.request);
+                    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                    let native_retirement = match &invocation.request {
+                        Request::NativeRetire { key } if self.native.as_ref().is_some_and(|native| native.key == *key) => Some(NativeRetirement { key: key.clone(), source: self.native.as_ref().expect("matched actual native connection").observation.borrow().source.clone() }),
+                        Request::NativeRetire { .. } => {
+                            drop(invocation.native_admission);
+                            let _ = invocation.reply.send(Err(ToolError::CleanupUnconfirmed("native retirement target is not owned by this process connection".into()))); continue;
+                        },
+                        _ => None,
+                    };
                     super::seal_parent_callbacks(&callbacks,&invocation.request);
-                    pending.insert(id, Pending { frames, response_received: false, identity:identity.clone() });
+                    pending.insert(id, Pending { native_observer: invocation.capabilities.native_interruption.clone(), frames, response_received: false, identity:identity.clone(), #[cfg(all(target_os = "windows", feature = "native-desktop"))] native_retirement, #[cfg(all(target_os = "windows", feature = "native-desktop"))] native_call: matches!(&invocation.request, Request::NativeInvoke { .. }) });
                     let sent = send.send(ParentFrame::Request { id, request: Box::new(invocation.request) });
                     let task_callbacks=callbacks.clone();
                     let task_send = send.clone();
-                    requests.spawn(async move {
+                    self.requests.spawn(async move {
                         let result = if sent.is_ok() {
                             let cancellation = invocation.cancellation.clone();
                             let operation = invoke_routed(id, response, task_send.clone(), invocation.capabilities, invocation.cancellation, task_callbacks,identity);
@@ -614,7 +1249,7 @@ impl ConnectionTask {
                             Err(ToolError::OutcomeUnknown("desktop writer closed before request settlement".into()))
                         };
                         let result = result.map(|value| Reply { value, audio: observation });
-                        Settled { id, result, reply: invocation.reply }
+                        CustodianSettlement::Request(Settled { id, result, reply: invocation.reply, #[cfg(all(target_os = "windows", feature = "native-desktop"))] _native_admission: invocation.native_admission, #[cfg(all(target_os = "windows", feature = "native-desktop"))] native_source: invocation.native_source })
                     });
                 }
             }
@@ -653,11 +1288,40 @@ impl ConnectionTask {
                 .completion
                 .send_replace(Some(Err(pending_error.clone())));
         }
+        self.callback_custody = Some(callbacks);
+        terminal.map_or(Ok(()), Err)
+    }
+
+    async fn finish_requests(&mut self) -> Completion {
+        let mut terminal = None;
+        // EOF closed the writer, but these ACK attempts preserve the original
+        // metadata future's actual outcome without resurrecting the channel.
         // A response already read still settles its own request; EOF cannot erase that ACK.
         // Request tasks retain canonical prompt cleanup before returning it.
-        while let Some(result) = requests.join_next().await {
+        while let Some(result) = self.requests.join_next().await {
             match result {
-                Ok(result) => {
+                Ok(CustodianSettlement::NativeNotice {
+                    id,
+                    identity,
+                    result,
+                }) => {
+                    // The original Host future has settled. EOF prevents an
+                    // ACK; do not invent another queue or resurrect the wire.
+                    let _ = (id, identity, result);
+                }
+                Ok(CustodianSettlement::Request(result)) => {
+                    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                    if let Some(native) = self.native.as_mut().filter(|native| {
+                        native.interruption.is_some()
+                            && !matches!(native.observation.borrow().retired, Some(Err(_)))
+                    }) {
+                        if native.affected_request == Some(result.id) && native.deferred.is_none() {
+                            native.deferred = Some(result);
+                            continue;
+                        }
+                    }
+                    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                    drop(result._native_admission);
                     let _ = result.reply.send(result.result);
                 }
                 Err(error) => {
@@ -669,11 +1333,16 @@ impl ConnectionTask {
                 }
             }
         }
-        if callbacks.has_unsettled() {
+        if self
+            .callback_custody
+            .as_ref()
+            .is_some_and(ParentCallbacks::has_unsettled)
+        {
             terminal.get_or_insert(ToolError::CleanupUnconfirmed(
                 "browser callback custody remains unconfirmed after desktop transport ended".into(),
             ));
         }
+        self.callback_custody.take();
         terminal.map_or(Ok(()), Err)
     }
 }
@@ -931,10 +1600,11 @@ mod tests {
             epoch: epoch.into(),
             session: "fixture-session".into(),
             turn: "fixture-turn".into(),
+            native_observer_available: false,
             operation_id: None,
             browsers: Vec::new(),
             preparation_policy: Default::default(),
-            command,
+            command: Box::new(command),
             language: maka_agent_facts::language::Language::En,
         }
     }
@@ -1696,10 +2366,11 @@ mod tests {
                         epoch: "canonical-epoch".into(),
                         session: "session".into(),
                         turn: "turn".into(),
+                        native_observer_available: false,
                         operation_id: None,
                         browsers: Vec::new(),
                         preparation_policy: Default::default(),
-                        command: Command::Documentation,
+                        command: Box::new(Command::Documentation),
                         language: maka_agent_facts::language::Language::En,
                     },
                     Some(authorization),
@@ -2879,5 +3550,343 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod native_observer_tests {
+    use super::*;
+    use crate::native_interruption::{WireNativeNotice, WireNativeSource};
+    use std::sync::Mutex;
+    use tokio::sync::Notify;
+
+    #[derive(Default)]
+    struct ObservationGate {
+        entered: Notify,
+        release: Notify,
+    }
+    #[derive(Default)]
+    struct Probe {
+        events: Arc<Mutex<Vec<crate::NativeInterruption>>>,
+        drains: Arc<Mutex<Vec<crate::NativeInterruptionDrain>>>,
+        gate: Option<Arc<ObservationGate>>,
+        fail: bool,
+    }
+    impl crate::NativeInterruptionObserver for Probe {
+        fn interrupted(&self, observed: crate::NativeInterruption) -> crate::InterruptionFuture {
+            let events = self.events.clone();
+            let gate = self.gate.clone();
+            let fail = self.fail;
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    gate.entered.notify_one();
+                    gate.release.notified().await;
+                }
+                events.lock().unwrap().push(observed);
+                if fail {
+                    Err(failed("fixture native writer failed"))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+        fn drained(&self, observed: crate::NativeInterruptionDrain) -> crate::InterruptionFuture {
+            let drains = self.drains.clone();
+            Box::pin(async move {
+                drains.lock().unwrap().push(observed);
+                Ok(())
+            })
+        }
+    }
+    fn identity(operation: &str) -> ScopeIdentity {
+        ScopeIdentity {
+            owner: "fixture-owner".into(),
+            epoch: "outer-epoch".into(),
+            session: "fixture-session".into(),
+            turn: "fixture-turn".into(),
+            operation_id: operation.into(),
+        }
+    }
+    fn source(operation: &str) -> WireNativeSource {
+        WireNativeSource {
+            session: "fixture-session".into(),
+            turn: "fixture-turn".into(),
+            native_epoch: "actual-windows-local-epoch".into(),
+            generation: uuid::Uuid::from_u128(7).to_string(),
+            operation_id: operation.into(),
+        }
+    }
+    fn request(operation: &str) -> Request {
+        Request::Invoke {
+            owner: "fixture-owner".into(),
+            epoch: "outer-epoch".into(),
+            session: "fixture-session".into(),
+            turn: "fixture-turn".into(),
+            operation_id: Some(operation.into()),
+            native_observer_available: false,
+            browsers: Vec::new(),
+            preparation_policy: Default::default(),
+            command: Box::new(Command::ListApps {
+                options: Default::default(),
+            }),
+            language: maka_agent_facts::language::Language::En,
+        }
+    }
+    fn pending_request(identity: ScopeIdentity, observer: Arc<Probe>) -> Pending {
+        let (frames, _receiver) = mpsc::unbounded_channel();
+        Pending {
+            native_observer: Some(observer),
+            frames,
+            response_received: false,
+            identity: Some(identity),
+            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+            native_retirement: None,
+            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+            native_call: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn native_proxy_presence_comes_from_actual_capability_not_operation_id_or_wire_flag() {
+        for available in [false, true] {
+            let (connection, mut task) = Connection::channel();
+            let probe = Arc::new(Probe::default());
+            let mut invocation = crate::InvocationContext::new("fixture-session", "fixture-turn")
+                .with_operation_id("source-A".into());
+            if available {
+                invocation = invocation.with_native_interruption_observer(probe);
+            }
+            let mut wire = request("source-A");
+            if let Request::Invoke {
+                native_observer_available,
+                ..
+            } = &mut wire
+            {
+                *native_observer_available = !available;
+            }
+            let observing = connection
+                .begin_browser(wire, &invocation, CancellationToken::new())
+                .unwrap();
+            let queued = task.receive.try_recv().unwrap();
+            let Request::Invoke {
+                native_observer_available,
+                ..
+            } = queued.request
+            else {
+                panic!("actual Invoke")
+            };
+            assert_eq!(native_observer_available, available);
+            assert_eq!(queued.capabilities.native_interruption.is_some(), available);
+            drop(observing);
+        }
+    }
+
+    #[tokio::test]
+    async fn retained_native_proxy_allows_idle_escape_and_maps_only_the_bound_parent_epoch() {
+        let (_connection, mut task) = Connection::channel();
+        let probe = Arc::new(Probe::default());
+        let mut pending = HashMap::new();
+        pending.insert(1, pending_request(identity("source-A"), probe.clone()));
+        task.native_notice(
+            1,
+            &identity("source-A"),
+            WireNativeNotice::Bound(source("source-A")),
+            &pending,
+        )
+        .await
+        .unwrap();
+        pending.remove(&1); // The first T1/T2/RPC has really returned; its binding remains.
+        task.native_notice(
+            1,
+            &identity("source-A"),
+            WireNativeNotice::Interrupted(source("source-A")),
+            &pending,
+        )
+        .await
+        .unwrap();
+        {
+            let events = probe.events.lock().unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].native_epoch(), "outer-epoch");
+            assert_eq!(events[0].operation_id(), "source-A");
+            assert_eq!(events[0].generation(), uuid::Uuid::from_u128(7).to_string());
+        }
+        let mut changed = source("source-A");
+        changed.generation = uuid::Uuid::from_u128(8).to_string();
+        assert!(
+            task.native_notice(
+                1,
+                &identity("source-A"),
+                WireNativeNotice::Interrupted(changed),
+                &pending
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            task.native_notice(
+                1,
+                &identity("source-A"),
+                WireNativeNotice::Bound(source("source-A")),
+                &pending
+            )
+            .await
+            .is_err(),
+            "terminal RPC cannot register a new observer"
+        );
+        assert_eq!(probe.events.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn drain_uses_exact_unacknowledged_affected_operation_not_the_binding_producer() {
+        let (_connection, mut task) = Connection::channel();
+        let source_probe = Arc::new(Probe::default());
+        let affected_probe = Arc::new(Probe::default());
+        let mut pending = HashMap::new();
+        pending.insert(
+            1,
+            pending_request(identity("source-A"), source_probe.clone()),
+        );
+        task.native_notice(
+            1,
+            &identity("source-A"),
+            WireNativeNotice::Bound(source("source-A")),
+            &pending,
+        )
+        .await
+        .unwrap();
+        pending.remove(&1);
+        pending.insert(
+            2,
+            pending_request(identity("affected-B"), affected_probe.clone()),
+        );
+        let notice = || WireNativeNotice::Drained {
+            source: source("source-A"),
+            affected_operation_id: "affected-B".into(),
+        };
+        task.native_notice(2, &identity("affected-B"), notice(), &pending)
+            .await
+            .unwrap();
+        assert!(source_probe.drains.lock().unwrap().is_empty());
+        {
+            let drains = affected_probe.drains.lock().unwrap();
+            assert_eq!(drains.len(), 1);
+            assert_eq!(drains[0].operation_id(), "source-A");
+            assert_eq!(drains[0].affected_operation_id(), "affected-B");
+            assert_eq!(drains[0].native_epoch(), "outer-epoch");
+        }
+        pending.get_mut(&2).unwrap().response_received = true;
+        assert!(
+            task.native_notice(2, &identity("affected-B"), notice(), &pending)
+                .await
+                .is_err(),
+            "a completed success must never be relabeled by idle Escape"
+        );
+        assert_eq!(affected_probe.drains.lock().unwrap().len(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn observer_future_survives_wire_eof_while_actual_owned_child_is_reaped() {
+        use std::process::Stdio;
+        use tokio::io::BufReader;
+        let gate = Arc::new(ObservationGate::default());
+        let probe = Arc::new(Probe {
+            gate: Some(gate.clone()),
+            ..Default::default()
+        });
+        let identity = identity("source-A");
+        let frames = [
+            WorkerFrame::BrowserCallback {
+                message: WorkerMessage::NativeObserver {
+                    invocation_id: 1,
+                    id: 101,
+                    identity: identity.clone(),
+                    notice: WireNativeNotice::Bound(source("source-A")),
+                },
+            },
+            WorkerFrame::Response {
+                id: 1,
+                result: Ok(Value::Null),
+            },
+            WorkerFrame::BrowserCallback {
+                message: WorkerMessage::NativeObserver {
+                    invocation_id: 1,
+                    id: 102,
+                    identity: identity.clone(),
+                    notice: WireNativeNotice::Interrupted(source("source-A")),
+                },
+            },
+        ];
+        let octal = |bytes: Vec<u8>| {
+            bytes
+                .iter()
+                .map(|byte| format!(r"\{:03o}", byte))
+                .collect::<String>()
+        };
+        let hello = octal(
+            super::super::encode(&super::super::Hello {
+                protocol: super::super::PROTOCOL,
+                platform: "windows".into(),
+                audio_enabled: false,
+            })
+            .unwrap(),
+        );
+        let frames = octal(
+            frames
+                .iter()
+                .flat_map(|frame| super::super::encode(frame).unwrap())
+                .collect(),
+        );
+        // Task-owned protocol peer only: no Windows/native SDK/input/audio.
+        // Closing stdout while still reading stdin creates the real EOF path;
+        // Parent's writer close then lets this exact shell child exit.
+        let script = format!(
+            "printf '%b' '{hello}'; dd bs=1 count=1 of=/dev/null 2>/dev/null; printf '%b' '{frames}'; exec 1>&-; cat >/dev/null"
+        );
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let process = Process {
+            pipes: Some((
+                child.stdin.take().unwrap(),
+                BufReader::new(child.stdout.take().unwrap()),
+            )),
+            child,
+        };
+        let connection = Connection::start(process.handshake(false).await.unwrap());
+        let context = crate::InvocationContext::new("fixture-session", "fixture-turn")
+            .with_operation_id("source-A".into())
+            .with_native_interruption_observer(probe.clone());
+        connection
+            .invoke_browser(request("source-A"), &context, CancellationToken::new())
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("actual owned child wait/reap must not wait on Host observation");
+        assert!(
+            connection.closed.borrow().is_none(),
+            "same observer future is still owned, not discarded on EOF"
+        );
+        assert!(probe.events.lock().unwrap().is_empty());
+        gate.release.notify_one();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), connection.close())
+            .await
+            .unwrap();
+        assert_eq!(probe.events.lock().unwrap().len(), 1);
     }
 }

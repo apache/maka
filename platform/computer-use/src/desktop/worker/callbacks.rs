@@ -56,6 +56,8 @@ use tokio::sync::mpsc;
 use tokio::sync::{Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 
+mod files;
+
 static NEXT_SCOPE: AtomicU64 = AtomicU64::new(0);
 type Rejected = Box<dyn FnOnce(ToolError) + Send>;
 pub(super) type ParentSender = Arc<dyn Fn(ParentMessage) -> Result<(), ToolError> + Send + Sync>;
@@ -116,6 +118,8 @@ pub(super) struct ScopeGrant {
     #[serde(default)]
     lease_children: bool,
     settlement: bool,
+    #[serde(default)]
+    files: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(
@@ -152,6 +156,17 @@ enum AttachmentCheck {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WorkerMessage {
+    FileRequest {
+        token: ScopeToken,
+        id: u64,
+        request: files::Request,
+    },
+    NativeObserver {
+        invocation_id: u64,
+        id: u64,
+        identity: ScopeIdentity,
+        notice: crate::native_interruption::WireNativeNotice,
+    },
     Prepare {
         invocation_id: u64,
         request_id: u64,
@@ -224,6 +239,16 @@ pub(super) enum WorkerMessage {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum ParentMessage {
+    FileResult {
+        token: ScopeToken,
+        id: u64,
+        result: Result<files::Reply, Failure>,
+    },
+    NativeObserved {
+        id: u64,
+        identity: ScopeIdentity,
+        result: Result<(), Failure>,
+    },
     Prepared {
         request_id: u64,
         key: ScopeKey,
@@ -258,6 +283,8 @@ pub(super) enum ParentMessage {
 
 #[derive(Clone, Default)]
 pub(super) struct ParentCapabilities {
+    pub files: Option<Arc<dyn crate::BrowserAssetFiles>>,
+    pub native_interruption: Option<Arc<dyn crate::NativeInterruptionObserver>>,
     pub authorization: Option<Arc<dyn BrowserAuthorization>>,
     pub attachment: Option<Arc<dyn BrowserAttachmentAuthorization>>,
     pub effects: Option<Arc<dyn BrowserHostEffects>>,
@@ -287,6 +314,18 @@ impl ParentCapabilities {
             let authorization = authorization.ok_or_else(|| {
                 failed("Browser session preparation requires current Host authorization")
             })?;
+            if preparation.target == crate::BrowserPreparationTarget::SessionHistory {
+                return match mode {
+                    AuthorizationMode::Authorize => {
+                        authorization
+                            .authorize_history(preparation, cancellation)
+                            .await
+                    }
+                    AuthorizationMode::Check => {
+                        authorization.check_history(preparation, cancellation).await
+                    }
+                };
+            }
             match mode {
                 AuthorizationMode::Authorize => {
                     authorization
@@ -392,6 +431,7 @@ impl Future for SignalUncertainty {
 }
 type Job = (u64, u64);
 struct ParentScope {
+    files: Arc<tokio::sync::Mutex<files::Custody>>,
     invocation_id: u64,
     token: ScopeToken,
     capabilities: ParentCapabilities,
@@ -498,6 +538,7 @@ impl ParentCallbacks {
                     .as_ref()
                     .is_some_and(|effects| effects.supports_lease_children()),
                 settlement: capabilities.settlement.is_some(),
+                files: capabilities.files.is_some(),
             };
             Ok((grant, capabilities))
         }
@@ -521,6 +562,7 @@ impl ParentCallbacks {
                 state.scopes.insert(
                     grant.token.id,
                     ParentScope {
+                        files: Arc::default(),
                         invocation_id,
                         token: grant.token,
                         capabilities,
@@ -787,7 +829,8 @@ impl ParentCallbacks {
         | WorkerMessage::Effect { token, id }
         | WorkerMessage::EffectScoped { token, id }
         | WorkerMessage::CheckEffectPreparation { token, id, .. }
-        | WorkerMessage::Retain { token, id } = &message
+        | WorkerMessage::Retain { token, id }
+        | WorkerMessage::FileRequest { token, id, .. } = &message
         {
             let mut state = self.0.state.lock().unwrap();
             checked_scope(&state, token, true)?;
@@ -800,6 +843,14 @@ impl ParentCallbacks {
             scope.last_request = *id;
         }
         match message {
+            WorkerMessage::FileRequest { token, id, request } => {
+                return self.file_request(token, id, request);
+            }
+            WorkerMessage::NativeObserver { .. } => {
+                return Err(failed(
+                    "Native observation requires its actual executor connection",
+                ));
+            }
             WorkerMessage::Prepare { .. } => {
                 return Err(failed(
                     "Browser preparation requires its original live invocation",
@@ -1311,8 +1362,16 @@ struct PendingRetention {
     uncertain: Option<ToolError>,
 }
 #[cfg(any(feature = "native-desktop", test))]
+struct NativePendingNotice {
+    id: u64,
+    identity: ScopeIdentity,
+    reply: oneshot::Sender<Result<(), ToolError>>,
+}
+#[cfg(any(feature = "native-desktop", test))]
 #[derive(Default)]
 struct WorkerState {
+    files: HashMap<Job, oneshot::Sender<Result<files::Reply, ToolError>>>,
+    native_pending: Option<NativePendingNotice>,
     prepares: HashMap<u64, PendingPrepare>,
     checks: HashMap<Job, oneshot::Sender<Result<(), ToolError>>>,
     scopes: HashMap<u64, WorkerScope>,
@@ -1355,12 +1414,65 @@ impl WorkerCallbacks {
             invocation_id,
         })
     }
-    async fn prepare(
+    #[cfg(feature = "native-desktop")]
+    pub fn native_observer(
+        &self,
+        identity: ScopeIdentity,
+        invocation_id: u64,
+    ) -> Arc<dyn crate::NativeInterruptionObserver> {
+        Arc::new(RemoteNativeObserver {
+            worker: self.clone(),
+            identity,
+            invocation_id,
+        })
+    }
+
+    async fn observe_native(
+        &self,
+        invocation_id: u64,
+        identity: ScopeIdentity,
+        notice: crate::native_interruption::WireNativeNotice,
+    ) -> Result<(), ToolError> {
+        let response = {
+            let _emission = self.0.emission.lock().unwrap();
+            let id = allocate(&self.0.next)?;
+            let (reply, response) = oneshot::channel();
+            {
+                let mut state = self.0.state.lock().unwrap();
+                if let Some(error) = &state.closed {
+                    return Err(error.clone());
+                }
+                if state.native_pending.is_some() {
+                    return Err(failed("native observer already has an unsettled notice"));
+                }
+                state.native_pending = Some(NativePendingNotice {
+                    id,
+                    identity: identity.clone(),
+                    reply,
+                });
+            }
+            if let Err(error) = (self.0.send)(WorkerMessage::NativeObserver {
+                invocation_id,
+                id,
+                identity,
+                notice,
+            }) {
+                self.0.state.lock().unwrap().native_pending.take();
+                return Err(error);
+            }
+            response
+        };
+        response
+            .await
+            .map_err(|error| uncertain(format!("native observer acknowledgement lost: {error}")))?
+    }
+
+    async fn prepare_binding(
         &self,
         invocation_id: u64,
         key: ScopeKey,
         cancellation: CancellationToken,
-    ) -> Result<BrowserServices, ToolError> {
+    ) -> Result<PreparedServices, ToolError> {
         let response = {
             let _emission = self.0.emission.lock().unwrap();
             let id = allocate(&self.0.next)?;
@@ -1398,7 +1510,23 @@ impl WorkerCallbacks {
         if scope.sealed.load(Ordering::SeqCst) || cancellation.is_cancelled() {
             return Err(failed("Browser services scope closed before delivery"));
         }
+        Ok(PreparedServices { grant, scope })
+    }
+    async fn prepare(
+        &self,
+        invocation_id: u64,
+        key: ScopeKey,
+        cancellation: CancellationToken,
+    ) -> Result<BrowserServices, ToolError> {
+        let PreparedServices { grant, scope } = self
+            .prepare_binding(invocation_id, key, cancellation)
+            .await?;
         Ok(BrowserServices {
+            files: grant.files.then(|| {
+                Arc::new(files::RemoteFiles {
+                    scope: scope.clone(),
+                }) as Arc<dyn crate::BrowserAssetFiles>
+            }),
             attachment: grant
                 .attachment
                 .then(|| scope.clone() as Arc<dyn BrowserAttachmentAuthorization>),
@@ -1412,6 +1540,33 @@ impl WorkerCallbacks {
     }
     pub fn handle(&self, message: ParentMessage) -> Result<(), ToolError> {
         match message {
+            ParentMessage::FileResult { token, id, result } => {
+                let mut state = self.0.state.lock().unwrap();
+                known_worker_scope(&state, &token)?;
+                let pending = state
+                    .files
+                    .remove(&(token.id, id))
+                    .ok_or_else(|| failed("File callback response identity mismatch"))?;
+                let _ = pending.send(result.map_err(ToolError::from));
+            }
+            ParentMessage::NativeObserved {
+                id,
+                identity,
+                result,
+            } => {
+                let mut state = self.0.state.lock().unwrap();
+                let pending = state.native_pending.as_ref().ok_or_else(|| {
+                    failed("native observer acknowledgement has no actual pending notice")
+                })?;
+                if pending.id != id || pending.identity != identity {
+                    return Err(failed("native observer acknowledgement identity mismatch"));
+                }
+                let pending = state
+                    .native_pending
+                    .take()
+                    .expect("validated pending notice");
+                let _ = pending.reply.send(result.map_err(ToolError::from));
+            }
             ParentMessage::Prepared {
                 request_id,
                 key,
@@ -1658,10 +1813,14 @@ impl WorkerCallbacks {
         }
     }
     pub fn disconnect(&self, reason: &str) {
-        let (prepares, checks, queued) = {
+        let (prepares, checks, files, queued) = {
             let mut state = self.0.state.lock().unwrap();
             let error = uncertain(format!("Browser callback transport lost: {reason}"));
             state.closed.get_or_insert(error.clone());
+            if let Some(pending) = state.native_pending.take() {
+                let _ = pending.reply.send(Err(error.clone()));
+            }
+
             for entry in state.retained.values_mut() {
                 entry.uncertain.get_or_insert(error.clone());
             }
@@ -1681,6 +1840,7 @@ impl WorkerCallbacks {
             (
                 std::mem::take(&mut state.prepares),
                 std::mem::take(&mut state.checks),
+                std::mem::take(&mut state.files),
                 queued,
             )
         };
@@ -1688,6 +1848,9 @@ impl WorkerCallbacks {
             let _ = pending.reply.send(Err(uncertain(reason)));
         }
         for reply in checks.into_values() {
+            let _ = reply.send(Err(uncertain(reason)));
+        }
+        for reply in files.into_values() {
             let _ = reply.send(Err(uncertain(reason)));
         }
         for entry in queued {
@@ -1712,7 +1875,12 @@ impl WorkerCallbacks {
             notified.as_mut().enable();
             let ready = {
                 let mut state = self.0.state.lock().unwrap();
-                let mut waiting = false;
+                let mut waiting = state.files.keys().any(|(scope, _)| {
+                    state
+                        .scopes
+                        .get(scope)
+                        .is_some_and(|entry| entry.token.key.identity == *identity)
+                });
                 let mut failure = None;
                 for entry in state.retained.values().filter(|entry| {
                     &entry.scope.token.key.identity == identity
@@ -1762,7 +1930,8 @@ impl WorkerCallbacks {
     }
     pub fn has_unsettled(&self) -> bool {
         let state = self.0.state.lock().unwrap();
-        !state.prepares.is_empty()
+        state.native_pending.is_some()
+            || !state.prepares.is_empty()
             || !state.checks.is_empty()
             || !state.effects.is_empty()
             || state
@@ -2350,6 +2519,65 @@ impl Drop for RetentionCustody {
             });
             self.worker.0.changed.notify_waiters();
         }
+    }
+}
+
+#[cfg(any(feature = "native-desktop", test))]
+struct RemoteNativeObserver {
+    worker: WorkerCallbacks,
+    identity: ScopeIdentity,
+    invocation_id: u64,
+}
+#[cfg(any(feature = "native-desktop", test))]
+impl crate::NativeInterruptionObserver for RemoteNativeObserver {
+    fn bound(&self, source: crate::NativeBindingSource) -> crate::InterruptionFuture {
+        let worker = self.worker.clone();
+        let identity = self.identity.clone();
+        let invocation_id = self.invocation_id;
+        Box::pin(async move {
+            worker
+                .observe_native(
+                    invocation_id,
+                    identity,
+                    crate::native_interruption::WireNativeNotice::Bound(
+                        crate::native_interruption::WireNativeSource::binding(&source),
+                    ),
+                )
+                .await
+        })
+    }
+    fn interrupted(&self, source: crate::NativeInterruption) -> crate::InterruptionFuture {
+        let worker = self.worker.clone();
+        let identity = self.identity.clone();
+        let invocation_id = self.invocation_id;
+        Box::pin(async move {
+            worker
+                .observe_native(
+                    invocation_id,
+                    identity,
+                    crate::native_interruption::WireNativeNotice::Interrupted(
+                        crate::native_interruption::WireNativeSource::interruption(&source),
+                    ),
+                )
+                .await
+        })
+    }
+    fn drained(&self, source: crate::NativeInterruptionDrain) -> crate::InterruptionFuture {
+        let worker = self.worker.clone();
+        let identity = self.identity.clone();
+        let invocation_id = self.invocation_id;
+        Box::pin(async move {
+            worker
+                .observe_native(
+                    invocation_id,
+                    identity,
+                    crate::native_interruption::WireNativeNotice::Drained {
+                        source: crate::native_interruption::WireNativeSource::drain(&source),
+                        affected_operation_id: source.affected_operation_id().into(),
+                    },
+                )
+                .await
+        })
     }
 }
 

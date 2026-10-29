@@ -122,6 +122,61 @@ pub(crate) fn validate_snapshot(snapshot: &NativeAxSnapshot) -> Result<(), Inval
     Ok(())
 }
 
+/// Original filters a completed native tree, before assigning display aliases.
+/// A retained matching ancestor still loses its unrelated descendants.
+/// The caller has already validated the snapshot and its single root.
+pub(crate) fn filter_snapshot(
+    mut snapshot: NativeAxSnapshot,
+    query: Option<&str>,
+) -> NativeAxSnapshot {
+    let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
+        return snapshot;
+    };
+    let query = query.to_lowercase();
+    let mut keep = vec![false; snapshot.rows.len()];
+    for (index, row) in snapshot.rows.iter().enumerate().rev() {
+        keep[index] |= [
+            Some(row.native_id.as_str()),
+            Some(row.role.as_str()),
+            row.name.as_deref(),
+            row.description.as_deref(),
+            row.value.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|text| text.to_lowercase().contains(&query));
+        if keep[index]
+            && let Some(parent) = row.parent
+        {
+            keep[parent] = true;
+        }
+    }
+    // The original caller ignores filter_children(root)'s bool result.
+    // Preserve the root even when no descendant or own field matches.
+    if let Some(root) = keep.first_mut() {
+        *root = true;
+    }
+    let mut remapped = vec![None; snapshot.rows.len()];
+    let mut next = 0;
+    snapshot.rows = snapshot
+        .rows
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, mut row)| {
+            if !keep[index] {
+                return None;
+            }
+            row.parent = row.parent.map(|parent| {
+                remapped[parent].expect("retained native query child keeps its preceding ancestors")
+            });
+            remapped[index] = Some(next);
+            next += 1;
+            Some(row)
+        })
+        .collect();
+    snapshot
+}
+
 impl ElementIds {
     pub(crate) fn assign<'a>(
         &mut self,
@@ -546,6 +601,129 @@ fn merge_text<'a>(adjacent: &mut Vec<ViewNode<'a>>, output: &mut Vec<ViewNode<'a
 
 fn js_whitespace(character: char) -> bool {
     matches!(character, '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}')
+}
+
+#[cfg(test)]
+mod native_query_tests {
+    use super::*;
+
+    fn row(id: &str, parent: Option<usize>, role: &str, name: Option<&str>) -> NativeAxRow {
+        NativeAxRow {
+            native_id: id.into(),
+            parent,
+            depth: usize::from(parent.is_some()),
+            role: role.into(),
+            name: name.map(str::to_owned),
+            description: None,
+            value: None,
+            states: None,
+            actions: None,
+            element_index: None,
+        }
+    }
+
+    #[test]
+    fn native_query_prunes_before_aliases_and_keeps_only_matches_with_ancestors() {
+        let mut rows = vec![
+            row("root", None, "frame", Some("Root")),
+            row("parent", Some(0), "group", Some("Needle parent")),
+            row("unrelated-child", Some(1), "label", Some("Unrelated child")),
+            row("described", Some(0), "label", None),
+            row("valued", Some(0), "label", None),
+            row("native:NeedleId", Some(0), "label", None),
+            row("roled", Some(0), "NeedleRole", None),
+            row("state-only", Some(0), "label", None),
+            row("action-only", Some(0), "label", None),
+            row("ancestor", Some(0), "group", None),
+            row("leaf", Some(9), "label", Some("Leaf needle")),
+            row("sibling", Some(9), "label", Some("Unrelated sibling")),
+        ];
+        rows[2].depth = 2;
+        rows[3].description = Some("nEeDlE description".into());
+        rows[4].value = Some("Needle value".into());
+        rows[7].states = Some(vec!["needle".into()]);
+        rows[8].actions = Some(vec!["needle".into()]);
+        rows[10].depth = 2;
+        rows[11].depth = 2;
+        let full = NativeAxSnapshot {
+            source: NativeAxSource::AtSpi,
+            rows,
+        };
+        validate_snapshot(&full).unwrap();
+        let filtered = filter_snapshot(full.clone(), Some("  nEeDlE\n"));
+        assert_eq!(filtered.source, NativeAxSource::AtSpi);
+        assert_eq!(
+            filtered
+                .rows
+                .iter()
+                .map(|row| row.native_id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "root",
+                "parent",
+                "described",
+                "valued",
+                "native:NeedleId",
+                "roled",
+                "ancestor",
+                "leaf"
+            ]
+        );
+        assert_eq!(filtered.rows[7].parent, Some(6));
+        assert_eq!(filtered.rows[7].depth, 2);
+        validate_snapshot(&filtered).unwrap();
+        let none = filter_snapshot(full.clone(), Some("absent"));
+        assert_eq!(
+            none.rows,
+            [full.rows[0].clone()],
+            "root stays even when its own predicate is false"
+        );
+        let mut ids = ElementIds::default();
+        ids.assign(7, &full, ReadCoverage::Full);
+        ids.assign(7, &filtered, ReadCoverage::Filtered);
+        assert_eq!(
+            ids.resolve(7, Some("2")).unwrap(),
+            Some("unrelated-child"),
+            "filtered query extends the prior window map without granting a target"
+        );
+        assert_eq!(ids.resolve(7, Some("10")).unwrap(), Some("leaf"));
+    }
+
+    #[test]
+    fn native_query_uses_native_unicode_trim_and_case_separately_from_js_alias_coverage() {
+        let full = NativeAxSnapshot {
+            source: NativeAxSource::X11,
+            rows: vec![
+                row("root", None, "frame", None),
+                row("unicode", Some(0), "label", Some("İSTANBUL")),
+                row("plain", Some(0), "label", Some("Other")),
+            ],
+        };
+        assert_eq!(
+            filter_snapshot(full.clone(), Some("i\u{0307}stan"))
+                .rows
+                .len(),
+            2
+        );
+        assert_eq!(filter_snapshot(full.clone(), None), full);
+        assert_eq!(
+            filter_snapshot(full.clone(), Some(" \n\u{0085}\u{3000}")),
+            full
+        );
+        assert_eq!(
+            filter_snapshot(full.clone(), Some("\u{feff}")).rows.len(),
+            1,
+            "native Rust trim retains FEFF, even though the JS client considers that query blank"
+        );
+        assert!(matches!(
+            ReadCoverage::for_query(Some("\u{feff}")),
+            ReadCoverage::Full
+        ));
+        assert!(matches!(
+            ReadCoverage::for_query(Some("\u{0085}")),
+            ReadCoverage::Filtered
+        ));
+    }
 }
 
 #[cfg(test)]

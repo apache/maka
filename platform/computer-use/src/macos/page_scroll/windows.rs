@@ -276,16 +276,26 @@ impl Windows {
         }
     }
 
-    fn collect_initial(&mut self) -> Result<(), ToolError> {
-        let primary = if let Some(window) = element_attribute(&self.application, "AXFocusedWindow")?
-        {
-            Some(window)
+    pub(crate) fn primary_window_id(&self) -> Result<Option<u32>, ToolError> {
+        self.require_open()?;
+        self.primary_window()?
+            .as_ref()
+            .map(ax_window_id)
+            .transpose()
+    }
+
+    fn primary_window(&self) -> Result<Option<RetainedElement>, ToolError> {
+        if let Some(window) = element_attribute(&self.application, "AXFocusedWindow")? {
+            Ok(Some(window))
         } else if let Some(window) = element_attribute(&self.application, "AXMainWindow")? {
-            Some(window)
+            Ok(Some(window))
         } else {
-            element_list(&self.application, "AXWindows")?.pop()
-        };
-        let Some(primary) = primary else {
+            Ok(element_list(&self.application, "AXWindows")?.pop())
+        }
+    }
+
+    fn collect_initial(&mut self) -> Result<(), ToolError> {
+        let Some(primary) = self.primary_window()? else {
             return Ok(());
         };
         self.insert(WindowVariant::Window(LocalElement::new(primary.clone())));

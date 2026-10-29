@@ -175,6 +175,7 @@ pub trait BrowserHostEffects: Send + Sync {
 #[cfg(any(feature = "native-desktop", test))]
 #[derive(Clone)]
 pub(crate) struct BrowserServices {
+    pub files: Option<Arc<dyn crate::BrowserAssetFiles>>,
     pub attachment: Option<Arc<dyn BrowserAttachmentAuthorization>>,
     pub effects: Option<Arc<dyn BrowserHostEffects>>,
     pub settlement: Option<Arc<dyn OperationSettlement>>,
@@ -283,6 +284,10 @@ pub enum BrowserPreparationTarget {
     PendingCreation,
     /// Scoped session inventory and exact metadata lookup, without a tab grant.
     SessionInventory,
+    /// Change only this logical session's managed browser-group presentation.
+    SessionPresentation,
+    /// Browser-wide history transport; a separate history grant is also required.
+    SessionHistory,
 }
 
 /// A bounded request for source-audited native session machinery, including
@@ -314,7 +319,9 @@ impl BrowserSessionPreparation {
                 !tab_id.is_empty() && !scope_id.is_empty()
             }
             BrowserPreparationTarget::PendingCreation
-            | BrowserPreparationTarget::SessionInventory => true,
+            | BrowserPreparationTarget::SessionInventory
+            | BrowserPreparationTarget::SessionPresentation
+            | BrowserPreparationTarget::SessionHistory => true,
         };
         if self.native_owner.is_nil()
             || self.native_epoch.is_empty()
@@ -364,6 +371,15 @@ pub enum BrowserAccess {
         document: BrowserDocument,
         url: String,
     },
+    PageAssetDownload {
+        document: BrowserDocument,
+        source_origin: BrowserAttachmentOrigin,
+    },
+    PageAssetFallbackFetch {
+        document: BrowserDocument,
+        source_origin: BrowserAttachmentOrigin,
+        url: String,
+    },
     Download {
         document: BrowserDocument,
         source_origin: BrowserAttachmentOrigin,
@@ -378,7 +394,9 @@ impl BrowserAccess {
             | Self::Metadata { document }
             | Self::Read { document }
             | Self::Navigate { document, .. }
-            | Self::Download { document, .. } => document,
+            | Self::Download { document, .. }
+            | Self::PageAssetDownload { document, .. }
+            | Self::PageAssetFallbackFetch { document, .. } => document,
         }
     }
 
@@ -386,14 +404,39 @@ impl BrowserAccess {
         match self {
             Self::ReadDocument { document, .. }
             | Self::Metadata { document }
-            | Self::Read { document } => &document.url,
-            Self::Navigate { url, .. } | Self::Download { url, .. } => url,
+            | Self::Read { document }
+            | Self::PageAssetDownload { document, .. } => &document.url,
+            Self::Navigate { url, .. }
+            | Self::Download { url, .. }
+            | Self::PageAssetFallbackFetch { url, .. } => url,
         }
     }
 
     pub fn origin(&self) -> Result<Option<String>, ToolError> {
         if matches!(self, Self::Metadata { .. }) {
             return Ok(None);
+        }
+        if let Self::PageAssetDownload {
+            document,
+            source_origin,
+        }
+        | Self::PageAssetFallbackFetch {
+            document,
+            source_origin,
+            ..
+        } = self
+        {
+            if let Self::PageAssetFallbackFetch { url, .. } = self
+                && let Ok(url) = reqwest::Url::parse(url)
+                && matches!(url.scheme(), "http" | "https")
+            {
+                return Ok(Some(url.origin().ascii_serialization()));
+            }
+            return Self::ReadDocument {
+                document: document.clone(),
+                origin: source_origin.clone(),
+            }
+            .origin();
         }
         if let Self::ReadDocument { origin, .. } = self {
             return match origin {
@@ -461,6 +504,31 @@ pub trait BrowserAuthorization: Send + Sync {
             ))
         })
     }
+    /// Browser-wide history is independent of page/site and download consent.
+    /// Implementations must bind the current native operation and permission basis.
+    fn authorize_history(
+        &self,
+        _request: BrowserSessionPreparation,
+        _cancellation: CancellationToken,
+    ) -> AuthorizationFuture {
+        Box::pin(async {
+            Err(ToolError::Failed(
+                "Browser history requires Host authorization".into(),
+            ))
+        })
+    }
+    /// Recheck history consent without prompting or replaying its original query.
+    fn check_history(
+        &self,
+        _request: BrowserSessionPreparation,
+        _cancellation: CancellationToken,
+    ) -> AuthorizationFuture {
+        Box::pin(async {
+            Err(ToolError::Failed(
+                "Browser history requires Host authorization".into(),
+            ))
+        })
+    }
     fn attachment(&self) -> Option<Arc<dyn BrowserAttachmentAuthorization>> {
         None
     }
@@ -524,9 +592,11 @@ pub struct InvocationContext<'a> {
     session: &'a str,
     turn: &'a str,
     operation_id: Option<String>,
+    native_interruption_observer: Option<Arc<dyn crate::NativeInterruptionObserver>>,
     browser_authorization: Option<Arc<dyn BrowserAuthorization>>,
     operation_settlement: Option<Arc<dyn OperationSettlement>>,
     browser_host_effects: Option<Arc<dyn BrowserHostEffects>>,
+    browser_asset_files: Option<Arc<dyn crate::BrowserAssetFiles>>,
     app_target: Option<crate::ComputerAppTarget>,
     #[cfg(feature = "native-desktop")]
     browser_services: Option<Arc<dyn BrowserServicesProvider>>,
@@ -540,9 +610,11 @@ pub(crate) struct OwnedInvocationContext {
     session: String,
     turn: String,
     operation_id: Option<String>,
+    native_interruption_observer: Option<Arc<dyn crate::NativeInterruptionObserver>>,
     browser_authorization: Option<Arc<dyn BrowserAuthorization>>,
     operation_settlement: Option<Arc<dyn OperationSettlement>>,
     browser_host_effects: Option<Arc<dyn BrowserHostEffects>>,
+    browser_asset_files: Option<Arc<dyn crate::BrowserAssetFiles>>,
     app_target: Option<crate::ComputerAppTarget>,
     #[cfg(feature = "native-desktop")]
     browser_services: Option<Arc<dyn BrowserServicesProvider>>,
@@ -555,9 +627,11 @@ impl OwnedInvocationContext {
             session: &self.session,
             turn: &self.turn,
             operation_id: self.operation_id.clone(),
+            native_interruption_observer: self.native_interruption_observer.clone(),
             browser_authorization: self.browser_authorization.clone(),
             operation_settlement: self.operation_settlement.clone(),
             browser_host_effects: self.browser_host_effects.clone(),
+            browser_asset_files: self.browser_asset_files.clone(),
             app_target: self.app_target.clone(),
             #[cfg(feature = "native-desktop")]
             browser_services: self.browser_services.clone(),
@@ -573,9 +647,11 @@ impl<'a> InvocationContext<'a> {
             session: self.session.to_owned(),
             turn: self.turn.to_owned(),
             operation_id: self.operation_id.clone(),
+            native_interruption_observer: self.native_interruption_observer.clone(),
             browser_authorization: self.browser_authorization.clone(),
             operation_settlement: self.operation_settlement.clone(),
             browser_host_effects: self.browser_host_effects.clone(),
+            browser_asset_files: self.browser_asset_files.clone(),
             app_target: self.app_target.clone(),
             #[cfg(feature = "native-desktop")]
             browser_services: self.browser_services.clone(),
@@ -588,9 +664,11 @@ impl<'a> InvocationContext<'a> {
             session,
             turn,
             operation_id: None,
+            native_interruption_observer: None,
             browser_authorization: None,
             operation_settlement: None,
             browser_host_effects: None,
+            browser_asset_files: None,
             app_target: None,
             #[cfg(feature = "native-desktop")]
             browser_services: None,
@@ -615,6 +693,7 @@ impl<'a> InvocationContext<'a> {
         match &self.browser_services {
             Some(services) => services.prepare(access, cancellation.clone()).await,
             None => Ok(BrowserServices {
+                files: self.browser_asset_files.clone(),
                 attachment: self
                     .browser_authorization
                     .as_ref()
@@ -707,6 +786,22 @@ impl<'a> InvocationContext<'a> {
         self
     }
 
+    /// Bind the native-only interruption writer from this actual Host scope.
+    /// This observer grants no native action and never comes from tool args.
+    pub fn with_native_interruption_observer(
+        mut self,
+        observer: Arc<dyn crate::NativeInterruptionObserver>,
+    ) -> Self {
+        self.native_interruption_observer = Some(observer);
+        self
+    }
+
+    pub(crate) fn native_interruption_observer(
+        &self,
+    ) -> Option<Arc<dyn crate::NativeInterruptionObserver>> {
+        self.native_interruption_observer.clone()
+    }
+
     pub(crate) fn operation_id(&self) -> Option<&str> {
         self.operation_id.as_deref()
     }
@@ -720,6 +815,13 @@ impl<'a> InvocationContext<'a> {
         self
     }
 
+    pub fn with_browser_asset_files(mut self, files: Arc<dyn crate::BrowserAssetFiles>) -> Self {
+        self.browser_asset_files = Some(files);
+        self
+    }
+    pub(crate) fn browser_asset_files(&self) -> Option<Arc<dyn crate::BrowserAssetFiles>> {
+        self.browser_asset_files.clone()
+    }
     pub fn with_browser_host_effects(mut self, effects: Arc<dyn BrowserHostEffects>) -> Self {
         self.browser_host_effects = Some(effects);
         self
@@ -768,6 +870,8 @@ impl<'a> InvocationContext<'a> {
                 BrowserAccess::Metadata { .. }
                     | BrowserAccess::ReadDocument { .. }
                     | BrowserAccess::Download { .. }
+                    | BrowserAccess::PageAssetDownload { .. }
+                    | BrowserAccess::PageAssetFallbackFetch { .. }
             )
         {
             return Ok(());
@@ -1159,5 +1263,42 @@ mod browser_subject_wire_tests {
         ));
         // A successful decode is routing only, never an SDK-issued receipt.
         assert_eq!(request.opener_tab_id, 7);
+    }
+}
+
+#[cfg(test)]
+mod browser_history_authorization_tests {
+    use super::*;
+
+    struct PageOnly;
+    impl BrowserAuthorization for PageOnly {
+        fn authorize(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
+            Box::pin(async { Ok(()) })
+        }
+        fn check(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
+            Box::pin(async { Ok(()) })
+        }
+    }
+    fn request() -> BrowserSessionPreparation {
+        BrowserSessionPreparation {
+            native_owner: uuid::Uuid::new_v4(),
+            native_epoch: "epoch".to_owned(),
+            browser_id: "maka:exact-instance".to_owned(),
+            generation: "generation".to_owned(),
+            turn_id: "turn".to_owned(),
+            operation_id: "operation".to_owned(),
+            target: BrowserPreparationTarget::SessionHistory,
+        }
+    }
+    #[tokio::test]
+    async fn page_authorization_never_grants_history_by_default() {
+        assert!(
+            matches!(PageOnly.authorize_history(request(), CancellationToken::new()).await,
+            Err(ToolError::Failed(message)) if message == "Browser history requires Host authorization")
+        );
+        assert!(
+            matches!(PageOnly.check_history(request(), CancellationToken::new()).await,
+            Err(ToolError::Failed(message)) if message == "Browser history requires Host authorization")
+        );
     }
 }

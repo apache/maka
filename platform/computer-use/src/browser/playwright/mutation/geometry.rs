@@ -138,7 +138,7 @@ impl Tab {
                 parent.session.as_deref(),
                 "Runtime.callFunctionOn",
                 json!({"objectId":object,"functionDeclaration":FRAME,
-                    "arguments":[{"value":{"point":point,"requireVisible":child.session==parent.session,"alignment":alignment}}],
+                    "arguments":[{"value":{"point":point,"requireVisible":child.session==parent.session&&!alignment.is_null(),"alignment":alignment}}],
                     "returnByValue":true}),
             )
             .await?;
@@ -209,6 +209,27 @@ impl Tab {
             }
         }
         Ok(point)
+    }
+
+    pub(super) async fn dom_cua_project(
+        &self,
+        selected: &Selected,
+        point: [f64; 2],
+        resources: &Resources,
+        cancellation: &CancellationToken,
+    ) -> Result<[f64; 2], ToolError> {
+        self.locator_project(
+            selected,
+            point,
+            &Projection {
+                force: true,
+                alignment: &Value::Null,
+                resources,
+                cancellation,
+                used: &selected.used,
+            },
+        )
+        .await
     }
 
     pub(super) async fn locator_pointer(

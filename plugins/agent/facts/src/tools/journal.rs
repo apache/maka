@@ -180,6 +180,9 @@ impl ToolJournal {
                     crate::event::CommitError::PermissionRevoked => {
                         ToolError::Failed("permission grant is no longer current".into())
                     }
+                    crate::event::CommitError::NativeTurnInterrupted => ToolError::Failed(
+                        "native Computer Use is stopped for this logical Turn".into(),
+                    ),
                     other => ToolError::Persistence(other.to_string()),
                 })?;
             effect.admitted(sequence);

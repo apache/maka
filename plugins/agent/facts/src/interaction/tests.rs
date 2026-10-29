@@ -438,3 +438,52 @@ fn browser_download_consent_is_origin_scoped_and_distinct_from_page_access() {
         );
     }
 }
+
+// Append inside plugins/agent/facts/src/interaction/tests.rs. Uses the real
+// canonical request decoder, decisions and serializer on every build host.
+#[test]
+fn windows_app_consent_uses_the_existing_typed_interaction_and_absolute_path_boundary() {
+    for path in [
+        r"C:\Program Files\Fixture\fixture.exe",
+        r"\\server\share\fixture.exe",
+        r"\\?\C:\Fixture\fixture.exe",
+    ] {
+        let mut input = computer_app_request();
+        input["target"]["scope"]["platform"] = json!("windows");
+        input["target"]["scope"]["applicationId"] = json!(path);
+        input["display"]["appPath"] = json!(path);
+        input["allowAlways"] = json!(false);
+        let request: InteractionRequest = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), input);
+        for decision in [ComputerAppDecision::Once, ComputerAppDecision::Session] {
+            assert_eq!(
+                InteractionAnswer::ComputerApp { decision }.validate_for_request(&request),
+                Ok(())
+            );
+        }
+        assert!(
+            InteractionAnswer::ComputerApp {
+                decision: ComputerAppDecision::Always
+            }
+            .validate_for_request(&request)
+            .is_err()
+        );
+        for path in [
+            r"C:fixture.exe",
+            r"\fixture.exe",
+            r"\\?\UNC",
+            r"\\?\UNC\server",
+            r"\\server\",
+            "fixture.exe",
+            "/Applications/Fixture.app",
+            "C:\\bad\0.exe",
+        ] {
+            let mut invalid = input.clone();
+            invalid["display"]["appPath"] = json!(path);
+            assert!(
+                serde_json::from_value::<InteractionRequest>(invalid).is_err(),
+                "{path:?}"
+            );
+        }
+    }
+}

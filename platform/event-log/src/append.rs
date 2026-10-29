@@ -30,7 +30,14 @@ pub(crate) mod history;
 pub(crate) mod ingress;
 pub(crate) mod write;
 
+#[derive(Clone, Copy)]
+pub(crate) enum ComputerLane {
+    Native,
+    Other,
+}
+
 struct CapabilityAdmission {
+    lane: ComputerLane,
     targets: Vec<maka_agent_facts::interaction::GrantTarget>,
     basis: maka_agent_facts::workspace::PermissionBasis,
     app: Option<(
@@ -78,7 +85,7 @@ impl EventLog {
         targets: &[maka_agent_facts::interaction::GrantTarget],
         basis: &maka_agent_facts::workspace::PermissionBasis,
     ) -> Result<u64, CommitError> {
-        self.append_granted_dispatch(event, targets, basis, None)
+        self.append_granted_dispatch(event, targets, basis, None, ComputerLane::Other)
             .await
     }
 
@@ -89,8 +96,28 @@ impl EventLog {
         app: &maka_agent_facts::interaction::GrantTarget,
         display: &maka_agent_facts::interaction::ComputerAppDisplay,
         basis: &maka_agent_facts::workspace::PermissionBasis,
+        lane: ComputerLane,
     ) -> Result<u64, CommitError> {
-        self.append_granted_dispatch(event, targets, basis, Some((app.clone(), display.clone())))
+        self.append_granted_dispatch(
+            event,
+            targets,
+            basis,
+            Some((app.clone(), display.clone())),
+            lane,
+        )
+        .await
+    }
+
+    /// Native-only Computer Use checks the logical-Turn interruption in the
+    /// same transaction as its existing grant admission and T1. Browser/JS
+    /// work continues through the ordinary capability dispatch path.
+    pub async fn append_native_computer_dispatch(
+        &self,
+        event: &EventWrite,
+        targets: &[maka_agent_facts::interaction::GrantTarget],
+        basis: &maka_agent_facts::workspace::PermissionBasis,
+    ) -> Result<u64, CommitError> {
+        self.append_granted_dispatch(event, targets, basis, None, ComputerLane::Native)
             .await
     }
 
@@ -103,6 +130,7 @@ impl EventLog {
             maka_agent_facts::interaction::GrantTarget,
             maka_agent_facts::interaction::ComputerAppDisplay,
         )>,
+        lane: ComputerLane,
     ) -> Result<u64, CommitError> {
         if !matches!(event.event().fact, Fact::ToolDispatched { .. }) {
             return Err(CommitError::Rejected(
@@ -117,6 +145,7 @@ impl EventLog {
         self.append_batch_checked(
             std::slice::from_ref(event),
             Some(CapabilityAdmission {
+                lane,
                 targets: targets.to_vec(),
                 basis: *basis,
                 app,
@@ -151,10 +180,18 @@ impl EventLog {
                     for event in &events {
                         if let Some(admission) = &capability {
                             let CapabilityAdmission {
+                                lane,
                                 targets,
                                 basis,
                                 app,
                             } = admission;
+                            if matches!(lane, ComputerLane::Native) {
+                                crate::native_computer::require_native_turn_running(
+                                    &mut transaction,
+                                    &event.event().invocation,
+                                )
+                                .await?;
+                            }
                             for target in targets {
                                 if crate::interactions::capability_grant(
                                     &mut transaction,
@@ -332,6 +369,7 @@ fn commit_error(error: StoreError) -> CommitError {
         StoreError::OperationUnknown => CommitError::OutcomeUnknown(error.to_string()),
         StoreError::SessionRetired => CommitError::Retired,
         StoreError::PermissionRevoked => CommitError::PermissionRevoked,
+        StoreError::NativeTurnInterrupted => CommitError::NativeTurnInterrupted,
         other => CommitError::Rejected(other.to_string()),
     }
 }

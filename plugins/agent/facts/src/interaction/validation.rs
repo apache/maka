@@ -56,6 +56,7 @@ impl ComputerAppDisplay {
         }
         let absolute = match platform {
             ComputerAppPlatform::Macos => self.app_path.starts_with('/'),
+            ComputerAppPlatform::Windows => windows_absolute(&self.app_path),
         };
         if !absolute || self.app_path.contains('\0') {
             return Err("Computer application display path must be absolute");
@@ -125,6 +126,16 @@ impl GrantTarget {
                 GrantCapability::ComputerUse | GrantCapability::ComputerAudio,
                 GrantScope::Capability {},
             ) => {}
+            (
+                GrantCapability::BrowserHistory,
+                GrantScope::BrowserProfile {
+                    browser_id,
+                    generation,
+                },
+            ) => {
+                entity_id(browser_id)?;
+                entity_id(generation)?;
+            }
             (GrantCapability::ComputerUse, GrantScope::ComputerApp { application_id, .. }) => {
                 computer_app_identity(application_id)?
             }
@@ -410,4 +421,26 @@ impl SessionGrant {
         }
         Ok(())
     }
+}
+
+fn windows_absolute(path: &str) -> bool {
+    fn drive(path: &str) -> bool {
+        let bytes = path.as_bytes();
+        bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
+    }
+    fn unc(rest: &str) -> bool {
+        let mut parts = rest.split('\\');
+        matches!((parts.next(), parts.next()), (Some(server),Some(share))
+            if !server.is_empty()&&!share.is_empty()&&!matches!(server,"."|".."|"?")&&!matches!(share,"."|".."))
+    }
+    let path = path.replace('/', "\\");
+    if let Some(rest) = path.strip_prefix("\\\\?\\") {
+        return drive(rest)
+            || (rest
+                .as_bytes()
+                .get(..4)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"UNC\\"))
+                && unc(&rest[4..]));
+    }
+    drive(&path) || path.strip_prefix("\\\\").is_some_and(unc)
 }

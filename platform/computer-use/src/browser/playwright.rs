@@ -20,6 +20,7 @@
 use super::*;
 
 mod download_media;
+mod evaluate;
 mod mutation;
 #[path = "wait.rs"]
 pub(super) mod wait;
@@ -154,7 +155,7 @@ impl Tab {
         let context = world["executionContextId"]
             .as_u64()
             .ok_or_else(|| failed("Playwright isolated world unavailable"))?;
-        let existing=cdp_value(self.frame_observation(frame.session.as_deref(),"Runtime.evaluate",json!({"contextId":context,"expression":"globalThis.__makaPlaywright","objectGroup":resources.group,"returnByValue":false})).await?)?;
+        let existing=cdp_value(self.frame_observation(frame.session.as_deref(),"Runtime.evaluate",json!({"contextId":context,"expression":"globalThis.__makaPlaywright?.makaProtectedInput ? globalThis.__makaPlaywright : undefined","objectGroup":resources.group,"returnByValue":false})).await?)?;
         if let Some(object) = existing["objectId"].as_str() {
             return Ok(object.into());
         }
@@ -189,22 +190,23 @@ impl Tab {
             .as_str()
             .ok_or_else(|| failed("frame locator did not return an object"))?;
         let properties = self
-            .frame_request(
+            .frame_property_handles(
                 frame.session.as_deref(),
-                "Runtime.getProperties",
                 json!({"objectId":envelope_id,"ownProperties":true}),
             )
             .await?;
-        let properties = properties["result"]
-            .as_array()
-            .ok_or_else(|| failed("frame locator metadata unavailable"))?;
         let property = |name: &str| {
             properties
                 .iter()
-                .find(|entry| entry["name"] == name)
-                .map(|entry| &entry["value"])
+                .find(|entry| entry.name == name)
+                .and_then(|entry| entry.value.as_ref())
         };
-        match property("status").and_then(|value| value["value"].as_str()) {
+        let status = property("status")
+            .map(frames::PropertyValue::text)
+            .transpose()
+            .map_err(failed)?
+            .flatten();
+        match status.as_deref() {
             Some("missing") => {
                 return Err(AttemptError::Retry(failed(
                     "frame locator has no matching element",
@@ -223,7 +225,7 @@ impl Tab {
             }
         }
         let node = property("value")
-            .and_then(|value| value["objectId"].as_str())
+            .and_then(|value| value.object_id.as_deref())
             .ok_or_else(|| failed("frame locator did not resolve an element"))?;
         Ok(node.to_owned())
     }
@@ -237,30 +239,18 @@ impl Tab {
     ) -> Attempt<frames::Frame> {
         let node = self.playwright_element(parent, segment, resources).await?;
         let described = self
-            .frame_request(
-                parent.session.as_deref(),
-                "DOM.describeNode",
-                json!({"objectId":node}),
-            )
+            .frame_node_identity(parent.session.as_deref(), json!({"objectId":node}))
             .await?;
-        let backend = described["node"]["backendNodeId"]
-            .as_u64()
+        let backend = described
+            .backend_node_id
             .ok_or_else(|| failed("frame owner identity unavailable"))?;
-        if !matches!(
-            described["node"]["nodeName"].as_str(),
-            Some("IFRAME" | "FRAME")
-        ) {
+        if !matches!(described.node_name.as_deref(), Some("IFRAME" | "FRAME")) {
             return Err(AttemptError::Retry(failed(
                 "frame locator must select an iframe or frame element",
             )));
         }
         Ok(self
-            .resolve_frame(
-                parent,
-                backend,
-                described["node"]["frameId"].as_str(),
-                catalog,
-            )
+            .resolve_frame(parent, backend, described.frame_id.as_deref(), catalog)
             .await?)
     }
 

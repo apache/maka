@@ -23,7 +23,7 @@ use maka_agent_facts::interaction::InteractionAnswer;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::interaction::{
-    ComputerAppDecision, ComputerAppRisk, GrantCapability, GrantScope,
+    ComputerAppDecision, ComputerAppPlatform, ComputerAppRisk, GrantCapability, GrantScope,
 };
 use maka_sandbox::grant;
 
@@ -117,6 +117,12 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
                 .raw_input(serde_json::to_value(target)?);
             let title = if target.capability == GrantCapability::ComputerAudio {
                 "Allow computer output audio for this session".to_owned()
+            } else if let (
+                GrantCapability::BrowserHistory,
+                GrantScope::BrowserProfile { browser_id, .. },
+            ) = (target.capability, &target.scope)
+            {
+                format!("Allow browsing history for browser {browser_id} for this session")
             } else if let (GrantCapability::BrowserDownload, GrantScope::BrowserOrigin { origin }) =
                 (target.capability, &target.scope)
             {
@@ -154,7 +160,11 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
             allow_always,
             ..
         } => {
-            let GrantScope::ComputerApp { application_id, .. } = &target.scope else {
+            let GrantScope::ComputerApp {
+                platform,
+                application_id,
+            } = &target.scope
+            else {
                 return Err(
                     "Computer application permission requires an application target".into(),
                 );
@@ -164,8 +174,12 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
                 Some(ComputerAppRisk::High) => "High",
                 None => "Unknown; risk information is unavailable for this application.",
             };
+            let identity_label = match platform {
+                ComputerAppPlatform::Macos => "Bundle ID",
+                ComputerAppPlatform::Windows => "Executable path",
+            };
             let mut description = format!(
-                "Application: {}\nPath: {}\nBundle ID: {}\nRisk: {}",
+                "Application: {}\nPath: {}\n{identity_label}: {}\nRisk: {}",
                 display.name, display.app_path, application_id, risk
             );
             if let Some(warning) = &display.warning {

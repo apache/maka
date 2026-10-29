@@ -166,9 +166,10 @@ enum Operation {
         session: String,
         turn: String,
         operation_id: Option<String>,
+        native_observer_available: bool,
         browsers: Vec<BrowserConnection>,
         preparation_policy: crate::BrowserPreparationPolicy,
-        command: Command,
+        command: Box<Command>,
         language: Language,
     },
     LeaseChild {
@@ -288,6 +289,36 @@ impl Authorization {
 }
 
 impl BrowserAuthorization for Authorization {
+    fn authorize_history(
+        &self,
+        request: crate::BrowserSessionPreparation,
+        cancellation: CancellationToken,
+    ) -> crate::AuthorizationFuture {
+        if request.target != crate::BrowserPreparationTarget::SessionHistory {
+            return Box::pin(async {
+                Err(failed(
+                    "Browser history requires its exact session-history purpose",
+                ))
+            });
+        }
+        self.request_preparation(AuthorizationMode::Authorize, request, cancellation)
+    }
+
+    fn check_history(
+        &self,
+        request: crate::BrowserSessionPreparation,
+        cancellation: CancellationToken,
+    ) -> crate::AuthorizationFuture {
+        if request.target != crate::BrowserPreparationTarget::SessionHistory {
+            return Box::pin(async {
+                Err(failed(
+                    "Browser history requires its exact session-history purpose",
+                ))
+            });
+        }
+        self.request_preparation(AuthorizationMode::Check, request, cancellation)
+    }
+
     fn authorize(
         &self,
         access: BrowserAccess,
@@ -357,12 +388,14 @@ impl EpochWorker {
                         session,
                         turn,
                         operation_id,
+                        native_observer_available,
                         browsers,
                         preparation_policy,
                         command,
                         language,
                     } => {
-                        let start_audio = matches!(&command, Command::StartAudioRecording { .. });
+                        let start_audio =
+                            matches!(command.as_ref(), Command::StartAudioRecording { .. });
                         let callback_identity =
                             operation_id.as_ref().map(|operation_id| ScopeIdentity {
                                 owner: owner_id.clone(),
@@ -386,7 +419,7 @@ impl EpochWorker {
                                     Ok(()) => {
                                         local
                                             .prepare_invoke(
-                                                command,
+                                                *command,
                                                 &{
                                                     let mut context =
                                                         InvocationContext::new(&session, &turn)
@@ -404,6 +437,15 @@ impl EpochWorker {
                                                         context = context.with_browser_services(
                                                             callbacks.scope(identity.clone(), id),
                                                         );
+                                                        if native_observer_available {
+                                                            context = context
+                                                                .with_native_interruption_observer(
+                                                                    callbacks.native_observer(
+                                                                        identity.clone(),
+                                                                        id,
+                                                                    ),
+                                                                );
+                                                        }
                                                     }
                                                     context
                                                 },
@@ -958,6 +1000,7 @@ fn dispatch(
             session,
             turn,
             operation_id,
+            native_observer_available,
             browsers,
             preparation_policy,
             command,
@@ -1003,6 +1046,7 @@ fn dispatch(
                 session,
                 turn,
                 operation_id,
+                native_observer_available,
                 browsers,
                 preparation_policy,
                 command,
@@ -1165,6 +1209,12 @@ fn dispatch(
             }));
             Ok(())
         }
+        #[cfg(target_os = "windows")]
+        Request::NativeInvoke { .. }
+        | Request::NativeDiscardAudio { .. }
+        | Request::NativeRetire { .. } => Err(failed(
+            "native-only request requires its actual dedicated process",
+        )),
         Request::Shutdown => unreachable!("shutdown seals the whole connection"),
     }
 }
@@ -1414,6 +1464,7 @@ mod tests {
             epoch: epoch.into(),
             session: "logical-session".into(),
             turn: "logical-turn".into(),
+            native_observer_available: false,
             operation_id: None,
             browsers: Vec::new(),
             preparation_policy: Default::default(),
@@ -2332,5 +2383,59 @@ mod tests {
             .await
             .unwrap();
         next.await.unwrap().unwrap();
+    }
+    #[tokio::test]
+    async fn typed_child_history_preserves_scoped_wire_and_the_original_host_refusal() {
+        let (events, mut incoming) = mpsc::unbounded_channel();
+        let authority = Authorization {
+            id: 41,
+            events,
+            identity: Some(preparation_identity()),
+        };
+        let mut request = preparation_dto();
+        request.target = crate::BrowserPreparationTarget::SessionHistory;
+        for check in [false, true] {
+            let future = if check {
+                authority.check_history(request.clone(), CancellationToken::new())
+            } else {
+                authority.authorize_history(request.clone(), CancellationToken::new())
+            };
+            let pending = tokio::spawn(future);
+            let Event::Authorization {
+                id,
+                mode,
+                request:
+                    BrowserAuthorizationRequest::SessionPreparation {
+                        identity,
+                        preparation,
+                    },
+                reply,
+            } = incoming.recv().await.unwrap()
+            else {
+                panic!("history lost its scoped typed authorization wire");
+            };
+            assert_eq!(id, 41);
+            assert_eq!(identity, preparation_identity());
+            assert_eq!(preparation, request);
+            assert_eq!(matches!(mode, AuthorizationMode::Check), check);
+            reply
+                .send(Err(Failure::Failed(
+                    "fixture independent history refusal".into(),
+                )))
+                .unwrap();
+            assert!(
+                matches!(pending.await.unwrap(), Err(ToolError::Failed(reason)) if reason == "fixture independent history refusal")
+            );
+        }
+        assert!(
+            authority
+                .check_history(preparation_dto(), CancellationToken::new())
+                .await
+                .is_err()
+        );
+        assert!(
+            incoming.try_recv().is_err(),
+            "wrong history purpose never emits a callback"
+        );
     }
 }

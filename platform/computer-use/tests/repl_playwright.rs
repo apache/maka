@@ -25,6 +25,8 @@ mod mutations;
 mod neutral_focus;
 #[path = "repl_playwright/prefix_scroll.rs"]
 mod prefix_scroll;
+#[path = "repl_playwright/readonly_evaluate.rs"]
+mod readonly_evaluate;
 #[path = "repl_playwright/text_events.rs"]
 mod text_events;
 

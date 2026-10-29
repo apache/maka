@@ -19,6 +19,7 @@
 
 use crate::protocol::*;
 use base64::Engine;
+use cua_driver_core::browser::JsonStringLiteral;
 use maka_agent_facts::language::Language;
 use maka_agent_facts::tools::ToolError;
 use maka_capabilities::computer::BrowserConnection;
@@ -27,17 +28,21 @@ use serde_json::{Value, json};
 use std::{collections::HashMap, time::Duration};
 use tokio_util::sync::CancellationToken;
 mod ax;
+mod capability;
 mod clipboard_bridge;
+mod context;
 mod cursor;
 mod dialogs;
 mod downloads;
 mod extension;
 mod frames;
 mod origin;
+mod owned_input;
 mod ownership;
 pub(crate) mod provider;
 use provider::Provider;
 mod playwright;
+mod surface;
 pub(crate) use ownership::Host;
 use ownership::{BrowserIdentity, TabIdentity};
 
@@ -48,8 +53,16 @@ struct DomElement {
 }
 
 #[derive(Clone, Debug)]
+struct DomCuaElement {
+    element: DomElement,
+    used: Vec<frames::Frame>,
+    clip: [f64; 4],
+}
+
+#[derive(Clone, Debug)]
 enum ElementRef {
     Dom(DomElement),
+    DomCua(DomCuaElement),
     Dialog(dialogs::DialogRef),
 }
 
@@ -91,7 +104,8 @@ impl<'a> BrowserCall<'a> {
 #[derive(Clone, Deserialize)]
 struct TabInfo {
     id: String,
-    title: String,
+    #[serde(deserialize_with = "JsonStringLiteral::deserialize_raw")]
+    title: JsonStringLiteral,
     url: String,
     #[serde(rename = "type")]
     kind: String,
@@ -110,6 +124,7 @@ enum InitialState {
     Deferred,
 }
 struct Tab {
+    page_assets: capability::Inventories,
     provider: Provider,
     generation: String,
     info: TabInfo,
@@ -449,32 +464,50 @@ impl Cdp {
         method: &str,
         params: Value,
     ) -> Result<Value, ToolError> {
+        self.observe_reply(method, self.raw_observation(session, method, params))
+            .await
+    }
+
+    async fn observe_metadata_in(
+        &self,
+        session: Option<&str>,
+        read: cua_driver_core::browser::cdp_ws::CdpMetadataRead,
+        params: Value,
+    ) -> Result<String, ToolError> {
+        let call = async {
+            let _preparation = self
+                .preparation
+                .before_request()
+                .await
+                .map_err(|error| anyhow::Error::new(CdpPreparationFailure(error)))?;
+            match &self.extension_context {
+                Some(context) => {
+                    self.connection
+                        .call_metadata_observation_with_extension_context(
+                            context, session, read, params,
+                        )
+                        .await
+                }
+                None => {
+                    self.connection
+                        .call_metadata_observation(session, read, params)
+                        .await
+                }
+            }
+        };
+        self.observe_reply(read.as_str(), call).await
+    }
+
+    async fn observe_reply<T>(
+        &self,
+        method: &str,
+        call: impl std::future::Future<Output = anyhow::Result<T>>,
+    ) -> Result<T, ToolError> {
         if let Some(dialogs) = &self.dialogs {
             dialogs.synchronize().await;
             dialogs.state.check_method(method)?;
         }
         let result = {
-            let call = async {
-                let _preparation = self
-                    .preparation
-                    .before_request()
-                    .await
-                    .map_err(|error| anyhow::Error::new(CdpPreparationFailure(error)))?;
-                match &self.extension_context {
-                    Some(context) => {
-                        self.connection
-                            .call_observation_with_extension_context(
-                                context, session, method, params,
-                            )
-                            .await
-                    }
-                    None => {
-                        self.connection
-                            .call_observation(session, method, params)
-                            .await
-                    }
-                }
-            };
             tokio::pin!(call);
             if let Some(dialogs) = &self.dialogs {
                 tokio::select! {
@@ -504,7 +537,7 @@ pub(crate) fn with_unknown_guidance(error: ToolError, language: Language) -> Too
     }
 }
 
-async fn http(provider: &BrowserConnection, path: &str) -> Result<Value, ToolError> {
+async fn http_bytes(provider: &BrowserConnection, path: &str) -> Result<Vec<u8>, ToolError> {
     let url = format!("{}{path}", provider.endpoint.trim_end_matches('/'));
     // Platform trust-store loading is synchronous; keep it off the async poll stack.
     let client = tokio::task::spawn_blocking(|| {
@@ -528,7 +561,10 @@ async fn http(provider: &BrowserConnection, path: &str) -> Result<Value, ToolErr
     while let Some(chunk) = response.chunk().await.map_err(failed)? {
         bytes.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&bytes).map_err(failed)
+    Ok(bytes)
+}
+async fn http(provider: &BrowserConnection, path: &str) -> Result<Value, ToolError> {
+    serde_json::from_slice(&http_bytes(provider, path).await?).map_err(failed)
 }
 async fn inventory(provider: &BrowserConnection) -> Result<(String, Vec<TabInfo>), ToolError> {
     let version = http(provider, "/json/version").await?;
@@ -537,7 +573,7 @@ async fn inventory(provider: &BrowserConnection) -> Result<(String, Vec<TabInfo>
         .ok_or_else(|| failed("browser generation unavailable"))?
         .to_owned();
     let tabs: Vec<TabInfo> =
-        serde_json::from_value(http(provider, "/json/list").await?).map_err(failed)?;
+        serde_json::from_slice(&http_bytes(provider, "/json/list").await?).map_err(failed)?;
     Ok((
         generation,
         tabs.into_iter().filter(|t| t.kind == "page").collect(),
@@ -547,7 +583,7 @@ fn tab_info(provider: &Provider, tab: &TabInfo) -> Value {
     if let Some(extension) = &tab.extension {
         return extension::tab_info(extension);
     }
-    json!({"id":provider.public_tab_id(&tab.id),"providerTabId":tab.id,"browserId":provider.id(),"title":tab.title,"url":tab.url})
+    json!({"id":provider.public_tab_id(&tab.id),"providerTabId":tab.id,"browserId":provider.id(),"titleJson":tab.title,"url":tab.url})
 }
 fn tab_matches(provider: &Provider, tab: &TabInfo, id: &str) -> bool {
     id == tab.id
@@ -696,8 +732,15 @@ impl Browsers {
                 | Command::BrowserTab { .. }
                 | Command::GetTab { .. }
                 | Command::CreateBrowserTab { .. }
+                | Command::BrowserSelect { .. }
+                | Command::BrowserSelectedTab { .. }
+                | Command::BrowserNameSession { .. }
+                | Command::BrowserHistory { .. }
+                | Command::BrowserViewportSet { .. }
+                | Command::BrowserViewportReset { .. }
                 | Command::BrowserManagedTabs { .. }
                 | Command::BrowserUserOpenTabs { .. }
+                | Command::BrowserUserGetTabContext { .. }
                 | Command::BrowserUserClaimTab { .. }
         ) {
             let discovered = provider::discover(&self.driver, self.owner).await;
@@ -706,11 +749,70 @@ impl Browsers {
         }
         self.reconcile_extension_command(&command).await?;
         match command {
+            Command::BrowserViewportSet {
+                browser_id,
+                options,
+            } => Box::pin(self.set_browser_viewport(&browser_id, Some(options), call)).await,
+            Command::BrowserViewportReset { browser_id } => {
+                Box::pin(self.set_browser_viewport(&browser_id, None, call)).await
+            }
+            Command::TabPageAssetsList {
+                handle: Handle::Tab(handle),
+            } => {
+                Box::pin(async move {
+                    let identity = self
+                        .targets
+                        .get(&handle)
+                        .ok_or_else(|| failed("stale_tab: bind it again"))?
+                        .identity()?;
+                    self.use_tab(&identity, turn).await?;
+                    let tab = self.targets.get_mut(&handle).expect("checked browser tab");
+                    tab.last_turn = turn.to_owned();
+                    tab.page_assets_list(call).await
+                })
+                .await
+            }
+            Command::TabPageAssetsBundle {
+                handle: Handle::Tab(handle),
+                options,
+            } => {
+                Box::pin(async move {
+                    let identity = self
+                        .targets
+                        .get(&handle)
+                        .ok_or_else(|| failed("stale_tab: bind it again"))?
+                        .identity()?;
+                    self.use_tab(&identity, turn).await?;
+                    let tab = self.targets.get_mut(&handle).expect("checked browser tab");
+                    tab.last_turn = turn.to_owned();
+                    tab.page_assets_bundle(options, call).await
+                })
+                .await
+            }
+
+            Command::BrowserSelect { selection } => {
+                Box::pin(self.select_browser(selection)).await
+            }
+            Command::BrowserSelectedTab { browser_id } => {
+                Box::pin(self.selected_tab(&browser_id, call)).await
+            }
+            Command::BrowserNameSession { browser_id, name } => {
+                Box::pin(self.name_session(&browser_id, &name, call)).await
+            }
+            Command::BrowserHistory { browser_id, options } => {
+                Box::pin(self.user_history(&browser_id, options, call)).await
+            }
+            Command::BrowserCua { handle: Handle::Tab(handle), operation } => {
+                Box::pin(self.cua(&handle, operation, call, cursor)).await
+            }
             Command::BrowserManagedTabs { browser_id } => {
                 Box::pin(self.managed_tabs(&browser_id, call)).await
             }
             Command::BrowserUserOpenTabs { browser_id } => {
                 Box::pin(self.user_tabs(&browser_id)).await
+            }
+            Command::BrowserUserGetTabContext { browser_id, tab_id } => {
+                Box::pin(self.user_tab_context(&browser_id, &tab_id, invocation, cancellation)).await
             }
             Command::BrowserUserClaimTab { browser_id, tab_id } => {
                 Box::pin(
@@ -1028,6 +1130,24 @@ impl Browsers {
                 })
                 .await
             }
+            Command::BrowserEvaluate {
+                handle: Handle::Tab(handle), locator, mode, script_json, options,
+            } => Box::pin(async move {
+                if (mode == BrowserEvaluateMode::Page) != locator.is_none() {
+                    return Err(failed("browser evaluation mode does not match its selector scope"));
+                }
+                let identity = self.targets.get(&handle)
+                    .ok_or_else(|| failed("stale_tab: bind it again"))?.identity()?;
+                self.use_tab(&identity, turn).await?;
+                let tab = self.targets.get_mut(&handle).expect("checked browser handle");
+                tab.last_turn = turn.to_owned();
+                let mut budget = Some(ReadBudget { remaining:options.budget() });
+                tab.authorize_with_budget(None,invocation,cancellation,language,
+                    extension::ClaimIntent::Implicit,&mut budget).await?;
+                tab.playwright_evaluate(locator.as_ref(),mode,&script_json,&options,
+                    budget.expect("evaluate budget remains owned by this call"),call).await
+            }).await,
+
             Command::BrowserRead {
                 handle: Handle::Tab(handle),
                 locator,
@@ -1135,7 +1255,7 @@ impl Browsers {
                     if let Some(extension) = &tab.info.extension {
                         Ok(extension::tab_info(extension))
                     } else {
-                        Ok(json!({"title":tab.info.title,"url":tab.info.url}))
+                        Ok(json!({"titleJson":tab.info.title,"url":tab.info.url}))
                     }
                 })
                 .await
@@ -1241,13 +1361,16 @@ impl Browsers {
                 options,
             } => {
                 Box::pin(async move {
-                    if options.visible.is_some() || options.session_name.is_some() {
+                    let provider = self.providers(Some(&browser_id))?[0].clone();
+                    if let Some(name) = options.session_name {
+                        self.name_session(&browser_id, &name, call).await?;
+                    }
+                    if options.visible.is_some() {
                         return Err(failed(
-                            "this CDP provider does not support visibility or sessionName options",
+                            "Capability is not available: visibility",
                         ));
                     }
                     let url = url.map(|url| convenience_url(&url));
-                    let provider = self.providers(Some(&browser_id))?[0].clone();
                     self.create(
                         provider,
                         url,
@@ -1488,6 +1611,7 @@ impl Browsers {
                     info,
                     socket: None,
                     socket_prepared: false,
+                    page_assets: Default::default(),
                     origin_proof: None,
                     navigation_admission: None,
                     extension_claim: None,
@@ -1521,7 +1645,7 @@ impl Browsers {
         }
         if matches!(initial, InitialState::Deferred) {
             return Ok(
-                json!({"handle":Handle::Tab(handle),"id":id,"kind":"tab","apiProfile":api_profile}),
+                json!({"handle":Handle::Tab(handle),"id":id,"kind":"tab","apiProfile":api_profile,"capabilities":{"tab":capability::tab_info()}}),
             );
         }
         match self
@@ -1536,7 +1660,7 @@ impl Browsers {
             .await
         {
             Ok(value) => Ok(
-                json!({"handle":Handle::Tab(handle),"id":id,"kind":"tab","state":value["state"],"apiProfile":api_profile}),
+                json!({"handle":Handle::Tab(handle),"id":id,"kind":"tab","state":value["state"],"apiProfile":api_profile,"capabilities":{"tab":capability::tab_info()}}),
             ),
             Err(error) => {
                 if new {
@@ -1732,6 +1856,11 @@ impl Browsers {
         cursor: &crate::cursor::Spec,
         language: Language,
     ) -> Result<(), ToolError> {
+        self.host()
+            .await
+            .lock()
+            .await
+            .check_owned_inputs(self.owner, Some(turn), None)?;
         self.drain_extension_controls(Some(turn), None).await?;
         for tab in self.targets.values().filter(|tab| {
             tab.last_turn == turn
@@ -1806,6 +1935,11 @@ impl Browsers {
         &mut self,
         cursor: &crate::cursor::Spec,
     ) -> Result<(), ToolError> {
+        self.host()
+            .await
+            .lock()
+            .await
+            .check_owned_inputs(self.owner, None, Some(self.epoch))?;
         self.drain_extension_controls(None, Some(self.epoch))
             .await?;
         for tab in self.targets.values() {
@@ -1837,6 +1971,11 @@ impl Browsers {
     }
 
     pub(crate) async fn close(&mut self, cursor: &crate::cursor::Spec) -> Result<(), ToolError> {
+        self.host()
+            .await
+            .lock()
+            .await
+            .check_owned_inputs(self.owner, None, None)?;
         self.drain_extension_controls(None, None).await?;
         let mut failures = Vec::new();
         if let Err(error) = self.retire_epoch(cursor).await {
@@ -1939,6 +2078,7 @@ impl Tab {
     }
 
     async fn disconnect(&mut self) -> Result<(), ToolError> {
+        self.check_owned_input().await?;
         self.begin_disconnect();
         self.cleanup_clipboard().await?;
         self.cleanup_downloads().await?;
@@ -2440,6 +2580,7 @@ impl Tab {
             }
             self.socket_prepared = true;
         }
+        self.apply_pending_viewport(call).await?;
         self.ensure_downloads().await?;
         Ok(())
     }
@@ -2925,9 +3066,10 @@ impl Tab {
                 }
                 self.before_element_input(selected_index, cancellation, language)
                     .await?;
-                let pressed=self.request("Input.dispatchMouseEvent",json!({"type":"mousePressed","x":point[0],"y":point[1],"button":button,"clickCount":count})).await;
-                self.request("Input.dispatchMouseEvent",json!({"type":"mouseReleased","x":point[0],"y":point[1],"button":button,"clickCount":count})).await.map_err(|error|ToolError::CleanupUnconfirmed(format!("mouse release was not acknowledged: {error}")))?;
-                pressed?;
+                self.owned_input(cancellation, None, move |_, input, _| Box::pin(async move {
+                    let held = input.mouse_down(None, json!({"type":"mousePressed","x":point[0],"y":point[1],"button":button,"clickCount":count})).await?;
+                    input.release(held).await
+                })).await?;
             }
             Action::PressKey { index, key } => {
                 self.focus(index, cancellation, language).await?;
@@ -3020,28 +3162,17 @@ impl Tab {
                 }
                 self.before_element_input(selected_index, cancellation, language)
                     .await?;
-                let pressed=self.request("Input.dispatchMouseEvent",json!({"type":"mousePressed","x":from[0],"y":from[1],"button":"left","clickCount":1})).await;
-                let moved = if pressed.is_ok() {
+                let cursor = cursor.clone();
+                self.owned_input(cancellation, None, move |mut page, input, cancellation| Box::pin(async move {
+                    let held = input.mouse_down(None, json!({"type":"mousePressed","x":from[0],"y":from[1],"button":"left","clickCount":1})).await?;
                     if cursor.enabled {
-                        let _ = self
-                            .draw_cursor(cursor, Some(to), "drag", "update", language)
-                            .await;
+                        let _ = page.draw_cursor(&cursor, Some(to), "drag", "update", language).await;
                     }
-                    if let Err(error) = self.before_input(cancellation, language).await {
-                        Err(error)
-                    } else {
-                        self.request("Input.dispatchMouseEvent",json!({"type":"mouseMoved","x":to[0],"y":to[1],"button":"left","buttons":1})).await
-                    }
-                } else {
-                    pressed
-                };
-                let released=self.request("Input.dispatchMouseEvent",json!({"type":"mouseReleased","x":to[0],"y":to[1],"button":"left","clickCount":1})).await;
-                released.map_err(|error| {
-                    ToolError::CleanupUnconfirmed(format!(
-                        "mouse release was not acknowledged: {error}"
-                    ))
-                })?;
-                moved?;
+                    page.before_input(&cancellation, language).await?;
+                    input.mouse_position(held, to);
+                    page.request("Input.dispatchMouseEvent",json!({"type":"mouseMoved","x":to[0],"y":to[1],"button":"left","buttons":1})).await?;
+                    input.release(held).await
+                })).await?;
             }
             Action::Secondary { .. } => {
                 return Err(failed(
@@ -4069,7 +4200,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             metadata,
-            json!({"title":"After","url":"https://example.com/current"})
+            json!({"titleJson":"\"After\"","url":"https://example.com/current"})
         );
         assert_eq!(
             server.await.unwrap(),
@@ -5035,5 +5166,32 @@ mod tests {
         chrome.kill().await.unwrap();
         let _ = chrome.wait().await;
         logging.abort();
+    }
+}
+
+#[cfg(test)]
+mod title_string_tests {
+    use super::*;
+
+    #[test]
+    fn direct_inventory_parses_raw_title_before_any_generic_value() {
+        let bytes = br#"[{"id":"page","title":"\ud800 title \udc00 \\ud800","url":"https://fixture.test/","type":"page"}]"#;
+        let tabs: Vec<TabInfo> = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(tabs[0].title.json(), r#""\ud800 title \udc00 \\ud800""#);
+        let provider = Provider::Cdp(BrowserConnection {
+            id: "direct".into(),
+            endpoint: "http://127.0.0.1".into(),
+        });
+        let metadata = tab_info(&provider, &tabs[0]);
+        assert_eq!(metadata["titleJson"], r#""\ud800 title \udc00 \\ud800""#);
+        assert!(metadata.get("title").is_none());
+        assert_eq!(metadata["id"], "direct:page");
+        for invalid in [
+            br#"[{"id":"page","title":null,"url":"https://fixture.test/","type":"page"}]"#
+                .as_slice(),
+            br#"[{"id":"page","title":"ok","url":"https://fixture.test/"}]"#.as_slice(),
+        ] {
+            assert!(serde_json::from_slice::<Vec<TabInfo>>(invalid).is_err());
+        }
     }
 }

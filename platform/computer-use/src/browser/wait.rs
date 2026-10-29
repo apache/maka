@@ -80,7 +80,7 @@ impl LoadState {
     }
 }
 
-fn js_string(value: &Value) -> String {
+pub(super) fn js_string(value: &Value) -> String {
     match value {
         Value::Null => "null".into(),
         Value::String(value) => value.clone(),
@@ -238,7 +238,7 @@ fn required_completion(result: Result<Value, ToolError>) -> Result<(), ToolError
     }
 }
 
-async fn cancellable_observation<T>(
+pub(super) async fn cancellable_observation<T>(
     effect: ReadEffect,
     cancellation: &CancellationToken,
     future: impl std::future::Future<Output = Result<T, ToolError>>,
@@ -356,7 +356,10 @@ impl Browsers {
 }
 
 impl Tab {
-    fn wait_observation_branch(&self, frame_events: Events) -> Result<Self, ToolError> {
+    pub(in crate::browser) fn wait_observation_branch(
+        &self,
+        frame_events: Events,
+    ) -> Result<Self, ToolError> {
         let socket = self
             .socket
             .as_ref()
@@ -369,6 +372,7 @@ impl Tab {
             frames: self.frames.observation_branch(frame_events),
             socket: Some(socket),
             socket_prepared: true,
+            page_assets: Default::default(),
             origin_proof: None,
             navigation_admission: None,
             extension_claim: self.extension_claim.clone(),
@@ -734,8 +738,16 @@ async fn wait_event(
         result=tokio::time::timeout_at(deadline,events.recv())=>result.map_err(|_|failed(timeout_message))?.ok_or_else(||failed(detached_message)),
     }
 }
-fn navigation_error(event: &CdpEvent) -> Result<(), ToolError> {
-    if event.method != "Page.navigationBlocked" || event.params["resourceType"] == "subFrame" {
+pub(super) fn navigation_error(event: &CdpEvent) -> Result<(), ToolError> {
+    navigation_error_including_subframes(event, false)
+}
+pub(super) fn navigation_error_including_subframes(
+    event: &CdpEvent,
+    reject_subframes: bool,
+) -> Result<(), ToolError> {
+    if event.method != "Page.navigationBlocked"
+        || !reject_subframes && event.params["resourceType"] == "subFrame"
+    {
         return Ok(());
     }
     let url = event.params["url"]
@@ -831,6 +843,7 @@ mod tests {
             params,
             session_id: None,
             source_target_id: None,
+            params_json: None,
         }
     }
     fn frame() -> NetworkIdle {
@@ -1183,6 +1196,7 @@ mod tests {
             let settlement = self.0.clone();
             Box::pin(async move {
                 Ok(crate::invocation::BrowserServices {
+                    files: None,
                     attachment: None,
                     effects: None,
                     settlement: Some(settlement),
@@ -1212,7 +1226,7 @@ mod tests {
                     generation: "ws://127.0.0.1:1/devtools/browser/fixture".into(),
                     info: TabInfo {
                         id: "17".into(),
-                        title: String::new(),
+                        title: String::new().into(),
                         url: "about:blank".into(),
                         kind: "page".into(),
                         websocket: None,

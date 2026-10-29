@@ -473,6 +473,45 @@ impl SessionStore {
         display: &maka_agent_facts::interaction::ComputerAppDisplay,
         basis: &PermissionBasis,
     ) -> Result<u64, CommitError> {
+        self.append_app_dispatch_in_lane(
+            event,
+            targets,
+            app,
+            display,
+            basis,
+            crate::append::ComputerLane::Other,
+        )
+        .await
+    }
+
+    pub async fn append_native_computer_app_dispatch(
+        &self,
+        event: &EventWrite,
+        targets: &[GrantTarget],
+        app: &GrantTarget,
+        display: &maka_agent_facts::interaction::ComputerAppDisplay,
+        basis: &PermissionBasis,
+    ) -> Result<u64, CommitError> {
+        self.append_app_dispatch_in_lane(
+            event,
+            targets,
+            app,
+            display,
+            basis,
+            crate::append::ComputerLane::Native,
+        )
+        .await
+    }
+
+    async fn append_app_dispatch_in_lane(
+        &self,
+        event: &EventWrite,
+        targets: &[GrantTarget],
+        app: &GrantTarget,
+        display: &maka_agent_facts::interaction::ComputerAppDisplay,
+        basis: &PermissionBasis,
+        lane: crate::append::ComputerLane,
+    ) -> Result<u64, CommitError> {
         let Fact::ToolDispatched { operation_id, .. } = &event.event().fact else {
             return Err(CommitError::Rejected(
                 "app admission requires a native tool dispatch".into(),
@@ -496,7 +535,7 @@ impl SessionStore {
             .await
             .map_err(super::session_store::commit_error)?;
         log.scoped(Arc::new(pin))
-            .append_computer_app_dispatch(event, targets, app, display, basis)
+            .append_computer_app_dispatch(event, targets, app, display, basis, lane)
             .await
     }
 

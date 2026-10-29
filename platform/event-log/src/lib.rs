@@ -54,6 +54,7 @@ pub mod recovery;
 pub mod root;
 pub mod root_store;
 pub use root_store::{RootStore, SessionStore};
+pub mod native_computer;
 pub mod recall;
 pub mod run_source;
 mod schema;
@@ -117,6 +118,8 @@ pub enum StoreError {
     SessionRetired,
     #[error("permission grant is no longer current")]
     PermissionRevoked,
+    #[error("native Computer Use is stopped for this logical Turn")]
+    NativeTurnInterrupted,
     #[error("session has an unsealed invocation")]
     SessionBusy,
     #[error("invalid event transition: source Turn does not exist")]

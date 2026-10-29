@@ -1152,6 +1152,7 @@ mod tests {
             },
             socket: Some(socket),
             socket_prepared: true,
+            page_assets: Default::default(),
             origin_proof: None,
             navigation_admission: None,
             extension_claim: None,

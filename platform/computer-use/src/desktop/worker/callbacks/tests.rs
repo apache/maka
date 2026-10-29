@@ -201,6 +201,8 @@ impl Fixture {
                 actual,
                 &identity,
                 ParentCapabilities {
+                    files: None,
+                    native_interruption: None,
                     authorization: Some(authority),
                     attachment: None,
                     effects: Some(host.clone()),
@@ -1181,5 +1183,101 @@ async fn early_checked_loss_is_not_erased_by_later_actual_success_before_host_po
     assert!(
         !fixture.parent.has_unsettled(),
         "known actual terminal is separate from retained Unknown outcome"
+    );
+}
+
+#[tokio::test]
+async fn history_preparation_routes_only_to_its_independent_host_consent() {
+    struct HistoryAuthority(Arc<Mutex<Vec<&'static str>>>);
+    impl BrowserAuthorization for HistoryAuthority {
+        fn authorize(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
+            panic!("history must not use page authorization");
+        }
+        fn check(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
+            Box::pin(async { Err(failed("history fixture does not authorize page access")) })
+        }
+        fn authorize_session_preparation(
+            &self,
+            _: crate::BrowserSessionPreparation,
+            _: CancellationToken,
+        ) -> AuthorizationFuture {
+            self.0.lock().unwrap().push("generic preparation");
+            Box::pin(async { Ok(()) })
+        }
+        fn authorize_history(
+            &self,
+            _: crate::BrowserSessionPreparation,
+            _: CancellationToken,
+        ) -> AuthorizationFuture {
+            self.0.lock().unwrap().push("history approval");
+            Box::pin(async { Err(failed("fixture history requires its own grant")) })
+        }
+        fn check_history(
+            &self,
+            _: crate::BrowserSessionPreparation,
+            _: CancellationToken,
+        ) -> AuthorizationFuture {
+            self.0.lock().unwrap().push("history check");
+            Box::pin(async { Err(failed("fixture history grant was revoked")) })
+        }
+    }
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let capabilities = ParentCapabilities {
+        authorization: Some(Arc::new(HistoryAuthority(calls.clone()))),
+        ..Default::default()
+    };
+    let identity = identity();
+    let request = crate::BrowserSessionPreparation {
+        native_owner: uuid::Uuid::from_u128(17),
+        native_epoch: "actual-native-epoch-fixture".into(),
+        browser_id: "selected-browser".into(),
+        generation: "selected-generation".into(),
+        turn_id: identity.turn.clone(),
+        operation_id: identity.operation_id.clone(),
+        target: crate::BrowserPreparationTarget::SessionHistory,
+    };
+    for (mode, message) in [
+        (
+            AuthorizationMode::Authorize,
+            "fixture history requires its own grant",
+        ),
+        (
+            AuthorizationMode::Check,
+            "fixture history grant was revoked",
+        ),
+    ] {
+        let result = capabilities
+            .session_preparation_decision(
+                Some(&identity),
+                identity.clone(),
+                request.clone(),
+                mode,
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(matches!(result, Err(ToolError::Failed(reason)) if reason == message));
+    }
+    assert_eq!(
+        *calls.lock().unwrap(),
+        ["history approval", "history check"]
+    );
+    let mut foreign = identity.clone();
+    foreign.operation_id = "other-operation".into();
+    assert!(
+        capabilities
+            .session_preparation_decision(
+                Some(&identity),
+                foreign,
+                request,
+                AuthorizationMode::Authorize,
+                CancellationToken::new()
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        2,
+        "foreign scope never reaches any Host authority"
     );
 }

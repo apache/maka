@@ -380,13 +380,21 @@ fn capability_name(target: &maka_agent_facts::interaction::GrantTarget) -> &'sta
         maka_agent_facts::interaction::GrantCapability::ComputerAudio => "Computer audio recording",
         maka_agent_facts::interaction::GrantCapability::Browser => "Browser site",
         maka_agent_facts::interaction::GrantCapability::BrowserDownload => "Browser file download",
+        maka_agent_facts::interaction::GrantCapability::BrowserHistory => "Browser history",
         _ => "Computer Use",
     }
 }
 
 /// T1 is committed under the original grant fence. T2 must still settle even
 /// after permission revocation, so only the dispatch uses the checked append.
+#[derive(Clone, Copy)]
+pub(super) enum ComputerLane {
+    Native,
+    Other,
+}
+
 pub(super) struct Journal {
+    pub lane: ComputerLane,
     pub store: maka_event_log::SessionStore,
     pub basis: PermissionBasis,
     pub targets: Vec<maka_agent_facts::interaction::GrantTarget>,
@@ -399,7 +407,23 @@ impl EventSink for Journal {
     fn commit(self: Arc<Self>, event: EventWrite) -> CommitFuture {
         Box::pin(async move {
             if matches!(event.event().fact, Fact::ToolDispatched { .. }) {
-                if let Some((app, display)) = &self.app {
+                if matches!(self.lane, ComputerLane::Native) {
+                    if let Some((app, display)) = &self.app {
+                        self.store
+                            .append_native_computer_app_dispatch(
+                                &event,
+                                &self.targets,
+                                app,
+                                display,
+                                &self.basis,
+                            )
+                            .await
+                    } else {
+                        self.store
+                            .append_native_computer_dispatch(&event, &self.targets, &self.basis)
+                            .await
+                    }
+                } else if let Some((app, display)) = &self.app {
                     self.store
                         .append_computer_app_dispatch(
                             &event,

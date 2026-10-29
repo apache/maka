@@ -41,7 +41,10 @@ fn clean(text: &str, max: usize) -> String {
 
 pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
     let (en, cn, tw, target) = match command {
-        Command::Documentation => (
+        Command::NativeComputer { .. } => {
+            ("Use native computer", "操作原生电脑", "操作原生電腦", None)
+        }
+        Command::Documentation | Command::ReadDocumentation { .. } => (
             "Read computer-use instructions",
             "查看电脑操作说明",
             "查看電腦操作說明",
@@ -95,6 +98,44 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
                 Handle::Tab(_) => ("Inspect page", "查看网页", "查看網頁", bound_target),
             },
         },
+        Command::BrowserSelect { .. } => ("Select browser", "选择浏览器", "選擇瀏覽器", None),
+        Command::BrowserSelectedTab { browser_id } => (
+            "Inspect selected tab",
+            "查看选中标签页",
+            "查看選取分頁",
+            Some(browser_id.as_str()),
+        ),
+        Command::BrowserNameSession { browser_id, .. } => (
+            "Name browser session",
+            "命名浏览器会话",
+            "命名瀏覽器工作階段",
+            Some(browser_id.as_str()),
+        ),
+        Command::BrowserHistory { browser_id, .. } => (
+            "Read browser history",
+            "读取浏览器历史",
+            "讀取瀏覽器歷史",
+            Some(browser_id.as_str()),
+        ),
+        Command::BrowserViewportSet { browser_id, .. }
+        | Command::BrowserViewportReset { browser_id } => (
+            "Set browser viewport",
+            "设置浏览器视口",
+            "設定瀏覽器檢視區",
+            Some(browser_id.as_str()),
+        ),
+        Command::TabPageAssetsList { .. } => (
+            "List page assets",
+            "查看页面资源",
+            "查看頁面資源",
+            bound_target,
+        ),
+        Command::TabPageAssetsBundle { .. } => (
+            "Save page assets",
+            "保存页面资源",
+            "儲存頁面資源",
+            bound_target,
+        ),
         Command::ListBrowsers { .. } => ("List browsers", "查看浏览器列表", "查看瀏覽器清單", None),
         Command::ListTabs { .. } => ("List tabs", "查看标签页列表", "查看分頁清單", None),
         Command::GetBrowser { options } => (
@@ -108,6 +149,12 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
             "List user tabs",
             "查看用户标签页",
             "查看使用者分頁",
+            Some(browser_id.as_str()),
+        ),
+        Command::BrowserUserGetTabContext { browser_id, .. } => (
+            "Read user tab context",
+            "读取用户标签页内容",
+            "讀取使用者分頁內容",
             Some(browser_id.as_str()),
         ),
         Command::BrowserUserClaimTab { browser_id, .. } => (
@@ -134,11 +181,16 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
                 Some(browser_id.as_str()),
             ),
         },
-        Command::TabMetadata { .. } | Command::BrowserRead { .. } | Command::GetJsDialog { .. } => {
-            ("Inspect page", "查看网页", "查看網頁", bound_target)
-        }
+        Command::TabMetadata { .. }
+        | Command::BrowserRead { .. }
+        | Command::BrowserEvaluate { .. }
+        | Command::GetJsDialog { .. }
+        | Command::BrowserCua {
+            operation: crate::protocol::BrowserCuaOperation::DomSnapshot,
+            ..
+        } => ("Inspect page", "查看网页", "查看網頁", bound_target),
         Command::BrowserWait { .. } => ("Wait for page", "等待网页", "等待網頁", bound_target),
-        Command::BrowserMutation { .. } => {
+        Command::BrowserCua { .. } | Command::BrowserMutation { .. } => {
             ("Interact with page", "操作网页", "操作網頁", bound_target)
         }
         Command::BrowserDownloadWait { .. } => (

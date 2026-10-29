@@ -92,13 +92,13 @@ impl Provider {
     pub(super) fn info(&self) -> Value {
         match self {
             Self::Cdp(provider) => {
-                json!({"id":provider.id,"name":provider.id,"type":"cdp","apiProfile":self.api_profile()})
+                json!({"id":provider.id,"name":provider.id,"type":"cdp","apiProfile":self.api_profile(),"capabilities":{"browser":[],"tab":super::capability::tab_info()}})
             }
             Self::Extension { id, connection } => {
                 let identity = connection.identity();
                 let mode = self.extension_mode();
                 let name = mode.map_or("Extension", |mode| mode.display_name());
-                json!({"id":id,"name":name,"type":"extension","apiProfile":self.api_profile(),"metadata":{"extensionId":identity.extension_id,"extensionInstanceId":identity.instance_id,"generation":identity.generation}})
+                json!({"id":id,"name":name,"type":"extension","apiProfile":self.api_profile(),"capabilities":{"browser":super::capability::browser_info(),"tab":super::capability::tab_info()},"metadata":{"extensionId":identity.extension_id,"extensionInstanceId":identity.instance_id,"generation":identity.generation}})
             }
         }
     }

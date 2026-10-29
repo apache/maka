@@ -387,6 +387,7 @@ async fn reply_barrier_covers_earlier_events_without_waiting_for_a_live_stream_t
             method: "fixture".into(),
             session_id: None,
             source_target_id: None,
+            params_json: None,
             params: serde_json::json!({"initial":initial}),
         })
         .unwrap();
@@ -406,6 +407,7 @@ async fn reply_barrier_covers_earlier_events_without_waiting_for_a_live_stream_t
                 method: "later".into(),
                 session_id: None,
                 source_target_id: None,
+                params_json: None,
                 params: serde_json::Value::Null,
             })
             .unwrap();
@@ -476,6 +478,7 @@ async fn cancelled_close_keeps_original_join_and_closing_refuses_new_host_effect
                     method: "Target.attachedToTarget".into(),
                     session_id: None,
                     source_target_id: None,
+                    params_json: None,
                     params: serde_json::json!({"sessionId":session,"targetInfo":{"type":"iframe"}}),
                 },
                 &mut children,

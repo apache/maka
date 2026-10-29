@@ -50,7 +50,8 @@ export function computerCapability(request: Request): boolean {
 			target.scope.kind === "capability") ||
 			((target.capability === "browser" ||
 				target.capability === "browser_download") &&
-				target.scope.kind === "browser_origin"))
+				target.scope.kind === "browser_origin") ||
+            (target.capability === "browser_history" && target.scope.kind === "browser_profile"))
 	);
 }
 export function CapabilityRequest(props: {
@@ -75,7 +76,9 @@ export function CapabilityRequest(props: {
 						{computerCapability(props.request)
 							? props.request.target.capability === "computer_audio"
 								? tr("Computer output audio for this session")
-								: props.request.target.capability === "browser_download"
+								: props.request.target.capability === "browser_history"
+                    ? tr("Browsing history for this browser profile")
+                : props.request.target.capability === "browser_download"
 									? tr("Browser file downloads for this session")
 									: props.request.target.capability === "browser"
 										? tr("Browser access for this session")
@@ -105,7 +108,9 @@ export function CapabilityRequest(props: {
 								? tr(
 										"This allows the requesting tool to record audio played by the computer. The grant lasts for this session's current permission boundary.",
 									)
-								: props.request.target.capability === "browser_download"
+								: props.request.target.capability === "browser_history"
+                    ? tr("This allows the requesting tool to read the selected browser profile's browsing history. Page access, downloads, and other browser profiles require separate permission. The grant lasts for this session's current permission boundary and this browser generation.")
+                : props.request.target.capability === "browser_download"
 									? tr(
 											"This allows the requesting tool to download files from the displayed browser origin. Browser page access is a separate permission. The grant lasts for this session's current permission boundary.",
 										)
@@ -130,7 +135,12 @@ export function CapabilityRequest(props: {
 						{ userSelect: "text" },
 					]}
 				>
-					{props.request.target.scope.kind === "browser_origin"
+					{props.request.target.scope.kind === "browser_profile"
+                        ? tr("Browser profile: {browser} · Generation: {generation}", {
+                            browser: props.request.target.scope.browserId,
+                            generation: props.request.target.scope.generation,
+                          })
+                        : props.request.target.scope.kind === "browser_origin"
 						? tr("Browser origin: {origin}", {
 								origin: props.request.target.scope.origin,
 							})
