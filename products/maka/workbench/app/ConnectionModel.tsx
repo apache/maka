@@ -21,6 +21,7 @@ import { inputAction, Scroll, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { modelLimitFields, thinkingLevels, type ModelSettingsOwner } from './settings';
 import { SettingsField } from './SettingsField';
+import { CatalogModelAssociation } from './CatalogModelAssociation';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { tr } from './locale';
 import {
@@ -58,6 +59,7 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
           disabled={disabled()}
           change={(id) => owner.changeModel({ id })}
         />
+        <CatalogModelAssociation settings={owner} disabled={disabled()} />
         <SettingsField
           label={tr('Model display name')}
           value={model().label}

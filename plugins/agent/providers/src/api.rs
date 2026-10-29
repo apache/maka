@@ -185,7 +185,12 @@ impl ApiProvider {
     }
 
     fn model_metadata(&self, model: ModelInfo, overrides: Option<&ModelOverride>) -> ModelMetadata {
-        let reported = metadata::enrich(&self.snapshot, self.id, model);
+        let reported = metadata::enrich(
+            &self.snapshot,
+            self.id,
+            model,
+            overrides.and_then(|value| value.catalog_model.as_ref()),
+        );
         let info =
             overrides.map_or_else(|| reported.clone(), |overrides| overrides.apply(&reported));
         let thinking_levels = overrides

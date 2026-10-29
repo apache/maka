@@ -35,9 +35,9 @@ pub fn definition(
     }
     match identity.package_id.as_str() {
         api::ID => api::ApiProviders::definition(&identity.name, snapshot),
-        codex::ID if identity.name == "chatgpt" => {
-            codex::Codex.definition().map_err(|e| e.to_string())
-        }
+        codex::ID if identity.name == "chatgpt" => codex::Codex::new(snapshot)
+            .definition()
+            .map_err(|e| e.to_string()),
         _ => Err("provider is unavailable".into()),
     }
 }

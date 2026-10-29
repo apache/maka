@@ -426,3 +426,64 @@ async fn selectable_thinking_choices_respect_native_encoder_and_invalid_default(
         .is_err()
     );
 }
+
+#[tokio::test]
+async fn manual_catalog_association_preserves_connection_policy_and_explicit_facts() {
+    use maka_agent_facts::configuration::CatalogModelReference;
+    let snapshot = snapshot();
+    let (provider, public) = snapshot
+        .models(None)
+        .find(|(provider, model)| {
+            *provider == "anthropic"
+                && model.context_window.is_some()
+                && model.max_output_tokens.is_some()
+        })
+        .unwrap();
+    let public = public.clone();
+    let reference = CatalogModelReference {
+        provider: provider.into(),
+        model_id: public.id.clone(),
+    };
+    let binding = ApiProviders::definition("openai-compatible", snapshot.clone()).unwrap();
+    let mut input = request(
+        &binding,
+        "private-alias",
+        ModelOverride {
+            catalog_model: Some(reference.clone()),
+            ..Default::default()
+        },
+    );
+    let model = binding.prepare(input.clone()).await.unwrap();
+    assert_eq!(model.info.id, "private-alias");
+    assert_eq!(model.base_url, "https://relay.test/v1");
+    assert_eq!(model.adapter, "chat-completions");
+    assert_eq!(model.info.context_window, public.context_window);
+    assert_eq!(model.main_output_limit, public.max_output_tokens);
+    assert!(model.thinking_levels.is_empty());
+    input.model.context_window = Some(8192);
+    input.overrides.as_mut().unwrap().context_window = Some(6000);
+    let model = binding.prepare(input).await.unwrap();
+    assert_eq!(model.info.context_window, Some(6000));
+    let subscription = maka_providers::codex::Codex::new(snapshot)
+        .definition()
+        .unwrap();
+    let model = subscription
+        .prepare(Resolve {
+            connection: Connection {
+                id: "subscription".into(),
+                revision: 1,
+                configuration: json!({"baseUrl":"https://chatgpt.com/backend-api/codex"}),
+            },
+            model: ModelInfo::new("private-alias"),
+            overrides: Some(ModelOverride {
+                catalog_model: Some(reference),
+                ..Default::default()
+            }),
+            thinking_level: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(model.info.id, "private-alias");
+    assert_eq!(model.info.context_window, public.context_window);
+    assert_eq!(model.adapter, maka_providers::codex::ADAPTER);
+}

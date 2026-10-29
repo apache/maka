@@ -154,12 +154,15 @@ fn compatible_connections_share_exact_public_ids_without_borrowing_route_control
         ..reported.clone()
     };
     assert_eq!(
-        snapshot.resolve("openai-compatible", reported.clone()),
+        snapshot.resolve("openai-compatible", reported.clone(), None),
         expected
     );
     let captured =
         Snapshot::for_model("openai-compatible", "vendor/new-model", Some(public)).unwrap();
-    assert_eq!(captured.resolve("openai-compatible", reported), expected);
+    assert_eq!(
+        captured.resolve("openai-compatible", reported, None),
+        expected
+    );
 
     let models_dev = json!({"openai-compatible":{"id":"openai-compatible","models":{
         "vendor/new-model":{"id":"vendor/new-model","name":"Route name",
@@ -305,7 +308,7 @@ fn account_false_empty_and_unknown_defaults_override_public_facts() {
         }),
         ..ModelInfo::new("new/account-model")
     };
-    let effective = snapshot.resolve("openrouter", reported.clone());
+    let effective = snapshot.resolve("openrouter", reported.clone(), None);
     assert_eq!(effective.display_name.as_deref(), Some("Public label"));
     assert_eq!(effective.thinking_levels, Some(vec![]));
     assert_eq!(effective.default_thinking_level, None);
@@ -317,7 +320,7 @@ fn account_false_empty_and_unknown_defaults_override_public_facts() {
         thinking_levels: Some(vec![Low, High]),
         ..ModelInfo::new("new/account-model")
     };
-    let effective = snapshot.resolve("openrouter", own_choices);
+    let effective = snapshot.resolve("openrouter", own_choices, None);
     assert_eq!(effective.thinking_levels, Some(vec![Low, High]));
     assert_eq!(effective.default_thinking_level, None);
     let disabled = snapshot.resolve(
@@ -329,10 +332,11 @@ fn account_false_empty_and_unknown_defaults_override_public_facts() {
             }),
             ..ModelInfo::new("new/account-model")
         },
+        None,
     );
     assert_eq!(disabled.thinking_levels, None);
     assert_eq!(disabled.default_thinking_level, None);
-    let inherited = snapshot.resolve("openrouter", ModelInfo::new("new/account-model"));
+    let inherited = snapshot.resolve("openrouter", ModelInfo::new("new/account-model"), None);
     assert_eq!(inherited.thinking_levels, Some(vec![High, Low, Off]));
     assert_eq!(inherited.default_thinking_level, Some(High));
 }
@@ -423,7 +427,7 @@ fn captured_public_fact_or_absence_never_uses_todays_fallback() {
     let absent = Snapshot::for_model("openai", "gpt-5.2", None).unwrap();
     assert_eq!(absent.get("openai", "gpt-5.2"), None);
     assert_eq!(
-        absent.resolve("openai", ModelInfo::new("gpt-5.2")),
+        absent.resolve("openai", ModelInfo::new("gpt-5.2"), None),
         ModelInfo::new("gpt-5.2")
     );
     assert!(Snapshot::for_model("openai", "a-different-model", Some(record)).is_err());
@@ -522,4 +526,103 @@ fn raw_source_numeric_overflow_follows_value_acceptance_before_schema_validation
             Some("Final")
         );
     }
+}
+
+#[test]
+fn explicit_catalog_association_keeps_wire_identity_account_facts_and_captured_defaults() {
+    use maka_agent_facts::configuration::{ApiProtocol, CatalogModelReference};
+    let mut snapshot = Snapshot::bundled().unwrap();
+    let reference = CatalogModelReference {
+        provider: "catalog-provider".into(),
+        model_id: "catalog-model".into(),
+    };
+    snapshot
+        .models
+        .entry(reference.provider.clone())
+        .or_default()
+        .insert(
+            reference.model_id.clone(),
+            ModelInfo {
+                id: reference.model_id.clone(),
+                display_name: Some("Catalog model".into()),
+                context_window: Some(8192),
+                input_limit: Some(6144),
+                max_output_tokens: Some(2048),
+                api_protocol: Some(ApiProtocol::AnthropicMessages),
+                thinking_levels: Some(vec![High]),
+                default_thinking_level: Some(High),
+                supports_reasoning_summary: Some(true),
+                capabilities: Some(ModelCapabilities {
+                    vision: Some(true),
+                    function_calling: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+    let reported = ModelInfo {
+        id: "custom-alias".into(),
+        context_window: Some(4096),
+        capabilities: Some(ModelCapabilities {
+            vision: Some(false),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let effective = snapshot.resolve("openai-compatible", reported.clone(), Some(&reference));
+    assert_eq!(effective.id, "custom-alias");
+    assert_eq!(effective.context_window, Some(4096));
+    assert_eq!(effective.max_output_tokens, Some(2048));
+    assert_eq!(effective.capabilities.unwrap().vision, Some(false));
+    assert_eq!(effective.capabilities.unwrap().function_calling, Some(true));
+    assert_eq!(effective.api_protocol, None);
+    assert_eq!(effective.thinking_levels, None);
+    assert_eq!(effective.default_thinking_level, None);
+    assert_eq!(effective.supports_reasoning_summary, None);
+    let captured = Snapshot::for_model(
+        "openai-compatible",
+        "custom-alias",
+        snapshot
+            .model_base("openai-compatible", "custom-alias", Some(&reference))
+            .map(std::borrow::Cow::into_owned),
+    )
+    .unwrap();
+    snapshot
+        .models
+        .get_mut(&reference.provider)
+        .unwrap()
+        .get_mut(&reference.model_id)
+        .unwrap()
+        .max_output_tokens = Some(1024);
+    assert_eq!(
+        snapshot
+            .resolve("openai-compatible", reported.clone(), Some(&reference))
+            .max_output_tokens,
+        Some(1024)
+    );
+    let missing = CatalogModelReference {
+        provider: reference.provider,
+        model_id: "removed-model".into(),
+    };
+    assert_eq!(
+        snapshot.resolve("openai-compatible", reported.clone(), Some(&missing)),
+        reported
+    );
+    assert_eq!(
+        captured.resolve("openai-compatible", reported.clone(), Some(&missing)),
+        effective
+    );
+    assert_eq!(
+        captured.resolve("openai-compatible", reported.clone(), None),
+        effective
+    );
+    assert_eq!(
+        snapshot.resolve("openai-compatible", reported.clone(), None),
+        reported
+    );
+    let absent = Snapshot::for_model("openai-compatible", "custom-alias", None).unwrap();
+    assert_eq!(
+        absent.resolve("openai-compatible", reported.clone(), Some(&missing)),
+        reported
+    );
 }
