@@ -19,23 +19,25 @@
 
 //! Bot mode: one persistent Session per installation. The model reaches its user
 //! only through `SendUser`; recorded messages form a Host-owned outbox kept apart
-//! from Run state, so a crash neither loses nor repeats a delivered message.
+//! from Run state, so a crash neither loses nor repeats a recorded message.
+//!
+//! The registered Bot record is the only source of Bot identity. Tool grants,
+//! recovery and `SendUser` all consult it, so forks and Sessions derived from the
+//! Bot are ordinary Sessions.
 use super::*;
 use maka_agent_facts::{
     tool_call::ToolRejection,
     tool_output::{DurableToolProjection, ToolOutput, ToolSuccess},
     tools::*,
 };
-use maka_capabilities::storage::{Data, Mutation, Namespace, Store, StoreError};
+use maka_capabilities::storage::{Data, Mutation, Namespace, Scan, Store, StoreError};
 use sha2::{Digest, Sha256};
-use std::sync::{OnceLock, Weak};
+use std::sync::{OnceLock, RwLock, Weak};
 
 pub(super) const SEND_USER: &str = "SendUser";
-/// Agent-native coordination tools a Bot Session may use. Workspace service tools
-/// (files, processes, browser, web) and MCP tools are never granted: hands-on work
-/// is delegated to WorkHub workers, which keep their own permissions.
-pub(super) const ALLOWED_TOOLS: &[&str] = &[
-    SEND_USER,
+/// Agent-native coordination tools the Bot Session is created with. `SendUser` is
+/// granted by Bot identity rather than by this list.
+pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "ScheduledTask",
     "GoalStatus",
     "Recall",
@@ -47,22 +49,11 @@ pub(super) const ALLOWED_TOOLS: &[&str] = &[
     "Skill",
     "SkillSearch",
 ];
-/// Shortest interval schedule that may wake the Bot Session.
-pub(super) const MIN_INTERVAL_SECONDS: u32 = 300;
-const MAX_MESSAGES: usize = 100;
-const MAX_CHARACTERS: usize = 48_000;
-const MAX_MESSAGE_ID: usize = 200;
-/// Calls retained for idempotency and reads; older calls are dropped oldest first.
-const RETAINED_CALLS: usize = 1_000;
 const PAGE: usize = 100;
 const RECORD_KEY: &str = "bot";
-const OUTBOX_KEY: &str = "outbox";
-
-/// True when the Session's immutable tool allow-list grants `SendUser`, which only
-/// [`Owner::open_bot`] can set.
-pub(super) fn is_bot(allowed_tools: Option<&[String]>) -> bool {
-    allowed_tools.is_some_and(|tools| tools.iter().any(|name| name == SEND_USER))
-}
+/// How long an open waits for a concurrent first open to finish creating its Session.
+const CLAIM_WAITS: u32 = 50;
+const CLAIM_WAIT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -71,27 +62,45 @@ struct Record {
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Outbox {
-    session_id: Option<String>,
+struct Head {
     through: u64,
-    calls: Vec<Call>,
 }
+/// One `SendUser` call. Calls are never evicted, so a reused `messageId` is always
+/// recognized.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Call {
     message_id: String,
     fingerprint: String,
-    messages: Vec<BotMessage>,
+    first: u64,
+    count: u64,
 }
 
 pub(super) enum Appended {
-    Recorded(usize),
-    Duplicate(usize),
+    Recorded(u64),
+    Duplicate(u64),
+}
+
+fn head_key(session: &str) -> String {
+    format!("outbox/{session}/head")
+}
+fn call_key(session: &str, message_id: &str) -> String {
+    format!(
+        "outbox/{session}/call/{}",
+        hex::encode(Sha256::digest(message_id.as_bytes()))
+    )
+}
+fn messages_prefix(session: &str) -> String {
+    format!("outbox/{session}/message/")
+}
+fn message_key(session: &str, sequence: u64) -> String {
+    format!("{}{sequence:020}", messages_prefix(session))
 }
 
 pub(super) struct Bot {
     storage: Arc<maka_host_runtime::storage::Storage>,
     owner: OnceLock<Weak<Owner>>,
+    current: RwLock<Option<String>>,
     changed: tokio::sync::watch::Sender<()>,
 }
 impl Bot {
@@ -104,8 +113,15 @@ impl Bot {
                     .expect("bot namespace"),
             )),
             owner: OnceLock::new(),
+            current: RwLock::new(None),
             changed: tokio::sync::watch::channel(()).0,
         }
+    }
+    /// Read the registered Bot before any queued work is scheduled.
+    pub async fn load(&self) -> Result<(), StoreError> {
+        let record = self.read::<Record>(RECORD_KEY).await?.1;
+        self.set_current(record.map(|record| record.session_id));
+        Ok(())
     }
     pub fn bind(&self, owner: &Arc<Owner>) {
         self.owner
@@ -114,6 +130,16 @@ impl Bot {
     }
     pub async fn finish(&self) -> Result<(), String> {
         self.storage.finish().await
+    }
+    /// The single decision of whether a Session is the Bot.
+    pub(super) fn is(&self, session: &str) -> bool {
+        self.current.read().expect("bot identity").as_deref() == Some(session)
+    }
+    fn set_current(&self, session: Option<String>) {
+        *self.current.write().expect("bot identity") = session;
+    }
+    pub(super) fn session(&self) -> Option<String> {
+        self.current.read().expect("bot identity").clone()
     }
     pub fn tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
         vec![ToolRegistration {
@@ -146,33 +172,23 @@ impl Bot {
         };
         Ok((revision, value))
     }
-    async fn write<T: Serialize>(
-        &self,
-        key: &str,
+    fn mutation<T: Serialize>(
+        key: String,
         expected: Option<u64>,
         value: &T,
-    ) -> Result<(), StoreError> {
-        self.storage
-            .batch(vec![Mutation {
-                key: key.into(),
-                expected_revision: expected,
-                data: Data::Present(
-                    serde_json::to_value(value)
-                        .map_err(|error| StoreError::Unavailable(error.to_string()))?,
-                ),
-            }])
-            .await?;
-        Ok(())
+    ) -> Result<Mutation, StoreError> {
+        Ok(Mutation {
+            key,
+            expected_revision: expected,
+            data: Data::Present(
+                serde_json::to_value(value)
+                    .map_err(|error| StoreError::Unavailable(error.to_string()))?,
+            ),
+        })
     }
-    pub(super) async fn session(&self) -> Result<Option<String>, StoreError> {
-        Ok(self
-            .read::<Record>(RECORD_KEY)
-            .await?
-            .1
-            .map(|record| record.session_id))
-    }
-    /// Append one `SendUser` call. A retried call with the same id and content is a
-    /// duplicate; the same id with different content is rejected.
+    /// Append one `SendUser` call atomically: its call record, its messages and the
+    /// advanced head commit together. A retried call with the same id and content is
+    /// a duplicate; the same id with different content is refused.
     pub(super) async fn append(
         &self,
         session: &str,
@@ -181,20 +197,14 @@ impl Bot {
         texts: &[String],
         at: i64,
     ) -> Result<Appended, ToolError> {
-        for _ in 0..8 {
-            let (revision, outbox) = self.read::<Outbox>(OUTBOX_KEY).await.map_err(storage)?;
-            let mut outbox = outbox.unwrap_or_default();
-            if outbox.session_id.as_deref().is_some_and(|id| id != session) {
-                // A replaced Bot Session starts a fresh outbox.
-                outbox = Outbox::default();
-            }
-            if let Some(call) = outbox
-                .calls
-                .iter()
-                .find(|call| call.message_id == message_id)
+        loop {
+            if let (_, Some(call)) = self
+                .read::<Call>(&call_key(session, message_id))
+                .await
+                .map_err(storage)?
             {
-                return if call.fingerprint == fingerprint {
-                    Ok(Appended::Duplicate(call.messages.len()))
+                return if call.message_id == message_id && call.fingerprint == fingerprint {
+                    Ok(Appended::Duplicate(call.count))
                 } else {
                     Err(ToolError::Failed(
                         "messageId was already used with different content; choose a new messageId"
@@ -202,38 +212,102 @@ impl Bot {
                     ))
                 };
             }
-            let messages = texts
-                .iter()
-                .enumerate()
-                .map(|(index, text)| BotMessage {
-                    sequence: outbox.through + index as u64 + 1,
-                    message_id: message_id.into(),
-                    index: index as u32,
-                    text: text.clone(),
-                    at,
-                })
-                .collect::<Vec<_>>();
-            outbox.through += messages.len() as u64;
-            outbox.session_id = Some(session.into());
-            outbox.calls.push(Call {
-                message_id: message_id.into(),
-                fingerprint: fingerprint.into(),
-                messages,
-            });
-            let excess = outbox.calls.len().saturating_sub(RETAINED_CALLS);
-            outbox.calls.drain(..excess);
-            match self.write(OUTBOX_KEY, revision, &outbox).await {
-                Ok(()) => {
+            let (revision, head) = self
+                .read::<Head>(&head_key(session))
+                .await
+                .map_err(storage)?;
+            let through = head.unwrap_or_default().through;
+            let count = texts.len() as u64;
+            let mut mutations = vec![
+                Self::mutation(
+                    head_key(session),
+                    revision,
+                    &Head {
+                        through: through + count,
+                    },
+                )
+                .map_err(storage)?,
+                Self::mutation(
+                    call_key(session, message_id),
+                    None,
+                    &Call {
+                        message_id: message_id.into(),
+                        fingerprint: fingerprint.into(),
+                        first: through + 1,
+                        count,
+                    },
+                )
+                .map_err(storage)?,
+            ];
+            for (index, text) in texts.iter().enumerate() {
+                let sequence = through + index as u64 + 1;
+                mutations.push(
+                    Self::mutation(
+                        message_key(session, sequence),
+                        None,
+                        &BotMessage {
+                            sequence,
+                            message_id: message_id.into(),
+                            index: index as u32,
+                            text: text.clone(),
+                            at,
+                        },
+                    )
+                    .map_err(storage)?,
+                );
+            }
+            match self.storage.batch(mutations).await {
+                Ok(_) => {
                     self.changed.send_replace(());
-                    return Ok(Appended::Recorded(texts.len()));
+                    return Ok(Appended::Recorded(count));
                 }
+                // Another call advanced the head or recorded this id; read again.
                 Err(StoreError::Conflict { .. }) => continue,
                 Err(error) => return Err(storage(error)),
             }
         }
-        Err(ToolError::Failed(
-            "outbox is busy; retry with the same messageId".into(),
-        ))
+    }
+    async fn page(
+        &self,
+        session: &str,
+        after: u64,
+    ) -> Result<(u64, Vec<BotMessage>, bool), StoreError> {
+        let through = self
+            .read::<Head>(&head_key(session))
+            .await?
+            .1
+            .unwrap_or_default()
+            .through;
+        let prefix = messages_prefix(session);
+        let mut cursor = (after > 0).then(|| message_key(session, after));
+        let mut messages = Vec::new();
+        loop {
+            let page = self
+                .storage
+                .scan(Scan {
+                    prefix: prefix.clone(),
+                    after: cursor.clone(),
+                })
+                .await?;
+            for entry in page.entries {
+                if let Some(value) = entry.record.data.value() {
+                    messages.push(
+                        serde_json::from_value::<BotMessage>(value.clone())
+                            .map_err(|error| StoreError::Unavailable(error.to_string()))?,
+                    );
+                }
+                if messages.len() > PAGE {
+                    break;
+                }
+            }
+            if messages.len() > PAGE || page.next_after.is_none() {
+                break;
+            }
+            cursor = page.next_after;
+        }
+        let more = messages.len() > PAGE;
+        messages.truncate(PAGE);
+        Ok((through, messages, more))
     }
 }
 
@@ -241,10 +315,10 @@ impl Bot {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SendUserInput {
     /// Idempotency key you choose for this call; reuse it only to retry the same content.
-    #[schemars(length(min = 1, max = 200))]
+    #[schemars(length(min = 1))]
     message_id: String,
     /// One or more messages, shown to the user in order.
-    #[schemars(length(min = 1, max = 100))]
+    #[schemars(length(min = 1))]
     messages: Vec<SendUserMessage>,
 }
 #[derive(Deserialize, Serialize, schemars::JsonSchema)]
@@ -277,11 +351,11 @@ impl ToolPreparer for Bot {
             let owner = owner.ok_or(ToolRejection::Unavailable)?;
             let input: SendUserInput = serde_json::from_value(input).map_err(invalid)?;
             let message_id = input.message_id.trim().to_owned();
-            if message_id.is_empty() || message_id.chars().count() > MAX_MESSAGE_ID {
-                return Err(invalid("messageId must contain 1 to 200 characters"));
+            if message_id.is_empty() {
+                return Err(invalid("messageId must not be empty"));
             }
-            if input.messages.is_empty() || input.messages.len() > MAX_MESSAGES {
-                return Err(invalid("messages must contain 1 to 100 items"));
+            if input.messages.is_empty() {
+                return Err(invalid("messages must not be empty"));
             }
             if input
                 .messages
@@ -290,14 +364,6 @@ impl ToolPreparer for Bot {
             {
                 return Err(invalid("every message needs non-empty text"));
             }
-            let total: usize = input
-                .messages
-                .iter()
-                .map(|message| message.text.chars().count())
-                .sum();
-            if total > MAX_CHARACTERS {
-                return Err(invalid("messages exceed 48000 characters in total"));
-            }
             let texts: Vec<String> = input
                 .messages
                 .into_iter()
@@ -305,6 +371,7 @@ impl ToolPreparer for Bot {
                 .collect();
             let fingerprint =
                 hex::encode(Sha256::digest(serde_json::to_vec(&texts).map_err(invalid)?));
+            // Checked here and again at execution: state can change in between.
             owner
                 .check_bot_invocation(&context)
                 .await
@@ -364,17 +431,9 @@ impl ToolPreparer for Bot {
 impl Owner {
     async fn check_bot_invocation(&self, context: &ToolCallContext) -> Result<(), String> {
         let session_id = &context.invocation.session_id;
-        let session = self.session(session_id).await?;
         if !self.settings.bot
-            || session.archived
-            || !is_bot(session.configuration.tools.as_deref())
-            || self
-                .bot
-                .session()
-                .await
-                .map_err(|error| error.to_string())?
-                .as_deref()
-                != Some(session_id.as_str())
+            || !self.bot.is(session_id)
+            || self.session(session_id).await?.archived
         {
             return Err("bot_unavailable".into());
         }
@@ -399,7 +458,8 @@ impl Owner {
         Ok(())
     }
     /// Return the installation's Bot Session, creating it on first use or after the
-    /// previous one was archived.
+    /// previous one was archived. The record is claimed before the Session is
+    /// created, so concurrent and retried opens converge on one Session.
     pub async fn open_bot(
         self: &Arc<Self>,
         input: BotOpen,
@@ -411,21 +471,47 @@ impl Owner {
                 reason: BotRejection::Disabled,
             });
         }
-        let (revision, record) = self
-            .bot
-            .read::<Record>(RECORD_KEY)
-            .await
-            .map_err(|error| error.to_string())?;
-        if let Some(record) = &record
-            && let Ok(session) = self.session(&record.session_id).await
-            && !session.archived
-        {
-            return Ok(BotOpened::Opened {
-                session_id: record.session_id.clone(),
-                created: false,
-            });
+        let mine = self.operation_id(operation);
+        let mut waits = 0;
+        loop {
+            let (revision, record) = self
+                .bot
+                .read::<Record>(RECORD_KEY)
+                .await
+                .map_err(|error| error.to_string())?;
+            if let Some(record) = &record {
+                if record.session_id == mine {
+                    // Our claim: a retry of this operation resumes its creation.
+                    self.bot.set_current(Some(mine.clone()));
+                    break;
+                }
+                match self.session(&record.session_id).await {
+                    Ok(session) if !session.archived => {
+                        self.bot.set_current(Some(record.session_id.clone()));
+                        return Ok(BotOpened::Opened {
+                            session_id: record.session_id.clone(),
+                            created: false,
+                        });
+                    }
+                    Ok(_) => {}
+                    Err(error) if error == "agent_session_unavailable" => {
+                        // Another open has claimed but not yet created its Session.
+                        if waits < CLAIM_WAITS {
+                            waits += 1;
+                            tokio::time::sleep(CLAIM_WAIT).await;
+                            continue;
+                        }
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            match self.storage_claim(revision, &mine).await {
+                Ok(()) => break,
+                Err(StoreError::Conflict { .. }) => continue,
+                Err(error) => return Err(error.to_string()),
+            }
         }
-        let tools: Vec<String> = ALLOWED_TOOLS
+        let tools: Vec<String> = COORDINATION_TOOLS
             .iter()
             .filter(|name| self.tools.contains(name))
             .map(|name| (*name).to_owned())
@@ -440,86 +526,84 @@ impl Owner {
         let operation = operation.clone();
         let created = self
             .resource_work(scope, move |owner, scope| {
-                Box::pin(async move { owner.create_inner(create, &operation, &scope, true).await })
+                Box::pin(async move { owner.create_inner(create, &operation, &scope).await })
             })
             .await?;
-        let session_id = match created {
-            Created::Created { session } => session.id,
-            Created::Rejected { .. } => {
-                return Ok(BotOpened::Rejected {
-                    reason: BotRejection::CreationRejected,
-                });
+        match created {
+            Created::Created { session } => {
+                self.bot.changed.send_replace(());
+                Ok(BotOpened::Opened {
+                    session_id: session.id,
+                    created: true,
+                })
             }
-        };
-        match self
-            .bot
-            .write(
-                RECORD_KEY,
+            Created::Rejected { .. } => {
+                self.release_claim(&mine).await?;
+                Ok(BotOpened::Rejected {
+                    reason: BotRejection::CreationRejected,
+                })
+            }
+        }
+    }
+    async fn storage_claim(&self, revision: Option<u64>, mine: &str) -> Result<(), StoreError> {
+        self.bot
+            .storage
+            .batch(vec![Bot::mutation(
+                RECORD_KEY.into(),
                 revision,
                 &Record {
-                    session_id: session_id.clone(),
+                    session_id: mine.into(),
                 },
-            )
+            )?])
+            .await?;
+        self.bot.set_current(Some(mine.into()));
+        Ok(())
+    }
+    async fn release_claim(&self, mine: &str) -> Result<(), String> {
+        let (revision, record) = self
+            .bot
+            .read::<Record>(RECORD_KEY)
             .await
-        {
-            Ok(()) => {}
-            Err(StoreError::Conflict { .. }) => {
-                // A concurrent open won; return its Session.
-                if let Some(existing) = self
-                    .bot
-                    .session()
-                    .await
-                    .map_err(|error| error.to_string())?
-                {
-                    return Ok(BotOpened::Opened {
-                        session_id: existing,
-                        created: false,
-                    });
-                }
-                return Err("bot_record_conflict".into());
+            .map_err(|error| error.to_string())?;
+        if record.is_some_and(|record| record.session_id == mine) {
+            match self
+                .bot
+                .storage
+                .batch(vec![Mutation {
+                    key: RECORD_KEY.into(),
+                    expected_revision: revision,
+                    data: Data::Deleted,
+                }])
+                .await
+            {
+                Ok(_) | Err(StoreError::Conflict { .. }) => {}
+                Err(error) => return Err(error.to_string()),
             }
-            Err(error) => return Err(error.to_string()),
         }
-        self.bot.changed.send_replace(());
-        Ok(BotOpened::Opened {
-            session_id,
-            created: true,
-        })
+        self.bot.load().await.map_err(|error| error.to_string())
     }
     pub fn bot_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.bot.changed.subscribe()
     }
     pub async fn bot_outbox(&self, input: &BotOutboxRead) -> Result<BotOutbox, String> {
-        let session_id = self
-            .bot
-            .session()
-            .await
-            .map_err(|error| error.to_string())?;
-        let outbox = self
-            .bot
-            .read::<Outbox>(OUTBOX_KEY)
-            .await
-            .map_err(|error| error.to_string())?
-            .1
-            .filter(|outbox| outbox.session_id == session_id)
-            .unwrap_or_default();
-        let mut messages: Vec<BotMessage> = outbox
-            .calls
-            .into_iter()
-            .flat_map(|call| call.messages)
-            .filter(|message| message.sequence > input.after)
-            .collect();
-        messages.sort_by_key(|message| message.sequence);
-        let truncated = messages.len() > PAGE;
-        if truncated {
-            messages.drain(..messages.len() - PAGE);
-        }
+        let session_id = self.bot.session();
+        let (through, messages, more) = match &session_id {
+            Some(session) => self
+                .bot
+                .page(session, input.after)
+                .await
+                .map_err(|error| error.to_string())?,
+            None => (0, vec![], false),
+        };
+        let next_after = more
+            .then(|| messages.last().map(|message| message.sequence))
+            .flatten();
         Ok(BotOutbox {
             enabled: self.settings.bot,
             session_id,
-            through: outbox.through,
+            through,
             messages,
-            truncated,
+            next_after,
         })
     }
 }

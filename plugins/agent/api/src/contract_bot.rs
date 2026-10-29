@@ -65,8 +65,7 @@ pub enum BotRejection {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentBotOutboxRead")]
 pub struct BotOutboxRead {
-    /// Return messages with a sequence greater than this value. When more than
-    /// 100 match, the newest 100 are returned and `truncated` is set.
+    /// Return messages with a sequence greater than this cursor, oldest first.
     #[serde(default)]
     pub after: u64,
 }
@@ -97,6 +96,6 @@ pub struct BotOutbox {
     pub through: u64,
     #[schemars(length(max = 100))]
     pub messages: Vec<BotMessage>,
-    /// True when older matching messages were omitted to stay within 100.
-    pub truncated: bool,
+    /// Pass as `after` to read the next page; absent when caught up.
+    pub next_after: Option<u64>,
 }

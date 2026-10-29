@@ -48,6 +48,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       'browse',
       'sessions',
       'new',
+      'bot',
       'workspace',
       'models',
       'settings',

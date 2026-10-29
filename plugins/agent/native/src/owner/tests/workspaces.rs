@@ -75,7 +75,6 @@ async fn blocked_creation_allows_other_sessions_and_precedes_close() {
         serde_json::from_value(input).unwrap(),
         prepared.reference(),
         &scope,
-        false,
     ));
     assert!(poll!(blocked.as_mut()).is_pending());
 

@@ -242,7 +242,7 @@ export const contracts = {
             properties: {
               after: {
                 description:
-                  'Return messages with a sequence greater than this value. When more than\n100 match, the newest 100 are returned and `truncated` is set.',
+                  'Return messages with a sequence greater than this cursor, oldest first.',
                 type: 'integer',
                 format: 'uint64',
                 minimum: 0,
@@ -275,13 +275,15 @@ export const contracts = {
                 },
                 maxItems: 100,
               },
-              truncated: {
-                description: 'True when older matching messages were omitted to stay within 100.',
-                type: 'boolean',
+              nextAfter: {
+                description: 'Pass as `after` to read the next page; absent when caught up.',
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
               },
             },
             additionalProperties: false,
-            required: ['enabled', 'through', 'messages', 'truncated'],
+            required: ['enabled', 'through', 'messages'],
             $defs: {
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',
@@ -22622,7 +22624,7 @@ export const contracts = {
             properties: {
               after: {
                 description:
-                  'Return messages with a sequence greater than this value. When more than\n100 match, the newest 100 are returned and `truncated` is set.',
+                  'Return messages with a sequence greater than this cursor, oldest first.',
                 type: 'integer',
                 format: 'uint64',
                 minimum: 0,
@@ -22655,13 +22657,15 @@ export const contracts = {
                 },
                 maxItems: 100,
               },
-              truncated: {
-                description: 'True when older matching messages were omitted to stay within 100.',
-                type: 'boolean',
+              nextAfter: {
+                description: 'Pass as `after` to read the next page; absent when caught up.',
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
               },
             },
             additionalProperties: false,
-            required: ['enabled', 'through', 'messages', 'truncated'],
+            required: ['enabled', 'through', 'messages'],
             $defs: {
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',

@@ -303,8 +303,7 @@ export interface ServiceMethods {
       mode: 'query';
       input: {
         /**
-         * Return messages with a sequence greater than this value. When more than
-         * 100 match, the newest 100 are returned and `truncated` is set.
+         * Return messages with a sequence greater than this cursor, oldest first.
          */
         after?: number;
       };
@@ -320,9 +319,9 @@ export interface ServiceMethods {
          */
         messages: AgentBotOutboxOutput_AgentBotMessage[];
         /**
-         * True when older matching messages were omitted to stay within 100.
+         * Pass as `after` to read the next page; absent when caught up.
          */
-        truncated: boolean;
+        nextAfter?: number | null;
       };
     };
     catalog: {
@@ -785,8 +784,7 @@ export interface ServiceMethods {
       mode: 'subscription';
       input: {
         /**
-         * Return messages with a sequence greater than this value. When more than
-         * 100 match, the newest 100 are returned and `truncated` is set.
+         * Return messages with a sequence greater than this cursor, oldest first.
          */
         after?: number;
       };
@@ -802,9 +800,9 @@ export interface ServiceMethods {
          */
         messages: AgentWatchBotOutboxOutput_AgentBotMessage[];
         /**
-         * True when older matching messages were omitted to stay within 100.
+         * Pass as `after` to read the next page; absent when caught up.
          */
-        truncated: boolean;
+        nextAfter?: number | null;
       };
     };
     watchChecklist: {

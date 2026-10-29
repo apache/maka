@@ -1469,7 +1469,12 @@ function projectComposerSession(
         host.subscribe('agent', 'watchChecklist', { sessionId: owner.sessionId, offset }),
     },
     bot: {
-      watch: () => host.subscribe('agent', 'watchBotOutbox', { after: 0 }),
+      botSession: async () =>
+        (await host.query('agent', 'botOutbox', { after: Number.MAX_SAFE_INTEGER })).sessionId ??
+        null,
+      // The watch is a change signal only; its cursor skips the message pages.
+      watch: () => host.subscribe('agent', 'watchBotOutbox', { after: Number.MAX_SAFE_INTEGER }),
+      read: (after) => host.query('agent', 'botOutbox', { after }),
     },
     queue: {
       sessionId: owner.queue.sessionId,

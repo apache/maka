@@ -99,52 +99,136 @@ async fn bot_mode_is_off_by_default() {
     .unwrap();
 }
 
+async fn sees_send_user(f: &Fixture, listener: &TcpListener, session: &str) -> bool {
+    f.send(session).await.unwrap();
+    let (mut socket, _) = listener.accept().await.unwrap();
+    let sent = request(&mut socket).await;
+    response(&mut socket).await;
+    idle(f, session).await;
+    tool_names(&sent).contains(&"SendUser".to_owned())
+}
+
 #[tokio::test]
-async fn only_the_single_bot_session_holds_send_user() {
-    tokio::time::timeout(Duration::from_secs(60), async {
+async fn bot_identity_alone_grants_send_user() {
+    tokio::time::timeout(Duration::from_secs(90), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
         let opened = open(&f).await;
         assert_eq!(opened["kind"], "opened");
         assert_eq!(opened["created"], true);
         let bot = opened["sessionId"].as_str().unwrap().to_owned();
-        let again = open(&f).await;
-        assert_eq!(again, json!({"kind":"opened","sessionId":bot,"created":false}));
+        assert_eq!(open(&f).await, json!({"kind":"opened","sessionId":bot,"created":false}));
 
-        // The Bot's allow-list is the coordination subset plus SendUser, nothing else.
+        // The Bot's tool list is coordination only; SendUser is granted by identity.
         let tools = f.owner.session(&bot).await.unwrap().configuration.tools.unwrap();
-        assert!(tools.iter().any(|name| name == "SendUser"));
-        assert!(tools.iter().all(|name| crate::owner::bot::ALLOWED_TOOLS.contains(&name.as_str())), "{tools:?}");
+        assert!(!tools.iter().any(|name| name == "SendUser"), "{tools:?}");
+        assert!(tools.iter().all(|name| crate::owner::bot::COORDINATION_TOOLS.contains(&name.as_str())), "{tools:?}");
+        assert!(sees_send_user(&f, &listener, &bot).await);
 
         // Ordinary creation cannot request SendUser.
         let mut input = f.create_input("Impostor").await;
         input["tools"] = json!(["SendUser"]);
-        let rejected = f.mutation(2, "create", input, Uuid::new_v4()).await.unwrap();
-        assert_eq!(rejected["kind"], "rejected", "{rejected}");
+        assert_eq!(f.mutation(2, "create", input, Uuid::new_v4()).await.unwrap()["kind"], "rejected");
 
-        // A Session derived from the Bot does not inherit its voice.
+        // Ordinary, derived and forked Sessions are not the Bot.
+        let ordinary = f.create("Ordinary").await;
+        assert!(!sees_send_user(&f, &listener, &ordinary).await);
         let derived = f
             .mutation(2, "create", json!({"title":"Derived","labels":[],"workspace":{"kind":"session","sessionId":bot}}), Uuid::new_v4())
             .await
-            .unwrap();
-        let derived = derived["session"]["id"].as_str().unwrap().to_owned();
-        let inherited = f.owner.session(&derived).await.unwrap().configuration.tools.unwrap();
-        assert!(!inherited.iter().any(|name| name == "SendUser"), "{inherited:?}");
-
-        // The model sees SendUser only in the Bot Session.
-        let ordinary = f.create("Ordinary").await;
-        f.send(&ordinary).await.unwrap();
+            .unwrap()["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(!f.owner.bot.is(&derived));
+        assert!(!sees_send_user(&f, &listener, &derived).await);
+        let first = f.mutation(2, "send", json!({"sessionId":bot,"message":"a turn to fork","model":f.selection().await}), Uuid::new_v4()).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
-        let sent = request(&mut socket).await;
-        assert!(!tool_names(&sent).contains(&"SendUser".to_owned()));
-        response(&mut socket).await;
-        idle(&f, &ordinary).await;
-        f.send(&bot).await.unwrap();
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let sent = request(&mut socket).await;
-        assert!(tool_names(&sent).contains(&"SendUser".to_owned()), "{:?}", tool_names(&sent));
+        request(&mut socket).await;
         response(&mut socket).await;
         idle(&f, &bot).await;
+        let turn = f.session(&bot).await.invocation_boundary(&bot, first["invocationId"].as_str().unwrap())
+            .await.unwrap().unwrap().0.invocation.turn_id;
+        let revision = f.owner.session(&bot).await.unwrap().revision;
+        let forked = f
+            .mutation(2, "fork", json!({"sessionId":bot,"expectedRevision":revision,"position":{"kind":"through_turn","turnId":turn},"title":"Fork","labels":[]}), Uuid::new_v4())
+            .await
+            .unwrap();
+        assert_eq!(forked["kind"], "forked", "{forked}");
+        let forked = forked["session"]["id"].as_str().unwrap().to_owned();
+        assert!(!f.owner.bot.is(&forked));
+        assert!(!sees_send_user(&f, &listener, &forked).await);
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn bot_opened_from_a_restricted_session_still_speaks() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        let mut input = f.create_input("Restricted").await;
+        input["tools"] = json!(["todo_read"]);
+        let restricted = f
+            .mutation(2, "create", input, Uuid::new_v4())
+            .await
+            .unwrap()["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let opened = f
+            .mutation(
+                2,
+                "openBot",
+                json!({"workspace":{"kind":"session","sessionId":restricted}}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(opened["kind"], "opened", "{opened}");
+        let bot = opened["sessionId"].as_str().unwrap().to_owned();
+        assert!(sees_send_user(&f, &listener, &bot).await);
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_and_retried_first_opens_leave_one_bot_session() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        let workspace = f.create_input("Bot").await["workspace"].clone();
+        let retried = Uuid::new_v4();
+        let (a, b, c) = tokio::join!(
+            f.mutation(2, "openBot", json!({"workspace":workspace}), retried),
+            f.mutation(2, "openBot", json!({"workspace":workspace}), Uuid::new_v4()),
+            f.mutation(2, "openBot", json!({"workspace":workspace}), Uuid::new_v4()),
+        );
+        let (a, b, c) = (a.unwrap(), b.unwrap(), c.unwrap());
+        let bot = a["sessionId"].clone();
+        assert_eq!(b["sessionId"], bot, "{a} {b}");
+        assert_eq!(c["sessionId"], bot, "{a} {c}");
+        let created = [&a, &b, &c].iter().filter(|r| r["created"] == true).count();
+        assert_eq!(created, 1, "{a} {b} {c}");
+        // A retry of an operation returns the same Bot.
+        assert_eq!(
+            f.mutation(2, "openBot", json!({"workspace":workspace}), retried)
+                .await
+                .unwrap()["sessionId"],
+            bot
+        );
+        let listed = f
+            .query("list", json!({"filter":"all","position":{"kind":"start"}}))
+            .await
+            .unwrap();
+        let bots = listed.to_string().matches("\"title\":\"Bot\"").count();
+        assert_eq!(bots, 1, "{listed}");
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })
@@ -346,23 +430,47 @@ async fn input_while_the_bot_runs_is_queued_not_rejected() {
 }
 
 #[tokio::test]
-async fn bot_interval_wakes_have_a_minimum() {
+async fn outbox_keeps_every_call_and_pages_by_cursor() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
         let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
-        let ordinary = f.create("Ordinary").await;
-        let schedule = |session: String, every: u32| {
-            let f = &f;
-            async move {
-                let boundary = f.owner.session(&session).await.unwrap().configuration;
-                let task = json!({"task":{"title":"Heartbeat","intentBody":"Check in","schedule":{"kind":"interval","everySeconds":every,"startAt":now()+3_600_000},"effect":{"kind":"session","target":{"sessionId":session,"workspace":boundary.workspace,"permissions":boundary.permissions,"boundaryRevision":boundary.boundary_revision,"binding":boundary.binding},"model":f.selection().await,"thinkingLevel":null},"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"skip"});
-                f.mutation(2, "schedule", json!({"kind":"create","input":task}), Uuid::new_v4()).await.unwrap()
-            }
-        };
-        assert_eq!(schedule(bot.clone(), 60).await, json!({"kind":"rejected","reason":"scheduler_bot_interval_too_short"}));
-        assert_eq!(schedule(bot.clone(), 300).await["kind"], "committed");
-        assert_eq!(schedule(ordinary, 60).await["kind"], "committed");
+        f.send(&bot).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        // No count limit: one call records 150 messages.
+        let many: Vec<_> = (1..=150)
+            .map(|n| json!({"text":format!("message {n}")}))
+            .collect();
+        service_tools::named_tool_response(
+            &mut socket,
+            "SendUser",
+            json!({"messageId":"bulk","messages":many}),
+        )
+        .await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        service_tools::named_tool_response(
+            &mut socket,
+            "SendUser",
+            json!({"messageId":"bulk","messages":[{"text":"other"}]}),
+        )
+        .await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert!(last_tool_result(&sent).contains("different content"));
+        response(&mut socket).await;
+        idle(&f, &bot).await;
+
+        let first = f.query("botOutbox", json!({})).await.unwrap();
+        assert_eq!(first["through"], 150);
+        assert_eq!(first["messages"].as_array().unwrap().len(), 100);
+        assert_eq!(first["messages"][0]["sequence"], 1);
+        assert_eq!(first["nextAfter"], 100);
+        let second = f.query("botOutbox", json!({"after":100})).await.unwrap();
+        assert_eq!(second["messages"].as_array().unwrap().len(), 50);
+        assert_eq!(second["messages"][49]["text"], "message 150");
+        assert!(second["nextAfter"].is_null());
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })

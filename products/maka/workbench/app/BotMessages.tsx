@@ -31,10 +31,13 @@ import { Icon } from './Icon';
 type BotMessage = ComposerBotOutbox['messages'][number];
 /** Collapsed view keeps the conversation in focus and shows only the newest messages. */
 const LATEST = 3;
+/** Messages loaded when the panel opens, and the most it keeps in memory. */
+const WINDOW = 50;
+const KEPT = 200;
 
 /**
  * Messages the Bot deliberately sent with `SendUser`, shown above the composer of
- * the Bot Session only. Ordinary model output stays in the transcript.
+ * the Bot Session only. Other Sessions make one lookup and never subscribe.
  */
 export function BotMessages(props: { sessionId: string; source: ComposerBotSource }) {
   const messages = signal<BotMessage[]>([]);
@@ -42,14 +45,28 @@ export function BotMessages(props: { sessionId: string; source: ComposerBotSourc
   const error = createText();
   let alive = true;
   let stream: { close(): Promise<void> } | null = null;
+  let cursor: number | null = null;
   cleanup(() => {
     alive = false;
     const previous = stream;
     stream = null;
     if (previous) void previous.close().catch(() => {});
   });
+  const catchUp = async (through: number) => {
+    if (cursor === null) cursor = Math.max(0, through - WINDOW);
+    while (alive && cursor < through) {
+      const page = await props.source.read(cursor);
+      if (!alive || page.sessionId !== props.sessionId) return;
+      if (page.messages.length > 0) {
+        cursor = page.messages[page.messages.length - 1]!.sequence;
+        messages.set([...messages(), ...page.messages].slice(-KEPT));
+      }
+      if (page.nextAfter === null || page.nextAfter === undefined) return;
+    }
+  };
   void (async () => {
     try {
+      if ((await props.source.botSession()) !== props.sessionId || !alive) return;
       const opened = await props.source.watch();
       if (!alive) {
         await opened.close();
@@ -57,10 +74,10 @@ export function BotMessages(props: { sessionId: string; source: ComposerBotSourc
       }
       stream = opened;
       for (;;) {
-        const page: ComposerBotOutbox | null = await opened.next();
+        const head: ComposerBotOutbox | null = await opened.next();
         if (!alive) return;
-        if (page === null) throw new UiError('Bot updates ended. Reopen the conversation.');
-        messages.set(page.enabled && page.sessionId === props.sessionId ? page.messages : []);
+        if (head === null) throw new UiError('Bot updates ended. Reopen the conversation.');
+        if (head.enabled && head.sessionId === props.sessionId) await catchUp(head.through);
       }
     } catch (reason) {
       if (alive) error.set(errorText(reason));

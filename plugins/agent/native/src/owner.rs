@@ -387,6 +387,14 @@ impl Owner {
             additional.extend(todo.tools());
         }
         let bot = Arc::new(bot::Bot::new(persistence.store().clone(), prefix.clone()));
+        // Bot identity must be known before activation schedules queued work.
+        if let Err(error) = bot.load().await {
+            configuration
+                .shutdown()
+                .await
+                .map_err(|_| "agent_configuration_cleanup_unconfirmed")?;
+            return Err(format!("agent_bot_unavailable: {error}"));
+        }
         if settings.bot {
             additional.extend(bot.tools());
         }
@@ -659,7 +667,7 @@ impl Owner {
     ) -> Result<Created, String> {
         let operation = operation.clone();
         self.resource_work(scope, move |owner, scope| {
-            Box::pin(async move { owner.create_inner(input, &operation, &scope, false).await })
+            Box::pin(async move { owner.create_inner(input, &operation, &scope).await })
         })
         .await
     }
@@ -668,7 +676,6 @@ impl Owner {
         input: Create,
         operation: &maka_plugin_core::operation::RecoveryRef,
         scope: &maka_capabilities::call::Scope,
-        bot: bool,
     ) -> Result<Created, String> {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(Created::Rejected { reason });
@@ -681,8 +688,11 @@ impl Owner {
             });
         }
         let mut tools = input.tools;
-        // Only the Bot Session may hold SendUser; ordinary creation cannot request it.
-        if !bot && bot::is_bot(tools.as_deref()) {
+        // SendUser follows Bot identity, never a requested tool list.
+        if tools
+            .as_ref()
+            .is_some_and(|names| names.iter().any(|name| name == bot::SEND_USER))
+        {
             return Ok(Created::Rejected {
                 reason: Rejection::ToolsUnavailable,
             });
@@ -759,9 +769,7 @@ impl Owner {
                         reason: Rejection::WorkspaceUnavailable,
                     });
                 }
-                if let Some(mut parent) = session.configuration.tools {
-                    // A Session derived from the Bot never inherits its voice.
-                    parent.retain(|name| name != bot::SEND_USER);
+                if let Some(parent) = session.configuration.tools {
                     tools = Some(match tools {
                         None => parent,
                         Some(names) => names
@@ -979,6 +987,7 @@ impl Owner {
     }
     fn selected_tools(
         &self,
+        session: &str,
         basis: &MessageBasis,
         discovery: bool,
         editing: Option<maka_agent_facts::execution::EditingTools>,
@@ -990,18 +999,24 @@ impl Owner {
         } else {
             selected.excluding(crate::workhub::tasks::graph::NAMES)
         };
+        // SendUser is granted by Bot identity, independent of the tool list.
+        let bot = self.bot.is(session);
         let selected = match basis.allowed_tools.as_deref() {
-            // SendUser is granted only by the Bot Session's explicit allow-list.
-            None => selected.excluding(&[bot::SEND_USER]),
+            None => selected.clone(),
             Some(allowed) => {
                 let names = selected.names();
                 let excluded: Vec<_> = names
                     .iter()
-                    .filter(|name| !allowed.contains(name))
+                    .filter(|name| !allowed.contains(name) && !(bot && *name == bot::SEND_USER))
                     .map(String::as_str)
                     .collect();
                 selected.excluding(&excluded)
             }
+        };
+        let selected = if bot {
+            selected
+        } else {
+            selected.excluding(&[bot::SEND_USER])
         };
         let selected = match editing {
             None => selected,
@@ -1240,6 +1255,7 @@ impl Owner {
                     vec![]
                 } else {
                     self.selected_tools(
+                        &id,
                         &basis,
                         false,
                         basis.model.as_ref().and_then(|model| model.editing_tools),

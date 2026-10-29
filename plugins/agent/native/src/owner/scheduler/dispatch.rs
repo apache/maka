@@ -97,34 +97,12 @@ impl Owner {
                 thinking_level,
             } => (target, model, thinking_level),
         };
-        self.check_bot_cadence(plan, target).await?;
         Ok(Approval::Execution {
             basis: Box::new(
                 self.approve_background(target, model.clone(), *thinking, BackgroundKind::Schedule)
                     .await?,
             ),
         })
-    }
-    /// A Bot is woken by its schedules without a user present, so frequent interval
-    /// wakes would spend tokens and attention continuously. Cron and calendar
-    /// schedules already fire at most once per minute and are left to the user.
-    async fn check_bot_cadence(&self, plan: &Plan, target: &ScheduledTarget) -> Result<(), String> {
-        let maka_scheduler::schedule::Schedule::Interval { every_seconds, .. } = plan.task.schedule
-        else {
-            return Ok(());
-        };
-        if every_seconds >= crate::owner::bot::MIN_INTERVAL_SECONDS {
-            return Ok(());
-        }
-        let bot = self
-            .bot
-            .session()
-            .await
-            .map_err(|error| error.to_string())?;
-        if bot.as_deref() == Some(target.session_id.as_str()) {
-            return Err("scheduler_bot_interval_too_short".into());
-        }
-        Ok(())
     }
     pub(in crate::owner) async fn approve_background(
         &self,

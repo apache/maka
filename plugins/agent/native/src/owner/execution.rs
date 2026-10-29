@@ -377,6 +377,7 @@ impl Owner {
         // Replay the original prepared prompt. Native service tools continue to
         // resolve the live Session permission boundary through their actual owner.
         let tools = self.selected_tools(
+            &input.session_id,
             &basis,
             configuration.tool_discovery,
             configuration.editing_tools,
