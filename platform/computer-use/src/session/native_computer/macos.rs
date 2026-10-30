@@ -89,16 +89,36 @@ impl Session {
                 .map(str::to_owned)
                 .ok_or_else(|| failed(format!("{name} is required")))
         };
-        if matches!(operation, NativeComputerMethod::Click)
-            && input.get("element_index").is_none_or(Value::is_null)
+        if matches!(operation, NativeComputerMethod::Drag)
+            || (matches!(operation, NativeComputerMethod::Click)
+                && input.get("element_index").is_none_or(Value::is_null))
         {
-            let point = [
-                input::finite(input.get("x"), "x")?,
-                input::finite(input.get("y"), "y")?,
-            ];
-            let button = input::mac_mouse_button(&input["mouse_button"])?;
-            let count: i64 =
-                serde_json::from_value(input["click_count"].clone()).map_err(failed)?;
+            let (point, button, count, drag_target) =
+                if matches!(operation, NativeComputerMethod::Drag) {
+                    (
+                        [
+                            input::finite(input.get("from_x"), "from_x")?,
+                            input::finite(input.get("from_y"), "from_y")?,
+                        ],
+                        MouseButton::Left,
+                        1,
+                        Some([
+                            input::finite(input.get("to_x"), "to_x")?,
+                            input::finite(input.get("to_y"), "to_y")?,
+                        ]),
+                    )
+                } else {
+                    (
+                        [
+                            input::finite(input.get("x"), "x")?,
+                            input::finite(input.get("y"), "y")?,
+                        ],
+                        input::mac_mouse_button(&input["mouse_button"])?,
+                        serde_json::from_value::<i64>(input["click_count"].clone())
+                            .map_err(failed)?,
+                        None,
+                    )
+                };
             let key = self
                 .raw_mac_application(&approved, cancellation, language)
                 .await?;
@@ -145,6 +165,7 @@ impl Session {
                 controller,
                 epoch: self.epoch,
                 frame,
+                drag_target,
                 input: crate::macos::mouse::Input {
                     point,
                     button,

@@ -291,6 +291,12 @@ pub(super) async fn fence(
             .execute(&mut *connection)
             .await?;
     }
+    crate::native_approvals::revoke_for_session(
+        connection,
+        session,
+        crate::native_approvals::now_millis()?,
+    )
+    .await?;
     // Accepted queue identities and payload deletion share the lifecycle commit.
     sqlx::query(
         "INSERT INTO message_cancellations(session_id,message_id,cancellation_id)

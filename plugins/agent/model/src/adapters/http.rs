@@ -144,6 +144,7 @@ async fn run_inner(
     shared: Arc<Shared>,
     response_body: &mut Option<Arc<dyn http::Body>>,
 ) -> Result<(), ModelError> {
+    let quota_scope = error::QuotaScope::endpoint(&request.provider.base_url);
     let mut prepared = tokio::select! {
         biased;
         _ = context.cancellation.cancelled() => return Err(ModelError::Cancelled),
@@ -164,6 +165,7 @@ async fn run_inner(
             .remove("stream_options");
     }
     let mut events = events::Events::new(prepared.anthropic);
+    events.evidence.quota_scope = quota_scope;
     let mut retried = remembered;
     loop {
         let response = dispatch(
@@ -223,7 +225,7 @@ async fn run_inner(
                                 if failure.reason() == ProviderFailureReason::Network)) =>
                 {
                     return Err(events.evidence.provider(
-                        error::http_error(status, &[]),
+                        error::http_body_error(status, error),
                         prepared.anthropic,
                         retry_after,
                     ));
@@ -436,9 +438,9 @@ async fn read_body(
         .map_err(|error| match error {
             http::Error::Denied => ModelError::Cancelled,
             http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
-            http::Error::Failed(_) => ModelError::Provider(crate::ProviderFailure::new(
+            http::Error::Failed(message) => ModelError::Provider(crate::ProviderFailure::new(
                 ProviderFailureReason::Network,
-                "error body interrupted",
+                message,
                 true,
                 None,
             )),

@@ -158,6 +158,12 @@ async fn visit_pending(
             return Ok(count);
         }
         for id in &ids {
+            if scope.is_none() && closure.is_some() {
+                let preserved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_operations o JOIN native_approval_checkpoints c ON c.id=o.checkpoint_id WHERE o.interaction_id=? AND c.active=1)").bind(id).fetch_one(&mut *connection).await?;
+                if preserved {
+                    continue;
+                }
+            }
             let record = if closure.is_some() {
                 read_local(connection, id).await?
             } else {

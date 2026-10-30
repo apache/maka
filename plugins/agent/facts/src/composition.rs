@@ -104,3 +104,86 @@ impl FrozenComposition {
         &self.bytes
     }
 }
+
+/// Request evidence is inline until a successful canonical commit permits a reference.
+#[derive(Clone, Debug)]
+pub enum CompositionEvidence {
+    Inline(std::sync::Arc<FrozenComposition>),
+    Committed { event_id: String, digest: String },
+}
+
+impl From<std::sync::Arc<FrozenComposition>> for CompositionEvidence {
+    fn from(composition: std::sync::Arc<FrozenComposition>) -> Self {
+        Self::Inline(composition)
+    }
+}
+
+impl CompositionEvidence {
+    pub fn digest(&self) -> &str {
+        match self {
+            Self::Inline(composition) => composition.digest(),
+            Self::Committed { digest, .. } => digest,
+        }
+    }
+
+    /// Retire inline bytes only after the caller received a successful commit receipt.
+    pub fn committed(&mut self, event_id: String) {
+        if let Self::Inline(composition) = self {
+            *self = Self::Committed {
+                digest: composition.digest().to_owned(),
+                event_id,
+            };
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn committed_evidence_releases_inline_body_and_keeps_original_locator() {
+        let frozen = Arc::new(
+            RequestComposition {
+                system_prompt: Some("frozen system".into()),
+                dynamic_context: vec!["frozen context".into()],
+                tool_catalog_digest: content_digest(b"[]"),
+                tools: vec![],
+                provider_options: Some(serde_json::json!({"temperature": 0.25})),
+                max_output_tokens: Some(4096),
+                sources: vec![],
+            }
+            .freeze()
+            .unwrap(),
+        );
+        let digest = frozen.digest().to_owned();
+        let body = Arc::downgrade(&frozen);
+        let mut evidence = CompositionEvidence::from(frozen);
+        let submission = evidence.clone();
+        assert!(Arc::ptr_eq(
+            &body.upgrade().unwrap(),
+            match &submission {
+                CompositionEvidence::Inline(frozen) => frozen,
+                CompositionEvidence::Committed { .. } =>
+                    panic!("unconfirmed evidence must retain bytes"),
+            }
+        ));
+        drop(submission);
+        evidence.committed("original-request".into());
+        assert!(
+            body.upgrade().is_none(),
+            "confirmed evidence must release the body"
+        );
+        evidence.committed("retry-request".into());
+        let CompositionEvidence::Committed {
+            event_id,
+            digest: actual,
+        } = evidence
+        else {
+            panic!("confirmed evidence must use its canonical reference");
+        };
+        assert_eq!(event_id, "original-request");
+        assert_eq!(actual, digest);
+    }
+}

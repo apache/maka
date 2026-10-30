@@ -137,7 +137,6 @@ pub struct Transition {
     pub fragments: Vec<Fragment>,
     /// Indexed by invocation; used by continuation selection, before rendering.
     pub stable_cut: Option<RowPosition>,
-    pub checkpoint: Option<crate::context::ContextCheckpoint>,
     /// Storage versions the existing result row at its original order position.
     pub archive: Option<crate::archive::ArchivedPlaceholder>,
 }
@@ -310,7 +309,6 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                 frontier.stable(&mut out, position(stored.sequence, END_INDEX));
             }
         }
-        Fact::ContextCheckpointRecorded { checkpoint } => out.checkpoint = Some(checkpoint.clone()),
         Fact::ToolResultArchived { placeholder } => out.archive = Some(placeholder.clone()),
         _ if matches!(frontier.opening, Some(OpeningKind::Compact)) => {}
         Fact::MessageImported { record, .. } if record.is_conversation() => {

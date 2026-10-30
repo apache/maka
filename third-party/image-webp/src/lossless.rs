@@ -67,6 +67,7 @@ pub(crate) struct LosslessDecoder<R> {
     transform_order: Vec<u8>,
     width: u16,
     height: u16,
+    huffman_budget: usize,
 }
 
 impl<R: BufRead> LosslessDecoder<R> {
@@ -78,7 +79,21 @@ impl<R: BufRead> LosslessDecoder<R> {
             transform_order: Vec::new(),
             width: 0,
             height: 0,
+            huffman_budget: usize::MAX,
         }
+    }
+
+    pub(crate) fn with_huffman_limit(mut self, bytes: usize) -> Self {
+        self.huffman_budget = bytes;
+        self
+    }
+
+    fn reserve_huffman(&mut self, bytes: usize) -> Result<(), DecodingError> {
+        self.huffman_budget = self
+            .huffman_budget
+            .checked_sub(bytes)
+            .ok_or(DecodingError::MemoryLimitExceeded)?;
+        Ok(())
     }
 
     /// Decodes a frame.
@@ -328,6 +343,11 @@ impl<R: BufRead> LosslessDecoder<R> {
         let mut hufftree_groups = Vec::new();
 
         for _i in 0..num_huff_groups {
+            // Vec growth can retain up to twice the completed group count.
+            self.reserve_huffman(2 * mem::size_of::<HuffmanCodeGroup>())?;
+            hufftree_groups
+                .try_reserve_exact(1)
+                .map_err(|_| DecodingError::MemoryLimitExceeded)?;
             let mut group: HuffmanCodeGroup = Default::default();
             for j in 0..HUFFMAN_CODES_PER_META_CODE {
                 let mut alphabet_size = ALPHABET_SIZE[j];
@@ -337,7 +357,14 @@ impl<R: BufRead> LosslessDecoder<R> {
                     }
                 }
 
+                // The alphabet is at most 2328 symbols. Even with Vec growth,
+                // binary nodes, the 1024-entry lookup table and code-length scratch
+                // fit in 256 KiB. Check before constructing an input-driven tree.
+                if self.huffman_budget < 256 * 1024 {
+                    return Err(DecodingError::MemoryLimitExceeded);
+                }
                 let tree = self.read_huffman_code(alphabet_size)?;
+                self.reserve_huffman(tree.allocated_bytes())?;
                 group[j] = tree;
             }
             hufftree_groups.push(group);

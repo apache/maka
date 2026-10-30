@@ -18,7 +18,7 @@
  */
 
 use crate::{EventLog, StoreError};
-use maka_agent_facts::composition::RequestComposition;
+use maka_agent_facts::composition::{CompositionEvidence, RequestComposition};
 use maka_agent_facts::event::EventWrite;
 use sqlx::SqliteConnection;
 
@@ -60,8 +60,15 @@ pub(crate) async fn insert(
     let Some(surface) = write.composition() else {
         return Ok(());
     };
-    sqlx::query("INSERT INTO request_compositions (digest, surface) VALUES (?, ?) ON CONFLICT(digest) DO NOTHING")
-        .bind(surface.digest()).bind(surface.bytes()).execute(&mut *connection).await?;
+    match surface {
+        CompositionEvidence::Inline(surface) => {
+            sqlx::query("INSERT INTO request_compositions (digest, surface) VALUES (?, ?) ON CONFLICT(digest) DO NOTHING")
+                .bind(surface.digest()).bind(surface.bytes()).execute(&mut *connection).await?;
+        }
+        CompositionEvidence::Committed { event_id, digest } => {
+            validate_reference(connection, write.event(), event_id, digest).await?;
+        }
+    }
     sqlx::query("INSERT INTO model_request_compositions (event_id, digest) VALUES (?, ?)")
         .bind(&write.event().id)
         .bind(surface.digest())
@@ -104,18 +111,59 @@ pub(crate) async fn verify_replay(
     connection: &mut SqliteConnection,
     write: &EventWrite,
 ) -> Result<(), StoreError> {
-    let stored: Option<(String, Vec<u8>)> = sqlx::query_as(
-        "SELECT digest, surface FROM request_compositions JOIN model_request_compositions USING(digest) WHERE event_id = ?"
-    ).bind(&write.event().id).fetch_optional(connection).await?;
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT digest FROM model_request_compositions WHERE event_id = ?")
+            .bind(&write.event().id)
+            .fetch_optional(&mut *connection)
+            .await?;
     match (stored, write.composition()) {
         (None, None) => Ok(()),
-        (Some((digest, bytes)), Some(surface))
-            if digest == surface.digest() && bytes == surface.bytes() =>
-        {
-            Ok(())
-        }
+        (Some(digest), Some(surface)) if digest == surface.digest() => match surface {
+            CompositionEvidence::Inline(surface) => {
+                let bytes: Vec<u8> =
+                    sqlx::query_scalar("SELECT surface FROM request_compositions WHERE digest = ?")
+                        .bind(digest)
+                        .fetch_one(connection)
+                        .await?;
+                if bytes == surface.bytes() {
+                    Ok(())
+                } else {
+                    Err(StoreError::EventConflict)
+                }
+            }
+            CompositionEvidence::Committed { event_id, digest } => {
+                validate_reference(connection, write.event(), event_id, digest).await
+            }
+        },
         _ => Err(StoreError::EventConflict),
     }
+}
+
+// Resolve the original binding rather than accepting a digest from another owner.
+// Session retirement removes these bindings, so a collected locator cannot revive bytes.
+async fn validate_reference(
+    connection: &mut SqliteConnection,
+    event: &maka_agent_facts::event::RuntimeEvent,
+    event_id: &str,
+    digest: &str,
+) -> Result<(), StoreError> {
+    let stored: Option<String> = sqlx::query_scalar(
+        "SELECT c.digest FROM model_request_compositions c
+         JOIN runtime_events r ON r.event_id=c.event_id
+         WHERE c.event_id=?1 AND r.invocation_id=?2
+           AND json_extract(r.event_json,'$.invocation.session_id')=?3",
+    )
+    .bind(event_id)
+    .bind(&event.invocation.invocation_id)
+    .bind(&event.invocation.session_id)
+    .fetch_optional(connection)
+    .await?;
+    if stored.as_deref() != Some(digest) {
+        return Err(StoreError::InvalidTransition(
+            "committed request composition reference is unavailable or differs".into(),
+        ));
+    }
+    Ok(())
 }
 
 impl EventLog {

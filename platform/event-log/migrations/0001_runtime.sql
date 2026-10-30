@@ -594,30 +594,6 @@ CREATE TABLE context_semantic_cuts (
     PRIMARY KEY(owner_session_id,invocation_id,revision)
 ) WITHOUT ROWID;
 
-CREATE TABLE context_semantic_checkpoints (
-    session_id TEXT NOT NULL,
-    sequence INTEGER NOT NULL,
-    event_id TEXT NOT NULL,
-    invocation_id TEXT NOT NULL,
-    checkpoint_json TEXT NOT NULL,
-    PRIMARY KEY(session_id,sequence)
-) WITHOUT ROWID;
-
-CREATE TABLE context_semantic_changes (
-    change_id INTEGER PRIMARY KEY,
-    owner_session_id TEXT NOT NULL,
-    revision INTEGER NOT NULL,
-    source_sequence INTEGER NOT NULL,
-    source_index INTEGER NOT NULL,
-    order_sequence INTEGER NOT NULL,
-    order_index INTEGER NOT NULL,
-    invocation_id TEXT NOT NULL,
-    revision_invocation TEXT NOT NULL,
-    archived INTEGER NOT NULL,
-    inherited INTEGER NOT NULL,
-    deleted INTEGER NOT NULL
-);
-
 CREATE TABLE context_obligations (
     session_id TEXT NOT NULL,
     invocation_id TEXT NOT NULL,
@@ -1000,8 +976,6 @@ CREATE INDEX context_semantic_notifications ON context_semantic_rows(owner_sessi
 
 
 CREATE INDEX context_semantic_cut_revision ON context_semantic_cuts(owner_session_id,revision);
-
-CREATE INDEX context_semantic_change_revision ON context_semantic_changes(owner_session_id,revision,change_id);
 
 CREATE INDEX context_obligations_session ON context_obligations(session_id, kind, invocation_id);
 

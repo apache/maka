@@ -1479,6 +1479,10 @@ export interface SettingsUpdateInput_ModelOverride {
   defaultThinkingLevel?: SettingsUpdateInput_ThinkingLevel;
   vision?: boolean;
   /**
+   * Explicit route image declarations; replaces catalog image constraints.
+   */
+  imageInput?: SettingsUpdateInput_ImageInput | null;
+  /**
    * Override total input-plus-output capacity, without subtracting a reply budget.
    */
   contextWindow?: number;
@@ -1506,6 +1510,23 @@ export interface SettingsUpdateInput_ModelOverride {
 export interface SettingsUpdateInput_CatalogModelReference {
   provider: string;
   modelId: string;
+}
+/**
+ * Route declarations for image input; absent fields remain unknown.
+ */
+export interface SettingsUpdateInput_ImageInput {
+  /**
+   * Exact MIME declarations. A generic image modality leaves this unknown.
+   */
+  mimeTypes?: string[] | null;
+  maxPerMessage?: number | null;
+  maxPerRequest?: number | null;
+  maxBytes?: number | null;
+  minWidth?: number | null;
+  minHeight?: number | null;
+  maxWidth?: number | null;
+  maxHeight?: number | null;
+  requestBytes?: number | null;
 }
 /**
  * Vision has one declaration owner: ModelOverride::vision.

@@ -32,6 +32,7 @@ fn request(base_url: &str) -> ModelRequest {
     ModelRequest {
         language: maka_agent_facts::language::Language::En,
         provider: ProviderConfig {
+            image_input: None,
             adapter: None,
             capabilities: Default::default(),
             kind: ProviderKind::OpenaiCompatible {
@@ -337,4 +338,70 @@ async fn captured_language_reaches_native_notifications_without_becoming_provide
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn full_request_byte_count_matches_upload_and_stops_oversized_headers() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let mut input = request(&url);
+    input.provider.body_overlay = Some(serde_json::Map::from_iter([(
+        "fixture".into(),
+        json!("quoted \" and Unicode 图片"),
+    )]));
+    input.tools.push(maka_model::ToolDefinition {
+        provider: None,
+        name: "read_fixture".into(),
+        description: "read an image region".into(),
+        input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+        freeform: None,
+        output_schema: None,
+    });
+    let bytes = input.encoded_request_bytes().await.unwrap();
+    input.provider.image_input = Some(maka_agent_facts::configuration::ImageInput {
+        request_bytes: Some(bytes - 1),
+        ..Default::default()
+    });
+    let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
+    let error = match executor.stream(input, CancellationToken::new()).await {
+        Ok(_) => panic!("oversized full request must fail before upload"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, maka_model::ModelError::ImageInputPayloadTooLarge { bytes: actual, limit } if actual == bytes && limit == bytes - 1)
+    );
+    {
+        use futures_util::FutureExt;
+        assert!(listener.accept().now_or_never().is_none());
+    }
+
+    let mut input = request(&url);
+    input.provider.body_overlay = Some(serde_json::Map::from_iter([(
+        "fixture".into(),
+        json!("quoted \" and Unicode 图片"),
+    )]));
+    let bytes = input.encoded_request_bytes().await.unwrap();
+    input.provider.image_input = Some(maka_agent_facts::configuration::ImageInput {
+        request_bytes: Some(bytes),
+        ..Default::default()
+    });
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let wire = body(&mut socket).await;
+        response(&mut socket, 200, &completion(&[])).await;
+        serde_json::to_vec(&wire).unwrap().len() as u64
+    });
+    let mut stream = executor
+        .stream(input, CancellationToken::new())
+        .await
+        .unwrap();
+    while let Some(event) = stream.next().await {
+        event.unwrap();
+    }
+    stream.cancel_and_wait().await.unwrap();
+    assert_eq!(
+        server.await.unwrap(),
+        bytes,
+        "count covers actual model/options/messages/overlay envelope"
+    );
 }

@@ -1329,6 +1329,7 @@ mod tests {
         maka_model::WireEncoding::new(
             maka_agent_facts::language::Language::En,
             &maka_model::ProviderConfig {
+                image_input: None,
                 adapter: None,
                 capabilities: Default::default(),
                 network: Default::default(),

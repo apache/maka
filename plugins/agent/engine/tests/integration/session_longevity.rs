@@ -395,6 +395,9 @@ async fn wave(engine: &Engine, stores: &[SessionStore], id: &str, compact: bool,
             started_tx.send(started).unwrap();
             let invocation = engine.run(store.clone(),input(&base,store.id(),id,compact),CancellationToken::new()).await.unwrap();
             let completed = started.elapsed().as_secs_f64()*1000.0;
+            let maka_agent_engine::ActivationExit::Terminal(invocation) = invocation else {
+                panic!("longevity terminal fixture unexpectedly parked")
+            };
             active.fetch_sub(1, Ordering::SeqCst);
             let (receipt,bytes,response_start,response_done) = server.await.unwrap();
             // Fact proof, after operation timing.
@@ -623,6 +626,9 @@ async fn same_run_steps() {
             start_gate.wait().await;
             started_tx.send(Instant::now()).unwrap();
             let invocation=tokio::time::timeout(Duration::from_secs(7200),engine.run(store.clone(),run,CancellationToken::new())).await.unwrap().unwrap();
+            let maka_agent_engine::ActivationExit::Terminal(invocation) = invocation else {
+                panic!("same-run longevity fixture unexpectedly parked")
+            };
             let (main,summaries)=server.await.unwrap();
             let boundary=store.invocation_boundary(store.id(),&invocation.invocation_id).await.unwrap().unwrap().0;
             assert!(matches!(boundary.state.terminal_outcome(),Some(InvocationOutcome::Completed)));

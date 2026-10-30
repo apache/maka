@@ -30,6 +30,7 @@ use std::{sync::Arc, task::Poll, time::Duration};
 
 fn provider() -> ProviderConfig {
     ProviderConfig {
+        image_input: None,
         adapter: None,
         capabilities: Default::default(),
         network: Default::default(),

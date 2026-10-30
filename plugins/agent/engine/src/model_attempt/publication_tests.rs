@@ -17,6 +17,7 @@
  * under the License.
  */
 
+mod approval;
 mod retirement;
 mod stream;
 

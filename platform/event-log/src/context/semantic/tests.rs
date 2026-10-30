@@ -517,19 +517,6 @@ async fn stale_source_request_moves_notification_without_changing_frozen_view() 
     assert!(matches!(notice.kind, SemanticKind::Notification { .. }));
     assert_eq!(notice.id.source_sequence, 8);
     assert_eq!(notice.order.source_sequence, 10);
-    let changed = changes(&mut db, &selection(10), 8, None, 20).await.unwrap();
-    assert!(
-        changed
-            .changes
-            .iter()
-            .any(|change| change.order.source_sequence == 8 && change.deleted)
-    );
-    assert!(
-        changed
-            .changes
-            .iter()
-            .any(|change| change.order.source_sequence == 10 && !change.deleted)
-    );
 }
 
 #[tokio::test]
@@ -833,13 +820,6 @@ async fn archive_revisions_preserve_old_views_and_copied_payload_identity() {
         archived.last().unwrap().payload,
         Some(Payload::Tool(archived_projection))
     );
-    let changed = changes(&mut db, &current, 6, None, 20).await.unwrap();
-    assert!(
-        changed
-            .changes
-            .iter()
-            .any(|change| change.order.source_sequence == 6)
-    );
     gc::retire_owner(&mut db, "session").await.unwrap();
     let copied = rows(&mut db, &child, None, 20, None).await.unwrap();
     let retained = resolve(&mut db, copied.rows).await.unwrap();
@@ -955,7 +935,7 @@ async fn typed_children_keep_actual_ranges_and_follow_shared_source_lifetime() {
 }
 
 #[tokio::test]
-async fn later_tool_settlement_dirties_the_previously_suppressed_assistant_group() {
+async fn later_tool_settlement_releases_assistant_group_and_preserves_old_pending_view() {
     let mut db = database().await;
     call(&mut db).await;
     let replay = SemanticReplay {
@@ -1017,14 +997,6 @@ async fn later_tool_settlement_dirties_the_previously_suppressed_assistant_group
             .rows
             .iter()
             .any(|row| matches!(row.kind, SemanticKind::UnknownTool { .. }))
-    );
-    assert!(
-        changes(&mut db, &next, 4, None, 20)
-            .await
-            .unwrap()
-            .changes
-            .iter()
-            .any(|change| change.order.source_sequence == 2)
     );
     assert!(
         rows(&mut db, &unknown, None, 20, None)
@@ -1297,168 +1269,6 @@ async fn imported_conversation_counts_as_new_compaction_history_but_covered_rows
         .await
         .unwrap(),
         "covered user history and a ledger note do not create new conversation history"
-    );
-}
-
-#[tokio::test]
-async fn stable_changes_page_latest_revisions_from_the_current_source_cursor() {
-    let mut db = database().await;
-    let row = SemanticRow {
-        id: RowPosition {
-            source_sequence: 10,
-            item_index: 0,
-        },
-        revision: 10,
-        invocation: invocation(),
-        order: RowPosition {
-            source_sequence: 101,
-            item_index: 0,
-        },
-        kind: SemanticKind::AssistantPart {
-            step_id: "step".into(),
-            model_id: "model".into(),
-            route_identity: "route".into(),
-            accepted_at: 10,
-            index: 0,
-            payload: PartPayload::Complete(RowPosition {
-                source_sequence: 10,
-                item_index: 0,
-            }),
-        },
-    };
-    sqlx::query(
-        "WITH RECURSIVE items(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM items WHERE n<299),
-        versions(v) AS (VALUES(1),(2),(3))
-        INSERT INTO context_semantic_rows
-        SELECT 'session',10,n,v*10,100+v,n,'invocation','invocation','part-'||n,
-            CASE WHEN n=200 AND v=3 THEN 'user' ELSE 'assistant_part' END,
-            0,v=3,1,0,json_set(?1,'$.id.itemIndex',n,'$.revision',v*10,
-                '$.order.sourceSequence',100+v,'$.order.itemIndex',n),semantic_directory(json_set(?1,'$.id.itemIndex',n,'$.revision',v*10,'$.order.sourceSequence',100+v,'$.order.itemIndex',n))
-        FROM items CROSS JOIN versions",
-    )
-    .bind(serde_json::to_string(&row).unwrap())
-    .execute(&mut db)
-    .await
-    .unwrap();
-    let plan = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "EXPLAIN QUERY PLAN {}",
-        write::STABLE_CHANGES_SQL
-    )))
-    .bind("session")
-    .bind("invocation")
-    .bind(10i64)
-    .bind(132i64)
-    .bind(30i64)
-    .bind(10i64)
-    .bind(290i64)
-    .bind(128i64)
-    .fetch_all(&mut db)
-    .await
-    .unwrap();
-    let details: Vec<String> = plan.iter().map(|row| row.get("detail")).collect();
-    assert!(
-        details
-            .iter()
-            .any(|detail| detail.starts_with("SEARCH r USING ")
-                && detail.contains("owner_session_id=?")
-                && detail.contains("(source_sequence,source_index,revision)>(?,?,?)")),
-        "each page must seek the current revision cursor: {details:?}"
-    );
-    assert!(
-        !details.iter().any(|detail| detail.contains("TEMP B-TREE")),
-        "source-key order must use the index: {details:?}"
-    );
-    let mut previous = 0_i64;
-    let mut work = Vec::new();
-    for history in [128_i64, 16_384] {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicU64, Ordering},
-        };
-        sqlx::query("WITH RECURSIVE items(n) AS (VALUES(?1) UNION ALL SELECT n+1 FROM items WHERE n<?2)
-            INSERT INTO context_semantic_rows SELECT 'session',9,n,1,9,n,'invocation','invocation','earlier-'||n,
-                'assistant_part',0,0,1,0,json_set(?3,'$.id.sourceSequence',9,'$.id.itemIndex',n,'$.revision',1,'$.order.sourceSequence',9,'$.order.itemIndex',n),semantic_directory(json_set(?3,'$.id.sourceSequence',9,'$.id.itemIndex',n,'$.revision',1,'$.order.sourceSequence',9,'$.order.itemIndex',n))
-            FROM items")
-            .bind(previous+1).bind(history).bind(serde_json::to_string(&row).unwrap()).execute(&mut db).await.unwrap();
-        let steps = Arc::new(AtomicU64::new(0));
-        let observed = steps.clone();
-        db.lock_handle()
-            .await
-            .unwrap()
-            .set_progress_handler(1, move || {
-                observed.fetch_add(1, Ordering::Relaxed);
-                true
-            });
-        let page = sqlx::query(write::STABLE_CHANGES_SQL)
-            .bind("session")
-            .bind("invocation")
-            .bind(10_i64)
-            .bind(132_i64)
-            .bind(30_i64)
-            .bind(10_i64)
-            .bind(290_i64)
-            .bind(128_i64)
-            .fetch_all(&mut db)
-            .await;
-        db.lock_handle().await.unwrap().remove_progress_handler();
-        let keys = page
-            .unwrap()
-            .iter()
-            .map(|row| {
-                (
-                    row.get::<i64, _>(0),
-                    row.get::<i64, _>(1),
-                    row.get::<i64, _>(2),
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            keys,
-            (133..=261)
-                .filter(|index| *index != 200)
-                .map(|index| (10, index, 30))
-                .collect::<Vec<_>>()
-        );
-        work.push(steps.load(Ordering::Relaxed));
-        previous = history;
-    }
-    assert!(
-        work[1] <= work[0] * 2,
-        "fixed revision page scanned earlier source history: {work:?}"
-    );
-    let stored = StoredEvent {
-        sequence: 1000,
-        event: RuntimeEvent::new(invocation(), interrupted("step")),
-    };
-    crate::connection::worker_query(&mut db, move |worker| {
-        Box::pin(async move {
-            write::stable_changes(
-                worker,
-                &stored,
-                Some(RowPosition {
-                    source_sequence: 10,
-                    item_index: 5,
-                }),
-                RowPosition {
-                    source_sequence: 10,
-                    item_index: 290,
-                },
-            )
-            .await
-        })
-    })
-    .await
-    .unwrap();
-    let changed: Vec<(i64,i64,i64,bool,bool)> = sqlx::query_as(
-        "SELECT source_index,order_sequence,revision,inherited,deleted FROM context_semantic_changes ORDER BY change_id")
-        .fetch_all(&mut db).await.unwrap();
-    let expected: Vec<_> = (5..290)
-        .filter(|index| *index != 200)
-        .map(|index| (index, 103, 1000, true, false))
-        .collect();
-    assert_eq!(
-        changed, expected,
-        "cross-page projection uses each latest row once and preserves both source boundaries"
     );
 }
 

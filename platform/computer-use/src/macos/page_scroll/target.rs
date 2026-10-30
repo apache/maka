@@ -67,6 +67,26 @@ pub(crate) struct EventTarget {
     pub(crate) _retained_accessibility_window: WindowVariant,
 }
 
+impl EventTarget {
+    pub(crate) fn is_menu(&self) -> bool {
+        matches!(&self._retained_accessibility_window, WindowVariant::Menu(_))
+    }
+
+    pub(crate) fn menu_element(&self) -> Option<&RetainedElement> {
+        self.is_menu()
+            .then(|| self._retained_accessibility_window.element())
+    }
+
+    pub(crate) fn menu_supports_press(&self) -> bool {
+        self.menu_element().is_some_and(|menu| {
+            action_names(menu)
+                .unwrap_or_default()
+                .iter()
+                .any(|action| action == "AXPress")
+        })
+    }
+}
+
 pub(crate) enum Resolution {
     NeedsProcess(i32),
     NeedsGlobalWindow,

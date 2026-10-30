@@ -18,7 +18,7 @@
  */
 
 use super::{ModelInfo, text, token_limit};
-use maka_agent_facts::configuration::ModelCapabilities;
+use maka_agent_facts::configuration::{ImageInput, ModelCapabilities};
 use maka_agent_facts::execution::ThinkingLevel;
 use maka_agent_facts::public_catalog::PublicCatalogBody;
 use serde_json::{Value, value::RawValue};
@@ -55,7 +55,10 @@ pub(super) fn parse(root: &PublicCatalogBody) -> Result<Vec<Entry>, String> {
             if row.get("id").and_then(Value::as_str) != Some(id.as_str()) {
                 return Err("models.dev model ID differs from its catalog key".into());
             }
-            let canonical = text(row.get("canonical_model_id"))?;
+            let canonical = text(
+                row.get("canonical_model_id")
+                    .or_else(|| row.get("canonical_id")),
+            )?;
             if canonical.as_ref().is_some_and(|id| id.trim().is_empty()) {
                 return Err("invalid models.dev canonical model ID".into());
             }
@@ -76,8 +79,14 @@ fn model(provider: &str, row: &Value) -> Result<ModelInfo, String> {
         row.pointer("/modalities/output"),
     )?;
     let mut capabilities = ModelCapabilities {
-        reasoning: row.get("reasoning").and_then(Value::as_bool),
-        function_calling: row.get("tool_call").and_then(Value::as_bool),
+        reasoning: row
+            .get("reasoning")
+            .or_else(|| row.pointer("/capabilities/reasoning/supported"))
+            .and_then(Value::as_bool),
+        function_calling: row
+            .get("tool_call")
+            .or_else(|| row.pointer("/capabilities/tools/supported"))
+            .and_then(Value::as_bool),
         ..Default::default()
     };
     if let Some(modalities) = &modalities {
@@ -146,11 +155,73 @@ fn model(provider: &str, row: &Value) -> Result<ModelInfo, String> {
         structured_output: row.get("structured_output").and_then(Value::as_bool),
         last_updated: text(row.get("last_updated"))?,
         capabilities: Some(capabilities),
+        image_input: image_input(row, row.pointer("/modalities/input"))?,
         modalities,
         ..Default::default()
     };
     model.validate()?;
     Ok(model)
+}
+
+pub(super) fn image_input(
+    row: &Value,
+    input: Option<&Value>,
+) -> Result<Option<ImageInput>, String> {
+    let mut image = ImageInput::default();
+    if let Some(values) = input.and_then(Value::as_array)
+        && !values.iter().any(|value| value.as_str() == Some("image"))
+    {
+        let types = values
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|value| value.starts_with("image/"))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if !types.is_empty() {
+            image.mime_types = Some(types);
+        }
+    }
+    fn number(value: Option<&Value>) -> Result<Option<u64>, String> {
+        value
+            .map(|value| {
+                value
+                    .as_f64()
+                    .filter(|value| {
+                        *value >= 0.0
+                            && value.fract() == 0.0
+                            && *value
+                                <= maka_agent_facts::configuration::validation::MAX_SAFE_INTEGER
+                                    as f64
+                    })
+                    .map(|value| value as u64)
+                    .ok_or_else(|| "invalid models.dev image limit".to_owned())
+            })
+            .transpose()
+    }
+    image.request_bytes = number(row.pointer("/limit/request_bytes"))?;
+    if let Some(limits) = row.pointer("/limit/image") {
+        let limits = limits
+            .as_object()
+            .ok_or("invalid models.dev image limits")?;
+        image.max_per_message = number(limits.get("max_per_message"))?;
+        image.max_per_request = number(limits.get("max_per_request"))?;
+        image.max_bytes = number(limits.get("max_bytes"))?;
+        let dimension = |name| -> Result<Option<u32>, String> {
+            number(limits.get(name))?
+                .map(|value| {
+                    u32::try_from(value).map_err(|_| {
+                        "models.dev image dimension exceeds supported range".to_owned()
+                    })
+                })
+                .transpose()
+        };
+        image.min_width = dimension("min_width")?;
+        image.min_height = dimension("min_height")?;
+        image.max_width = dimension("max_width")?;
+        image.max_height = dimension("max_height")?;
+    }
+    image.validate()?;
+    Ok((image != ImageInput::default()).then_some(image))
 }
 
 fn toggle_off(provider: &str) -> bool {

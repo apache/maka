@@ -95,14 +95,27 @@ impl EventLog {
         self.validate_root()?;
         validate_id(session)?;
         let session = session.to_owned();
+        let commits = self.commits.session(&session);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    Ok(read(&mut tx, &session)
+                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+                    if !read(&mut tx, &session)
                         .await?
                         .is_some_and(SessionRetirement::pending)
-                        && settled(&mut tx, &session).await?)
+                    {
+                        return Ok(false);
+                    }
+                    let terminal =
+                        crate::native_approvals::settle_retiring_waits(&mut tx, &session).await?;
+                    let ready = settled(&mut tx, &session).await?;
+                    if let Some(sequence) = terminal {
+                        tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                        commits.publish(sequence);
+                    } else {
+                        tx.rollback().await?;
+                    }
+                    Ok(ready)
                 })
             })
             .await
@@ -239,7 +252,13 @@ impl EventLog {
                         }
                         return Ok(state);
                     }
+                    let native_terminal =
+                        crate::native_approvals::settle_retiring_waits(&mut tx, &session).await?;
                     if !settled(&mut tx, &session).await? {
+                        if let Some(sequence) = native_terminal {
+                            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                            commits.publish(sequence);
+                        }
                         return Ok(state);
                     }
                     if state == SessionRetirement::Archiving {
@@ -251,7 +270,11 @@ impl EventLog {
                         .await?;
                         advance_catalog(&mut tx).await?;
                         tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                        commits.metadata();
+                        if let Some(sequence) = native_terminal {
+                            commits.publish(sequence);
+                        } else {
+                            commits.metadata();
+                        }
                         return Ok(SessionRetirement::Archived);
                     }
                     // Membership is retained proof, not a disposable UI projection:
@@ -281,7 +304,11 @@ impl EventLog {
                         .await?;
                     advance_catalog(&mut tx).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.metadata();
+                    if let Some(sequence) = native_terminal {
+                        commits.publish(sequence);
+                    } else {
+                        commits.metadata();
+                    }
                     observations.purge_session(session).await?;
                     Ok(SessionRetirement::Removed)
                 })

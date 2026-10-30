@@ -57,6 +57,8 @@ pub struct ProviderConfig {
     pub adapter: Option<String>,
     #[serde(skip)]
     pub capabilities: maka_agent_facts::configuration::ModelCapabilities,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_input: Option<maka_agent_facts::configuration::ImageInput>,
     #[serde(skip)]
     pub network: maka_network::Policy,
     pub kind: ProviderKind,
@@ -100,7 +102,31 @@ impl ProviderConfig {
     }
 }
 
+/// Complete JSON encodings before transport-level prefix reuse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EncodedRequestBytes {
+    pub http: u64,
+    pub websocket: Option<u64>,
+}
+impl EncodedRequestBytes {
+    /// Both transports must fit because Responses may fall back to HTTP.
+    pub fn largest(self) -> u64 {
+        self.http.max(self.websocket.unwrap_or(0))
+    }
+}
+
 impl ModelRequest {
+    /// Counts the complete HTTP JSON body using the selected built-in codec.
+    /// Reopens immutable prompt sources without uploading or retaining body bytes.
+    pub async fn encoded_request_bytes(&self) -> Result<u64, ModelError> {
+        Ok(self.encoded_request_sizes().await?.http)
+    }
+
+    /// Counts complete HTTP and, where available, Responses WebSocket JSON bodies.
+    pub async fn encoded_request_sizes(&self) -> Result<EncodedRequestBytes, ModelError> {
+        adapters::encoded_request_bytes(self).await
+    }
+
     fn into_adapter(self) -> Result<maka_agent_facts::model::request::Request, ModelError> {
         use maka_agent_facts::model::request::Credentials;
         use maka_agent_facts::model::request::Provider;
@@ -404,6 +430,21 @@ impl ModelExecutor {
             biased;
             _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
             result = auth::resolve(&mut request.provider.auth) => result?,
+        }
+        if let Some(limit) = request
+            .provider
+            .image_input
+            .as_ref()
+            .and_then(|image| image.request_bytes)
+        {
+            let bytes = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
+                result = request.encoded_request_sizes() => result?.largest(),
+            };
+            if bytes > limit {
+                return Err(ModelError::ImageInputPayloadTooLarge { bytes, limit });
+            }
         }
         let (sender, receiver) = mpsc::channel(4);
         let worker_cancel = cancellation.clone();

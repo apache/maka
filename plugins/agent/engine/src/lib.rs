@@ -37,10 +37,18 @@ pub mod pricing;
 mod request_composition;
 pub use history::project as project_model_history;
 mod prune;
+mod resume;
+pub use resume::{NativeApprovalExecutor, ResumeContinuation, ResumeInput};
 mod runner;
 mod running;
 mod steps;
 pub use running::{RunningCompletion, RunningInvocation};
+
+#[derive(Clone, Debug)]
+pub enum ActivationExit {
+    Terminal(Invocation),
+    Parked(maka_event_log::native_approvals::ParkedActivationReceipt),
+}
 
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("invocation cleanup is unconfirmed")]
@@ -105,10 +113,7 @@ pub enum RunError {
 struct PreparationCancelled(&'static str);
 
 fn preparation_cancelled(message: &'static str) -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::Interrupted,
-        PreparationCancelled(message),
-    )
+    std::io::Error::other(PreparationCancelled(message))
 }
 
 impl RunError {
@@ -175,6 +180,8 @@ pub struct RunInput<W = RunWork> {
     pub request_fingerprint: Option<String>,
     pub provider: ProviderConfig,
     pub provider_options: Value,
+    /// Accepted native activation evidence; it carries no execution authority.
+    pub native_activation_basis: Option<Value>,
     /// Resolved SDK reply budget; summaries additionally cap their text at 8K.
     pub main_output_limit: Option<u64>,
     /// Current selected-model capability; image bytes are projected per request.
@@ -184,7 +191,7 @@ pub struct RunInput<W = RunWork> {
 
 // Admission owns the submitted body. Running execution owns only settings and
 // identity; canonical opening facts supply the body to bounded history reads.
-type RunSettings = RunInput<()>;
+pub type RunSettings = RunInput<()>;
 
 impl RunInput {
     fn into_context(self) -> (RunSettings, RunWork) {
@@ -198,6 +205,7 @@ impl RunInput {
             request_fingerprint,
             provider,
             provider_options,
+            native_activation_basis,
             main_output_limit,
             supports_vision,
             configuration,
@@ -213,6 +221,7 @@ impl RunInput {
                 request_fingerprint,
                 provider,
                 provider_options,
+                native_activation_basis,
                 main_output_limit,
                 supports_vision,
                 configuration,
@@ -291,7 +300,7 @@ impl RunContext {
             ) -> Fut
             + Send
             + 'static,
-        Fut: std::future::Future<Output = Result<Invocation, RunError>> + Send + 'static,
+        Fut: std::future::Future<Output = Result<ActivationExit, RunError>> + Send + 'static,
     {
         let session_id = invocation.session_id.clone();
         if !self
@@ -410,8 +419,8 @@ impl Inner {
     }
 }
 
-/// Owns session admission and the entire invocation lifetime, including effects
-/// still draining after the caller stops waiting.
+/// Owns physical session admission and activations, including effects still
+/// draining after the caller stops waiting.
 #[derive(Clone)]
 pub struct Engine(Arc<Inner>);
 
@@ -479,7 +488,7 @@ impl Engine {
         store: SessionStore,
         input: RunInput,
         cancellation: CancellationToken,
-    ) -> Result<Invocation, RunError> {
+    ) -> Result<ActivationExit, RunError> {
         self.start(store, input, cancellation).await?.wait().await
     }
 
