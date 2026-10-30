@@ -1,6 +1,6 @@
 {
   "inputs": {
-    "Cargo.lock": "62164097a091ab3ed0cf3c14531e33ef0f7611e4c853f7e1407e1685e85eebf6",
+    "Cargo.lock": "d307c071e3b97d12f7344846c668f9fddb41678bd49fd7d7f72091ffafa57cd3",
     "Cargo.toml": "9c58d4f2ef93b548e6c02de8950270a9da42bcfea000ab262a78985e75e672e7",
     "package-lock.json": "863e20d94f46507befd14d7abe94982bb110dff3efaa13b9d1c3b60333f8d64a",
     "package.json": "a513ba49c73a1cd6d8060d9a4f2edb47f5286469553cf3b3f4959b9ceb64fa58",
@@ -46,8 +46,8 @@
     "plugins/agent/composer/ui/composerCompletionSyntax.ts": "0a9252770f4ff5dcf5ee1823ddf86a1a93a462591d42b1c60b7f43b2546bebdc",
     "plugins/agent/composer/ui/composerPaste.ts": "2a075c1441ede5c99688a51a6e29f3e0d61adc19259440962a9969076db635e6",
     "plugins/agent/conversations/package.ts": "010e8ebbb77d9c9d5fbe334f71c4811d5a1cfc0cc48dcc1a47290317b962abdc",
-    "plugins/agent/engine/Cargo.toml": "b2559bcf885e8d77a45d9939a0802d73cbfafa47819aaa3651aaeadb40b62325",
-    "plugins/agent/facts/Cargo.toml": "884642d3e983b761bc1a37d980aae95f96d5d5e3d5198b6f259954fcaaa49c3c",
+    "plugins/agent/engine/Cargo.toml": "a98df65e09385ab45f1e52f2c054efe0628ab7afc43e27febbd54e5dd4bb735b",
+    "plugins/agent/facts/Cargo.toml": "a74555b8eae72829b0692c7bca74c7085a9e6bcd128ade513d8a4a4409aef247",
     "plugins/agent/goal/Cargo.toml": "0e7b81aaa8b60b884a0f64fb586c03f7ecbdf1dc426d2d731ce8f80ba61cf9eb",
     "plugins/agent/graph/Cargo.toml": "b12c9de4be4fff7472d313e7176fd4289686f73f691fead2b130739256c8f7f8",
     "plugins/agent/insights/Cargo.toml": "e11b391c1304bb27d552322e9f31b9e1858340f81f49ebbb3d484b02c9238def",
