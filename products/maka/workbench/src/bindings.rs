@@ -56,7 +56,6 @@ struct Owner {
     client: Client,
     runtime: Handle,
     tasks: StdMutex<Option<TaskTracker>>,
-    budget: maka_ui_support::budget::NativeBudget,
     plugins: plugins::Packages,
     reload: crate::reload::UiReload,
 }
@@ -139,7 +138,6 @@ impl Bindings {
                 client,
                 runtime,
                 tasks: StdMutex::new(Some(TaskTracker::new())),
-                budget: Default::default(),
                 plugins: Default::default(),
                 reload: Default::default(),
             }),
@@ -312,30 +310,34 @@ impl ApplicationHost {
         this: Instance<Self>,
         ids: Vec<String>,
     ) -> Result<Vec<Instance<uploads::StagedFile>>, String> {
-        if ids.len() > 128 {
-            return Err("Too many selected files".into());
-        }
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         let result_owner = owner.clone();
         let restored = execute(owner.clone(), async move {
             let client = source.resolve(&owner).await?;
-            let mut files = Vec::new();
-            for id in ids {
-                let saved = client.pending_file(&id).await?;
-                let budget = owner.budget.clone();
-                let snapshot = tokio::task::spawn_blocking(move || {
+            let runtime = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || {
+                runtime.block_on(async move {
+                    use maka_ui_support::file::{FILE_CHUNK_BYTES, FileSnapshotWriter};
                     use std::io::Write;
-                    let mut writer =
-                        maka_ui_support::file::FileSnapshotWriter::new(&saved.name, budget)
-                            .map_err(|e| e.to_string())?;
-                    writer.write_all(&saved.bytes).map_err(|e| e.to_string())?;
-                    writer.finish().map_err(|e| e.to_string())
+                    let mut files = Vec::new();
+                    for id in ids {
+                        let saved = client.pending_file(&id).await?;
+                        let mut writer = FileSnapshotWriter::new(&saved.name)
+                            .map_err(|error| error.to_string())?;
+                        for offset in (0..saved.bytes).step_by(FILE_CHUNK_BYTES) {
+                            let chunk = client.pending_file_chunk(&id, offset).await?;
+                            writer
+                                .write_all(&chunk)
+                                .map_err(|error| error.to_string())?;
+                        }
+                        let snapshot = writer.finish().map_err(|error| error.to_string())?;
+                        files.push((id, snapshot));
+                    }
+                    Ok::<_, String>(files)
                 })
-                .await
-                .map_err(|e| e.to_string())??;
-                files.push((id, snapshot));
-            }
-            Ok(files)
+            })
+            .await
+            .map_err(|error| format!("Restore desktop draft files: {error}"))?
         })
         .await?;
         restored
@@ -350,9 +352,6 @@ impl ApplicationHost {
         ids: Vec<String>,
         files: Instance<uploads::StagedFiles>,
     ) -> Result<u64, String> {
-        if ids.len() > 128 {
-            return Err("Too many selected files".into());
-        }
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         let snapshots = files.with(|files| {
             if !Arc::ptr_eq(&files.owner, &owner) {
@@ -362,42 +361,15 @@ impl ApplicationHost {
         })?;
         drop(files);
         execute(owner.clone(), async move {
-            use maka_capabilities::call::ReadResource;
             let client = source.resolve(&owner).await?;
-            let known = client.pending_file_ids().await?;
-            let budget = owner.budget.clone();
-            let (fresh, _copies) = tokio::task::spawn_blocking(move || {
-                let mut copies = Vec::new();
-                let files = snapshots
-                    .into_iter()
-                    .filter(|(id, _)| !known.contains(id))
-                    .map(|(id, snapshot)| {
-                        copies.push(
-                            budget
-                                .reserve(maka_ui_support::budget::Kind::Encoded, snapshot.bytes())
-                                .map_err(|e| e.to_string())?,
-                        );
-                        let mut bytes = Vec::with_capacity(snapshot.bytes());
-                        for start in (0..snapshot.bytes()).step_by(65536) {
-                            bytes.extend(
-                                snapshot.read(start..(start + 65536).min(snapshot.bytes()))?,
-                            );
-                        }
-                        Ok(maka_app_client::PendingFile {
-                            id,
-                            name: snapshot.metadata()["name"]
-                                .as_str()
-                                .ok_or("Selected file name is missing")?
-                                .into(),
-                            bytes,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                Ok::<_, String>((files, copies))
-            })
-            .await
-            .map_err(|e| e.to_string())??;
-            client.save_pending_draft(revision, state, ids, fresh).await
+            let files = snapshots
+                .into_iter()
+                .map(|(id, resource)| maka_app_client::PendingFile {
+                    id,
+                    resource: resource as Arc<dyn maka_capabilities::call::ReadResource>,
+                })
+                .collect();
+            client.save_pending_draft(revision, state, ids, files).await
         })
         .await
     }
@@ -410,10 +382,10 @@ impl ApplicationHost {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
         let snapshots = uploads::stage_files(owner.clone(), files).await?;
-        snapshots
+        Ok(snapshots
             .into_iter()
             .map(|file| uploads::staged_file(owner.clone(), file))
-            .collect()
+            .collect())
     }
     /// Capture an explicit clipboard paste before a session exists.
     pub async fn stage_clipboard(

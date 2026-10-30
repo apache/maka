@@ -1672,7 +1672,7 @@ pub fn evidence(name: &str, snapshot: &str) {
 /// Withhold one real IPC result without manufacturing a Host fact or Agent effect.
 async fn gate_read<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {
     let length = reader.read_u32().await? as usize;
-    if length == 0 || length > 64 * 1024 * 1024 {
+    if length == 0 {
         return Err(std::io::Error::other("invalid gate frame length"));
     }
     let mut body = vec![0; length];
@@ -1694,11 +1694,13 @@ pub struct ReplyGate {
     worker: JoinHandle<()>,
 }
 impl ReplyGate {
+    #[cfg(feature = "desktop-tests")]
     pub fn create(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(
             directory, target, "agent", "create", "mutation", false, None,
         )
     }
+    #[cfg(feature = "desktop-tests")]
     pub fn upload(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(
             directory,
@@ -1710,6 +1712,7 @@ impl ReplyGate {
             None,
         )
     }
+    #[cfg(feature = "desktop-tests")]
     pub fn disconnect_send(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "send", "mutation", true, None)
     }

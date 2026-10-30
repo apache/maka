@@ -1371,10 +1371,15 @@ export const conversationMessages = {
     '{tool} · 權限邊界：{revision}',
   ],
   'Attachment path': ['Attachment path', '附件路径', '附件路徑'],
-  'Finish or remove the pending attachments before reloading.': [
-    'Finish or remove the pending attachments before reloading.',
-    '请先发送或移除待处理的附件，再重新加载。',
-    '請先傳送或移除待處理的附件，再重新載入。',
+  'The saved draft could not be loaded.': [
+    'The saved draft could not be loaded.',
+    '无法加载已保存的草稿。',
+    '無法載入已儲存的草稿。',
+  ],
+  'The conversation draft changed. Open the conversation to review it.': [
+    'The conversation draft changed. Open the conversation to review it.',
+    '此会话的草稿已发生变化，请打开会话查看。',
+    '此對話的草稿已發生變化，請開啟對話查看。',
   ],
   'Finish or recover the pending action before reloading.': [
     'Finish or recover the pending action before reloading.',
@@ -1385,11 +1390,6 @@ export const conversationMessages = {
     'The action was not dispatched. Try again.',
     '操作未发送，请重试。',
     '操作未傳送，請重試。',
-  ],
-  'A new conversation can hold at most 128 attachments.': [
-    'A new conversation can hold at most 128 attachments.',
-    '新会话最多可添加 128 个附件。',
-    '新對話最多可新增 128 個附件。',
   ],
   'This conversation was already created. Finish sending it before changing workspaces.': [
     'This conversation was already created. Finish sending it before changing workspaces.',

@@ -23,6 +23,8 @@ Runs the experimental [Maka workbench](../workbench/README.md), an Agent workben
 
 NSH lives in [`third-party/nsh`](../../../third-party/nsh/SOURCE.md). Cargo builds the runtime, TSX bundler, `nsh-base` components and UI declaration generator from that source; a separate NSH checkout is unnecessary. Make related NSH and Maka changes in the same tree and validate them together with the terminal's [real Host tests](tests/real_host/mod.rs): `cargo test -p maka-cli --no-default-features --test integration terminal::`.
 
+The desktop draft and restart tests use the headless GPUI renderer: `cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test integration -E 'test(terminal::desktop_new_session)' -j 1`. Terminal-only tests do not build those desktop dependencies.
+
 ## Start
 
 From the workspace root, start the terminal interface in the Maka CLI. Cargo builds and embeds its plugins and workbench:

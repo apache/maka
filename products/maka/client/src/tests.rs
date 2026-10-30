@@ -48,6 +48,7 @@ use std::{
 use tokio::sync::Notify;
 
 mod drafts;
+mod pending;
 mod progress;
 mod request_custody;
 mod settings;

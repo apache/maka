@@ -17,8 +17,7 @@
  * under the License.
  */
 
-//! Immutable snapshots of user-selected files and clipboard image encoders.
-use crate::budget::{Kind, NativeBudget, Permit};
+//! Immutable, file-backed snapshots of user-selected files and clipboard images.
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::{
     ambient_authority,
@@ -26,10 +25,17 @@ use cap_std::{
 };
 use maka_capabilities::call::ReadResource;
 use maka_plugin_core::contract::binary_resource_type;
+use memmap2::Mmap;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{io::Read, ops::Range, path::Path, sync::Arc};
+use std::{
+    fs::File,
+    io::{self, Write},
+    ops::Range,
+    path::Path,
+    sync::Arc,
+};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct FileDescriptor {
@@ -38,62 +44,57 @@ pub struct FileDescriptor {
     pub digest: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum FileError {
     #[error("selected path is not an absolute regular file")]
     InvalidFile,
-    #[error("selected file could not be read")]
-    ReadFailed,
-    #[error("native resource budget exhausted")]
-    BudgetExhausted,
-}
-impl From<crate::budget::BudgetExhausted> for FileError {
-    fn from(_: crate::budget::BudgetExhausted) -> Self {
-        Self::BudgetExhausted
-    }
+    #[error("selected file changed while it was being captured")]
+    Changed,
+    #[error("selected file snapshot: {0}")]
+    Io(#[from] io::Error),
 }
 
-const CHUNK: usize = 64 * 1024;
-struct Chunk {
-    bytes: Vec<u8>,
-    _permit: Permit,
-}
-/// Contains only immutable bytes, descriptors and allocation permits, no native lease.
+/// Resource reads share the transport's 64 KiB chunk size, not a whole-file limit.
+pub const FILE_CHUNK_BYTES: usize = 64 * 1024;
+
+#[derive(Debug)]
 pub struct FileSnapshot {
-    chunks: Vec<Chunk>,
+    mapping: Option<Mmap>,
+    _file: File,
     descriptor: FileDescriptor,
 }
 
-/// Bounded native byte producer. Encoders write directly into the same immutable
-/// chunks as a selected file, without a second buffer or temporary file owner.
+/// Encoders write directly into a private temporary file. Finished snapshots are read-only.
 pub struct FileSnapshotWriter {
-    budget: NativeBudget,
+    file: File,
     name: String,
-    chunks: Vec<Chunk>,
     bytes: usize,
     hash: Sha256,
-    error: Option<FileError>,
 }
 impl FileSnapshotWriter {
-    pub fn new(name: &str, budget: NativeBudget) -> Result<Self, FileError> {
+    pub fn new(name: &str) -> Result<Self, FileError> {
         if name.is_empty() || name.chars().any(char::is_control) {
             return Err(FileError::InvalidFile);
         }
         Ok(Self {
-            budget,
+            file: tempfile::tempfile()?,
             name: name.into(),
-            chunks: Vec::new(),
             bytes: 0,
             hash: Sha256::new(),
-            error: None,
         })
     }
-    pub fn finish(self) -> Result<Arc<FileSnapshot>, FileError> {
-        if let Some(error) = self.error {
-            return Err(error);
-        }
+    pub fn finish(mut self) -> Result<Arc<FileSnapshot>, FileError> {
+        self.file.flush()?;
+        let mapping = if self.bytes == 0 {
+            None
+        } else {
+            // SAFETY: the anonymous file is private and its only writable handle moves
+            // into this immutable snapshot. No method changes its contents or length.
+            Some(unsafe { Mmap::map(&self.file)? })
+        };
         Ok(Arc::new(FileSnapshot {
-            chunks: self.chunks,
+            mapping,
+            _file: self.file,
             descriptor: FileDescriptor {
                 name: self.name,
                 bytes: self.bytes,
@@ -101,44 +102,18 @@ impl FileSnapshotWriter {
             },
         }))
     }
-    fn write_bytes(&mut self, mut bytes: &[u8]) -> Result<(), FileError> {
-        if let Some(error) = self.error {
-            return Err(error);
-        }
-        while !bytes.is_empty() {
-            if self
-                .chunks
-                .last()
-                .is_none_or(|chunk| chunk.bytes.len() == CHUNK)
-            {
-                let permit = self.budget.reserve(Kind::Encoded, CHUNK)?;
-                self.chunks.push(Chunk {
-                    bytes: Vec::with_capacity(CHUNK),
-                    _permit: permit,
-                });
-            }
-            let chunk = self.chunks.last_mut().unwrap();
-            let count = (CHUNK - chunk.bytes.len()).min(bytes.len());
-            chunk.bytes.extend_from_slice(&bytes[..count]);
-            self.hash.update(&bytes[..count]);
-            self.bytes += count;
-            bytes = &bytes[count..];
-        }
-        Ok(())
-    }
 }
-impl std::io::Write for FileSnapshotWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        match self.write_bytes(bytes) {
-            Ok(()) => Ok(bytes.len()),
-            Err(error) => {
-                self.error = Some(error);
-                Err(std::io::Error::other(error))
-            }
-        }
+impl Write for FileSnapshotWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let count = self.file.write(bytes)?;
+        self.hash.update(&bytes[..count]);
+        self.bytes = self.bytes.checked_add(count).ok_or_else(|| {
+            io::Error::other("selected file exceeds the addressable resource range")
+        })?;
+        Ok(count)
     }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
     }
 }
 impl ReadResource for FileSnapshot {
@@ -152,24 +127,20 @@ impl ReadResource for FileSnapshot {
         serde_json::to_value(&self.descriptor).expect("file descriptor")
     }
     fn read(&self, range: Range<usize>) -> Result<Vec<u8>, String> {
-        if range.end > self.bytes() || range.end.checked_sub(range.start).is_none_or(|n| n > CHUNK)
+        if range.end > self.bytes()
+            || range
+                .end
+                .checked_sub(range.start)
+                .is_none_or(|n| n > FILE_CHUNK_BYTES)
         {
             return Err("invalid file resource range or exceeds 64 KiB".into());
         }
-        let mut out = Vec::with_capacity(range.end - range.start);
-        let mut start = range.start;
-        while start < range.end {
-            let chunk = &self.chunks[start / CHUNK].bytes;
-            let offset = start % CHUNK;
-            let count = (chunk.len() - offset).min(range.end - start);
-            out.extend_from_slice(&chunk[offset..offset + count]);
-            start += count;
-        }
-        Ok(out)
+        Ok(self.mapping.as_deref().unwrap_or_default()[range].to_vec())
     }
 }
-/// Runs only in an admitted original native worker, after actual user selection.
-pub fn read_selected(path: &Path, budget: &NativeBudget) -> Result<Arc<FileSnapshot>, FileError> {
+
+/// Runs in a blocking worker after an explicit native file selection.
+pub fn read_selected(path: &Path) -> Result<Arc<FileSnapshot>, FileError> {
     if !path.is_absolute() {
         return Err(FileError::InvalidFile);
     }
@@ -177,8 +148,7 @@ pub fn read_selected(path: &Path, budget: &NativeBudget) -> Result<Arc<FileSnaps
     let directory = Dir::open_ambient_dir(
         path.parent().ok_or(FileError::InvalidFile)?,
         ambient_authority(),
-    )
-    .map_err(|_| FileError::ReadFailed)?;
+    )?;
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No);
     #[cfg(unix)]
@@ -186,53 +156,45 @@ pub fn read_selected(path: &Path, budget: &NativeBudget) -> Result<Arc<FileSnaps
         use cap_std::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NONBLOCK);
     }
-    let mut file = directory
-        .open_with(name, &options)
-        .map_err(|_| FileError::InvalidFile)?;
-    let metadata = file.metadata().map_err(|_| FileError::ReadFailed)?;
+    let mut file = directory.open_with(name, &options)?;
+    let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(FileError::InvalidFile);
     }
-    let mut chunks = Vec::new();
-    let mut total = 0;
-    let mut hash = Sha256::new();
-    loop {
-        // Probe without an allocation: exact-size and empty files need no extra permit.
-        let mut first = [0];
-        if file.read(&mut first).map_err(|_| FileError::ReadFailed)? == 0 {
-            break;
-        }
-        let permit = budget.reserve(Kind::Encoded, CHUNK)?;
-        let mut bytes = Vec::with_capacity(CHUNK);
-        bytes.push(first[0]);
-        (&mut file)
-            .take((CHUNK - 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|_| FileError::ReadFailed)?;
-        hash.update(&bytes);
-        total += bytes.len();
-        let last = bytes.len() < CHUNK;
-        chunks.push(Chunk {
-            bytes,
-            _permit: permit,
-        });
-        if last {
-            break;
-        }
-    }
-    let after = file.metadata().map_err(|_| FileError::ReadFailed)?;
-    if total as u64 != metadata.len()
+    let mut writer = FileSnapshotWriter::new(&name.to_string_lossy())?;
+    let bytes = io::copy(&mut file, &mut writer)?;
+    let after = file.metadata()?;
+    if bytes != metadata.len()
         || after.len() != metadata.len()
         || after.modified().ok() != metadata.modified().ok()
     {
-        return Err(FileError::ReadFailed);
+        return Err(FileError::Changed);
     }
-    Ok(Arc::new(FileSnapshot {
-        chunks,
-        descriptor: FileDescriptor {
-            name: name.to_string_lossy().into_owned(),
-            bytes: total,
-            digest: format!("sha256:{}", hex::encode(hash.finalize())),
-        },
-    }))
+    writer.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshots_keep_selected_bytes_after_source_changes_and_allow_empty_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("selected.bin");
+        std::fs::write(&path, b"original selected bytes").unwrap();
+        let snapshot = read_selected(&path).unwrap();
+        std::fs::write(&path, b"changed").unwrap();
+        assert_eq!(snapshot.bytes(), 23);
+        assert_eq!(snapshot.read(0..8).unwrap(), b"original");
+        assert_eq!(snapshot.read(9..17).unwrap(), b"selected");
+
+        std::fs::write(&path, b"").unwrap();
+        let empty = read_selected(&path).unwrap();
+        assert_eq!(empty.bytes(), 0);
+        assert_eq!(empty.read(0..0).unwrap(), b"");
+        assert_eq!(
+            empty.metadata()["digest"],
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
 }

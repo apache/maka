@@ -791,11 +791,7 @@ async fn imported_source_operations_recover_through_the_original_host_after_libr
     let (input, mut resources, _) = super::imported("review", bytes);
     resources.insert(
         "file".into(),
-        maka_ui_support::file::read_selected(
-            &file,
-            &maka_ui_support::budget::NativeBudget::default(),
-        )
-        .unwrap(),
+        maka_ui_support::file::read_selected(&file).unwrap(),
     );
     let imported = mutate(&fixture, "importSource", json!(input), resources).await;
     assert!(

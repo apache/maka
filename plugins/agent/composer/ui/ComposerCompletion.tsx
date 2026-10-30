@@ -43,6 +43,7 @@ import type { CompletionToken, Selection } from './composerCompletionSyntax.ts';
 import { C, bodyTextStyle, captionTextStyle } from '../../../../products/maka/workbench/app/ui';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { createComposerPaste } from './composerPaste';
+import type { ComposerCommandRunner } from './composerCommand';
 
 type Source = 'add' | 'files' | 'skills' | 'commands' | 'slash';
 type Editor = { sessionId: string | null; node: InputRef };
@@ -79,6 +80,7 @@ type Options = {
   session(): ComposerSession | null;
   commands(): ComposerCommand[];
   active(): boolean;
+  runCommand: ComposerCommandRunner;
 };
 type FileRead = { close(): Promise<void>; closing: Promise<void> | null };
 
@@ -119,8 +121,6 @@ export function createComposerCompletion(options: Options) {
   let fileRead: FileRead | null = null;
   let directoryHint: { prefix: string; path: WorkspacePath } | null = null;
   let textVersion = 0;
-  let pendingCommand: { owner: ComposerSession; text: string; version: number; id: string } | null =
-    null;
 
   const releaseFile = (read: FileRead) => (read.closing ??= read.close());
   const stopFile = () => {
@@ -172,7 +172,7 @@ export function createComposerCompletion(options: Options) {
     editor()?.node.focus();
   };
   const paste = createComposerPaste({
-    session: options.session,
+    owner: options.session,
     active: options.active,
     editor: (owner) => {
       const target = editor();
@@ -457,42 +457,22 @@ export function createComposerCompletion(options: Options) {
     argument: string | undefined,
     consume: boolean,
   ) => {
-    const ticket = { owner, text, version: textVersion, id: command.id };
-    if (
-      pendingCommand &&
-      pendingCommand.owner === owner &&
-      pendingCommand.text === text &&
-      pendingCommand.version === textVersion &&
-      pendingCommand.id === command.id
-    )
-      return;
-    pendingCommand = ticket;
-    const finish = (accepted: void | boolean) => {
-      if (pendingCommand === ticket) pendingCommand = null;
-      if (
-        consume &&
-        accepted !== false &&
-        alive &&
-        options.session() === owner &&
-        textVersion === ticket.version &&
-        owner.draft() === text
-      ) {
-        textVersion += 1;
-        owner.changeDraft('');
-      }
-    };
-    try {
-      const result = command.run(argument);
-      if (result instanceof Promise)
-        void result.then(finish, (reason) => {
-          if (pendingCommand === ticket) pendingCommand = null;
-          throw reason;
-        });
-      else finish(result);
-    } catch (reason) {
-      if (pendingCommand === ticket) pendingCommand = null;
-      throw reason;
-    }
+    const revision = textVersion;
+    options.runCommand({
+      owner,
+      text,
+      revision,
+      command,
+      argument,
+      current: () =>
+        alive && options.session() === owner && textVersion === revision && owner.draft() === text,
+      consume: consume
+        ? () => {
+            textVersion += 1;
+            owner.changeDraft('');
+          }
+        : undefined,
+    });
   };
   const submitCommand = (owner: ComposerSession, text: string) => {
     const action = command(text);
@@ -721,7 +701,7 @@ export function createComposerCompletion(options: Options) {
     selection(owner: ComposerSession, event: Selection) {
       if (options.session() === owner) selection.set({ ...event });
     },
-    composition(owner: ComposerSession, event: { composing: boolean }) {
+    composition(owner: ComposerSession | null, event: { composing: boolean }) {
       if (options.session() === owner) composing.set(event.composing);
     },
     toggleAdd(target: { sessionId: string | null }) {

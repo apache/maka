@@ -2219,17 +2219,19 @@ export function Conversation(props: ConversationProps) {
         attachments.restore(stored.attachments);
         draftReady.set(true);
         const prefill = props.takePrefill?.() ?? null;
-        if (prefill && stored.text === '' && stored.attachments.length === 0) {
-          changeDraft(prefill.text);
+        if (prefill) {
           try {
-            for (const file of prefill.files ?? [])
-              attachments.observeIntake(client.beginStagedUpload(file), () => {});
+            if (stored.text === '' && stored.attachments.length === 0) {
+              changeDraft(prefill.text);
+              for (const file of prefill.files ?? [])
+                attachments.observeIntake(client.beginStagedUpload(file), () => {});
+              props.focusComposer();
+              if (prefill.send) {
+                autoSend.set({ text: prefill.text, first: prefill.first });
+              }
+            }
           } finally {
             for (const file of prefill.files ?? []) file.dispose();
-          }
-          props.focusComposer();
-          if (prefill.send) {
-            autoSend.set({ text: prefill.text, first: prefill.first });
           }
         }
         void attachments.start();

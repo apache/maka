@@ -244,7 +244,7 @@ export interface ComposerViewInput<Element = unknown> {
     picking(): boolean;
     selectFiles(files: string[]): void;
     pasteClipboard(onText: (text: string) => void): void;
-    pasteChanged(): void;
+    reportError(reason: unknown): void;
     removeFile(id: string): void;
     openPicker(open: boolean): void;
   } | null;

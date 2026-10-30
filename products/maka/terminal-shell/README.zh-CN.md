@@ -23,6 +23,8 @@
 
 NSH 源码位于 [`third-party/nsh`](../../../third-party/nsh/SOURCE.md)。Cargo 从这里构建运行时、TSX 打包器、`nsh-base` 组件和 UI 类型声明生成器，无需单独检出 NSH。相关的 NSH 与 Maka 修改在同一源码树中完成，并通过终端的[真实 Host 测试](tests/real_host/mod.rs)一起验证：`cargo test -p maka-cli --no-default-features --test integration terminal::`。
 
+桌面草稿与重启测试使用无窗口的 GPUI 渲染器：`cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test integration -E 'test(terminal::desktop_new_session)' -j 1`。仅运行终端测试时不会构建这些桌面依赖。
+
 ## 启动
 
 在仓库根目录通过 Maka CLI 启动终端界面。Cargo 会构建并嵌入插件和工作台：

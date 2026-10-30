@@ -272,8 +272,7 @@ async fn user_attachment_images_use_uploaded_identity_and_canonical_user_rows() 
         std::fs::write(&selected, &bytes).unwrap();
         let resource = maka_ui_support::file::read_selected(
             &selected,
-            &maka_ui_support::budget::NativeBudget::default(),
-        ).unwrap();
+            ).unwrap();
         let image = f.mutation_with(
             2, "uploadAttachment",
             json!({"sessionId":session,"name":image_name,"bytes":bytes.len(),"digest":content_digest(&bytes)}),

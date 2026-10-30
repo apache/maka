@@ -41,6 +41,8 @@ import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
+import { createComposerCommandRunner } from './composerCommand';
+import { createComposerPaste } from './composerPaste';
 import logo from '../../../../products/maka/workbench/app/assets/maka.png';
 
 // Match the skill invocation grammar; the surrounding whitespace is not part of the chip.
@@ -53,10 +55,12 @@ const skillTokens = () => [
 ];
 
 export function Composer(props: ComposerViewInput<JSX.Element>) {
+  const runCommand = createComposerCommandRunner();
   const completion = createComposerCompletion({
     session: props.session,
     commands: props.commands,
     active: props.active,
+    runCommand,
   });
   // Files dropped on the conversation attach as they do on the field.
   props.dropFiles?.((event) => {
@@ -69,13 +73,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   const noConnections = () => !platform.isTerminal && (props.needsConnection?.() ?? false);
   const pending = () => props.pending?.() ?? null;
   type Pending = NonNullable<ReturnType<NonNullable<ComposerViewInput<JSX.Element>['pending']>>>;
-  let pendingCommand: { owner: Pending; text: string; confirmation: string; id: string } | null =
-    null;
   const submitPending = (owner: Pending, text: string, expected?: string) => {
     if (
       pending() !== owner ||
       !props.active() ||
       owner.sending() ||
+      completion.composing() ||
       owner.draft() !== text ||
       (expected !== undefined && owner.confirmation() !== expected)
     )
@@ -86,32 +89,15 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       return;
     }
     const confirmation = owner.confirmation();
-    if (
-      pendingCommand?.owner === owner &&
-      pendingCommand.text === text &&
-      pendingCommand.confirmation === confirmation &&
-      pendingCommand.id === command.found.id
-    )
-      return;
-    const ticket = { owner, text, confirmation, id: command.found.id };
-    pendingCommand = ticket;
-    const finish = (accepted: void | boolean) => {
-      if (pendingCommand === ticket) pendingCommand = null;
-      if (accepted !== false && pending() === owner && owner.confirmation() === confirmation)
-        owner.changeDraft('');
-    };
-    try {
-      const result = command.found.run(command.argument || undefined);
-      if (result instanceof Promise)
-        void result.then(finish, (reason) => {
-          if (pendingCommand === ticket) pendingCommand = null;
-          throw reason;
-        });
-      else finish(result);
-    } catch (reason) {
-      if (pendingCommand === ticket) pendingCommand = null;
-      throw reason;
-    }
+    runCommand({
+      owner,
+      text,
+      revision: confirmation,
+      command: command.found,
+      argument: command.argument || undefined,
+      current: () => pending() === owner && owner.confirmation() === confirmation,
+      consume: () => owner.changeDraft(''),
+    });
   };
   const sendPending = ({
     owner,
@@ -128,20 +114,23 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     if (pending() === owner && owner.picking() === open) owner.openPicker(!open);
   };
   const blocked = () => props.session()?.blockedReason() ?? '';
-  const cannotSend = () =>
-    props.blocked?.() ||
-    (props.session() === null &&
-      (pending() === null ||
-        pending()!.sending() ||
-        !pending()!.ready() ||
-        (!pending()!.draft().trim() && !pending()!.files().length))) ||
-    (props.session() !== null && !props.session()!.editable()) ||
-    (!completion.isCommand() &&
-      (!!blocked() ||
-        (!props.session()?.draft().trim() &&
-          !props.session()?.attachments.files().length &&
-          !pending()?.draft().trim() &&
-          !pending()?.files().length)));
+  const cannotSend = () => {
+    if (props.blocked?.()) return true;
+    const owner = props.session();
+    if (owner)
+      return (
+        !owner.editable() ||
+        (!completion.isCommand() &&
+          (!!blocked() || (!owner.draft().trim() && !owner.attachments.files().length)))
+      );
+    const local = pending();
+    return (
+      !local ||
+      local.sending() ||
+      !local.ready() ||
+      (!local.draft().trim() && !local.files().length)
+    );
+  };
   const sendLabel = () =>
     props.session()?.invocation() != null ? tr('Queue message') : tr('Send message');
   const primaryStops = () => props.session()?.invocation() != null && cannotSend();
@@ -417,39 +406,20 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               const owner = session();
               const local = owner === null ? pending() : null;
               const path = signal('');
-              let editor: InputRef | undefined;
-              let selection = { start: 0, end: 0 };
-              let unbindPaste = () => {};
-              cleanup(() => unbindPaste());
-              const pastePending = () => {
-                if (!local || !editor || local.sending()) return;
-                const node = editor;
-                const text = local.draft();
-                const expectedSelection = { ...selection };
-                local.pasteClipboard((inserted) => {
-                  if (
-                    pending() !== local ||
-                    editor !== node ||
-                    !props.active() ||
-                    !cardRoot() ||
-                    !keymap.focusedWithin(cardRoot()!) ||
-                    local.draft() !== text ||
-                    selection.start !== expectedSelection.start ||
-                    selection.end !== expectedSelection.end
-                  ) {
-                    if (pending() === local) local.pasteChanged();
-                    return;
-                  }
-                  node.replaceRange({
-                    ...expectedSelection,
-                    text: inserted,
-                    expectedText: text,
-                    expectedSelection,
-                  });
-                });
-              };
+              const editor = signal<InputRef | null>(null);
+              const selection = signal({ start: 0, end: 0 });
+              const paste = local
+                ? createComposerPaste({
+                    owner: pending,
+                    active: props.active,
+                    editor: (target) => (target === local ? editor() : null),
+                    selection,
+                    composing: completion.composing,
+                    dismiss: completion.close,
+                  })
+                : null;
               const focusEditor = () => {
-                if (owner?.editable() || local) editor?.focus();
+                if (owner?.editable() || local) editor()?.focus();
               };
               // Undo, selection and queued native events belong to this session.
               // Hero/history and responsive layout never replace this editor.
@@ -520,16 +490,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     </If>
                     <Input
                       ref={(node) => {
-                        editor = node;
+                        editor.set(node);
                         props.attach(node);
                         completion.attach(owner?.sessionId ?? null, node);
-                        unbindPaste();
-                        if (local) {
-                          const unbind = ['mod+v', 'alt+v', 'ctrl+alt+v'].map((key) =>
-                            keymap.bind(key, pastePending, { when: 'always', within: node }),
-                          );
-                          unbindPaste = () => unbind.forEach((remove) => remove());
-                        }
                       }}
                       testID="message"
                       accessibilityLabel={tr('Message composer')}
@@ -550,10 +513,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         owner
                           ? (event) => completion.paste(owner, event)
                           : local
-                            ? (event) => {
-                                if (event.uris.length) local.selectFiles(event.uris);
-                                else if (!event.text) pastePending();
-                              }
+                            ? (event) => paste?.paste(local, event)
                             : undefined
                       }
                       onFileDrop={
@@ -565,7 +525,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           : local
                             ? (event) => {
                                 draggingOverEditor.set(false);
-                                local.selectFiles(event.uris);
+                                paste?.drop(local, event);
                               }
                             : undefined
                       }
@@ -575,20 +535,37 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                       onFileDragLeave={
                         owner || local ? () => draggingOverEditor.set(false) : undefined
                       }
-                      onFocus={owner ? () => completion.pasteFocus(owner) : undefined}
-                      onBlur={owner ? () => completion.pasteBlur(owner) : undefined}
+                      onFocus={
+                        owner
+                          ? () => completion.pasteFocus(owner)
+                          : local
+                            ? () => paste?.focus(local)
+                            : undefined
+                      }
+                      onBlur={
+                        owner
+                          ? () => completion.pasteBlur(owner)
+                          : local
+                            ? () => paste?.blur(local)
+                            : undefined
+                      }
                       onSelectionChange={
                         owner
                           ? (event) => completion.selection(owner, event)
                           : local
                             ? (event) => {
-                                selection = { ...event };
+                                selection.set({ ...event });
                               }
                             : undefined
                       }
                       onCaretMove={owner ? (event) => completion.caret(owner, event) : undefined}
                       onCompositionChange={
-                        owner ? (event) => completion.composition(owner, event) : undefined
+                        owner || local
+                          ? (event) => {
+                              if (owner || pending() === local)
+                                completion.composition(owner, event);
+                            }
+                          : undefined
                       }
                       onSubmit={
                         owner

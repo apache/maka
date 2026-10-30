@@ -35,7 +35,7 @@ use maka_plugin_core::{
     deployment::DeploymentRef,
     operation::{OperationReply, RecoveryContract, receipt_reader_contract},
 };
-pub use pending::PendingFile;
+pub use pending::{PendingFile, PendingFileMetadata};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
