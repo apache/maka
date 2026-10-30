@@ -21,7 +21,7 @@
 
 ## Unreleased
 
-## 0.2.2 - Unreleased
+## 0.2.2 - 2026-10-30
 
 ### Added
 
