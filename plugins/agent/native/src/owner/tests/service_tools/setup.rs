@@ -298,7 +298,9 @@ impl Setup {
             },
             name: self.tool_name.unwrap_or(name).into(),
             description: description.into(),
-            import: "service".into(),
+            target: maka_host_runtime::application::ServiceTarget::Import {
+                name: "service".into(),
+            },
             method: self.service.method().into(),
         }
     }

@@ -202,6 +202,7 @@ fn context(attachments: Attachments) -> Context {
         operation: None,
         operation_scope: None,
         attachments,
+        exports: Arc::default(),
         imports: Arc::new(BTreeMap::new()),
         dispatch: Weak::new(),
     }
@@ -1143,6 +1144,7 @@ async fn fixed_target_factory_requires_the_original_root_owner() {
                 persistence: Some(NativePersistence { source, store }),
                 services: NativeServices {
                     activation,
+                    exports: Arc::default(),
                     imports: Arc::new(BTreeMap::new()),
                     dispatch: Weak::new(),
                     issuer: Issuer::default(),

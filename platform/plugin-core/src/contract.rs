@@ -215,6 +215,28 @@ pub struct Import {
     pub cardinality: Cardinality,
 }
 
+/// A selected service is either an imported provider or the caller's own export.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ServiceTarget {
+    Import {
+        #[schemars(length(min = 1))]
+        name: String,
+    },
+    Export {
+        #[schemars(length(min = 1))]
+        name: String,
+    },
+}
+impl ServiceTarget {
+    /// The selected import or export name.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Import { name } | Self::Export { name } => name,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Cardinality {

@@ -170,6 +170,23 @@ fn published<T>(value: T) -> BTreeMap<String, Published<T>> {
     )])
 }
 
+#[test]
+fn own_export_waits_for_publication_and_retains_original_call_lifetime() {
+    let fixture = Fixture::new();
+    let mut runtime = Runtime::new(fixture.plan());
+    let owner = runtime.begin(&fixture.id("p")).unwrap();
+    let capability = runtime.own_export(&owner, "action").unwrap();
+    assert!(runtime.admit(&capability).is_err());
+    runtime.publish(&owner, published(42usize)).unwrap();
+    let execution = runtime.admit(&capability).unwrap();
+    assert_eq!(*execution.value(), 42);
+    runtime.retire(&owner).unwrap();
+    assert!(matches!(runtime.admit(&capability), Err(Error::Retired)));
+    assert_eq!(runtime.status(&owner).unwrap().calls, 1);
+    runtime.settle(&execution, Ok(())).unwrap();
+    assert_eq!(runtime.status(&owner).unwrap().calls, 0);
+}
+
 // Rc and Cell deliberately model foreground-only native objects.
 struct Action {
     effects: Rc<Cell<usize>>,

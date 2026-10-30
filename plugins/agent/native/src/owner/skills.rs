@@ -78,7 +78,7 @@ impl Library {
                     tool.input == ToolInput::Skill
                         && tool.method == method
                         && services.imports().any(|(name, targets)| {
-                            name == tool.import
+                            matches!(&tool.target, maka_host_runtime::application::ServiceTarget::Import { name: import } if name == import)
                                 && targets.len() == 1
                                 && targets[0].execution_basis() == binding.execution_basis()
                         })

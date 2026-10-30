@@ -170,7 +170,7 @@ pub(super) async fn stored_facts(
     }
 }
 
-async fn pending_approval(
+pub(super) async fn pending_approval(
     fixture: &Fixture,
     session: &str,
 ) -> maka_agent_facts::interaction::InteractionRecord {

@@ -87,7 +87,7 @@ impl Setup {
         if settings
             .tools
             .iter()
-            .any(|tool| tool.import == "service" && tool.method == "execute")
+            .any(|tool| matches!(&tool.target, maka_host_runtime::application::ServiceTarget::Import { name } if name == "service") && tool.method == "execute")
         {
             assert!(
                 !workers,

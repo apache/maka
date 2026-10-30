@@ -691,6 +691,18 @@ export type AgentWorkspaceAccess = 'read_only' | 'workspace_write' | 'danger_ful
 export type AgentToolInput = ('json' | 'skill' | 'web') | 'shell';
 export type AgentToolResult = ('json' | 'image') | 'computer';
 export type AgentToolConfirmation = 'required' | 'preapproved';
+/**
+ * A selected service is either an imported provider or the caller's own export.
+ */
+export type ServiceTarget =
+  | {
+      kind: 'import';
+      name: string;
+    }
+  | {
+      kind: 'export';
+      name: string;
+    };
 export type Network =
   | ('denied' | 'allowed')
   | {
@@ -5207,7 +5219,7 @@ export interface AgentServiceTool {
   confirmation: AgentToolConfirmation;
   name: string;
   description: string;
-  import: string;
+  target: ServiceTarget;
   method: string;
 }
 /**

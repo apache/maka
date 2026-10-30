@@ -41,9 +41,8 @@ pub(super) async fn capture(
         .map_err(ToolError::Failed)?;
     let result = AssertUnwindSafe(async {
         request
-            .call(
-                &service.selection.import,
-                0,
+            .call_target(
+                &service.selection.target,
                 "capture".into(),
                 serde_json::json!({}),
                 Attachments::default(),
@@ -101,14 +100,13 @@ impl RequestBinding for Binding {
                     })?,
                 )
                 .map_err(ToolError::Failed)?;
-            let import = service.selection.import.clone();
+            let target = service.selection.target.clone();
             let capture = workers
                 .spawn(async move {
                     let result = AssertUnwindSafe(async {
                         request
-                            .call(
-                                &import,
-                                0,
+                            .call_target(
+                                &target,
                                 "capture".into(),
                                 serde_json::json!({}),
                                 Attachments::default(),

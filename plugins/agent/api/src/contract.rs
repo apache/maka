@@ -164,8 +164,7 @@ pub struct ServiceTool {
     pub name: String,
     #[schemars(length(min = 1))]
     pub description: String,
-    #[schemars(length(min = 1))]
-    pub import: String,
+    pub target: maka_plugin_core::contract::ServiceTarget,
     #[schemars(length(min = 1))]
     pub method: String,
 }

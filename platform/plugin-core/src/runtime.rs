@@ -173,6 +173,7 @@ struct Live<T> {
     activation: Activation,
     plan: Option<Instance>,
     phase: Phase,
+    export_epochs: BTreeMap<String, Uuid>,
     exports: BTreeMap<String, Registration<T>>,
     calls: BTreeMap<Uuid, Work<T>>,
     resources: BTreeMap<Uuid, OwnedResource>,
@@ -303,6 +304,12 @@ impl<T> Runtime<T> {
             Origin::Local(instance.clone()),
             Live {
                 activation: activation.clone(),
+                export_epochs: plan
+                    .host_entry()
+                    .into_iter()
+                    .flat_map(|entry| entry.exports.keys())
+                    .map(|name| (name.clone(), Uuid::new_v4()))
+                    .collect(),
                 plan: Some(plan),
                 phase: Phase::Loading,
                 exports: BTreeMap::new(),
@@ -359,6 +366,7 @@ impl<T> Runtime<T> {
                 activation: activation.clone(),
                 plan: None,
                 phase: Phase::Active,
+                export_epochs: BTreeMap::new(),
                 exports: BTreeMap::from([(
                     target.export,
                     Registration {
@@ -415,10 +423,11 @@ impl<T> Runtime<T> {
         live.exports = batch
             .into_iter()
             .map(|(name, published)| {
+                let epoch = live.export_epochs[&name];
                 (
                     name,
                     Registration {
-                        epoch: Uuid::new_v4(),
+                        epoch,
                         contract: published.contract,
                         value: Arc::new(published.value),
                     },
@@ -427,6 +436,26 @@ impl<T> Runtime<T> {
             .collect();
         live.phase = Phase::Active;
         Ok(())
+    }
+
+    /// Capture an owner's declared export without adding an import dependency.
+    /// The capability becomes callable only after successful publication.
+    pub fn own_export(&self, owner: &Activation, export: &str) -> Result<Capability<T>, Error> {
+        let live = self.owner(owner)?;
+        if live.phase == Phase::Retiring {
+            return Err(Error::Retired);
+        }
+        let epoch = *live
+            .export_epochs
+            .get(export)
+            .ok_or_else(|| Error::Contract(format!("undeclared own export: {export}")))?;
+        Ok(Capability {
+            consumer: owner.clone(),
+            provider: owner.clone(),
+            export: export.into(),
+            epoch,
+            _type: std::marker::PhantomData,
+        })
     }
 
     /// Bind during loading or while active. Structural imports are only routing
