@@ -75,7 +75,7 @@ export function WorkspacePicker(props: {
   instance: number;
   current(): boolean;
   close(instance: number): boolean;
-  create(workspace: AgentWorkspaceSelection): Promise<void>;
+  create(workspace: AgentWorkspaceSelection, label?: string): Promise<void>;
   changed(): void;
 }) {
   const host = useHost();
@@ -232,7 +232,7 @@ export function WorkspacePicker(props: {
     )
       return;
     if (props.close(props.instance))
-      void props.create({ kind: 'directory', selection: action.selection });
+      void props.create({ kind: 'directory', selection: action.selection }, directory.path);
   };
   const roots = async () => {
     await host.refresh();
@@ -313,7 +313,7 @@ export function WorkspacePicker(props: {
         if (!path || !alive || !props.current()) return;
         const selection = await resolve(path);
         if (alive && props.close(props.instance))
-          void props.create({ kind: 'directory', selection });
+          void props.create({ kind: 'directory', selection }, path);
       } catch (reason) {
         if (alive) error.set(errorText(reason));
       } finally {

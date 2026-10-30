@@ -1371,6 +1371,26 @@ export const conversationMessages = {
     '{tool} · 權限邊界：{revision}',
   ],
   'Attachment path': ['Attachment path', '附件路径', '附件路徑'],
+  'The conversation draft changed. Open the conversation to review it.': [
+    'The conversation draft changed. Open the conversation to review it.',
+    '此会话的草稿已发生变化，请打开会话查看。',
+    '此對話的草稿已發生變化，請開啟對話查看。',
+  ],
+  'Finish or recover the pending action before reloading.': [
+    'Finish or recover the pending action before reloading.',
+    '请先完成或恢复待处理操作，再重新加载。',
+    '請先完成或恢復待處理操作，再重新載入。',
+  ],
+  'The action was not dispatched. Try again.': [
+    'The action was not dispatched. Try again.',
+    '操作未发送，请重试。',
+    '操作未傳送，請重試。',
+  ],
+  'This conversation was already created. Finish sending it before changing workspaces.': [
+    'This conversation was already created. Finish sending it before changing workspaces.',
+    '此会话已创建，请先完成发送再更换工作区。',
+    '此對話已建立，請先完成傳送再更換工作區。',
+  ],
   'Absolute file path\u2026': ['Absolute file path…', '绝对文件路径…', '絕對檔案路徑…'],
   'Upload selected file': ['Upload selected file', '上传所选文件', '上傳所選檔案'],
   'Uploading\u2026': ['Uploading…', '正在上传…', '正在上傳…'],

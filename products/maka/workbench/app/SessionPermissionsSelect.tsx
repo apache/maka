@@ -21,8 +21,14 @@ import { textTooltip } from './ui';
 import { inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Button, Popover } from 'nsh/base';
 import { windowSize } from 'nsh';
-import type { AgentWorkspaceAccess } from '../../../../packages/plugin-sdk/src/index.js';
-import type { ComposerPermissions as SessionPermissions } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import type {
+  AgentSession,
+  AgentWorkspaceAccess,
+} from '../../../../packages/plugin-sdk/src/index.js';
+import type {
+  ComposerPermissions as SessionPermissions,
+  PendingComposerPermissions,
+} from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { delayed } from './delayed';
 import { Icon } from './Icon';
@@ -54,10 +60,27 @@ const accessDetail = (access: AgentWorkspaceAccess) =>
     danger_full_access: tr('Sandbox off'),
   })[access];
 
-export function SessionPermissionsSelect(props: { owner: SessionPermissions | null }) {
+type MenuSnapshot = {
+  session: AgentSession | null;
+  permissions: { access: AgentWorkspaceAccess | null; requestPermissions: boolean | null };
+};
+type PermissionChange =
+  | { kind: 'access'; value: AgentWorkspaceAccess }
+  | { kind: 'requests'; value: boolean };
+type MenuOwner = {
+  pending(): boolean;
+  error(): string;
+  snapshot(): MenuSnapshot | null;
+  select(input: { snapshot: MenuSnapshot; change: PermissionChange }): void;
+};
+
+export function SessionPermissionsSelect(props: {
+  owner: SessionPermissions | null;
+  pending?: PendingComposerPermissions | null;
+}) {
   return (
     <View style={{ minWidth: 0, flexShrink: 1 }}>
-      <If when={props.owner === null}>
+      <If when={props.owner === null && !props.pending}>
         <Button
           disabled
           accessibilityLabel={tr('Sandbox and approvals')}
@@ -72,13 +95,62 @@ export function SessionPermissionsSelect(props: { owner: SessionPermissions | nu
         of={props.owner ? [props.owner] : []}
         key={(owner: SessionPermissions) => owner.sessionId}
       >
-        {(owner) => <PermissionsMenu owner={owner()} />}
+        {(item) => {
+          const owner = item();
+          const menu: MenuOwner = {
+            pending: owner.pending,
+            error: owner.error,
+            snapshot: () => {
+              const session = owner.snapshot();
+              return session ? { session, permissions: session.permissions } : null;
+            },
+            select: ({ snapshot, change }) => {
+              const session = snapshot.session;
+              if (!session) return;
+              const settings =
+                change.kind === 'access'
+                  ? { ...session.permissions, access: change.value }
+                  : { ...session.permissions, requestPermissions: change.value };
+              void owner.select({ session, settings });
+            },
+          };
+          return <PermissionsMenu owner={menu} />;
+        }}
+      </Each>
+      <Each<PendingComposerPermissions>
+        of={props.pending ? [props.pending] : []}
+        key={(owner) => owner.id}
+      >
+        {(item) => {
+          const owner = item();
+          const menu: MenuOwner = {
+            pending: owner.pending,
+            error: () => '',
+            snapshot: () => ({
+              session: null,
+              permissions: {
+                access: owner.access(),
+                requestPermissions: owner.requestPermissions(),
+              },
+            }),
+            select: ({ snapshot, change }) => {
+              if (
+                snapshot.permissions.access !== owner.access() ||
+                snapshot.permissions.requestPermissions !== owner.requestPermissions()
+              )
+                return;
+              if (change.kind === 'access') owner.selectAccess(change.value);
+              else owner.selectRequests(change.value);
+            },
+          };
+          return <PermissionsMenu owner={menu} />;
+        }}
       </Each>
     </View>
   );
 }
 
-function PermissionsMenu(props: { owner: SessionPermissions }) {
+function PermissionsMenu(props: { owner: MenuOwner }) {
   const owner = props.owner;
   const open = signal(false);
   // A save that settles quickly keeps the menu as it is. Choices made while
@@ -193,8 +265,8 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
                         : accessLabel(access())
                     }
                     onPress={inputAction(owner.select, {
-                      session: owner.snapshot()!,
-                      settings: { ...owner.snapshot()!.permissions, access: access() },
+                      snapshot: owner.snapshot()!,
+                      change: { kind: 'access', value: access() },
                     })}
                     style={rowStyle()}
                     hoverStyle={controlHoverStyle()}
@@ -242,8 +314,8 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
                       ask() ? tr('Ask for approval') : tr('Do not ask for approval')
                     }
                     onPress={inputAction(owner.select, {
-                      session: owner.snapshot()!,
-                      settings: { ...owner.snapshot()!.permissions, requestPermissions: ask() },
+                      snapshot: owner.snapshot()!,
+                      change: { kind: 'requests', value: ask() },
                     })}
                     style={rowStyle()}
                     hoverStyle={controlHoverStyle()}

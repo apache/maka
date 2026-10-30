@@ -180,6 +180,8 @@ export function createHost(application: UiHost) {
           };
     },
     query,
+    stageFiles: (files: string[]) => nativeHost.stageFiles(files),
+    stageClipboard: () => nativeHost.stageClipboard(),
     hasService: (endpoint: string) => nativeHost.hasService(endpoint),
     refresh: () => nativeHost.refresh(),
     subscribe,
@@ -196,6 +198,8 @@ export function createHost(application: UiHost) {
     async control(method: string, input: unknown) {
       return attempt(await nativeHost.control(method, input));
     },
+    beginControl: (method: string, input: unknown) =>
+      nativeHost.beginControl(method, input) as Promise<OriginalMutation>,
     async settingsMutation(
       endpoint: string,
       method: string,

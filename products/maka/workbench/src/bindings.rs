@@ -194,6 +194,8 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
     registry.register::<uploads::AttachmentPicker>();
     registry.class::<terminal_grid::TerminalGrid>();
     registry.class::<uploads::UploadIntake>();
+    registry.class::<uploads::StagedFile>();
+    registry.class::<uploads::StagedClipboard>();
     registry.class::<ui_services::UiScope>();
     registry.value("host", make_host);
     registry
@@ -291,6 +293,27 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    /// Snapshot files selected for a conversation that has not yet been sent.
+    pub async fn stage_files(
+        this: Instance<Self>,
+        files: Vec<String>,
+    ) -> Result<Vec<Instance<uploads::StagedFile>>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        let snapshots = uploads::stage_files(owner.clone(), files).await?;
+        Ok(snapshots
+            .into_iter()
+            .map(|file| uploads::staged_file(owner.clone(), file))
+            .collect())
+    }
+    /// Capture an explicit clipboard paste before a session exists.
+    pub async fn stage_clipboard(
+        this: Instance<Self>,
+    ) -> Result<Instance<uploads::StagedClipboard>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        Ok(Instance::new(uploads::stage_clipboard(owner).await?))
+    }
     pub fn asset_uri(&self, uri: String) -> Result<String, String> {
         self.client.asset_uri(uri)
     }
@@ -605,6 +628,24 @@ impl ApplicationHost {
         .await
     }
 
+    /// Prepare an Agent control before the caller confirms the original operation.
+    pub async fn begin_control(
+        this: Instance<Self>,
+        method: String,
+        input: JsonValue,
+    ) -> Result<Instance<OriginalMutation>, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            let mutation = client.control(Uuid::new_v4(), &method, input).await?;
+            mutation.prepare().await?;
+            Ok(OriginalMutation::new(owner, mutation))
+        })
+        .await?;
+        Ok(Instance::new(original))
+    }
+
     /// Confirm one Settings mutation with an optional request-local secret resource.
     pub async fn settings_mutation(
         this: Instance<Self>,
@@ -842,6 +883,17 @@ impl ScopedHost {
     /// Admit files selected by this editor's native paste or drop gesture.
     pub fn begin_file_drop(&self, uris: Vec<String>) -> Instance<uploads::UploadIntake> {
         Instance::new(uploads::UploadIntake::files(self.scope.clone(), uris))
+    }
+
+    /// Upload a file that was selected before the session was created.
+    pub fn begin_staged_upload(
+        &self,
+        file: Instance<uploads::StagedFile>,
+    ) -> Result<Instance<uploads::UploadIntake>, String> {
+        Ok(Instance::new(uploads::UploadIntake::staged(
+            self.scope.clone(),
+            file,
+        )?))
     }
 
     /// Read native clipboard content only for the user's explicit paste action.
