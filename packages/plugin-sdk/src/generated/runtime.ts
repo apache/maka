@@ -3953,6 +3953,7 @@ export type ModelFailureCause =
   | {
       kind: 'provider';
       reason: ProviderFailureReason;
+      retry_at_unix_ms?: number | null;
     }
   | {
       kind: 'adapter';
@@ -3961,6 +3962,7 @@ export type ProviderFailureReason =
   | 'network'
   | 'timed_out'
   | 'rate_limit'
+  | 'quota_exhausted'
   | 'provider_unavailable'
   | 'stream_truncated';
 export type ModelInterruption = ('cancelled' | 'timed_out' | 'failed') | 'retryable_failure';

@@ -99,6 +99,7 @@ async fn collection_waits_for_the_last_history_owner_and_preserves_frozen_accoun
             model_failure: Some(
                 maka_agent_facts::model::error::ModelFailureCause::Provider {
                     reason: maka_agent_facts::model::error::ProviderFailureReason::Network,
+                    retry_at_unix_ms: None,
                 },
             ),
             diagnostic: None,
@@ -116,6 +117,7 @@ async fn collection_waits_for_the_last_history_owner_and_preserves_frozen_accoun
                 model_failure: Some(
                     maka_agent_facts::model::error::ModelFailureCause::Provider {
                         reason: maka_agent_facts::model::error::ProviderFailureReason::Network,
+                        retry_at_unix_ms: None,
                     },
                 ),
                 class: "connection_lost".into(),

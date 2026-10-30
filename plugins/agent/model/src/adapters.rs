@@ -29,6 +29,7 @@ mod media;
 mod prompt;
 mod request;
 mod responses;
+mod retry;
 pub(crate) mod wire;
 
 use crate::ProviderKind;

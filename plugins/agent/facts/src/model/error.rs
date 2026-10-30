@@ -23,14 +23,16 @@ use std::time::Duration;
 /// A provider failure with protocol-level evidence for safe replay.
 #[derive(Clone, Debug, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[error("provider failed ({reason:?}): {message}")]
+#[error("provider failed ({reason:?}): {message}{retry}", retry = .retry_at_unix_ms.map(|ms| format!(" (retry at Unix {ms} ms)")).unwrap_or_default())]
 pub struct ProviderFailure {
     reason: ProviderFailureReason,
     message: String,
+    status: Option<u16>,
+    code: Option<String>,
     replay_safe: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     retained_output_safe: bool,
-    retry_after_ms: Option<u64>,
+    retry_at_unix_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -39,6 +41,7 @@ pub enum ProviderFailureReason {
     Network,
     TimedOut,
     RateLimit,
+    QuotaExhausted,
     ProviderUnavailable,
     StreamTruncated,
 }
@@ -48,7 +51,7 @@ impl ProviderFailure {
         reason: ProviderFailureReason,
         message: impl Into<String>,
         replay_safe: bool,
-        retry_after_ms: Option<u64>,
+        retry_at_unix_ms: Option<u64>,
     ) -> Self {
         let mut message = message.into();
         if message.len() > 4096 {
@@ -61,13 +64,28 @@ impl ProviderFailure {
         Self {
             reason,
             message,
+            status: None,
+            code: None,
             replay_safe,
             retained_output_safe: false,
-            retry_after_ms: retry_after_ms.filter(|value| (1..=2_147_483_647).contains(value)),
+            retry_at_unix_ms,
         }
     }
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub fn with_diagnostic(mut self, status: Option<u16>, code: Option<String>) -> Self {
+        self.status = status;
+        self.code = code;
+        self
+    }
+
+    pub fn status(&self) -> Option<u16> {
+        self.status
+    }
+    pub fn code(&self) -> Option<&str> {
+        self.code.as_deref()
     }
 
     pub fn reason(&self) -> ProviderFailureReason {
@@ -89,15 +107,58 @@ impl ProviderFailure {
         self.retained_output_safe
     }
 
+    pub fn retry_at_unix_ms(&self) -> Option<u64> {
+        self.retry_at_unix_ms
+    }
+
+    /// The provider deadline is a lower bound, independent of replay authorization.
     pub fn retry_after(&self) -> Option<Duration> {
-        self.retry_after_ms.map(Duration::from_millis)
+        self.retry_delay_at(Self::now_unix_ms())
+    }
+
+    pub fn retry_delay_at(&self, now_unix_ms: u64) -> Option<Duration> {
+        self.retry_at_unix_ms
+            .map(|at| Duration::from_millis(at.saturating_sub(now_unix_ms)))
+    }
+
+    pub fn now_unix_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| {
+                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+            })
+    }
+
+    pub fn retryable(&self) -> bool {
+        matches!(
+            self.reason,
+            ProviderFailureReason::Network
+                | ProviderFailureReason::TimedOut
+                | ProviderFailureReason::RateLimit
+                | ProviderFailureReason::ProviderUnavailable
+                | ProviderFailureReason::StreamTruncated
+        )
+    }
+
+    pub fn restrict_replay(mut self, safe: bool) -> Self {
+        self.replay_safe &= safe;
+        self
+    }
+
+    pub fn with_retry_at(mut self, retry_at_unix_ms: Option<u64>) -> Self {
+        self.retry_at_unix_ms = self
+            .retry_at_unix_ms
+            .into_iter()
+            .chain(retry_at_unix_ms)
+            .max();
+        self
     }
 
     pub fn validate(&self) -> Result<(), ModelError> {
         if self.message.len() > 4096
             || self
-                .retry_after_ms
-                .is_some_and(|delay| !(1..=2_147_483_647).contains(&delay))
+                .status
+                .is_some_and(|status| !(100..600).contains(&status))
         {
             return Err(ModelError::Adapter(
                 "invalid provider failure evidence".into(),
@@ -119,6 +180,8 @@ pub enum ModelFailureCause {
     ContextOverflow,
     Provider {
         reason: ProviderFailureReason,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_at_unix_ms: Option<u64>,
     },
     Adapter,
 }
@@ -167,8 +230,45 @@ impl ModelError {
             Self::ContextOverflow { .. } => ModelFailureCause::ContextOverflow,
             Self::Provider(failure) => ModelFailureCause::Provider {
                 reason: failure.reason(),
+                retry_at_unix_ms: failure.retry_at_unix_ms,
             },
             Self::Adapter(_) | Self::CleanupUnconfirmed => ModelFailureCause::Adapter,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_retry_windows_survive_terminal_classification_and_serialization() {
+        let error = ModelError::Provider(ProviderFailure::new(
+            ProviderFailureReason::RateLimit,
+            "account usage window exhausted",
+            true,
+            Some(2_592_000_000),
+        ));
+        let cause = error.failure_cause().unwrap();
+        assert_eq!(
+            serde_json::to_value(&cause).unwrap(),
+            serde_json::json!({
+                "kind": "provider", "reason": "rate_limit", "retry_at_unix_ms": 2_592_000_000u64,
+            })
+        );
+        assert_eq!(
+            error.to_string(),
+            "provider failed (RateLimit): account usage window exhausted (retry at Unix 2592000000 ms)"
+        );
+        let decoded: ModelError =
+            serde_json::from_value(serde_json::to_value(error).unwrap()).unwrap();
+        let ModelError::Provider(failure) = decoded else {
+            panic!("failure evidence lost")
+        };
+        failure.validate().unwrap();
+        assert_eq!(
+            failure.retry_delay_at(0),
+            Some(Duration::from_secs(2_592_000))
+        );
     }
 }
