@@ -1,6 +1,6 @@
 {
   "inputs": {
-    "Cargo.lock": "a0a10665c9875dc6fbcede7cd7078245194ea482151eafacf9ada812ec40e4d0",
+    "Cargo.lock": "71c87183411a568bbb0897e264303443c36fe3acb80d8119bd31b82ae242d497",
     "Cargo.toml": "9c58d4f2ef93b548e6c02de8950270a9da42bcfea000ab262a78985e75e672e7",
     "package-lock.json": "863e20d94f46507befd14d7abe94982bb110dff3efaa13b9d1c3b60333f8d64a",
     "package.json": "a513ba49c73a1cd6d8060d9a4f2edb47f5286469553cf3b3f4959b9ceb64fa58",
@@ -16,7 +16,7 @@
     "packages/plugin-sdk/src/workspace-view.ts": "860bd38f16a18a061355521da3d25fa30e8ec4afa7c933fb725db95a5310d2db",
     "patches/zod+4.6.7.patch": "5a6cbff1b31ca2a5d2b7c006abb7b1002241dbf4ae42c315c27940201f52b081",
     "platform/background-health/Cargo.toml": "41e89dc7e43adf066306b03b3083cbd4163a5550f39d5be6669463d3c16c53a5",
-    "platform/capabilities/Cargo.toml": "11a690e4a2679c59e1c22da27e25b97e8fe47a7ec38df19519c71c2406a0ce8f",
+    "platform/capabilities/Cargo.toml": "9b5407113c0595744e1da903e41171f6311be1a543309fe35cd977c3c62041d7",
     "platform/code-runtime/Cargo.toml": "30a8e555effeaa063b11d255d60d6f858d53e3bd950e2f162382324ef0a7cc20",
     "platform/computer-use/Cargo.toml": "a98ddcf5a438f3a5b9489be024351d47426676fdafb544f9f067ffc7c211dc4d",
     "platform/computer-use/THIRD_PARTY_NOTICES": "8b25853c9fe8f668531e01e69c6c803e511b7beac5b642f52b4fdf545bfa5dea",
@@ -53,7 +53,7 @@
     "plugins/agent/insights/Cargo.toml": "e11b391c1304bb27d552322e9f31b9e1858340f81f49ebbb3d484b02c9238def",
     "plugins/agent/mcp/Cargo.toml": "495fd90383de06577b24218bfd6af32515751588e55e3b582a414a76ac5d4906",
     "plugins/agent/mcp/tests/server.mjs": "306bbf4c8a2ab189ab7626a060666d30c3e876b4d262367da587b194cd7d6134",
-    "plugins/agent/model/Cargo.toml": "9131005e3748674fe2b0f823d7dbcfad39c6be6bae55ad6d435cdd1b2b505b66",
+    "plugins/agent/model/Cargo.toml": "71853814cfc14e842f4aea0ef1eb5a76b6e231ed612ec21f98368c03027d3873",
     "plugins/agent/native/Cargo.toml": "8b9899e7077e169b84e2648d70b2a0c38500ae2a88a65f6253865bfec39eea1e",
     "plugins/agent/ports/Cargo.toml": "f7623bda4c4413a1d4377eda079a769ff98a6ca9b6b40cf880d34dc30ba6a6f7",
     "plugins/agent/provider-protocol/Cargo.toml": "0f9c2b7f6ca51854d1dd93400b5377ea5110d6352ce78639bf6235bbed187aa9",

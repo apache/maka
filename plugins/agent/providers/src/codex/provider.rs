@@ -31,6 +31,7 @@ use maka_agent_ports::provider::Descriptor;
 use maka_agent_ports::provider::Discovery;
 use maka_agent_ports::provider::Error;
 use maka_agent_ports::provider::Model;
+use maka_agent_ports::provider::Policy;
 use maka_agent_ports::provider::Provider;
 use maka_agent_ports::provider::Resolve;
 use maka_agent_ports::provider::Verification;
@@ -40,7 +41,7 @@ use maka_agent_ports::provider::authentication::Method;
 use maka_capabilities::http;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex";
 #[derive(Deserialize, Serialize, schemars::JsonSchema)]
@@ -65,26 +66,33 @@ pub(super) fn configuration(connection: &Connection) -> Result<String, Error> {
 
 impl Codex {
     pub fn definition(&self) -> Result<Definition, maka_capabilities::Error> {
-        Definition::new(
-            Descriptor {
-                label: "ChatGPT Subscription".into(),
-                custom_endpoint: false,
-                configuration_schema: serde_json::to_value(schemars::schema_for!(Configuration))
-                    .map_err(|e| maka_capabilities::Error::Invalid(e.to_string()))?,
-                configuration_defaults: json!({ "baseUrl": ENDPOINT }),
-                authentication: vec![Method {
-                    id: "chatgpt".into(),
-                    label: "Sign in with ChatGPT".into(),
-                    input_schema: serde_json::to_value(schemars::schema_for!(LoginInput))
-                        .map_err(|e| maka_capabilities::Error::Invalid(e.to_string()))?,
-                    interactive: true,
-                }],
-                anonymous: false,
-                discovery: true,
-            },
-            Arc::new(self.clone()),
-        )
-        .map_err(|e| maka_capabilities::Error::Invalid(e.to_string()))
+        static POLICY: OnceLock<Result<Arc<Policy>, String>> = OnceLock::new();
+        let policy = POLICY
+            .get_or_init(Self::compile_policy)
+            .clone()
+            .map_err(maka_capabilities::Error::Invalid)?;
+        Ok(Definition::new(policy, Arc::new(self.clone())))
+    }
+
+    fn compile_policy() -> Result<Arc<Policy>, String> {
+        Policy::new(Descriptor {
+            label: "ChatGPT Subscription".into(),
+            custom_endpoint: false,
+            configuration_schema: serde_json::to_value(schemars::schema_for!(Configuration))
+                .map_err(|e| e.to_string())?,
+            configuration_defaults: json!({ "baseUrl": ENDPOINT }),
+            authentication: vec![Method {
+                id: "chatgpt".into(),
+                label: "Sign in with ChatGPT".into(),
+                input_schema: serde_json::to_value(schemars::schema_for!(LoginInput))
+                    .map_err(|e| e.to_string())?,
+                interactive: true,
+            }],
+            anonymous: false,
+            discovery: true,
+        })
+        .map(Arc::new)
+        .map_err(|e| e.to_string())
     }
 }
 impl Provider for Codex {

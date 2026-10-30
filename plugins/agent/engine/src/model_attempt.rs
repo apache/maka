@@ -290,24 +290,19 @@ pub(super) async fn execute_main(
 
 pub(super) async fn execute_frozen_main(
     inner: &Arc<RunContext>,
-    frozen: &crate::frozen_request::FrozenRequest<'_>,
-    lane: maka_model::Conversation,
-    continuation_base: Option<u64>,
+    input: &RunSettings,
+    source: RequestSource,
+    prompt: PreparedPrompt,
+    main: Main<'_>,
     consumption: maka_agent_facts::model_retry::ModelRetryConsumption,
     cancellation: &CancellationToken,
 ) -> (u64, Result<Outcome, RunError>) {
     execute_retry_chain(
         inner,
-        &frozen.input,
-        frozen.source.clone(),
-        frozen.prompt.clone(),
-        Main {
-            lane,
-            continuation_base,
-            surface: frozen.surface.clone(),
-            tools: &frozen.tools,
-            prior_unknown: frozen.source.capture.prior_unknown,
-        },
+        input,
+        source,
+        prompt,
+        main,
         Some(consumption),
         cancellation,
     )

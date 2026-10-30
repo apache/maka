@@ -84,16 +84,16 @@ pub(super) async fn resume(
     inner: &Arc<RunContext>,
     input: &mut RunSettings,
     work: crate::runner::ModelWork,
-    point: ModelResumePoint,
+    mut point: ModelResumePoint,
     cancellation: &CancellationToken,
     handoff: &crate::HandoffGate,
     effects: &maka_event_log::root_store::InvocationEffects,
 ) -> Result<StepExit, RunError> {
-    input.context = point.context.clone();
-    input.provider_options = point.provider_options.clone();
+    input.context = point.context.take();
+    input.provider_options = std::mem::take(&mut point.provider_options);
     input.main_output_limit = point.main_output_limit;
     input.supports_vision = point.supports_vision;
-    let opening_id = point.opening_id.clone();
+    let opening_id = std::mem::take(&mut point.opening_id);
     run_from(
         inner,
         input,
@@ -120,8 +120,11 @@ pub(super) async fn resume_retry(
     handoff: &crate::HandoffGate,
     effects: &maka_event_log::root_store::InvocationEffects,
 ) -> Result<StepExit, RunError> {
-    let RetryContinuation { point, consumption } = continuation;
-    let opening_id = point.opening_id.clone();
+    let RetryContinuation {
+        mut point,
+        consumption,
+    } = continuation;
+    let opening_id = std::mem::take(&mut point.opening_id);
     run_from(
         inner,
         input,
@@ -182,20 +185,19 @@ async fn run_from(
     let mut handoff_cleanup = None;
     let result = std::panic::AssertUnwindSafe(async {
         use maka_agent_facts::handoff::CompactionBudget;
-        let mut compaction = resume
-            .as_ref()
-            .map_or(CompactionBudget::Available, |point| point.compaction);
-        // This tracks work after this physical opening, not after the logical root.
-        // A successor may compact the sealed prefix with a PreTurn boundary.
-        let mut main_progress = resume.as_ref().is_some_and(|point| point.main_progress);
-        if let Some(point) = &resume {
+        let (mut compaction, mut main_progress) = if let Some(point) = resume {
             tools.restore(&point.tools)?;
             if point.finish_turn {
                 return Ok(StepExit::Terminal(
                     maka_agent_facts::event::InvocationOutcome::Completed,
                 ));
             }
-        }
+            (point.compaction, point.main_progress)
+        } else {
+            (CompactionBudget::Available, false)
+        };
+        // This tracks work after this physical opening, not after the logical root.
+        // A successor may compact the sealed prefix with a PreTurn boundary.
         if let Some((checkpoint, budget)) = restored {
             tools.restore(&checkpoint)?;
             compaction = budget;
@@ -204,7 +206,13 @@ async fn run_from(
             let (initial_high_water, high_water, result, request_tools, surface) =
                 if let Some(consumption) = retry.take() {
                     let plan = consumption.plan.clone();
-                    let frozen = crate::frozen_request::rehydrate_frozen_request(
+                    let crate::frozen_request::FrozenRequest {
+                        input: frozen_input,
+                        source,
+                        prompt,
+                        surface,
+                        tools: request_tools,
+                    } = crate::frozen_request::rehydrate_frozen_request(
                         inner,
                         &plan.failure_event_id,
                         input,
@@ -212,23 +220,31 @@ async fn run_from(
                         cancellation,
                     )
                     .await?;
-                    let initial_high_water = frozen.source.evidence.high_water;
+                    let initial_high_water = source.evidence.high_water;
+                    let prior_unknown = source.capture.prior_unknown;
+                    *input = frozen_input;
                     let (high_water, result) = model_attempt::execute_frozen_main(
                         inner,
-                        &frozen,
-                        lane.clone(),
-                        continuation_base,
+                        input,
+                        source,
+                        prompt,
+                        model_attempt::Main {
+                            lane: lane.clone(),
+                            continuation_base,
+                            surface: surface.clone(),
+                            tools: &request_tools,
+                            prior_unknown,
+                        },
                         consumption,
                         cancellation,
                     )
                     .await;
-                    *input = frozen.input;
                     (
                         initial_high_water,
                         high_water,
                         result,
-                        frozen.tools,
-                        frozen.surface,
+                        request_tools,
+                        surface,
                     )
                 } else {
                     crate::interactions::wait_until_clear(

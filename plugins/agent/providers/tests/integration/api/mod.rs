@@ -285,3 +285,53 @@ async fn account_metadata_and_reply_capacity_survive_plugin_policy_resolution() 
     );
     assert_eq!(model.main_output_limit, Some(128000));
 }
+
+#[tokio::test]
+async fn repeated_definitions_keep_each_captured_model_observation() {
+    use maka_providers::{catalog::Snapshot, codex::Codex};
+    use std::sync::Arc;
+
+    for provider in ["openai", "chatgpt"] {
+        let bindings: Vec<_> = [Some(400_000), Some(600_000), None]
+            .into_iter()
+            .map(|context_window| {
+                let record = context_window.map(|context_window| ModelInfo {
+                    context_window: Some(context_window),
+                    max_output_tokens: Some(8_000),
+                    ..ModelInfo::new("gpt-5.4")
+                });
+                let snapshot = Arc::new(Snapshot::for_model(provider, "gpt-5.4", record).unwrap());
+                let binding = if provider == "chatgpt" {
+                    Codex::new(snapshot).definition().unwrap()
+                } else {
+                    ApiProviders::definition(provider, snapshot).unwrap()
+                };
+                (binding, context_window)
+            })
+            .collect();
+        assert!(
+            std::ptr::eq(bindings[0].0.descriptor(), bindings[1].0.descriptor()),
+            "provider {provider} should share its compiled descriptor policy"
+        );
+        for (binding, context_window) in bindings {
+            let configuration = binding.configure(json!({})).unwrap();
+            let model = binding
+                .prepare(Resolve {
+                    connection: Connection {
+                        id: "captured-account".into(),
+                        revision: 1,
+                        configuration,
+                    },
+                    model: ModelInfo::new("gpt-5.4"),
+                    overrides: None,
+                    thinking_level: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                model.info.context_window, context_window,
+                "provider {provider}"
+            );
+        }
+    }
+}
