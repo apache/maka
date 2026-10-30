@@ -180,9 +180,13 @@ impl EventLog {
                     if actual != expected {
                         return Ok(SessionRemovalResult::RevisionConflict { expected, actual });
                     }
-                    plan::fence(&mut tx, &session, plan::Action::Remove).await?;
+                    let approval_revoked =
+                        plan::fence(&mut tx, &session, plan::Action::Remove).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     commits.metadata();
+                    if approval_revoked {
+                        commits.native_approvals();
+                    }
                     Ok(SessionRemovalResult::Accepted(SessionRetirement::Removing))
                 })
             })

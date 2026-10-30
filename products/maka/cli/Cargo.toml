@@ -29,6 +29,7 @@ autotests = false
 [features]
 default = ["native-desktop"]
 native-desktop = ["maka-computer-use/native-desktop"]
+desktop-tests = ["dep:gpui", "dep:gpui_wgpu", "dep:nsh-platform-gpui", "dep:nsh-gpui-terminal"]
 
 [[bin]]
 name = "maka"
@@ -45,6 +46,10 @@ name = "integration"
 path = "tests/integration/main.rs"
 
 [dependencies]
+gpui = { package = "gpui-fast", version = "0.1.10", default-features = false, optional = true }
+gpui_wgpu = { package = "gpui-fast-wgpu", version = "0.1.10", default-features = false, features = ["offscreen"], optional = true }
+nsh-platform-gpui = { workspace = true, optional = true }
+nsh-gpui-terminal = { workspace = true, optional = true }
 maka-ui-build.workspace = true
 maka-code-runtime.workspace = true
 hex.workspace = true

@@ -32,6 +32,7 @@ import type {
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { WorkspacePath } from '../../../../packages/plugin-sdk/src/index.js';
 import { sameRoute } from '../../../../products/maka/workbench/app/modelSelection';
+import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
 import {
   completionToken,
   fileInvocation,
@@ -171,7 +172,7 @@ export function createComposerCompletion(options: Options) {
     editor()?.node.focus();
   };
   const paste = createComposerPaste({
-    session: options.session,
+    owner: options.session,
     active: options.active,
     editor: (owner) => {
       const target = editor();
@@ -448,13 +449,7 @@ export function createComposerCompletion(options: Options) {
     wanted = remote && available ? read : null;
     if (wanted) void pump();
   });
-  const command = (text: string) => {
-    const match = /^\s*\/([^\s]+)(?:\s+([\s\S]*))?$/u.exec(text);
-    if (!match || match[1].startsWith('skill:')) return null;
-    const found = options.commands().find((entry) => entry.trigger === match[1]);
-    const argument = match[2]?.trim() ?? '';
-    return found && (!argument || found.takesArgument) ? { found, argument } : null;
-  };
+  const command = (text: string) => matchComposerCommand(options.commands(), text);
   const runCommand = (
     owner: ComposerSession,
     text: string,
@@ -726,7 +721,7 @@ export function createComposerCompletion(options: Options) {
     selection(owner: ComposerSession, event: Selection) {
       if (options.session() === owner) selection.set({ ...event });
     },
-    composition(owner: ComposerSession, event: { composing: boolean }) {
+    composition(owner: ComposerSession | null, event: { composing: boolean }) {
       if (options.session() === owner) composing.set(event.composing);
     },
     toggleAdd(target: { sessionId: string | null }) {

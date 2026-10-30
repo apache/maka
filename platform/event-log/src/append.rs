@@ -196,6 +196,7 @@ impl EventLog {
                     let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await?;
                     let mut sequences = Vec::with_capacity(events.len());
                     let mut last_inserted = None;
+                    let mut approval_settled = false;
                     for (index, event) in events.iter().enumerate() {
                         let admission = capability.as_ref().filter(|_| index + 1 == events.len());
                         if let Some(admission) = admission {
@@ -248,9 +249,12 @@ impl EventLog {
                             )
                             .await?;
                         }
+                        approval_settled |=
+                            matches!(result, AppendResult::NativeApprovalSettled(_));
                         let sequence = match result {
                             AppendResult::Existing(sequence) => sequence,
-                            AppendResult::Inserted(sequence) => {
+                            AppendResult::Inserted(sequence)
+                            | AppendResult::NativeApprovalSettled(sequence) => {
                                 last_inserted = Some(sequence);
                                 sequence
                             }
@@ -264,6 +268,9 @@ impl EventLog {
                             .await
                             .map_err(StoreError::CommitUnknown)?;
                         commits.publish(sequence);
+                        if approval_settled {
+                            commits.native_approvals();
+                        }
                     } else {
                         transaction.rollback().await?;
                     }
@@ -343,7 +350,8 @@ impl EventLog {
         }
         let sequence =
             ingress::insert(transaction, event, json, ingress::Position::Admitted).await?;
-        crate::native_approvals::append_settlement(transaction, event).await?;
+        let approval_settled =
+            crate::native_approvals::append_settlement(transaction, event).await?;
         crate::native_approvals::append_model_request(transaction, event).await?;
         if matches!(event.fact, Fact::InvocationEnded { .. }) {
             crate::native_approvals::retire_terminal(transaction, &event.invocation).await?;
@@ -384,7 +392,11 @@ impl EventLog {
             crate::sessions::project_execution(transaction, sequence).await?;
             crate::sessions::advance_revision(transaction, &event.invocation.session_id).await?;
         }
-        Ok(AppendResult::Inserted(sequence))
+        Ok(if approval_settled {
+            AppendResult::NativeApprovalSettled(sequence)
+        } else {
+            AppendResult::Inserted(sequence)
+        })
     }
 }
 
@@ -402,6 +414,7 @@ fn commit_error(error: StoreError) -> CommitError {
 pub(crate) enum AppendResult {
     Existing(u64),
     Inserted(u64),
+    NativeApprovalSettled(u64),
 }
 
 impl EventLog {

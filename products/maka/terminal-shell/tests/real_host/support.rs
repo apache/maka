@@ -36,7 +36,6 @@ use maka_host_runtime::{
     application::{
         NativeRegistry,
         host::{Client as HostClient, Configuration, Host},
-        transport::wire,
     },
     ipc::{self, LocalListener},
 };
@@ -55,7 +54,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{Notify, mpsc},
     task::{JoinHandle, JoinSet},
@@ -698,6 +697,22 @@ pub fn wait_draft<'a>(
     }
 }
 
+async fn gate_read<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {
+    let length = reader.read_u32().await? as usize;
+    if length == 0 {
+        return Err(std::io::Error::other("invalid gate frame length"));
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).await?;
+    Ok(body)
+}
+
+async fn gate_write<W: AsyncWrite + Unpin>(writer: &mut W, frame: &[u8]) -> std::io::Result<()> {
+    writer.write_u32(frame.len() as u32).await?;
+    writer.write_all(frame).await?;
+    writer.flush().await
+}
+
 pub struct ReplyGate {
     pub address: PathBuf,
     armed: Arc<AtomicBool>,
@@ -707,7 +722,24 @@ pub struct ReplyGate {
 }
 impl ReplyGate {
     pub fn resolve_model(directory: &Path, target: PathBuf) -> Self {
-        let address = socket(directory, "resolve-model");
+        Self::for_method(directory, target, "settings", "resolveModel", "finished")
+    }
+    #[cfg(feature = "desktop-tests")]
+    pub fn create(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(directory, target, "agent", "create", "mutation")
+    }
+    #[cfg(feature = "desktop-tests")]
+    pub fn upload(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(directory, target, "agent", "uploadAttachment", "mutation")
+    }
+    fn for_method(
+        directory: &Path,
+        target: PathBuf,
+        endpoint: &'static str,
+        method: &'static str,
+        reply: &'static str,
+    ) -> Self {
+        let address = socket(directory, &format!("{endpoint}-{method}"));
         let mut listener = LocalListener::bind(&address).unwrap();
         let armed = Arc::new(AtomicBool::new(false));
         let held = Arc::new(Notify::new());
@@ -720,18 +752,42 @@ impl ReplyGate {
                 let mut connections = JoinSet::new();
                 loop {
                     tokio::select! {
-                        downstream=listener.accept()=>{let downstream=downstream.unwrap();let upstream=ipc::connect(&target).await.unwrap();let armed=armed.clone();let held=held.clone();let release=release.clone();connections.spawn(async move {
-                            let (down_read,mut down_write)=tokio::io::split(downstream);let (up_read,mut up_write)=tokio::io::split(upstream);
-                            let selected=Arc::new(AtomicBool::new(false));let mark=selected.clone();
-                            let up=async move {let mut reader=wire::Reader::new(down_read);while let Ok(value)=reader.read::<Value>().await {
-                                if value["endpoint"]=="settings"&&value["method"]=="resolveModel"{mark.store(true,Ordering::SeqCst);}
-                                if wire::write(&mut up_write,&value).await.is_err(){break;}
-                            }let _=up_write.shutdown().await;};
-                            let down=async move {let mut reader=wire::Reader::new(up_read);while let Ok(value)=reader.read::<Value>().await {
-                                if selected.load(Ordering::SeqCst)&&value["kind"]=="finished"&&armed.swap(false,Ordering::SeqCst){held.notify_one();release.notified().await;}
-                                if wire::write(&mut down_write,&value).await.is_err(){break;}
-                            }let _=down_write.shutdown().await;};tokio::join!(up,down);
-                        });},
+                        accepted=listener.accept()=> {
+                            let downstream=accepted.unwrap(); let upstream=ipc::connect(&target).await.unwrap();
+                            let armed=armed.clone(); let held=held.clone(); let release=release.clone();
+                            connections.spawn(async move {
+                                let (down_read,mut down_write)=tokio::io::split(downstream);
+                                let (up_read,mut up_write)=tokio::io::split(upstream);
+                                let selected=Arc::new(AtomicBool::new(false)); let mark=selected.clone();
+                                let up=async move {
+                                    let mut reader=down_read;
+                                    let mut opening=true;
+                                    while let Ok(frame)=gate_read(&mut reader).await {
+                                        if opening && let Ok(value)=serde_json::from_slice::<Value>(&frame)
+                                            && value.get("endpoint").is_some() && value.get("method").is_some() {
+                                            opening=false;
+                                            if value["endpoint"]==endpoint && value["method"]==method {mark.store(true,Ordering::SeqCst);}
+                                        }
+                                        if gate_write(&mut up_write,&frame).await.is_err(){break;}
+                                    }
+                                    let _=up_write.shutdown().await;
+                                };
+                                let down=async move {
+                                    let mut reader=up_read;
+                                    while let Ok(frame)=gate_read(&mut reader).await {
+                                        if selected.load(Ordering::SeqCst)
+                                            && serde_json::from_slice::<Value>(&frame).is_ok_and(|value|value["kind"]==reply)
+                                            && armed.swap(false,Ordering::SeqCst) {
+                                            held.notify_one();
+                                            release.notified().await;
+                                        }
+                                        if gate_write(&mut down_write,&frame).await.is_err(){break;}
+                                    }
+                                    let _=down_write.shutdown().await;
+                                };
+                                tokio::join!(up,down);
+                            });
+                        }
                         Some(result)=connections.join_next(),if !connections.is_empty()=>{result.unwrap();}
                     }
                 }

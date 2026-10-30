@@ -261,7 +261,7 @@ impl EventLog {
             sqlx::query("INSERT INTO native_approval_checkpoints(id,session_id,invocation_id,checkpoint_json,pending_json,revision,active) VALUES(?,?,?,?,?,?,1)")
               .bind(&checkpoint.id).bind(&checkpoint.invocation.session_id).bind(&checkpoint.invocation.invocation_id).bind(serde_json::to_string(&checkpoint)?).bind(serde_json::to_string(&pending)?).bind(revision).execute(&mut *tx).await?;
             for item in &pending { sqlx::query("INSERT INTO native_approval_operations(checkpoint_id,operation_id,interaction_id,phase) VALUES(?,?,?,'waiting')").bind(&checkpoint.id).bind(&item.operation_id).bind(&item.interaction_id).execute(&mut *tx).await?; }
-            tx.commit().await.map_err(StoreError::CommitUnknown)?; commits.metadata();
+            tx.commit().await.map_err(StoreError::CommitUnknown)?; commits.metadata();commits.native_approvals();
             Ok(ParkResult::Parked(receipt(&checkpoint,revision)?))
         })).await
     }
@@ -374,7 +374,7 @@ impl EventLog {
         self.connection.run(move |db|Box::pin(async move {let mut tx=db.begin_with("BEGIN IMMEDIATE").await?;
             let changed=sqlx::query("UPDATE native_approval_checkpoints SET revoked=1 WHERE invocation_id=? AND session_id=? AND active=1").bind(&invocation.invocation_id).bind(&invocation.session_id).execute(&mut *tx).await?.rows_affected();
             if changed>0 {crate::interactions::lifecycle::close_in_transaction(&mut tx,Some(&invocation),&InteractionOutcome::Closure{reason:maka_agent_facts::interaction::ClosureReason::TurnStopped,committed_at:now}).await?;}
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;if changed>0 {commits.metadata();}Ok(changed>0)
+            tx.commit().await.map_err(StoreError::CommitUnknown)?;if changed>0 {commits.metadata();commits.native_approvals();}Ok(changed>0)
         })).await
     }
 }
@@ -417,7 +417,7 @@ impl EventLog {
             let revoked:bool=sqlx::query_scalar("SELECT revoked FROM native_approval_checkpoints WHERE id=?").bind(&previous.checkpoint_id).fetch_one(&mut *tx).await?;
             if revoked || !permission_current(&mut tx,&checkpoint.invocation).await? {
                 revoke_for_session(&mut tx,&checkpoint.invocation.session_id,now_millis()?).await?;
-                tx.commit().await.map_err(StoreError::CommitUnknown)?;commits.metadata();
+                tx.commit().await.map_err(StoreError::CommitUnknown)?;commits.metadata();commits.native_approvals();
                 return Ok(ParkResult::Changed);
             }
             if !frontier(&mut tx,&checkpoint,&pending,false,true).await? {return Ok(ParkResult::Changed)}
@@ -431,7 +431,7 @@ impl EventLog {
             for item in &pending {sqlx::query("INSERT INTO native_approval_operations(checkpoint_id,operation_id,interaction_id,phase) VALUES(?,?,?,'waiting')").bind(&checkpoint.id).bind(&item.operation_id).bind(&item.interaction_id).execute(&mut *tx).await?;}
             sqlx::query("DELETE FROM native_approval_operations WHERE checkpoint_id=?").bind(&previous.checkpoint_id).execute(&mut *tx).await?;
             sqlx::query("DELETE FROM native_approval_checkpoints WHERE id=?").bind(&previous.checkpoint_id).execute(&mut *tx).await?;
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;commits.metadata();Ok(ParkResult::Parked(receipt(&checkpoint,revision)?))
+            tx.commit().await.map_err(StoreError::CommitUnknown)?;commits.metadata();commits.native_approvals();Ok(ParkResult::Parked(receipt(&checkpoint,revision)?))
         })).await
     }
     pub async fn ready_native_approval_sessions(&self) -> Result<Vec<String>, StoreError> {
@@ -455,16 +455,18 @@ impl EventLog {
                 {changed_sessions.push(session);}
             }
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
-            for session in changed_sessions {commits.session(&session).metadata();}Ok(())
+            for session in changed_sessions {commits.session(&session).metadata();commits.notice().native_approvals();}Ok(())
         })).await
     }
     pub(crate) async fn prepare_native_approval_recovery(
         &self,
     ) -> Result<HashSet<String>, StoreError> {
         self.validate_root()?;
+        let commits = self.commits.notice();
         self.connection.run(move |db|Box::pin(async move {
             let mut tx=db.begin_with("BEGIN IMMEDIATE").await?;
             let checkpoints:Vec<(String,String)>=sqlx::query_as("SELECT checkpoint_json,pending_json FROM native_approval_checkpoints WHERE active=1").fetch_all(&mut *tx).await?;
+            let checkpoints_empty = checkpoints.is_empty();
             let mut preserved=HashSet::new();
             for (json,pending) in checkpoints {
                 let checkpoint:ActivationCheckpoint=serde_json::from_str(&json)?;let mut pending:Vec<NativeApprovalPending>=serde_json::from_str(&pending)?;
@@ -486,7 +488,7 @@ impl EventLog {
                     preserved.insert(checkpoint.invocation.invocation_id);
                 } else {sqlx::query("UPDATE native_approval_checkpoints SET active=0 WHERE id=?").bind(&checkpoint.id).execute(&mut *tx).await?;}
             }
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;Ok(preserved)
+            tx.commit().await.map_err(StoreError::CommitUnknown)?;if !checkpoints_empty {commits.native_approvals();}Ok(preserved)
         })).await
     }
     pub async fn native_approval_dispatch(
@@ -625,7 +627,8 @@ pub(crate) async fn settle_retiring_waits(
     crate::context::validate_batch(tx, &writes).await?;
     let sequence = match appended {
         crate::append::AppendResult::Existing(sequence)
-        | crate::append::AppendResult::Inserted(sequence) => sequence,
+        | crate::append::AppendResult::Inserted(sequence)
+        | crate::append::AppendResult::NativeApprovalSettled(sequence) => sequence,
     };
     Ok(Some(sequence))
 }
@@ -633,13 +636,13 @@ pub(crate) async fn settle_retiring_waits(
 pub(crate) async fn append_settlement(
     tx: &mut SqliteConnection,
     event: &RuntimeEvent,
-) -> Result<(), StoreError> {
+) -> Result<bool, StoreError> {
     let Fact::ToolSettled { operation_id, .. } = &event.fact else {
-        return Ok(());
+        return Ok(false);
     };
-    sqlx::query("UPDATE native_approval_operations SET phase='settled',terminal_event_id=? WHERE checkpoint_id=(SELECT id FROM native_approval_checkpoints WHERE invocation_id=? AND active=1) AND operation_id=?")
-        .bind(&event.id).bind(&event.invocation.invocation_id).bind(operation_id).execute(tx).await?;
-    Ok(())
+    let changed = sqlx::query("UPDATE native_approval_operations SET phase='settled',terminal_event_id=? WHERE checkpoint_id=(SELECT id FROM native_approval_checkpoints WHERE invocation_id=? AND active=1) AND operation_id=?")
+        .bind(&event.id).bind(&event.invocation.invocation_id).bind(operation_id).execute(tx).await?.rows_affected();
+    Ok(changed > 0)
 }
 
 impl EventLog {
@@ -678,14 +681,14 @@ impl EventLog {
             let revoked:bool=sqlx::query_scalar("SELECT revoked FROM native_approval_checkpoints WHERE id=?").bind(&receipt.checkpoint_id).fetch_one(&mut *tx).await?;
             if revoked || !permission_current(&mut tx,&receipt.invocation).await? {
                 revoke_for_session(&mut tx,&receipt.invocation.session_id,now_millis()?).await?;
-                tx.commit().await.map_err(StoreError::CommitUnknown)?;commits.metadata();return Ok(false)
+                tx.commit().await.map_err(StoreError::CommitUnknown)?;commits.metadata();commits.native_approvals();return Ok(false)
             }
             let settled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='tool_settled')").bind(&receipt.invocation.invocation_id).bind(&operation).fetch_one(&mut *tx).await?;
             if settled {return Ok(false)}
             if already_waiting {return Ok(true)}
             let changed=sqlx::query("UPDATE native_approval_operations SET phase='waiting',claim=NULL,host_epoch=NULL WHERE checkpoint_id=? AND operation_id=? AND phase='claimed' AND claim=? AND host_epoch=? AND start_id IS NULL")
                 .bind(&receipt.checkpoint_id).bind(&operation).bind(&claim).bind(&host_epoch).execute(&mut *tx).await?.rows_affected();
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;if changed==1 {commits.metadata();}Ok(changed==1)
+            tx.commit().await.map_err(StoreError::CommitUnknown)?;if changed==1 {commits.metadata();commits.native_approvals();}Ok(changed==1)
         })).await
     }
 }
@@ -710,4 +713,13 @@ pub(crate) async fn append_model_request(
     .execute(tx)
     .await?;
     Ok(())
+}
+
+/// Changes to this request can make an existing parked wait runnable.
+pub(crate) async fn waits_for_interaction(
+    tx: &mut SqliteConnection,
+    request: &str,
+) -> Result<bool, StoreError> {
+    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_operations o JOIN native_approval_checkpoints c ON c.id=o.checkpoint_id WHERE o.interaction_id=? AND c.active=1 AND o.phase='waiting')")
+        .bind(request).fetch_one(tx).await?)
 }

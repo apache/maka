@@ -106,6 +106,15 @@ export function createAttachmentDraft(options: {
   };
   const receive = (operations: any[]) => {
     if (!alive) return;
+    let changed = false;
+    for (const original of operations) {
+      const attachment = uploaded(original);
+      if (!attachment || settled.has(original.id)) continue;
+      if (!files().some((file) => file.id === attachment.id)) files.set([...files(), attachment]);
+      settled.set(original.id, 'pending');
+      changed = true;
+    }
+    if (changed) options.changed();
     originals.set(operations);
     selecting.set(
       selecting().filter((item) => {
@@ -120,16 +129,7 @@ export function createAttachmentDraft(options: {
         );
       }),
     );
-    let changed = false;
-    for (const original of operations) {
-      const attachment = uploaded(original);
-      if (!attachment || settled.has(original.id)) continue;
-      if (!files().some((file) => file.id === attachment.id)) files.set([...files(), attachment]);
-      settled.set(original.id, 'pending');
-      changed = true;
-    }
     restoring.set(false);
-    if (changed) options.changed();
   };
   const receiveOne = (original: any) => {
     const known = originals().find((item) => item.id === original.id);

@@ -171,11 +171,12 @@ impl EventLog {
                         return Ok(None);
                     }
                     authority.check(&mut tx, &plan).await?;
+                    let mut approval_revoked = false;
                     for target in &plan.remove {
-                        fence(&mut tx, target, Action::Remove).await?;
+                        approval_revoked |= fence(&mut tx, target, Action::Remove).await?;
                     }
                     for target in &plan.archive {
-                        fence(&mut tx, target, Action::Archive).await?;
+                        approval_revoked |= fence(&mut tx, target, Action::Archive).await?;
                     }
                     sqlx::query("INSERT INTO session_removal_receipts VALUES (?,?)")
                         .bind(&session)
@@ -183,6 +184,9 @@ impl EventLog {
                         .execute(&mut *tx)
                         .await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    if approval_revoked {
+                        commits.native_approvals();
+                    }
                     commits
                         .for_sessions(plan.remove.iter().chain(&plan.archive).map(String::as_str))
                         .metadata();
@@ -268,11 +272,11 @@ pub(super) async fn fence(
     connection: &mut SqliteConnection,
     session: &str,
     action: Action,
-) -> Result<(), StoreError> {
+) -> Result<bool, StoreError> {
     if let Some(previous) = super::read(connection, session).await? {
         match action {
-            Action::Archive => return Ok(()),
-            Action::Remove if previous.removes() => return Ok(()),
+            Action::Archive => return Ok(false),
+            Action::Remove if previous.removes() => return Ok(false),
             Action::Remove => {}
         }
     }
@@ -291,7 +295,7 @@ pub(super) async fn fence(
             .execute(&mut *connection)
             .await?;
     }
-    crate::native_approvals::revoke_for_session(
+    let approval_revoked = crate::native_approvals::revoke_for_session(
         connection,
         session,
         crate::native_approvals::now_millis()?,
@@ -313,5 +317,6 @@ pub(super) async fn fence(
     if cancelled > 0 {
         crate::message_queue::bump(connection, session).await?;
     }
-    super::super::advance_revision(connection, session).await
+    super::super::advance_revision(connection, session).await?;
+    Ok(approval_revoked)
 }

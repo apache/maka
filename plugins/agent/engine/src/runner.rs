@@ -358,6 +358,7 @@ fn failure_class(error: &RunError) -> &'static str {
         RunError::Model(maka_model::ModelError::ContextOverflow { .. }) => "context_overflow",
         RunError::Tool(_) => "tool_execution",
         RunError::Internal(_) => "runtime_internal",
+        RunError::Checkpoint(_) => "activation_checkpoint",
         RunError::Preparation(_) => "model_preparation",
         RunError::CleanupUnconfirmed
         | RunError::PreparationCleanup(_)

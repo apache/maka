@@ -473,6 +473,11 @@ impl EventLog {
         self.commits.subscribe_session(session)
     }
 
+    /// Register before reading approval state. This hint never grants execution authority.
+    pub fn subscribe_native_approval_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.commits.subscribe_native_approvals()
+    }
+
     /// Register before reading catalog state. Hints include metadata writes;
     /// only a re-read of the canonical catalog revision establishes a change.
     pub fn subscribe_catalog_changes(&self) -> tokio::sync::watch::Receiver<()> {

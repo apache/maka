@@ -20,6 +20,8 @@
 mod attachments;
 mod catalog_association;
 mod components;
+#[cfg(feature = "desktop-tests")]
+mod desktop_new_session;
 mod keyboard;
 mod send_hold;
 mod support;

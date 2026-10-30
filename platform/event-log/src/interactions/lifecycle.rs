@@ -65,11 +65,15 @@ impl EventLog {
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let count = close_in_transaction(&mut tx, scope.as_ref(), &outcome).await?;
+                    let (count, approval_ready) =
+                        close_notified_in_transaction(&mut tx, scope.as_ref(), &outcome).await?;
                     if count > 0 {
                         tx.commit().await.map_err(StoreError::CommitUnknown)?;
                         // Interaction facts wake observers without advancing the execution cursor.
                         commits.metadata();
+                        if approval_ready {
+                            commits.native_approvals();
+                        }
                     } else {
                         tx.rollback().await?;
                     }
@@ -96,7 +100,7 @@ pub(crate) async fn require_closed(
     invocation: &Invocation,
 ) -> Result<(), StoreError> {
     validate_scope(invocation)?;
-    if visit_pending(connection, Some(invocation), None).await? > 0 {
+    if visit_pending(connection, Some(invocation), None).await?.0 > 0 {
         return Err(invalid("cannot seal a Run with pending interactions"));
     }
     Ok(())
@@ -107,6 +111,16 @@ pub(crate) async fn close_in_transaction(
     scope: Option<&Invocation>,
     outcome: &InteractionOutcome,
 ) -> Result<usize, StoreError> {
+    Ok(close_notified_in_transaction(connection, scope, outcome)
+        .await?
+        .0)
+}
+
+pub(crate) async fn close_notified_in_transaction(
+    connection: &mut SqliteConnection,
+    scope: Option<&Invocation>,
+    outcome: &InteractionOutcome,
+) -> Result<(usize, bool), StoreError> {
     if !matches!(outcome, InteractionOutcome::Closure { .. }) {
         return Err(invalid("interaction closure requires a closure outcome"));
     }
@@ -132,9 +146,10 @@ async fn visit_pending(
     connection: &mut SqliteConnection,
     scope: Option<&Invocation>,
     closure: Option<&InteractionOutcome>,
-) -> Result<usize, StoreError> {
+) -> Result<(usize, bool), StoreError> {
     let mut after = String::new();
     let mut count = 0;
+    let mut approval_ready = false;
     loop {
         // Separate statements keep Session closure an indexed Session seek,
         // while startup recovery pages the global active set only.
@@ -155,7 +170,7 @@ async fn visit_pending(
                 .await?
         };
         if ids.is_empty() {
-            return Ok(count);
+            return Ok((count, approval_ready));
         }
         for id in &ids {
             if scope.is_none() && closure.is_some() {
@@ -177,7 +192,9 @@ async fn visit_pending(
             {
                 continue;
             }
-            let Some(closure) = closure else { return Ok(1) };
+            let Some(closure) = closure else {
+                return Ok((1, false));
+            };
             closure
                 .validate_for_request(&record.request)
                 .map_err(invalid)?;
@@ -186,6 +203,8 @@ async fn visit_pending(
                 .bind(encode(closure)?)
                 .execute(&mut *connection)
                 .await?;
+            approval_ready |=
+                crate::native_approvals::waits_for_interaction(connection, id).await?;
             count += 1;
             crate::sessions::advance_revision(connection, &record.session_id).await?;
         }

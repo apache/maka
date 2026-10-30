@@ -29,11 +29,7 @@ pub(super) async fn upload(
 ) -> Result<Value, String> {
     let file = f._dir.path().join(name);
     std::fs::write(&file, bytes).unwrap();
-    let snapshot = maka_ui_support::file::read_selected(
-        &file,
-        &maka_ui_support::budget::NativeBudget::default(),
-    )
-    .unwrap();
+    let snapshot = maka_ui_support::file::read_selected(&file).unwrap();
     f.mutation_with(
         2,
         "uploadAttachment",
@@ -55,9 +51,7 @@ async fn large_selected_upload_keeps_complete_bytes_and_session_authority() {
     let file = f._dir.path().join("large.txt");
     std::fs::write(&file, &bytes).unwrap();
     let completed = async {
-        let snapshot = maka_ui_support::file::read_selected(
-            &file, &maka_ui_support::budget::NativeBudget::default(),
-        ).map_err(|error| error.to_string())?;
+        let snapshot = maka_ui_support::file::read_selected(&file).map_err(|error| error.to_string())?;
         let uploaded = f.mutation_with(
             2, "uploadAttachment",
             json!({"sessionId":session,"name":"large.txt","bytes":bytes.len(),"digest":content_digest(&bytes)}),
