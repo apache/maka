@@ -48,8 +48,23 @@ export type BotTranscriptMessage = {
  * Bot Session subscribes; other Sessions make one head lookup and stop. Chat shows
  * nothing but these messages from the Bot, so a Turn with none simply shows none.
  */
-export function createBotTranscriptCore(host: BotHost, sessionId: string, changed: () => void) {
-  let isBot = false;
+/** Whether this Session is the Bot is `unknown` until the Host has said so. */
+export type BotIdentity = 'unknown' | 'bot' | 'ordinary';
+const IDENTITY_RETRY_MS = [500, 1500, 4000, 10000];
+
+export function createBotTranscriptCore(
+  host: BotHost,
+  sessionId: string,
+  changed: () => void,
+  wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  /** The Bot Session the application already knows: a string, `null` for none, `undefined` if unknown. */
+  known: () => string | null | undefined = () => undefined,
+) {
+  const fromKnown = (): BotIdentity => {
+    const bot = known();
+    return bot === undefined ? 'unknown' : bot === sessionId ? 'bot' : 'ordinary';
+  };
+  let identity: BotIdentity = fromKnown();
   let byTurn: ReadonlyMap<string, BotTranscriptMessage[]> = new Map();
   let alive = true;
   let stream: { close(): Promise<void> } | null = null;
@@ -81,12 +96,32 @@ export function createBotTranscriptCore(host: BotHost, sessionId: string, change
   const started = new Promise<void>((resolve) => {
     ready = resolve;
   });
+  /** Ask who the Bot is, retrying a failed lookup; a failure never decides "ordinary". */
+  const identify = async (): Promise<boolean> => {
+    for (let attempt = 0; alive; attempt++) {
+      const prior = fromKnown();
+      if (prior !== 'unknown') {
+        identity = prior;
+        changed();
+        return identity === 'bot';
+      }
+      try {
+        const head = await host.query('agent', 'botOutbox', { limit: 0 });
+        if (!alive) return false;
+        identity = head.sessionId === sessionId ? 'bot' : 'ordinary';
+        changed();
+        return identity === 'bot';
+      } catch {
+        const delay = IDENTITY_RETRY_MS[attempt];
+        if (delay === undefined) return false;
+        await wait(delay);
+      }
+    }
+    return false;
+  };
   void (async () => {
     try {
-      const head = await host.query('agent', 'botOutbox', { limit: 0 });
-      if (!alive || head.sessionId !== sessionId) return;
-      isBot = true;
-      changed();
+      if (!(await identify())) return;
       const opened = await host.subscribe('agent', 'watchBotOutbox', { limit: 0 });
       if (!alive) {
         await opened.close();
@@ -102,7 +137,7 @@ export function createBotTranscriptCore(host: BotHost, sessionId: string, change
         changed();
       }
     } catch {
-      // Not the Bot Session, or the Bot mode is off: the conversation stays ordinary.
+      // The watch ended; what was read stays.
     } finally {
       ready();
     }
@@ -110,7 +145,8 @@ export function createBotTranscriptCore(host: BotHost, sessionId: string, change
 
   return {
     started,
-    isBot: () => isBot,
+    identity: (): BotIdentity => (identity === 'unknown' ? fromKnown() : identity),
+    isBot: () => identity === 'bot' || (identity === 'unknown' && fromKnown() === 'bot'),
     forTurn: (turnId: string): BotTranscriptMessage[] => byTurn.get(turnId) ?? [],
     close() {
       alive = false;

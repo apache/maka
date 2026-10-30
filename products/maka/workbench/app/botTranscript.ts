@@ -27,11 +27,21 @@ export type { BotTranscriptMessage } from './botTranscriptCore';
 export function createBotTranscript(
   host: Pick<ReturnType<typeof createHost>, 'query' | 'subscribe'>,
   sessionId: string,
+  known: () => string | null | undefined = () => undefined,
 ) {
   const version = signal(0);
-  const core = createBotTranscriptCore(host as never, sessionId, () => version.set(version() + 1));
+  const core = createBotTranscriptCore(
+    host as never,
+    sessionId,
+    () => version.set(version() + 1),
+    undefined,
+    // Read through a signal so a later answer from the application is noticed.
+    () => known(),
+  );
   return {
-    isBot: () => (version(), core.isBot()),
+    isBot: () => (version(), known(), core.isBot()),
+    /** `unknown` until the Host answers; Chat must not treat unknown as ordinary. */
+    identity: () => (version(), known(), core.identity()),
     forTurn: (turnId: string) => (version(), core.forTurn(turnId)),
     close: () => core.close(),
   };

@@ -148,3 +148,109 @@ test('an ordinary Session makes one lookup and never subscribes', async () => {
   assert.equal(subscribed, false);
   core.close();
 });
+
+/** A Host whose identity lookup (`limit: 0`) can be held back or made to fail. */
+function slowIdentity({ hold = false, failures = 0, bot = SESSION } = {}) {
+  const state = { hold, failures, releases: [], lookups: 0 };
+  const query = async (_endpoint, _method, input) => {
+    if (input.limit === 0) {
+      state.lookups += 1;
+      if (state.hold) await new Promise((resolve) => state.releases.push(resolve));
+      if (state.failures > 0) {
+        state.failures -= 1;
+        throw new Error('identity lookup failed');
+      }
+      return { sessionId: bot, through: 0, messages: [] };
+    }
+    return { sessionId: bot, through: 0, messages: [], nextAfter: null };
+  };
+  const subscribe = async () => ({ next: () => new Promise(() => {}), close: async () => {} });
+  return { state, host: { query, subscribe } };
+}
+const noWait = async () => {};
+
+test('identity is unknown, not ordinary, while the lookup is pending', async () => {
+  const { state, host: h } = slowIdentity({ hold: true });
+  const core = createBotTranscriptCore(h, SESSION, () => {}, noWait);
+  await settle();
+  assert.equal(core.identity(), 'unknown');
+  assert.equal(core.isBot(), false);
+  state.hold = false;
+  for (const release of state.releases) release();
+  await core.started;
+  assert.equal(core.identity(), 'bot');
+  core.close();
+});
+
+test('a failed identity lookup is retried and never decides ordinary', async () => {
+  const { state, host: h } = slowIdentity({ failures: 2 });
+  const core = createBotTranscriptCore(h, SESSION, () => {}, noWait);
+  await core.started;
+  assert.equal(core.identity(), 'bot');
+  // Two failures, then the successful lookup; the watch then reads the head once more.
+  assert.ok(state.lookups >= 3, `retried (${state.lookups} lookups)`);
+  core.close();
+});
+
+test('identity stays unknown when every lookup fails', async () => {
+  const { host: h } = slowIdentity({ failures: 100 });
+  const core = createBotTranscriptCore(h, SESSION, () => {}, noWait);
+  await core.started;
+  assert.equal(core.identity(), 'unknown');
+  core.close();
+});
+
+test("a Session the Host reports as someone else's Bot is ordinary", async () => {
+  const { host: h } = slowIdentity({ bot: 'other-session' });
+  const core = createBotTranscriptCore(h, SESSION, () => {}, noWait);
+  await core.started;
+  assert.equal(core.identity(), 'ordinary');
+  core.close();
+});
+
+test('an identity the application already knows is used without waiting for the lookup', async () => {
+  const { state, host: h } = slowIdentity({ hold: true });
+  const asBot = createBotTranscriptCore(
+    h,
+    SESSION,
+    () => {},
+    noWait,
+    () => SESSION,
+  );
+  const asOrdinary = createBotTranscriptCore(
+    h,
+    'ordinary',
+    () => {},
+    noWait,
+    () => SESSION,
+  );
+  const none = createBotTranscriptCore(
+    h,
+    SESSION,
+    () => {},
+    noWait,
+    () => null,
+  );
+  assert.equal(asBot.identity(), 'bot');
+  assert.equal(asOrdinary.identity(), 'ordinary');
+  assert.equal(none.identity(), 'ordinary');
+  assert.equal(state.lookups, 0, 'no lookup is needed');
+  for (const core of [asBot, asOrdinary, none]) core.close();
+});
+
+test('a later answer from the application settles an unknown identity', async () => {
+  const { host: h } = slowIdentity({ failures: 100 });
+  let known;
+  const core = createBotTranscriptCore(
+    h,
+    SESSION,
+    () => {},
+    noWait,
+    () => known,
+  );
+  await core.started;
+  assert.equal(core.identity(), 'unknown');
+  known = SESSION;
+  assert.equal(core.identity(), 'bot');
+  core.close();
+});

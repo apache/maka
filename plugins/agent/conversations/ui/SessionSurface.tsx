@@ -1053,7 +1053,8 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   };
   // The Bot is one persistent Session per installation; the first open creates it
   // in the current conversation's workspace, later opens return the same Session.
-  const botSession = signal<string | null>(null);
+  // `undefined` until the Host has answered; then the Bot Session or `null` for none.
+  const botSession = signal<string | null | undefined>(undefined);
   const refreshBotSession = async () => {
     const head = await host.query('agent', 'botOutbox', { limit: 0 });
     if (alive) botSession.set(head.sessionId ?? null);
@@ -1604,6 +1605,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               {(id) => (
                 <Conversation
                   client={host.session(id())}
+                  botSession={botSession}
                   visible={() =>
                     selected() === id() && overlay() === null && (shell()?.visible() ?? false)
                   }

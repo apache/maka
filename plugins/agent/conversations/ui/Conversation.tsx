@@ -185,6 +185,8 @@ export type ConversationHandle = Omit<
 type ConversationProps = {
   client: ScopedHost;
   control: Control;
+  /** The Bot Session when the application knows it; `null` for none; `undefined` if unknown. */
+  botSession?(): string | null | undefined;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
   /**
    * Edit and resend a user message, or regenerate a reply (desktop): fork before
@@ -341,7 +343,7 @@ export function Conversation(props: ConversationProps) {
   const reading = signal<'chat' | 'trajectory'>('chat');
   // In the Bot Session, Chat shows what the Bot told the user (SendUser); its own
   // replies and steps stay in Trajectory.
-  const bot = createBotTranscript(host, sessionId);
+  const bot = createBotTranscript(host, sessionId, () => props.botSession?.());
   const readingSize = signal({ width: 640, height: 192 });
   const innerReader = signal<string | null>(null);
   // The process group whose activity list last reported its end.
@@ -474,7 +476,10 @@ export function Conversation(props: ConversationProps) {
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
-    const botChat = bot.isBot() && reading() === 'chat';
+    // Until the Host has said whether this is the Bot, assume it is: showing the model's
+    // own text on the Bot's Chat would publish internal output, while a short blank on an
+    // ordinary conversation only delays it. Reading a Bot never becomes visible by failing.
+    const botChat = bot.identity() !== 'ordinary' && reading() === 'chat';
     // The Bot's reply to a Turn is what it sent with SendUser during that Turn,
     // shown after the Turn's own entries.
     let openTurn: string | undefined;
@@ -543,7 +548,7 @@ export function Conversation(props: ConversationProps) {
         if (
           reading() === 'trajectory' &&
           (row.role === 'user' ||
-            (row.finalOutput && !bot.isBot()) ||
+            (row.finalOutput && bot.identity() === 'ordinary') ||
             row.role === 'compaction' ||
             (!row.turnId && row.role !== 'failure'))
         )
