@@ -31,8 +31,13 @@ use maka_agent_facts::model::ModelToolCall;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::tools::ToolError;
-use maka_agent_facts::tools::ToolJournal;
+use maka_agent_facts::tools::{ApprovalContinuation, ToolContinuation, ToolFuture, ToolJournal};
 use serde_json::Value;
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::availability::{Availability, LoadedTools, SEARCH};
@@ -379,16 +384,87 @@ pub struct PreparedCall<'a> {
 }
 
 /// The writer installs the prefix receipt before polling the one-shot completion.
-pub struct PublishedCall<'a> {
+pub struct PublishedCall {
     pub prefix_sequences: Vec<u64>,
-    pub completion: BoxFuture<'a, Result<Value, ToolError>>,
+    pub completion: CallContinuation,
+}
+
+pub enum CallContinuation {
+    Executing(ToolFuture<Value>),
+    Approval(PendingCall),
+}
+
+impl CallContinuation {
+    pub fn into_future(self) -> ToolFuture<Value> {
+        Box::pin(self)
+    }
+}
+
+impl Future for CallContinuation {
+    type Output = Result<Value, ToolError>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        loop {
+            match this {
+                Self::Executing(future) => return future.as_mut().poll(cx),
+                Self::Approval(pending) => match Pin::new(pending).poll(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(future) => *this = Self::Executing(future),
+                },
+            }
+        }
+    }
+}
+
+struct CallSettlement {
+    finish_turn: bool,
+    finished: Arc<AtomicBool>,
+    availability: Availability,
+    name: String,
+}
+
+impl CallSettlement {
+    fn complete(self, execution: ToolFuture<Value>) -> ToolFuture<Value> {
+        Box::pin(async move {
+            let result = execution.await?;
+            if self.finish_turn {
+                self.finished.store(true, Ordering::Release);
+            }
+            self.availability.settled(&self.name, &result)?;
+            Ok(result)
+        })
+    }
+}
+
+pub struct PendingCall {
+    approval: Box<ApprovalContinuation<Value>>,
+    settlement: Option<CallSettlement>,
+}
+
+impl PendingCall {
+    pub fn pending(&self) -> &maka_agent_facts::native_approval::NativeApprovalPending {
+        self.approval.pending()
+    }
+}
+
+impl Future for PendingCall {
+    type Output = ToolFuture<Value>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        match Pin::new(this.approval.as_mut()).poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(execution) => Poll::Ready(
+                this.settlement
+                    .take()
+                    .expect("pending call settles once")
+                    .complete(execution),
+            ),
+        }
+    }
 }
 
 impl<'a> PreparedCall<'a> {
-    pub fn publish(
-        self,
-        prefix: &[EventWrite],
-    ) -> BoxFuture<'a, Result<PublishedCall<'a>, ToolError>> {
+    pub fn publish(self, prefix: &[EventWrite]) -> BoxFuture<'a, Result<PublishedCall, ToolError>> {
         let prefix = prefix.to_vec();
         Box::pin(async move {
             let Self {
@@ -427,19 +503,26 @@ impl<'a> PreparedCall<'a> {
                         .await?
                 }
             };
-            let completion = Box::pin(async move {
-                let result = published.completion.await?;
-                let catalog = if request.run.mode == ToolMode::CodeMode {
-                    &request.direct
-                } else {
-                    &request.catalog
-                };
-                if catalog.semantics(&call.name) == Ok(ToolSemantics::FinishTurn) {
-                    request.finished.store(true, Ordering::Release);
+            let catalog = if request.run.mode == ToolMode::CodeMode {
+                &request.direct
+            } else {
+                &request.catalog
+            };
+            let settlement = CallSettlement {
+                finish_turn: catalog.semantics(&call.name) == Ok(ToolSemantics::FinishTurn),
+                finished: request.finished.clone(),
+                availability: request.availability.clone(),
+                name: call.name,
+            };
+            let completion = match published.completion {
+                ToolContinuation::Executing(execution) => {
+                    CallContinuation::Executing(settlement.complete(execution))
                 }
-                request.availability.settled(&call.name, &result)?;
-                Ok(result)
-            });
+                ToolContinuation::Approval(approval) => CallContinuation::Approval(PendingCall {
+                    approval,
+                    settlement: Some(settlement),
+                }),
+            };
             Ok(PublishedCall {
                 prefix_sequences: published.prefix_sequences,
                 completion,

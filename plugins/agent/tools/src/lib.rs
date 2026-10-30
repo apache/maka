@@ -22,5 +22,7 @@ mod cell;
 mod code_executor;
 pub use code_executor::CodeExecutor;
 mod dispatch;
-pub use dispatch::{PreparedCall, PublishedCall, RequestTools, RunTools, StepTools};
+pub use dispatch::{
+    CallContinuation, PendingCall, PreparedCall, PublishedCall, RequestTools, RunTools, StepTools,
+};
 pub use maka_tool_catalog::*;

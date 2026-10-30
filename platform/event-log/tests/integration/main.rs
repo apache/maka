@@ -42,6 +42,8 @@ mod interactions;
 mod message_interrupts;
 mod message_queue;
 mod message_submit_receipts;
+mod native_approval_read_lane;
+mod native_approvals;
 mod native_turn_interruption;
 mod navigation;
 mod observation;

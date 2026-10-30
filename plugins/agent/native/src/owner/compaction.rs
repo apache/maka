@@ -141,6 +141,7 @@ impl Owner {
             return rejected(CompactRejection::Archived);
         }
         if runs.busy(&input.session_id)
+            || self.has_parked_invocation(&input.session_id).await?
             || !self
                 .store
                 .session(&input.session_id)
@@ -243,6 +244,7 @@ impl Owner {
             tools: Arc::default(),
         };
         let run = RunInput {
+            native_activation_basis: None,
             invocation: invocation.clone(),
             model_source: Some(Arc::new(source)),
             model_revision: Some(prepared.revision),

@@ -206,6 +206,7 @@ pub(crate) struct Owner {
     managed_worktrees: std::path::PathBuf,
     engine: Engine,
     tools: maka_tools::ToolCatalog,
+    native_approval_executor: Arc<dyn maka_agent_engine::NativeApprovalExecutor>,
     mcp: crate::mcp::Servers,
     mcp_projects: Arc<crate::mcp::Projects>,
     tool_basis: Arc<Vec<crate::tools::SelectedTool>>,
@@ -228,6 +229,25 @@ pub(crate) enum BuiltinBehavior {
 }
 
 impl Owner {
+    async fn has_parked_invocation(&self, session: &str) -> Result<bool, String> {
+        match async {
+            self.store
+                .session(session)
+                .await?
+                .native_approval_checkpoint(session)
+                .await
+        }
+        .await
+        {
+            Ok(checkpoint) => Ok(checkpoint.is_some()),
+            Err(
+                maka_event_log::StoreError::SessionNotFound
+                | maka_event_log::StoreError::SessionRetired,
+            ) => Ok(false),
+            Err(_) => Err("agent_execution_unavailable".into()),
+        }
+    }
+
     pub(crate) fn preview_epoch(&self) -> &str {
         &self.revision.activation
     }
@@ -492,6 +512,7 @@ impl Owner {
             basis: tool_basis,
             editing: editing_tools,
             planning: planning_tools,
+            executor: native_approval_executor,
         } = match prepared_tools {
             Ok(tools) => tools,
             Err(error) => {
@@ -564,6 +585,7 @@ impl Owner {
             credentials,
             engine,
             tools,
+            native_approval_executor,
             mcp,
             mcp_projects,
             tool_basis: Arc::new(tool_basis),
@@ -922,6 +944,7 @@ impl Owner {
                 });
             }
             if runs.busy(&input.session_id)
+                || self.has_parked_invocation(&input.session_id).await?
                 || !self.store.session(&input.session_id).await.map_err(|error| error.to_string())?.message_queue(&input.session_id).await.map_err(|_| "agent_queue_unavailable")?.entries.is_empty()
                 || self.store.session(&input.session_id).await.map_err(|error| error.to_string())?.latest_turn_boundary(&input.session_id).await.map_err(|_| "agent_execution_unavailable")?
                     .is_some_and(|boundary| matches!(boundary.state, maka_event_log::turns::InvocationState::Ended { outcome: maka_agent_facts::event::InvocationOutcome::HandoffPaused { .. }, .. })) {
@@ -1032,11 +1055,12 @@ impl Owner {
                 selected.excluding(&excluded)
             }
         };
-        Ok(if discovery {
+        let selected = if discovery {
             selected.with_discovery()
         } else {
             selected
-        })
+        };
+        Ok(selected)
     }
     pub async fn send(
         self: &Arc<Self>,
@@ -1110,6 +1134,18 @@ impl Owner {
                 return Err(reason.into());
             }
             current.map(|control| control.invocation.clone())
+        };
+        let queued = match queued {
+            Some(invocation) => Some(invocation),
+            None => self
+                .store
+                .session(&id)
+                .await
+                .map_err(|error| error.to_string())?
+                .native_approval_checkpoint(&id)
+                .await
+                .map_err(|_| "agent_execution_unavailable")?
+                .map(|parked| parked.checkpoint.invocation),
         };
         let session = self.session(&id).await?;
         if session.archived {
@@ -1186,6 +1222,18 @@ impl Owner {
                             return Err(reason.into());
                         }
                         current.map(|control| control.invocation.clone())
+                    };
+                    let queued = match queued {
+                        Some(invocation) => Some(invocation),
+                        None => self
+                            .store
+                            .session(&id)
+                            .await
+                            .map_err(|error| error.to_string())?
+                            .native_approval_checkpoint(&id)
+                            .await
+                            .map_err(|_| "agent_execution_unavailable")?
+                            .map(|parked| parked.checkpoint.invocation),
                     };
                     let current = self.session(&id).await?;
                     if current.configuration != session.configuration || current.archived {

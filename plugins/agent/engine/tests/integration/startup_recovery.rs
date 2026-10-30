@@ -348,6 +348,7 @@ async fn unknown_dispatch_stays_unknown_and_blocks_next_admission_after_reopen()
         .run(
             log.store(),
             RunInput {
+                native_activation_basis: None,
                 model_source: None,
                 model_revision: None,
                 provider_id: "fixture".into(),
@@ -438,6 +439,7 @@ async fn explicit_new_message_after_unknown_dispatch_informs_model_without_repla
         });
         let engine = Engine::new(ModelExecutor::new(Duration::from_secs(5)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
         let run = RunInput {
+            native_activation_basis: None,
             model_source: None,
             model_revision: None,
             provider_id: "fixture".into(),

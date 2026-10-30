@@ -247,6 +247,9 @@ async fn compact(worker: &maka_agent_engine::Engine, log: &SessionFixture, throu
     .await
     .expect("compact timed out")
     .expect("compact failed");
+    let maka_agent_engine::ActivationExit::Terminal(invocation) = invocation else {
+        panic!("compact fixture unexpectedly parked")
+    };
     server.await.unwrap();
     let through = *log.subscribe_commits().borrow();
     let page = log
@@ -508,6 +511,9 @@ async fn engine_long_history() {
             .expect("engine Run timed out")
             .expect("engine Run failed");
             let completion_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let maka_agent_engine::ActivationExit::Terminal(invocation) = invocation else {
+                panic!("measured terminal fixture unexpectedly parked")
+            };
             println!(
                 "{}",
                 json!({"phase":"measure_done", "history_turns":turns, "repetition":repetition})
