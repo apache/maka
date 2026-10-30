@@ -117,7 +117,7 @@ async fn composer_slash_command_and_workspace_reference_edit_the_native_draft() 
     let mut view = component("composer").await;
     wait_editable_composer(&mut view).await;
     view.handle_event(TerminalEvent::Paste("/insp".into()));
-    support::click_button(&mut view, "Inspect draft").await;
+    support::click_button(&mut view, "/inspect").await;
     wait_view(&mut view, |screen| screen.contains("command:inspect")).await;
     wait_view_state(&mut view, |view, _| {
         view.surface()
