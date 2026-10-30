@@ -110,9 +110,15 @@ pub async fn run(
             None,
             RunWork::Continuation { source, tools, .. } | RunWork::Handoff { source, tools, .. },
         ) => Some(
-            crate::continuation::prepare(&inner, &input, source, tools, &cancellation)
-                .await?
-                .claim,
+            Box::pin(crate::continuation::prepare(
+                &inner,
+                &input,
+                source,
+                tools,
+                &cancellation,
+            ))
+            .await?
+            .claim,
         ),
         _ => None,
     };
