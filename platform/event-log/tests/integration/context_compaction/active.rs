@@ -42,6 +42,10 @@ fn request(id: &str, step: &str, purpose: ModelPurpose, source: &ModelContextSou
     event(
         id,
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             effective_source_digest: (purpose == ModelPurpose::Summary)

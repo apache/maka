@@ -26,6 +26,7 @@ pub use maka_agent_facts::model::request::Credentials;
 pub use maka_agent_facts::model::request::Provider;
 pub use maka_agent_facts::model::request::ProviderKind;
 pub use maka_agent_facts::model::request::Request;
+pub use maka_agent_facts::model::retry_transport::RetryTransportPhase;
 use maka_capabilities::http;
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
@@ -108,6 +109,19 @@ pub struct Context {
 /// Disposable per-conversation optimization state, never a history authority.
 pub trait Session: Send + Sync {
     fn stream(&self, request: Request, context: Context) -> BoxFuture<'static, Result<(), Error>>;
+    /// Observe semantic transport consumption, including automatic fallback.
+    fn retry_transport_phase(&self) -> RetryTransportPhase {
+        RetryTransportPhase::Primary
+    }
+    /// Restore a fresh session before streaming; unsupported fallback fails closed.
+    fn restore_retry_transport_phase(&self, phase: RetryTransportPhase) -> Result<(), Error> {
+        match phase {
+            RetryTransportPhase::Primary => Ok(()),
+            RetryTransportPhase::Fallback => Err(Error::Adapter(
+                "model session does not support restoring fallback transport".into(),
+            )),
+        }
+    }
     /// Select an unused fallback after the caller exhausts replay-safe retries
     /// and drains the failed stream. Returns true only when transport changes;
     /// this never sends a request or authorizes replay itself.

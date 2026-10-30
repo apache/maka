@@ -43,6 +43,10 @@ pub(crate) fn event(fact: Fact, micros: u64) -> EventWrite {
 pub(crate) fn request(id: &str, micros: u64) -> EventWrite {
     event(
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             step_id: id.into(),

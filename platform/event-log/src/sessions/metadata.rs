@@ -249,7 +249,7 @@ impl EventLog {
                         .ok_or(StoreError::SessionNotFound)?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     if approval_revoked {
-                        commits.native_approvals();
+                        commits.activations();
                     }
                     if let (Some(control), Some(old), Some(now)) =
                         (root_app_control, retired_basis, permission_time)

@@ -69,21 +69,21 @@ impl RootStore {
 }
 
 impl RootStore {
-    /// Register before reading the initial approval snapshot.
-    pub fn subscribe_native_approval_changes(&self) -> RootSubscription {
+    /// Register before reading the initial activation snapshot.
+    pub fn subscribe_activation_changes(&self) -> RootSubscription {
         RootSubscription {
             receivers: self
                 .partitions
                 .iter()
-                .map(|log| log.subscribe_native_approval_changes())
+                .map(|log| log.subscribe_activation_changes())
                 .collect(),
             stop: self.gates.cancellation(),
         }
     }
     /// Shared permission changes require reconciliation in each partition.
-    pub fn subscribe_native_approval_control_changes(&self) -> RootSubscription {
+    pub fn subscribe_activation_control_changes(&self) -> RootSubscription {
         RootSubscription {
-            receivers: vec![self.control.subscribe_native_approval_changes()],
+            receivers: vec![self.control.subscribe_activation_changes()],
             stop: self.gates.cancellation(),
         }
     }

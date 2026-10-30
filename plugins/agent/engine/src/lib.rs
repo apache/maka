@@ -26,6 +26,7 @@ mod executor;
 pub use executor::ExecutorInput;
 mod handoff;
 pub use handoff::{HandoffGate, HandoffReservation, HeldHandoff, PendingSeal};
+mod frozen_request;
 mod history;
 mod interactions;
 mod model_attempt;
@@ -37,6 +38,10 @@ pub mod pricing;
 mod request_composition;
 pub use history::project as project_model_history;
 mod prune;
+#[cfg(feature = "test-support")]
+pub mod retry_fixture;
+mod retry_resume;
+pub use retry_resume::RetryResumeInput;
 mod resume;
 pub use resume::{NativeApprovalExecutor, ResumeContinuation, ResumeInput};
 mod runner;

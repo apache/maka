@@ -107,6 +107,10 @@ pub async fn accepted(log: &EventLog, invocation: &Invocation, calls: &[ModelToo
             },
         },
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             effective_source_digest: None,

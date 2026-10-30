@@ -44,6 +44,10 @@ pub(super) fn event(fact: Fact, micros: u64) -> EventWrite {
 pub(super) fn request(id: &str, micros: u64) -> EventWrite {
     event(
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             step_id: id.into(),
@@ -422,6 +426,10 @@ async fn session_auxiliary_counts_once_and_bundle_import_uses_the_same_settlemen
         .append_batch(&[
             event(
                 Fact::ModelRequested {
+                    source_capture: maka_agent_facts::event::SourceCapture {
+                        publication_watermark: 0,
+                        prior_unknown: false,
+                    },
                     context_breakdown: None,
                     item_acceptance: false,
                     step_id: "imported".into(),

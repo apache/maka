@@ -248,6 +248,8 @@ impl Job {
                     cancellation,
                     &mut false,
                     &mut None,
+                    &mut None,
+                    None,
                 )
                 .await;
                 let output = match result {

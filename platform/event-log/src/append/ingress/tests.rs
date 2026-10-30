@@ -178,6 +178,10 @@ fn visible_tool_prefix() -> Vec<EventWrite> {
     let invocation = opened.invocation.clone();
     let facts = [
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             item_acceptance: true,
             step_id: "step".into(),
             model_id: "model".into(),

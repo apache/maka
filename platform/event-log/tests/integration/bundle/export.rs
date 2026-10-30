@@ -366,3 +366,168 @@ async fn imported_start_position_rejects_nonempty_branch_history() {
     }
     log.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn frozen_request_capture_relocates_a_watermark_outside_the_exported_session() {
+    use maka_agent_facts::{
+        composition::{CompositionEvidence, RequestComposition},
+        context::ModelPurpose,
+        event::{ModelInterruption, SourceCapture},
+    };
+    use maka_event_log::bundle::StagedBundle;
+    use std::{collections::BTreeMap, sync::Arc};
+    let directory = tempfile::tempdir().unwrap();
+    let log = EventLog::open(&directory.path().join("frozen-source.sqlite"))
+        .await
+        .unwrap();
+    log.create_session("source", "source", &json!({}), 1)
+        .await
+        .unwrap();
+    log.create_session("unrelated", "unrelated", &json!({}), 1)
+        .await
+        .unwrap();
+    open(&log, "request", "original input".into()).await;
+    let unrelated = Invocation {
+        session_id: "unrelated".into(),
+        turn_id: "unrelated".into(),
+        run_id: "unrelated".into(),
+        invocation_id: "unrelated".into(),
+    };
+    for fact in [
+        Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::Code {
+                source: "outside the bundle".into(),
+            },
+        },
+        Fact::InvocationEnded {
+            outcome: InvocationOutcome::Completed,
+        },
+    ] {
+        log.append(&EventWrite::plain(RuntimeEvent::new(unrelated.clone(), fact)).unwrap())
+            .await
+            .unwrap();
+    }
+    let view = log
+        .read_model_view("source", Some("request"))
+        .await
+        .unwrap();
+    assert!(view.selection.captured_through > view.source_evidence.high_water);
+    let composition = RequestComposition {
+        system_prompt: Some("original system".into()),
+        dynamic_context: vec![],
+        tool_catalog_digest: maka_agent_facts::artifact::content_digest(b"[]"),
+        tools: vec![],
+        provider_options: Some(json!({})),
+        max_output_tokens: None,
+        sources: vec![],
+    };
+    let request = event(
+        "request",
+        Fact::ModelRequested {
+            source_capture: SourceCapture {
+                publication_watermark: view.selection.captured_through,
+                prior_unknown: true,
+            },
+            context_breakdown: None,
+            item_acceptance: false,
+            effective_source_digest: Some(view.effective_source_digest),
+            purpose: ModelPurpose::Main,
+            context: None,
+            step_id: "frozen-step".into(),
+            model_id: "test".into(),
+            source_scope: view.source_evidence.scope,
+            source_high_water: view.source_evidence.high_water,
+            source_digest: view.source_evidence.digest,
+            input_digest: "fixture-input".into(),
+            route_identity: format!("sha256:{}", "a".repeat(64)),
+            checkpoint_event_id: None,
+        },
+    );
+    let original = request.event().id.clone();
+    let invocation = request.event().invocation.clone();
+    log.append(
+        &request
+            .with_composition(CompositionEvidence::Inline(Arc::new(
+                composition.freeze().unwrap(),
+            )))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let interruption = event(
+        "request",
+        Fact::ModelInterrupted {
+            step_id: "frozen-step".into(),
+            status: ModelInterruption::Cancelled,
+            diagnostic: None,
+            model_failure: None,
+            partial: None,
+        },
+    );
+    let failure_id = interruption.event().id.clone();
+    log.append(&interruption).await.unwrap();
+    end(&log, "request").await;
+    let inventory = log.preview_bundle("source").await.unwrap();
+    let (bytes, _) = log
+        .export_bundle("source", &inventory.subtree_digest, Vec::new())
+        .await
+        .unwrap();
+    let destination = EventLog::open(&directory.path().join("frozen-destination.sqlite"))
+        .await
+        .unwrap();
+    destination
+        .create_session("destination", "destination", &json!({}), 1)
+        .await
+        .unwrap();
+    for n in 0..3 {
+        let identity = Invocation {
+            session_id: "destination".into(),
+            turn_id: format!("destination-{n}"),
+            run_id: format!("destination-{n}"),
+            invocation_id: format!("destination-{n}"),
+        };
+        for fact in [
+            Fact::InvocationOpened {
+                configuration: None,
+                input: InvocationInput::Code {
+                    source: "offset".into(),
+                },
+            },
+            Fact::InvocationEnded {
+                outcome: InvocationOutcome::Completed,
+            },
+        ] {
+            destination
+                .append(&EventWrite::plain(RuntimeEvent::new(identity.clone(), fact)).unwrap())
+                .await
+                .unwrap();
+        }
+    }
+    destination
+        .import_bundle(
+            StagedBundle::read(&bytes[..]).await.unwrap(),
+            &maka_agent_facts::artifact::content_digest(b"fixture-binding"),
+            BTreeMap::from([("source".into(), json!({}))]),
+        )
+        .await
+        .unwrap();
+    let restored = destination
+        .read_frozen_model_request(&invocation, &failure_id)
+        .await
+        .unwrap();
+    assert_eq!(restored.request.event.id, original);
+    assert_eq!(
+        restored.view.selection.captured_through, restored.view.source_evidence.high_water,
+        "an omitted foreign event is relocated as a fence"
+    );
+    assert!(restored.view.selection.prior_unknown);
+    assert_eq!(
+        restored.view.selection.before,
+        restored.view.selection.captured_through + 1
+    );
+    assert_eq!(
+        restored.composition.system_prompt.as_deref(),
+        Some("original system")
+    );
+}

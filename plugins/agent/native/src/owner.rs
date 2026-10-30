@@ -239,7 +239,7 @@ impl Owner {
             self.store
                 .session(session)
                 .await?
-                .native_approval_checkpoint(session)
+                .activation_checkpoint(session)
                 .await
         }
         .await
@@ -1134,7 +1134,7 @@ impl Owner {
                 .session(&id)
                 .await
                 .map_err(|error| error.to_string())?
-                .native_approval_checkpoint(&id)
+                .activation_checkpoint(&id)
                 .await
                 .map_err(|_| "agent_execution_unavailable")?
                 .map(|parked| parked.checkpoint.invocation),
@@ -1222,7 +1222,7 @@ impl Owner {
                             .session(&id)
                             .await
                             .map_err(|error| error.to_string())?
-                            .native_approval_checkpoint(&id)
+                            .activation_checkpoint(&id)
                             .await
                             .map_err(|_| "agent_execution_unavailable")?
                             .map(|parked| parked.checkpoint.invocation),

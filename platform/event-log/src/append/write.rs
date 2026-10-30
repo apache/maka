@@ -58,14 +58,14 @@ impl Statement for WriteAppend {
         connection: &mut SqliteConnection,
     ) -> crate::connection::BoxFuture<'_, Result<Prepared<Self::Value>, StoreError>> {
         Box::pin(async move {
-            let (sequences, inserted, approval_settled) =
+            let (sequences, inserted, activation_changed) =
                 prepare_request(connection, &self.events).await?;
             Ok(Prepared {
                 value: sequences,
                 changed: inserted.is_some(),
                 notification: inserted.map_or(Notification::None, |sequence| {
-                    if approval_settled {
-                        Notification::NativeApprovalSequence(sequence)
+                    if activation_changed {
+                        Notification::ActivationSequence(sequence)
                     } else {
                         Notification::Sequence(sequence)
                     }
@@ -112,13 +112,13 @@ async fn prepare_request(
 ) -> Result<(Vec<u64>, Option<u64>, bool), StoreError> {
     let mut sequences = Vec::with_capacity(events.len());
     let mut inserted = None;
-    let mut approval_settled = false;
+    let mut activation_changed = false;
     for event in events {
         sequences.push(
             match EventLog::append_in_transaction(connection, event).await? {
                 AppendResult::Existing(sequence) => sequence,
-                AppendResult::NativeApprovalSettled(sequence) => {
-                    approval_settled = true;
+                AppendResult::ActivationChanged(sequence) => {
+                    activation_changed = true;
                     inserted = Some(sequence);
                     sequence
                 }
@@ -130,7 +130,7 @@ async fn prepare_request(
         );
     }
     crate::context::validate_batch(connection, events).await?;
-    Ok((sequences, inserted, approval_settled))
+    Ok((sequences, inserted, activation_changed))
 }
 
 #[cfg(test)]

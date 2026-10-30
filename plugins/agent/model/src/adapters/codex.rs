@@ -50,6 +50,17 @@ impl ProviderAdapter for Adapter {
 
 struct Subscription(Arc<dyn Session>);
 impl Session for Subscription {
+    fn retry_transport_phase(&self) -> model::RetryTransportPhase {
+        self.0.retry_transport_phase()
+    }
+
+    fn restore_retry_transport_phase(
+        &self,
+        phase: model::RetryTransportPhase,
+    ) -> Result<(), Error> {
+        self.0.restore_retry_transport_phase(phase)
+    }
+
     fn try_switch_fallback_transport(&self) -> bool {
         self.0.try_switch_fallback_transport()
     }
