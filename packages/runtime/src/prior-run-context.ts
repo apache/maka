@@ -32,6 +32,8 @@ export interface BuildPriorRuntimeContextInput {
   sessionId: string;
   currentRunId: string;
   currentTurnId: string;
+  /** Compaction includes same-turn handoff predecessors, excluding only the live run. */
+  includeCurrentTurn?: boolean;
   runtimeEventStore?: RuntimeEventStore;
   runtimeEventStoreAvailable: boolean;
 }
@@ -55,7 +57,7 @@ export async function buildPriorRuntimeContext(
   const invocations = (await store.listSessionInvocations(input.sessionId)).filter(
     (invocation) =>
       invocation.runId !== input.currentRunId &&
-      invocation.turnId !== input.currentTurnId &&
+      (input.includeCurrentTurn || invocation.turnId !== input.currentTurnId) &&
       isSessionInlineInvocation(invocation.opening),
   );
   if (invocations.length === 0) return undefined;
@@ -64,7 +66,10 @@ export async function buildPriorRuntimeContext(
   for (const invocation of invocations) {
     const committed = await store.readRuntimeEvents(input.sessionId, invocation.runId);
     for (const event of committed) {
-      if (event.runId !== input.currentRunId && event.turnId !== input.currentTurnId) {
+      if (
+        event.runId !== input.currentRunId &&
+        (input.includeCurrentTurn || event.turnId !== input.currentTurnId)
+      ) {
         events.push(event);
       }
     }
