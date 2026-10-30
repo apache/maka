@@ -153,6 +153,10 @@ impl Owner {
             .await
             .map_err(fork_failure)?;
         let configuration = StoredSessionConfiguration {
+            parent_session_id: scope
+                .identity
+                .agent()
+                .map(|source| source.session_id.clone()),
             backend: parent.backend,
             compaction_prompt: parent.compaction_prompt,
             collaboration_mode: CollaborationMode::Agent,

@@ -1386,6 +1386,7 @@ mod tests {
                     "browser-session",
                     "fixture",
                     &StoredSessionConfiguration {
+                        parent_session_id: None,
                         backend: None,
                         collaboration_mode: maka_agent_facts::execution::CollaborationMode::Agent,
                         tools: None,

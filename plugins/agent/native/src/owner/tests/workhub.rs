@@ -758,6 +758,7 @@ async fn workhub_creates_selected_worker_and_transfers_original_attachment_bytes
         assert_eq!(query_import(&fixture,hub::EXPORT,"tasks",json!({})).await["entries"][0]["title"],"New assigned worker");
         let worker=task["status"]["sessionId"].as_str().unwrap();
         idle(&fixture,EXPORT,&coordinator).await;idle(&fixture,"worker",worker).await;
+        assert_eq!(query_import(&fixture,"worker","observe",json!({"sessionId":worker})).await["session"]["parentSessionId"],coordinator);
         let artifacts=fixture.session(worker).await.list_artifacts(worker,0,10).await.unwrap();assert_eq!(artifacts.records.len(),9);
         for ((name,bytes),source) in files.iter().zip(&sources) {
             let copied=artifacts.records.iter().find(|record|record.name==*name).unwrap();

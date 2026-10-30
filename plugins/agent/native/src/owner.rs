@@ -836,6 +836,10 @@ impl Owner {
                 &id,
                 &operation.fingerprint,
                 &StoredSessionConfiguration {
+                    parent_session_id: scope
+                        .identity
+                        .agent()
+                        .map(|source| source.session_id.clone()),
                     backend: None,
                     compaction_prompt: None,
                     collaboration_mode: CollaborationMode::Agent,

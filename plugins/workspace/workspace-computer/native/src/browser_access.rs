@@ -873,6 +873,7 @@ mod tests {
                 },
             };
             let configuration = StoredSessionConfiguration {
+                parent_session_id: None,
                 backend: None,
                 compaction_prompt: None,
                 collaboration_mode: Default::default(),

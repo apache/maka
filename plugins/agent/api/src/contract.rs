@@ -707,6 +707,9 @@ pub struct DataSource {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSession")]
 pub struct Session {
+    /// Session that initiated creation, independent of fork ancestry and task ownership.
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub parent_session_id: Option<String>,
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<SessionBranch>")]
     pub branch: Option<SessionBranch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

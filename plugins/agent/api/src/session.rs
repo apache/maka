@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StoredSessionConfiguration {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<crate::contract::BackendPreference>,
     #[serde(default)]
@@ -49,6 +51,8 @@ pub struct StoredSessionConfiguration {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolvedConfiguration {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<crate::contract::BackendPreference>,
     #[serde(default)]
@@ -79,6 +83,7 @@ impl StoredSessionConfiguration {
             .workspace
             .boundary_revision(self.boundary_revision, stamp)?;
         Ok(ResolvedConfiguration {
+            parent_session_id: self.parent_session_id,
             backend: self.backend,
             collaboration_mode: self.collaboration_mode,
             tools: self.tools,
@@ -107,6 +112,7 @@ impl ResolvedConfiguration {
     /// The Session metadata transaction validates the reference's current epochs.
     pub fn into_stored(self, workspace: BindingRef) -> StoredSessionConfiguration {
         StoredSessionConfiguration {
+            parent_session_id: self.parent_session_id,
             backend: self.backend,
             collaboration_mode: self.collaboration_mode,
             tools: self.tools,

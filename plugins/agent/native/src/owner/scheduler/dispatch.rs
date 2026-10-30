@@ -417,6 +417,7 @@ impl Owner {
                             &session_id,
                             &basis.fingerprint,
                             &StoredSessionConfiguration {
+                                parent_session_id: Some(source_session.clone()),
                                 backend: None,
                                 compaction_prompt: None,
                                 collaboration_mode: CollaborationMode::Agent,

@@ -276,13 +276,32 @@ async fn session_send_returns_to_caller_while_the_existing_target_keeps_working(
             let mut send = tools(contract::ToolConfirmation::Preapproved).remove(0);
             send.name = "SessionSend".into();
             send.method = "send".into();
-            settings.tools = vec![send];
+            let mut create = send.clone();
+            create.name = "SessionCreate".into();
+            create.method = "create".into();
+            settings.tools = vec![create, send];
         }).await;
         let target = fixture.create("Existing task").await;
         let caller = fixture.create("Coordinator").await;
         fixture.send(&caller).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
+        service_tools::named_tool_response(&mut socket, "SessionCreate", fixture.create_input("Created task").await).await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        let created: Value = serde_json::from_str(sent["messages"].as_array().unwrap().iter().rev()
+            .find(|message| message["role"] == "tool").unwrap()["content"].as_str().unwrap()).unwrap();
+        assert_eq!(created["session"]["parentSessionId"], caller);
+        let child = created["session"]["id"].as_str().unwrap();
+        let observed = fixture.query("observe", json!({"sessionId":child})).await.unwrap();
+        let updated = fixture.mutation(2, "metadata", json!({
+            "sessionId":child, "expectedRevision":observed["session"]["revision"],
+            "title":"Renamed child", "labels":[],
+        }), Uuid::new_v4()).await.unwrap();
+        assert_eq!(updated["session"]["parentSessionId"], caller);
+        let listed = fixture.query("list", json!({"filter":"all","position":{"kind":"start"}})).await.unwrap();
+        assert_eq!(listed["sessions"].as_array().unwrap().iter()
+            .find(|session| session["id"] == child).unwrap()["parentSessionId"], caller);
         service_tools::named_tool_response(&mut socket, "SessionSend", json!({
             "sessionId":target, "message":"Continue the existing task", "model":fixture.selection().await,
         })).await;
@@ -304,6 +323,7 @@ async fn session_send_returns_to_caller_while_the_existing_target_keeps_working(
         response(&mut caller_socket).await;
         response(&mut target_socket).await;
         fixture.drained().await;
+        assert_eq!(fixture.query("observe", json!({"sessionId":target})).await.unwrap()["session"]["parentSessionId"], Value::Null);
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     }).await.unwrap();

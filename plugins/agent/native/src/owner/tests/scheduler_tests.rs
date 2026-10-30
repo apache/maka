@@ -263,6 +263,7 @@ async fn scheduler_model_proposal_requires_user_approval_and_archived_source_blo
         assert_ne!(run["sessionId"],source);
         let actual = f.owner.session(run["sessionId"].as_str().unwrap()).await.unwrap();
         let original = f.owner.session(&source).await.unwrap();
+        assert_eq!(actual.configuration.parent_session_id.as_deref(), Some(source.as_str()));
         assert_eq!(actual.configuration.workspace,original.configuration.workspace);
         assert_eq!(actual.configuration.permissions,original.configuration.permissions);
         assert_eq!(change(&f,"clear_history",&id,json!({})).await["kind"],"committed");

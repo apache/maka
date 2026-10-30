@@ -414,6 +414,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -503,6 +508,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -1604,6 +1610,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -1693,6 +1704,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -2985,6 +2997,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -3074,6 +3091,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -4979,6 +4997,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -5068,6 +5091,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -5553,6 +5577,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -5642,6 +5671,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -7970,6 +8000,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -8059,6 +8094,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -9029,6 +9065,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -9118,6 +9159,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -10693,6 +10735,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -10782,6 +10829,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -11480,6 +11528,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -11569,6 +11622,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -12229,6 +12283,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -12318,6 +12377,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -12750,6 +12810,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -12839,6 +12904,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -15344,6 +15410,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -15433,6 +15504,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -19393,6 +19465,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -19482,6 +19559,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -20316,6 +20394,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -20405,6 +20488,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -25731,6 +25815,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  parentSessionId: {
+                    type: ['string', 'null'],
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -25819,6 +25908,7 @@ export const contracts = {
                   },
                 },
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -27267,6 +27357,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  parentSessionId: {
+                    type: ['string', 'null'],
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -27355,6 +27450,7 @@ export const contracts = {
                   },
                 },
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',

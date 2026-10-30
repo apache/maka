@@ -5852,6 +5852,10 @@ export interface AgentDirectorySelection {
   directoryIdentity: string;
 }
 export interface AgentSession {
+  /**
+   * Session that initiated creation, independent of fork ancestry and task ownership.
+   */
+  parentSessionId: string | null;
   branch: AgentSessionBranch | null;
   backend?: AgentBackendPreference | null;
   collaborationMode?: CollaborationMode & string;

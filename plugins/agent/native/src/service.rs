@@ -1211,6 +1211,7 @@ pub(crate) fn summary_for(
             position: origin.position.clone(),
         });
     Session {
+        parent_session_id: session.configuration.parent_session_id,
         branch,
         backend: session.configuration.backend,
         collaboration_mode: session.configuration.collaboration_mode,
