@@ -69,6 +69,12 @@ export function WorkspacePicker({ workspacePicker: picker }: {
 }) {
   const copy = getConversationCopy(useUiLocale()).workspace;
   const locked = picker.pending === true;
+  const accessibleLabel = copy.chooseAriaLabel(
+    picker.hostBadge
+      ? `${picker.hostBadge} · ${picker.label ?? copy.current}`
+      : picker.label ?? copy.current,
+    picker.branch ?? undefined,
+  );
   // Which host's New project dialog is open. The dialog optionally names the
   // project, then the caller's `onAdd` opens the folder picker — a blank name
   // simply means the folder's name will be used.
@@ -76,24 +82,18 @@ export function WorkspacePicker({ workspacePicker: picker }: {
   const newProjectGroup = picker.groups.find((group) => group.id === newProjectGroupId);
 
   return (
-    <>
+    <div className="maka-composer-workspace">
     <DropdownMenu
       placement="above"
+      hasChevron={false}
       isMenuOpen={picker.isMenuOpen}
       onOpenChange={picker.onOpenChange}
       className="maka-composer-quiet-menu"
       button={{
-        label: picker.label ?? copy.choose,
-        icon: <FolderOpen size={ICON_SIZE.meta} aria-hidden="true" />,
-        variant: 'ghost',
-        size: 'sm',
-        isDisabled: locked,
-        isLoading: locked,
-        tooltip: copy.chooseTitle(picker.branch ?? undefined),
-        className: 'maka-workspace-picker',
-        // Any endContent replaces DropdownMenu's own chevron, so the chevron is
-        // drawn here, as the model and thinking Selectors draw theirs.
-        endContent: (
+        label: accessibleLabel,
+        children: <span className="maka-composer-button-content">
+          <FolderOpen size={ICON_SIZE.meta} aria-hidden="true" />
+          <span className="maka-workspace-picker-label">{picker.label ?? copy.choose}</span>
           <span className="maka-workspace-picker-end">
             {picker.hostBadge ? (
               <span className="maka-workspace-picker-host-badge">
@@ -103,13 +103,14 @@ export function WorkspacePicker({ workspacePicker: picker }: {
             ) : null}
             <Icon icon="chevronDown" size="sm" color="secondary" className="maka-workspace-picker-chevron" />
           </span>
-        ),
-        'aria-label': copy.chooseAriaLabel(
-          picker.hostBadge
-            ? `${picker.hostBadge} · ${picker.label ?? copy.current}`
-            : picker.label ?? copy.current,
-          picker.branch ?? undefined,
-        ),
+        </span>,
+        variant: 'ghost',
+        size: 'sm',
+        isDisabled: locked,
+        isLoading: locked,
+        tooltip: accessibleLabel,
+        className: 'maka-workspace-picker',
+        'aria-label': accessibleLabel,
       }}
     >
       {picker.groups.length > 0 ? <div className="maka-workspace-picker-scroll">
@@ -219,6 +220,6 @@ export function WorkspacePicker({ workspacePicker: picker }: {
         document.body,
       )
     ) : null}
-    </>
+    </div>
   );
 }

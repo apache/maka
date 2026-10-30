@@ -19,6 +19,7 @@
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
+import { expectComposerToolbar, sweepComposerToolbar } from './composer-layout-checks';
 import { ResizeHandle, useResizable } from '@astryxdesign/core/Resizable';
 import { useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
@@ -1851,6 +1852,7 @@ export const NewChatComposer: Story = {
         .toBeCloseTo(gap, 0);
     });
 
+    sweepComposerToolbar(card);
     const send = within(card).getByRole('button', { name: '发送' });
     const originalMaxWidth = card.style.maxWidth;
     try {
@@ -1886,8 +1888,10 @@ function DraftCatalogRefreshFailure() {
           { modelId: 'flash-low', level: 'low' }, { modelId: 'flash-high', level: 'high' },
         ] }],
         currentModel: 'flash-high', supportsModelChange: true, supportsAttachments: true,
+        modes: [{ id: 'default', name: 'Default mode with a long external Agent label' }],
+        supportsModeChange: true,
       }],
-      selection: { executorId: 'antigravity', configuration: { model: 'flash-high' } },
+      selection: { executorId: 'antigravity', configuration: { model: 'flash-high', mode: 'default' } },
       loadingIds: refreshing ? ['antigravity'] : [],
       onSelect: noop, onSetup: noop, onNewTask: noop,
       onRetry: () => {
@@ -1910,6 +1914,8 @@ export const NewChatCatalogRefreshFailure: Story = {
     const before = composer.getBoundingClientRect();
     const controlsBefore = [refresh, model].map(control => ({ control, box: control.getBoundingClientRect() }));
     await userEvent.click(refresh);
+    // The loading spinner replaces the indicator without changing width.
+    expect(model.getBoundingClientRect().width).toBe(controlsBefore[1]!.box.width);
     const notice = await page.findByText(/Could not refresh models|模型列表刷新失败|模型清單重新整理失敗/);
     await waitFor(() => expect(notice).toBeVisible());
     await expect(composer.contains(notice)).toBe(false);
@@ -1919,12 +1925,38 @@ export const NewChatCatalogRefreshFailure: Story = {
     await expect(model).toHaveTextContent('Gemini 3.8 Flash');
     const after = composer.getBoundingClientRect();
     await expect(after.height).toBe(before.height);
-    // Controls may already wrap on narrow screens; the toast must preserve their positions within the Composer.
+    const card = composer.querySelector<HTMLElement>('.maka-composer-astryx')!;
+    sweepComposerToolbar(card);
+    // The failed refresh preserves the same single-row toolbar geometry.
     for (const { control, box } of controlsBefore) {
       const current = control.getBoundingClientRect();
       await expect(Math.abs((current.x - after.x) - (box.x - before.x))).toBeLessThanOrEqual(2);
       await expect(Math.abs((current.y - after.y) - (box.y - before.y))).toBeLessThanOrEqual(2);
     }
+
+    const editor = card.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]')!;
+    await userEvent.click(editor);
+    await userEvent.type(editor, 'Keep this draft while resizing the conversation.');
+    const draft = editor.textContent;
+    sweepComposerToolbar(card);
+    expect(editor).toHaveFocus();
+    expect(editor.textContent).toBe(draft);
+
+    // An open searchable picker keeps its identity, query and keyboard focus
+    // while its trigger crosses the compact presentation boundary.
+    const trigger = model.querySelector<HTMLButtonElement>('button')!;
+    await userEvent.click(trigger);
+    const listbox = canvasElement.ownerDocument.getElementById(trigger.getAttribute('aria-controls')!)!;
+    const popup = listbox.closest<HTMLElement>('.astryx-selector-popup')!;
+    const search = popup.querySelector<HTMLInputElement>('input')!;
+    await userEvent.type(search, 'Gemini');
+    sweepComposerToolbar(card);
+    expect(popup.contains(search)).toBe(true);
+    expect(search).toHaveFocus();
+    expect(search.value).toBe('Gemini');
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(popup.getBoundingClientRect().width).toBeGreaterThan(28);
+    await userEvent.keyboard('{Escape}');
   },
 };
 
@@ -4727,9 +4759,10 @@ export const NarrowComposerFooter: Story = {
     const leftControls = card.querySelector<HTMLElement>('.maka-composer-left-controls');
     if (!leftControls) throw new Error('composer footer controls are missing');
     expect(getComputedStyle(leftControls).flexWrap).toBe('nowrap');
+    expectComposerToolbar(card);
 
     const send = within(card).getByRole('button', { name: '发送' });
-    const contextGauge = within(card).queryByRole('button', { name: '打开用量追踪' });
+    const contextGauge = within(card).getByRole('button', { name: '打开用量追踪' });
     const modelMenu = card.querySelector<HTMLElement>('.maka-model-switcher-trigger');
     if (!modelMenu) throw new Error('composer model menu is missing');
     await waitFor(() => {
@@ -4737,7 +4770,8 @@ export const NarrowComposerFooter: Story = {
       const sendBox = send.getBoundingClientRect();
       expect(sendBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
       expect(sendBox.right).toBeLessThanOrEqual(cardBox.right + 1);
-      expect(contextGauge).toBeNull();
+      // The compact toolbar keeps usage reachable through its icon button.
+      expect(contextGauge).toBeVisible();
       expect(getComputedStyle(modelMenu).display).not.toBe('none');
       const modelBox = modelMenu.getBoundingClientRect();
       expect(modelBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);

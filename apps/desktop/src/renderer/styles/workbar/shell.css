@@ -242,7 +242,8 @@
   padding: 0;
 }
 
-.maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx {
+.maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx,
+.maka-detail-with-artifacts[data-preview-focused] .maka-composer-feedback {
   width: 100%;
   max-width: none;
 }

@@ -357,7 +357,17 @@ test('production Host settles dispatched Client Capabilities before publishing R
   });
 });
 
-test('check-in reads Sessions through the composed Host', async () => {
+test('check-in reads Sessions through the composed Host', async (t) => {
+  // The production Host bootstraps a default model from ambient credentials.
+  // This scenario starts without a model, then explicitly configures one.
+  for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY']) {
+    const previous = process.env[key];
+    delete process.env[key];
+    t.after(() => {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    });
+  }
   await withExecutionRoot(async (fixture) => {
     let host = await fixture.startHost();
     let client = await connectClient(fixture.root);
