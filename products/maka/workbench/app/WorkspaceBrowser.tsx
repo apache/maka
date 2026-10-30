@@ -78,6 +78,11 @@ export type WorkspaceBrowserProps = {
   settings(expectedSessionId: string | null): void;
   search(expectedSessionId: string | null): void;
   changeSession(action: SessionAction, expectedSessionId: string | null): Promise<void>;
+  /** Whether a conversation can open in a pane beside the current one. */
+  canOpenBeside?(): boolean;
+  /** The conversation open beside the selected one, marked like a selected row. */
+  beside?(): string | null;
+  openBeside?(sessionId: string): void;
 };
 
 type WorkspaceGroup = {
@@ -737,7 +742,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                           ? {}
                           : {
                               backgroundColor:
-                                props.selected() === key() || hovered() ? C.line : C.surface,
+                                props.selected() === key() ||
+                                props.beside?.() === key() ||
+                                hovered()
+                                  ? C.line
+                                  : C.surface,
                             }),
                       }}
                     >
@@ -960,6 +969,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               close={closeActions}
               notice={(message) => navigationNotice.set({ kind: 'action', message })}
               change={(action) => props.changeSession(action, target.origin)}
+              openBeside={
+                props.canOpenBeside?.() && target.session.id !== props.selected()
+                  ? () => props.openBeside?.(target.session.id)
+                  : undefined
+              }
             />
           );
         }}

@@ -53,6 +53,8 @@ export function SessionActions(props: {
   close(): void;
   notice(message: UiText): void;
   change(action: SessionAction): Promise<void>;
+  /** Opens the conversation in a pane beside the current one, where there can be one. */
+  openBeside?(): void;
 }) {
   const host = useHost();
   const session = signal(props.session);
@@ -93,6 +95,11 @@ export function SessionActions(props: {
     error.set('');
     title.set(to === 'fork' ? forkTitle(original.title) : original.title);
     page.set(to);
+  };
+  const openBeside = () => {
+    if (!active() || pending() || page() !== 'actions') return;
+    props.close();
+    props.openBeside?.();
   };
   const submit = async (action: SessionAction) => {
     if (!active() || pending() || !sameSession(action.session)) return;
@@ -178,6 +185,26 @@ export function SessionActions(props: {
               >
                 {tr('Conversation actions')}
               </Text>
+              <If when={props.openBeside}>
+                <Button
+                  disabled={pending()}
+                  accessibilityLabel={tr('Open to the side')}
+                  role="menuitem"
+                  style={menuRowStyle()}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                  disabledStyle={controlDisabledStyle}
+                  onPress={inputAction(openBeside, null)}
+                >
+                  <Icon name="split" color={C.secondary} />
+                  <Text
+                    accessibilityElementsHidden
+                    style={{ ...secondaryTextStyle, color: C.text }}
+                  >
+                    {tr('Open to the side')}
+                  </Text>
+                </Button>
+              </If>
               <Button
                 disabled={pending() || session().archived}
                 accessibilityLabel={
