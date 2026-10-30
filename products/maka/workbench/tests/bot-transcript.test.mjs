@@ -30,88 +30,101 @@ const message = (sequence, turnId, text = `m${sequence}`) => ({
   at: 0,
   turnId,
 });
-const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
 
-/** A Host whose outbox reads can be held back or made to fail. */
-function host({ messages = [], hold = false, fail = false } = {}) {
-  const state = { messages, hold, fail, releases: [], reads: 0, watchers: [] };
+/** A Host whose outbox pages can be held back or made to fail, and which can announce changes. */
+function host({ messages = [], hold = false, fail = false, pageSize = 100 } = {}) {
+  const state = { messages, hold, fail, releases: [], waiting: [], reads: [] };
   const query = async (_endpoint, _method, input) => {
     const through = state.messages.length;
     if (input.limit === 0) return { sessionId: SESSION, through, messages: [] };
-    state.reads += 1;
+    state.reads.push(input.after ?? 0);
     if (state.hold) await new Promise((resolve) => state.releases.push(resolve));
     if (state.fail) throw new Error('outbox read failed');
-    const page = state.messages.filter((m) => m.sequence > (input.after ?? 0));
-    return { sessionId: SESSION, through, messages: page, nextAfter: null };
+    const rest = state.messages.filter((m) => m.sequence > (input.after ?? 0));
+    const page = rest.slice(0, pageSize);
+    return {
+      sessionId: SESSION,
+      through,
+      messages: page,
+      nextAfter: rest.length > page.length ? page[page.length - 1].sequence : null,
+    };
   };
   const subscribe = async () => ({
-    next: () => new Promise((resolve) => state.watchers.push(resolve)),
+    next: () => new Promise((resolve) => state.waiting.push(resolve)),
     close: async () => {},
   });
-  return { state, host: { query, subscribe } };
+  /** The Host announces that the outbox head moved. */
+  const announce = () => {
+    for (const resolve of state.waiting.splice(0)) resolve({ sessionId: SESSION });
+  };
+  return { state, announce, host: { query, subscribe } };
 }
-const turn = (core, id) => ({
-  replies: core.forTurn(id).length,
-  confirmedEmpty: core.confirmedEmpty(id),
+const replies = (core, id) => core.forTurn(id).map((m) => m.text);
+
+test('replies are grouped by the Turn that sent them and read in order across pages', async () => {
+  const { state, host: h } = host({
+    messages: [message(1, 'a'), message(2, 'a'), message(3, 'b'), message(4, 'a'), message(5, 'c')],
+    pageSize: 2,
+  });
+  const core = createBotTranscriptCore(h, SESSION, () => {});
+  await core.started;
+  await settle();
+  assert.deepEqual(replies(core, 'a'), ['m1', 'm2', 'm4']);
+  assert.deepEqual(replies(core, 'b'), ['m3']);
+  assert.deepEqual(replies(core, 'c'), ['m5']);
+  assert.deepEqual(replies(core, 'none'), []);
+  assert.deepEqual(state.reads, [0, 2, 4], 'each page is read once, in order');
+  core.close();
 });
 
-test('a Turn is not known to have sent nothing while its replies are still being read', async () => {
-  const { state, host: h } = host({ messages: [message(1, 'turn-a')], hold: true });
+test('a reply held behind a page read appears when the read completes', async () => {
+  const { state, host: h } = host({ messages: [message(1, 'a')], hold: true });
   const core = createBotTranscriptCore(h, SESSION, () => {});
   await core.started;
   await settle();
   assert.equal(core.isBot(), true);
-  // The reply exists in the Host but its page has not arrived: unknown, not empty.
-  assert.deepEqual(turn(core, 'turn-a'), { replies: 0, confirmedEmpty: false });
-  void core.confirm('turn-a');
-  await settle();
-  assert.equal(core.confirmedEmpty('turn-a'), false, 'confirmation waits for the read');
+  assert.deepEqual(replies(core, 'a'), [], 'not yet read');
   state.hold = false;
   for (const release of state.releases) release();
   await settle();
-  assert.deepEqual(turn(core, 'turn-a'), { replies: 1, confirmedEmpty: false });
+  assert.deepEqual(replies(core, 'a'), ['m1']);
   core.close();
 });
 
-test('a failed outbox read never confirms that a Turn sent nothing', async () => {
-  const { state, host: h } = host({ messages: [message(1, 'turn-a')], fail: true });
+test('a failed read recovers on the next change without losing or repeating messages', async () => {
+  const { state, announce, host: h } = host({ messages: [message(1, 'a')], fail: true });
   const core = createBotTranscriptCore(h, SESSION, () => {});
   await core.started;
   await settle();
-  await core.confirm('turn-a');
-  await settle();
-  assert.deepEqual(turn(core, 'turn-a'), { replies: 0, confirmedEmpty: false });
-  // Reading works again: the next ask reaches the reply instead of an empty answer.
+  assert.deepEqual(replies(core, 'a'), []);
   state.fail = false;
-  await core.confirm('turn-a');
-  assert.deepEqual(turn(core, 'turn-a'), { replies: 1, confirmedEmpty: false });
+  state.messages.push(message(2, 'a'));
+  announce();
+  await settle();
+  assert.deepEqual(replies(core, 'a'), ['m1', 'm2']);
+  announce();
+  await settle();
+  assert.deepEqual(replies(core, 'a'), ['m1', 'm2'], 'a repeated announcement adds nothing');
   core.close();
 });
 
-test('a Turn is confirmed empty only by a read that reached the head', async () => {
-  const { host: h } = host({ messages: [message(1, 'turn-a')] });
+test('new messages are picked up as the head moves', async () => {
+  const { state, announce, host: h } = host({ messages: [] });
   const core = createBotTranscriptCore(h, SESSION, () => {});
   await core.started;
   await settle();
-  await core.confirm('turn-b');
-  assert.deepEqual(turn(core, 'turn-b'), { replies: 0, confirmedEmpty: true });
-  assert.deepEqual(turn(core, 'turn-a'), { replies: 1, confirmedEmpty: false });
-  core.close();
-});
-
-test('a reply that lands after the Turn ended is read before confirming', async () => {
-  const { state, host: h } = host({ messages: [] });
-  const core = createBotTranscriptCore(h, SESSION, () => {});
-  await core.started;
+  state.messages.push(message(1, 'a'));
+  announce();
   await settle();
-  // The Turn ends; its reply was committed just before, after our last head read.
-  state.messages.push(message(1, 'turn-a'));
-  await core.confirm('turn-a');
-  assert.deepEqual(turn(core, 'turn-a'), { replies: 1, confirmedEmpty: false });
+  state.messages.push(message(2, 'b'));
+  announce();
+  await settle();
+  assert.deepEqual([replies(core, 'a'), replies(core, 'b')], [['m1'], ['m2']]);
   core.close();
 });
 
-test('an ordinary Session makes one lookup and is never a Bot', async () => {
+test('an ordinary Session makes one lookup and never subscribes', async () => {
   let queries = 0;
   let subscribed = false;
   const core = createBotTranscriptCore(
@@ -130,22 +143,8 @@ test('an ordinary Session makes one lookup and is never a Bot', async () => {
   );
   await core.started;
   assert.equal(core.isBot(), false);
-  await core.confirm('turn-a');
-  assert.equal(core.confirmedEmpty('turn-a'), false);
+  assert.deepEqual(core.forTurn('a'), []);
   assert.equal(queries, 1);
   assert.equal(subscribed, false);
-  core.close();
-});
-
-test('concurrent confirmations share reads and the outbox is read in order', async () => {
-  const { state, host: h } = host({ messages: [message(1, 'turn-a'), message(2, 'turn-a')] });
-  const core = createBotTranscriptCore(h, SESSION, () => {});
-  await core.started;
-  await settle();
-  const before = state.reads;
-  await Promise.all(['t1', 't2', 't3', 't4'].map((id) => core.confirm(id)));
-  assert.equal(core.forTurn('turn-a').length, 2, 'no message is read twice');
-  for (const id of ['t1', 't2', 't3', 't4']) assert.equal(core.confirmedEmpty(id), true);
-  assert.ok(state.reads - before <= 2, `reads were shared (${state.reads - before})`);
   core.close();
 });

@@ -532,15 +532,10 @@ export function Conversation(props: ConversationProps) {
         if (!turn || !turnExpanded(turn)) continue;
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
-        // The model's own text stays in Trajectory for the Bot, unless the finished
-        // Turn is confirmed to have sent nothing with SendUser: then its final answer
-        // is the reply. While that is unknown, or if reading it failed, it stays hidden.
-        if (
-          botChat &&
-          row.role === 'assistant' &&
-          !(row.finalOutput && turn && !turn.active && bot.confirmedEmpty(turn.turnId))
-        )
-          continue;
+        // Only SendUser publishes for the Bot. The model's own text, including a
+        // deliberately silent Turn's conclusion, stays internal in Trajectory; a real
+        // failure is a failure row, which this does not hide.
+        if (botChat && row.role === 'assistant') continue;
         if (entry.processTurnId && turn && !turnExpanded(turn)) continue;
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
@@ -562,14 +557,6 @@ export function Conversation(props: ConversationProps) {
       working(undefined);
     }
     return result;
-  });
-  // Ask the Host, once the Bot has no known reply for a finished Turn, whether it
-  // really sent none; only a confirmed answer lets the final text through.
-  effect(() => {
-    if (!bot.isBot()) return;
-    for (const turn of projection().turns.values())
-      if (!turn.active && bot.forTurn(turn.turnId).length === 0)
-        untracked(() => bot.confirm(turn.turnId));
   });
   let previouslyVisible = new Set<string>();
   effect(() => {

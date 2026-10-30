@@ -33,8 +33,6 @@ export function createBotTranscript(
   return {
     isBot: () => (version(), core.isBot()),
     forTurn: (turnId: string) => (version(), core.forTurn(turnId)),
-    confirmedEmpty: (turnId: string) => (version(), core.confirmedEmpty(turnId)),
-    confirm: (turnId: string) => void core.confirm(turnId),
     close: () => core.close(),
   };
 }

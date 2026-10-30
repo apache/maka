@@ -45,17 +45,12 @@ export type BotTranscriptMessage = {
 
 /**
  * What the Bot deliberately told its user, grouped by the Turn that sent it. Only the
- * Bot Session subscribes; other Sessions make one head lookup and stop.
- *
- * A Turn that has no messages here is not thereby known to have sent none: the
- * pages may not have arrived or may have failed. `confirmedEmpty` is true only after
- * a read that reached the outbox head observed after the Turn ended.
+ * Bot Session subscribes; other Sessions make one head lookup and stop. Chat shows
+ * nothing but these messages from the Bot, so a Turn with none simply shows none.
  */
 export function createBotTranscriptCore(host: BotHost, sessionId: string, changed: () => void) {
   let isBot = false;
   let byTurn: ReadonlyMap<string, BotTranscriptMessage[]> = new Map();
-  let confirmed: ReadonlySet<string> = new Set();
-  const asking = new Set<string>();
   let alive = true;
   let stream: { close(): Promise<void> } | null = null;
   let cursor = 0;
@@ -75,33 +70,11 @@ export function createBotTranscriptCore(host: BotHost, sessionId: string, change
       if (page.nextAfter === null || page.nextAfter === undefined) return;
     }
   };
-  // One read at a time. A request that arrives while one runs waits for a fresh
-  // read, because the running one may have observed the head before the request.
-  let running: Promise<boolean> | null = null;
-  let queued: Promise<boolean> | null = null;
-  const read = async (): Promise<boolean> => {
+  // Only the watch loop reads, one page run at a time, so the cursor never races.
+  const sync = async (): Promise<void> => {
     const head = await host.query('agent', 'botOutbox', { limit: 0 });
-    if (!alive || head.sessionId !== sessionId) return false;
+    if (!alive || head.sessionId !== sessionId) return;
     await catchUp(head.through);
-    return alive && cursor >= head.through;
-  };
-  const sync = (): Promise<boolean> => {
-    const start = () => {
-      running = read().finally(() => {
-        running = null;
-      });
-      return running;
-    };
-    if (running === null) return start();
-    if (queued === null) {
-      queued = running
-        .catch(() => false)
-        .then(() => {
-          queued = null;
-          return start();
-        });
-    }
-    return queued;
   };
 
   let ready: () => void = () => {};
@@ -120,8 +93,8 @@ export function createBotTranscriptCore(host: BotHost, sessionId: string, change
         return;
       }
       stream = opened;
-      void sync().catch(() => {});
       ready();
+      await sync().catch(() => {});
       for (;;) {
         const latest = await opened.next();
         if (!alive || latest === null) return;
@@ -139,24 +112,6 @@ export function createBotTranscriptCore(host: BotHost, sessionId: string, change
     started,
     isBot: () => isBot,
     forTurn: (turnId: string): BotTranscriptMessage[] => byTurn.get(turnId) ?? [],
-    confirmedEmpty: (turnId: string) => confirmed.has(turnId),
-    /** Confirm that a finished Turn sent nothing; a failed read confirms nothing. */
-    confirm(turnId: string): Promise<void> {
-      if (!isBot || asking.has(turnId) || confirmed.has(turnId) || byTurn.has(turnId))
-        return Promise.resolve();
-      asking.add(turnId);
-      return sync()
-        .then((reached) => {
-          if (reached && alive && !byTurn.has(turnId)) {
-            confirmed = new Set(confirmed).add(turnId);
-            changed();
-          }
-        })
-        .catch(() => {})
-        .finally(() => {
-          asking.delete(turnId);
-        });
-    },
     close() {
       alive = false;
       const previous = stream;
