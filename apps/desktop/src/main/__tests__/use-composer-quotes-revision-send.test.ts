@@ -99,6 +99,8 @@ test('the in-flight revision send still reads the re-keyed plate (#5274 review)'
         attachments: [],
         restoreQuotes: surface.restoreQuotes,
         clearQuotes: surface.clearQuotes,
+        restoreAttachments: () => {},
+        clearAttachments: () => [],
       }),
     },
     openSessionInChat: (sessionId: string) => {

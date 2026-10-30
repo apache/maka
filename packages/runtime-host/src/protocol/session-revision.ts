@@ -24,6 +24,7 @@ import {
   requireRecord,
   requireShapedRecord,
 } from './codec.js';
+import { isAttachmentRef, type AttachmentRef } from '@maka/core/events';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 import { decodeSessionCatalogItem, type SessionCatalogItem } from './session-catalog.js';
@@ -58,6 +59,13 @@ export type SessionConversationCopyResult =
   | {
       readonly kind: 'committed';
       readonly session: SessionCatalogItem;
+      /**
+       * Revision copies only: the edited turn's own attachments, copied into
+       * the new Session with their refs rewritten, so the client can re-attach
+       * them to the replacement submit (#5109). Absent when the turn (or the
+       * copy kind) carries none.
+       */
+      readonly stagedAttachments?: readonly AttachmentRef[];
     }
   | {
       readonly kind: 'source_revision_conflict';
@@ -183,13 +191,20 @@ export function decodeSessionConversationCopyInput(value: unknown): SessionConve
 export function decodeSessionConversationCopyResult(value: unknown): SessionConversationCopyResult {
   const result = requireRecord(value, 'Session conversation-copy result');
   if (result.kind === 'committed') {
-    const exact = requireExactRecord(result, 'committed Session conversation-copy result', [
-      'kind',
-      'session',
-    ]);
+    const exact = requireShapedRecord(
+      result,
+      'committed Session conversation-copy result',
+      ['kind', 'session'],
+      ['stagedAttachments'],
+    );
     return {
       kind: 'committed',
       session: decodeSessionCatalogItem(exact.session),
+      ...(exact.stagedAttachments !== undefined
+        ? {
+            stagedAttachments: decodeStagedAttachments(exact.stagedAttachments),
+          }
+        : {}),
     };
   }
   if (result.kind === 'source_revision_conflict') {
@@ -220,6 +235,13 @@ function assertConversationCopyOutput(
   ) {
     throw invalidProtocolFrame('Session source revision conflict does not match request');
   }
+}
+
+function decodeStagedAttachments(value: unknown): readonly AttachmentRef[] {
+  if (!Array.isArray(value) || !value.every((item) => isAttachmentRef(item))) {
+    throw invalidProtocolFrame('Invalid staged attachments');
+  }
+  return value;
 }
 
 function positiveRevision(value: unknown, label: string): number {
