@@ -308,65 +308,6 @@ mod tests {
             }),
         }
     }
-    async fn wire(body: RequestBody) -> Value {
-        let mut stream = Box::pin(body.chunks());
-        let mut bytes = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.unwrap();
-            assert!(chunk.len() <= 16 * 1024);
-            bytes.extend_from_slice(&chunk);
-        }
-        serde_json::from_slice(&bytes).unwrap()
-    }
-
-    struct PreparedItems(Vec<http::Bytes>);
-    struct PreparedCursor {
-        items: Vec<http::Bytes>,
-        index: usize,
-        offset: usize,
-    }
-    impl maka_agent_facts::model::prompt_source::WireSource for PreparedItems {
-        fn open(&self, start_message: usize) -> Box<dyn WireCursor> {
-            Box::new(PreparedCursor {
-                items: self.0.clone(),
-                index: start_message,
-                offset: 0,
-            })
-        }
-    }
-    impl WireCursor for PreparedCursor {
-        fn next(&mut self) -> maka_agent_facts::model::prompt_source::NextWire<'_> {
-            Box::pin(async move {
-                let Some(item) = self.items.get(self.index) else {
-                    return Ok(None);
-                };
-                let end = (self.offset + 32 * 1024).min(item.len());
-                let chunk = maka_agent_facts::model::prompt_source::WireChunk {
-                    bytes: item.slice(self.offset..end),
-                    item_start: self.offset == 0,
-                    item_end: end == item.len(),
-                    message_index: self.index,
-                    metadata: None,
-                };
-                self.offset = end;
-                if chunk.item_end {
-                    self.index += 1;
-                    self.offset = 0;
-                }
-                Ok(Some(chunk))
-            })
-        }
-    }
-    struct RetainedItem {
-        bytes: Vec<u8>,
-        _owner: Arc<()>,
-    }
-    impl AsRef<[u8]> for RetainedItem {
-        fn as_ref(&self) -> &[u8] {
-            &self.bytes
-        }
-    }
-
     struct Generated {
         reads: Arc<AtomicUsize>,
         drops: Arc<AtomicUsize>,

@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use crossterm::event::Event as TerminalEvent;
 use nsh_core::prelude::*;
 
 #[class]
@@ -115,7 +116,7 @@ async fn capability_dialog_displays_the_boundary_and_answers_its_original_reques
 async fn composer_slash_command_and_workspace_reference_edit_the_native_draft() {
     let mut view = component("composer").await;
     wait_editable_composer(&mut view).await;
-    view.handle_event(Event::Paste("/insp".into()));
+    view.handle_event(TerminalEvent::Paste("/insp".into()));
     support::click_button(&mut view, "Inspect draft").await;
     wait_view(&mut view, |screen| screen.contains("command:inspect")).await;
     wait_view_state(&mut view, |view, _| {
@@ -124,7 +125,7 @@ async fn composer_slash_command_and_workspace_reference_edit_the_native_draft() 
             .is_some_and(|input| input.text.as_deref() == Some(""))
     })
     .await;
-    view.handle_event(Event::Paste("check @docs/Rel".into()));
+    view.handle_event(TerminalEvent::Paste("check @docs/Rel".into()));
     support::click_button(&mut view, "docs/Release Notes.md").await;
     wait_view_state(&mut view, |view, screen| {
         screen.contains("files:Rel:ZG9jcw==")
@@ -139,7 +140,7 @@ async fn composer_slash_command_and_workspace_reference_edit_the_native_draft() 
 async fn skill_completion_is_inserted_and_backspace_deletes_the_whole_native_chip() {
     let mut view = component("composer").await;
     wait_editable_composer(&mut view).await;
-    view.handle_event(Event::Paste("before /skill:rev".into()));
+    view.handle_event(TerminalEvent::Paste("before /skill:rev".into()));
     support::click_button(&mut view, "Review changes").await;
     wait_view_state(&mut view, |view, _| {
         view.surface()
@@ -147,12 +148,12 @@ async fn skill_completion_is_inserted_and_backspace_deletes_the_whole_native_chi
             .is_some_and(|input| input.text.as_deref() == Some("before /skill:review "))
     })
     .await;
-    view.handle_event(Event::Key(KeyEvent::new(
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
         KeyCode::Backspace,
         KeyModifiers::NONE,
     )));
     commit_native_events(&mut view).await;
-    view.handle_event(Event::Key(KeyEvent::new(
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
         KeyCode::Backspace,
         KeyModifiers::NONE,
     )));

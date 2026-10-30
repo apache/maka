@@ -113,6 +113,8 @@ async fn stopping_original_run_retracts_queue_and_fences_tail_admission() {
         request(&mut socket).await;
         let queued = fixture.send(&session).await.unwrap();
         assert_eq!(queued["kind"], "queued");
+        let selected = fixture.session(&session).await.message_queue(&session).await.unwrap().entries.remove(0);
+        assert_eq!(selected.source.message.message_id, queued["messageId"]);
         let selection = fixture.selection().await;
         let client = fixture.app.client();
         let stop = client
@@ -175,6 +177,9 @@ async fn stopping_original_run_retracts_queue_and_fences_tail_admission() {
         drop(gate);
         assert_eq!(tail.await.err().unwrap(), "agent_admission_failed");
         fixture.drained().await;
+        let selection_cancellation = CancellationToken::new();
+        assert!(fixture.owner.prepare_selected(&session, &selected, &selection_cancellation).await.unwrap().is_none());
+        assert!(!selection_cancellation.is_cancelled());
         assert!(
             fixture.session(&session).await.pending_messages(&session)
                 .await
@@ -451,9 +456,4 @@ async fn queue_preparation_does_not_hold_the_global_lifecycle_and_close_waits_fo
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
-}
-
-#[tokio::test]
-async fn stop_retraction_rejects_a_selected_successor_without_closing_independent_sessions() {
-    selected_entry_after_stop(false).await;
 }

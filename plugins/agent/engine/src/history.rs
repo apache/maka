@@ -26,11 +26,7 @@ use crate::RunError;
 mod arena_directory;
 pub(super) mod arena_recipes;
 pub(super) mod capture_arena;
-#[cfg(test)]
-mod chat;
 mod chat_source;
-#[cfg(test)]
-mod compatible;
 pub(super) mod frozen;
 mod images;
 mod joined_source;

@@ -29,6 +29,8 @@ use maka_plugin_core::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod approval_park;
+
 fn counter_contract() -> Contract {
     let write = Method {
         progress: None,

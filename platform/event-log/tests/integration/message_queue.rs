@@ -30,7 +30,7 @@ use maka_event_log::{
 };
 use serde_json::json;
 
-use crate::support::{admission, append, command, invocation, opening};
+use crate::support::message_queue::{admission, append, command, invocation, opening};
 
 #[tokio::test]
 async fn removal_atomically_cancels_pending_work_and_keeps_accepted_settlement_across_restart() {

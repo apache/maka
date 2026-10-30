@@ -193,7 +193,59 @@ async fn indexed_caller_membership_preserves_present_sources_and_prunes_missing_
             .iter()
             .find(|block| block["id"] == "local")
             .unwrap();
-        assert_eq!(local.get("caller").is_some(), present);
-        assert_eq!(actual, owned_request_bytes(messages));
+        assert_eq!(
+            local.get("caller"),
+            present
+                .then(|| json!({"type":"code_execution_20250825","tool_id":"source"}))
+                .as_ref()
+        );
     }
+}
+
+async fn source_request_bytes(messages: &[crate::prompt::Message]) -> Vec<u8> {
+    use crate::{
+        ModelPreparationResources, PreparationPolicy, ProviderAuth, ProviderConfig, ProviderKind,
+        adapters::wire::WireEncoding,
+    };
+    use futures_util::StreamExt;
+    use maka_agent_facts::model::prompt_source::source::generated::GeneratedMessages;
+    let provider = ProviderConfig {
+        adapter: None,
+        capabilities: Default::default(),
+        network: Default::default(),
+        kind: ProviderKind::Anthropic,
+        model: "model".into(),
+        base_url: "https://example.invalid".into(),
+        auth: ProviderAuth::ApiKey("fixture".into()),
+        headers: Default::default(),
+        body_overlay: None,
+    };
+    let encoding =
+        WireEncoding::new(Language::En, &provider, &serde_json::Value::Null, &[]).unwrap();
+    let resources = ModelPreparationResources::new(PreparationPolicy {
+        staging_bytes: 1024 * 1024,
+        resident_bytes: 1024 * 1024,
+        progress_bytes: 256 * 1024,
+        work_bytes: 256 * 1024,
+    })
+    .unwrap();
+    let frozen = encoding
+        .prepare_source(Arc::new(GeneratedMessages::new(messages)), resources)
+        .await
+        .unwrap();
+    let wire = PreparedWire {
+        format: WireFormat::Anthropic,
+        codec: encoding.codec().into(),
+        identity: frozen.identity.into(),
+        source: frozen.source,
+    };
+    let context = metadata(&wire).await.unwrap().context;
+    let mut stream = body(json!({"model":"model"}), wire, context)
+        .unwrap()
+        .into_stream();
+    let mut actual = Vec::new();
+    while let Some(bytes) = stream.next().await {
+        actual.extend_from_slice(&bytes.unwrap());
+    }
+    actual
 }

@@ -56,7 +56,7 @@ async fn settle(engine: &Engine, root: &maka_event_log::root_store::RootStore, s
             CancellationToken::new(),
             move |_, admitted, _| async move {
                 admitted.send(()).unwrap();
-                Ok(invocation)
+                Ok(ActivationExit::Terminal(invocation))
             },
         )
         .await

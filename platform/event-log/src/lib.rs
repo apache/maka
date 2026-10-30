@@ -55,6 +55,7 @@ pub mod recovery;
 pub mod root;
 pub mod root_store;
 pub use root_store::{RootStore, SessionStore};
+pub mod native_approvals;
 pub mod native_computer;
 pub mod recall;
 pub mod run_source;

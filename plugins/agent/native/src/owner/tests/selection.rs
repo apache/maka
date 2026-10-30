@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use maka_agent_engine::ModelSource;
 
 pub(super) async fn edit(
     fixture: &Fixture,

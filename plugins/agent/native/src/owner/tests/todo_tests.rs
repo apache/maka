@@ -18,11 +18,7 @@
  */
 
 use super::*;
-use maka_agent_facts::{
-    event::{Fact, InvocationOutcome, ToolOutcome},
-    tool_call::{ToolCallIdentity, ToolRejection},
-    tools::{ToolCallContext, ToolJournal, ToolPreparer},
-};
+use maka_agent_facts::event::{Fact, InvocationOutcome, ToolOutcome};
 
 async fn fixture(base: &str) -> Fixture {
     Fixture::configured(base, None, None, None, |settings| {

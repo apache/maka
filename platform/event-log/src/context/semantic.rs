@@ -75,26 +75,6 @@ pub struct SemanticPage {
     pub next: Option<SemanticCursor>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SemanticChangeCursor {
-    pub revision: u64,
-    pub change_id: u64,
-}
-
-#[derive(Clone, Debug)]
-pub struct SemanticChange {
-    pub order: RowPosition,
-    pub id: RowPosition,
-    pub revision: u64,
-    pub deleted: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct SemanticChangePage {
-    pub changes: Vec<SemanticChange>,
-    pub next: Option<SemanticChangeCursor>,
-}
-
 fn invalid(reason: impl Into<String>) -> StoreError {
     StoreError::InvalidTransition(reason.into())
 }
@@ -263,65 +243,6 @@ fn rows_query(group: bool) -> String {
     )
 }
 
-pub(crate) async fn changes(
-    connection: &mut SqliteConnection,
-    selection: &SemanticSelection,
-    since: u64,
-    cursor: Option<SemanticChangeCursor>,
-    limit: usize,
-) -> Result<SemanticChangePage, StoreError> {
-    available_at(connection, &selection.session, selection.captured_through).await?;
-    let limit = page_limit(limit)?;
-    let point = cursor.unwrap_or(SemanticChangeCursor {
-        revision: since,
-        change_id: 0,
-    });
-    let query=format!("SELECT r.change_id,r.revision,r.source_sequence,r.source_index,r.order_sequence,r.order_index,r.deleted
-        FROM context_semantic_changes r WHERE r.owner_session_id=?1
-        AND r.source_sequence>?2 AND r.source_sequence<=?3 AND {}
-        AND r.revision>?7 AND (r.revision,r.change_id)>(?8,?9)
-        ORDER BY r.revision,r.change_id LIMIT ?10",eligible("r"));
-    let records = sqlx::query(sqlx::AssertSqlSafe(query))
-        .bind(&selection.session)
-        .bind(selection.after as i64)
-        .bind(selection.through as i64)
-        .bind(selection.captured_through as i64)
-        .bind(selection.before.min(i64::MAX as u64) as i64)
-        .bind(&selection.lineage)
-        .bind(since as i64)
-        .bind(point.revision as i64)
-        .bind(point.change_id as i64)
-        .bind(limit + 1)
-        .fetch_all(connection)
-        .await?;
-    let more = records.len() > limit as usize;
-    let mut changes = Vec::new();
-    let mut next = None;
-    for record in records.into_iter().take(limit as usize) {
-        let revision = crate::sequence_number(record.try_get("revision")?)?;
-        next = Some(SemanticChangeCursor {
-            revision,
-            change_id: crate::sequence_number(record.try_get("change_id")?)?,
-        });
-        changes.push(SemanticChange {
-            order: RowPosition {
-                source_sequence: crate::sequence_number(record.try_get("order_sequence")?)?,
-                item_index: crate::sequence_number(record.try_get("order_index")?)?,
-            },
-            id: RowPosition {
-                source_sequence: crate::sequence_number(record.try_get("source_sequence")?)?,
-                item_index: crate::sequence_number(record.try_get("source_index")?)?,
-            },
-            revision,
-            deleted: record.try_get("deleted")?,
-        });
-    }
-    Ok(SemanticChangePage {
-        changes,
-        next: if more { next } else { None },
-    })
-}
-
 pub(crate) async fn meaningful_history(
     connection: &mut SqliteConnection,
     selection: &SemanticSelection,
@@ -478,25 +399,7 @@ impl EventLog {
             .await
     }
 
-    pub async fn context_semantic_changes(
-        &self,
-        selection: &SemanticSelection,
-        since_revision: u64,
-        cursor: Option<SemanticChangeCursor>,
-        limit: usize,
-    ) -> Result<SemanticChangePage, StoreError> {
-        self.validate_root()?;
-        let selection = selection.clone();
-        self.connection
-            .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    changes(connection, &selection, since_revision, cursor, limit).await
-                })
-            })
-            .await
-    }
-
-    /// Explicit materialization boundary for one dirty/rendered group.
+    /// Explicit materialization boundary for one selected group.
     pub async fn context_semantic_resolve(
         &self,
         rows: &[SemanticRow],

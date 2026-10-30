@@ -1207,14 +1207,6 @@ mod tests {
         }
     }
 
-    struct RejectedHost;
-
-    impl BrowserHostEffects for RejectedHost {
-        fn spawn(&self, _unpolled: crate::HostEffectFuture) -> Result<(), ToolError> {
-            Err(failed("fixture Host admission rejected"))
-        }
-    }
-
     fn frame_tree() -> Value {
         json!({"frameTree":{"frame":{"id":"main","loaderId":"document","url":"https://fixture.example"}}})
     }

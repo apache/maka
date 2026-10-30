@@ -134,7 +134,6 @@ struct Fixture {
     worker: WorkerCallbacks,
     parent_messages: mpsc::UnboundedReceiver<ParentMessage>,
     worker_messages: mpsc::UnboundedReceiver<WorkerMessage>,
-    fail_send: Arc<AtomicBool>,
     faults: mpsc::UnboundedReceiver<CallbackFault>,
 }
 impl Fixture {
@@ -142,8 +141,6 @@ impl Fixture {
         let (parent_send, parent_messages) = mpsc::unbounded_channel();
         let (worker_send, worker_messages) = mpsc::unbounded_channel();
         let (fault, faults) = mpsc::unbounded_channel();
-        let fail_send = Arc::new(AtomicBool::new(false));
-        let failing = fail_send.clone();
         Self {
             parent: ParentCallbacks::new(
                 Arc::new(move |message| {
@@ -154,16 +151,12 @@ impl Fixture {
                 fault,
             ),
             worker: WorkerCallbacks::new(Arc::new(move |message| {
-                if failing.load(Ordering::SeqCst) {
-                    return Err(failed("fixture frame was not queued"));
-                }
                 worker_send
                     .send(message)
                     .map_err(|_| failed("fixture worker closed"))
             })),
             parent_messages,
             worker_messages,
-            fail_send,
             faults,
         }
     }

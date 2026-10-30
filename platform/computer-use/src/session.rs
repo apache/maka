@@ -2433,14 +2433,6 @@ mod tests {
         assert_eq!(retained.requested_image_size(), [200.5, 160.25]);
     }
 
-    fn scroll(target: Position, distance: Option<Distance>) -> Action {
-        Action::Scroll {
-            target,
-            direction: Direction::Down,
-            distance,
-        }
-    }
-
     #[test]
     fn launch_uses_revalidated_inventory_identity_not_pid_zero_or_caller_path() {
         let app = |path: &str| AppInfo {

@@ -46,7 +46,7 @@ pub async fn run(
     handoff: Option<crate::HandoffGate>,
     prepared_claim: Option<crate::continuation::PreparedClaim>,
     effects: Arc<maka_event_log::root_store::InvocationEffects>,
-) -> Result<Invocation, RunError> {
+) -> Result<crate::ActivationExit, RunError> {
     let cancellation = cancellation_owner.clone();
     if cancellation.is_cancelled() {
         return Err(RunError::Cancelled);
@@ -207,7 +207,7 @@ pub async fn run(
                 &effects,
             )
             .await
-            .map(|outcome| (outcome, None))
+            .map(|exit| (exit, None))
         } else {
             // Compaction owns a larger preparation frame than normal steps.
             // Allocate it only for this branch, not for every live invocation.
@@ -221,18 +221,46 @@ pub async fn run(
             .await
             .map(|(outcome, checkpoint)| {
                 (
-                    InvocationOutcome::ContextCompactFinished { outcome },
+                    steps::StepExit::Terminal(InvocationOutcome::ContextCompactFinished {
+                        outcome,
+                    }),
                     checkpoint,
                 )
             })
         }
     }
     .await;
+    finish(
+        &inner,
+        input.invocation,
+        result,
+        &cancellation,
+        handoff.as_ref(),
+        &effects,
+    )
+    .await
+}
+
+pub(super) async fn finish(
+    inner: &Arc<RunContext>,
+    invocation: Invocation,
+    result: Result<(steps::StepExit, Option<RuntimeEvent>), RunError>,
+    cancellation: &tokio_util::sync::CancellationToken,
+    handoff: Option<&crate::HandoffGate>,
+    effects: &maka_event_log::root_store::InvocationEffects,
+) -> Result<crate::ActivationExit, RunError> {
     let result = match effects.settle().await {
         Ok(()) => result,
         Err(error) => crate::model_attempt::additional_failure(result, error.into()),
     };
-    let result = crate::model_attempt::seal_unfinished_attempts(&inner, result).await;
+    let result = crate::model_attempt::seal_unfinished_attempts(inner, result).await;
+    if let Ok((steps::StepExit::Parked(receipt), _)) = &result {
+        return Ok(crate::ActivationExit::Parked(receipt.clone()));
+    }
+    let result = result.map(|(exit, checkpoint)| match exit {
+        steps::StepExit::Terminal(outcome) => (outcome, checkpoint),
+        steps::StepExit::Parked(_) => unreachable!("parked exits returned above"),
+    });
     let result = if matches!(&result, Err(RunError::Commit(CommitError::Retired)))
         || (matches!(&result, Ok((outcome, _)) if !matches!(outcome, InvocationOutcome::HandoffPaused { .. }))
             && cancellation.is_cancelled())
@@ -263,8 +291,7 @@ pub async fn run(
     };
     if let Some(checkpoint) = checkpoint {
         // A checkpoint is adopted only with its successful terminal in this transaction.
-        let terminal =
-            RuntimeEvent::new(input.invocation.clone(), Fact::InvocationEnded { outcome });
+        let terminal = RuntimeEvent::new(invocation.clone(), Fact::InvocationEnded { outcome });
         let committed = inner
             .log
             .append_batch(&[EventWrite::plain(checkpoint)?, EventWrite::plain(terminal)?])
@@ -272,8 +299,8 @@ pub async fn run(
         if let Err(error) = committed {
             if matches!(error, CommitError::Rejected(_)) {
                 append(
-                    &inner,
-                    &input.invocation,
+                    inner,
+                    &invocation,
                     Fact::InvocationEnded {
                         outcome: InvocationOutcome::Failed {
                             class: "event_commit".into(),
@@ -286,19 +313,19 @@ pub async fn run(
             }
             return Err(error.into());
         }
-        inner.shared.clear_loaded(&input.invocation.session_id)?;
+        inner.shared.clear_loaded(&invocation.session_id)?;
     } else {
         let pause = match &outcome {
             InvocationOutcome::HandoffPaused { pause } => Some(pause.clone()),
             _ => None,
         };
-        append(&inner, &input.invocation, Fact::InvocationEnded { outcome }).await?;
+        append(inner, &invocation, Fact::InvocationEnded { outcome }).await?;
         if let Some(pause) = pause {
-            handoff.as_ref().expect("model Run handoff").sealed(&pause);
+            handoff.expect("model Run handoff").sealed(&pause);
         }
     }
     result?;
-    Ok(input.invocation)
+    Ok(crate::ActivationExit::Terminal(invocation))
 }
 
 fn failure_class(error: &RunError) -> &'static str {

@@ -163,13 +163,14 @@ async fn streamed_exec_journals_parallel_children_and_reopens_without_reexecutio
                 }),
             );
             let invocation = input.invocation.clone();
-            assert_eq!(
-                engine
-                    .run(log.store(), input, CancellationToken::new())
-                    .await
-                    .unwrap(),
-                invocation
-            );
+            let exit = engine
+                .run(log.store(), input, CancellationToken::new())
+                .await
+                .unwrap();
+            let maka_agent_engine::ActivationExit::Terminal(completed) = exit else {
+                panic!("code mode terminal fixture unexpectedly parked")
+            };
+            assert_eq!(completed, invocation);
             engine.drain().await;
             let prefix = log.prefix(100, 128 * 1024).await.unwrap();
             assert_eq!(

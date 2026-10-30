@@ -494,6 +494,7 @@ async fn copies_own_history_and_files_without_replaying_execution_across_retries
 async fn revisions_own_excluded_inputs_and_allocate_one_durable_family() {
     use maka_agent_facts::session::BranchOrigin;
     use maka_agent_facts::session::CopyPurpose;
+    use maka_agent_facts::session::Lineage;
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("revision.sqlite");
     let log = EventLog::open(&path).await.unwrap();

@@ -3347,39 +3347,6 @@ mod tests {
         paths
     }
 
-    struct PathPolicyFixture {
-        site_allowed: bool,
-        accesses: Arc<Mutex<Vec<crate::BrowserAccess>>>,
-    }
-    impl crate::BrowserAuthorization for PathPolicyFixture {
-        fn authorize(
-            &self,
-            access: crate::BrowserAccess,
-            _: CancellationToken,
-        ) -> crate::AuthorizationFuture {
-            let allowed = match &access {
-                crate::BrowserAccess::Metadata { .. } => true,
-                crate::BrowserAccess::Read { .. } => self.site_allowed,
-                _ => false,
-            };
-            self.accesses.lock().unwrap().push(access);
-            Box::pin(async move {
-                if allowed {
-                    Ok(())
-                } else {
-                    Err(failed("fixture current URL policy denied"))
-                }
-            })
-        }
-        fn check(
-            &self,
-            access: crate::BrowserAccess,
-            cancellation: CancellationToken,
-        ) -> crate::AuthorizationFuture {
-            self.authorize(access, cancellation)
-        }
-    }
-
     #[tokio::test]
     async fn download_path_rechecks_actual_target_url_after_host_consent() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

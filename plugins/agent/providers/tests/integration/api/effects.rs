@@ -51,7 +51,7 @@ impl Transport for Exchange {
 async fn compiled_definition_authenticates_without_legacy_registration_or_secret_diagnostics() {
     use maka_agent_ports::provider::authentication::Authenticate;
     let definition = ApiProviders::definition("openai-compatible", snapshot()).unwrap();
-    let transport = Arc::new(Exchange::default());
+    let transport = Arc::new(Exchange);
     let context = Context {
         transport: transport.clone(),
         cancellation: CancellationToken::new(),

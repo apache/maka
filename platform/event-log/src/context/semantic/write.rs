@@ -213,31 +213,6 @@ fn archived(row: &SemanticRow) -> bool {
     matches!(row.kind, SemanticKind::ToolResult { archived: true, .. })
 }
 
-async fn change(
-    db: &mut SqliteWorkerConnection<'_>,
-    owner: &str,
-    row: &SemanticRow,
-    order: RowPosition,
-    revision_invocation: &str,
-    inherited: bool,
-    deleted: bool,
-) -> Result<(), StoreError> {
-    sqlx::query("INSERT INTO context_semantic_changes(owner_session_id,revision,source_sequence,source_index,order_sequence,order_index,invocation_id,revision_invocation,archived,inherited,deleted) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(owner)
-        .bind(row.revision as i64)
-        .bind(row.id.source_sequence as i64)
-        .bind(row.id.item_index as i64)
-        .bind(order.source_sequence as i64)
-        .bind(order.item_index as i64)
-        .bind(&row.invocation.invocation_id)
-        .bind(revision_invocation)
-        .bind(archived(row))
-        .bind(inherited)
-        .bind(deleted)
-        .execute(&mut *db).await?;
-    Ok(())
-}
-
 async fn save_row(
     db: &mut SqliteWorkerConnection<'_>,
     owner: &str,
@@ -281,34 +256,13 @@ async fn save_row_mode(
         visible,
         unknown_only,
     } = state;
-    let old:Option<(i64,i64,i64)>=sqlx::query_as("SELECT revision,order_sequence,order_index FROM context_semantic_rows WHERE owner_session_id=? AND source_sequence=? AND source_index=? ORDER BY revision DESC LIMIT 1")
+    let old:Option<i64>=sqlx::query_scalar("SELECT revision FROM context_semantic_rows WHERE owner_session_id=? AND source_sequence=? AND source_index=? ORDER BY revision DESC LIMIT 1")
         .bind(owner)
         .bind(row.id.source_sequence as i64)
         .bind(row.id.item_index as i64)
         .fetch_optional(&mut *db).await?;
-    if old.is_some_and(|old| old.0 == row.revision as i64) {
+    if old == Some(row.revision as i64) {
         return Ok(());
-    }
-    if let Some((_, sequence, index)) = old
-        && (sequence, index)
-            != (
-                row.order.source_sequence as i64,
-                row.order.item_index as i64,
-            )
-    {
-        change(
-            db,
-            owner,
-            row,
-            RowPosition {
-                source_sequence: sequence as u64,
-                item_index: index as u64,
-            },
-            revision_invocation,
-            inherited,
-            true,
-        )
-        .await?;
     }
     let encoded_row = json(row)?;
     let row_directory = super::directory::row(&encoded_row)?;
@@ -331,84 +285,12 @@ async fn save_row_mode(
         .bind(json(&row_directory)?)
         .execute(&mut *db)
         .await?;
-    change(
-        db,
-        owner,
-        row,
-        row.order,
-        revision_invocation,
-        inherited,
-        !visible,
-    )
-    .await
+    Ok(())
 }
 
 // Match the existing copy-hydration metadata batch; this bounds intermediate
-// query rows without limiting the number of projected changes.
+// query rows without limiting the number of reopened notifications.
 const METADATA_PAGE_ROWS: i64 = 128;
-
-pub(super) const STABLE_CHANGES_SQL: &str = "SELECT r.source_sequence,r.source_index,r.revision,r.row_json,r.inherited
-    FROM context_semantic_rows r
-    WHERE r.owner_session_id=?1 AND r.invocation_id=?2 AND r.kind='assistant_part'
-      AND (r.source_sequence,r.source_index,r.revision)>(?3,?4,?5)
-      AND (r.source_sequence,r.source_index)<(?6,?7)
-      AND NOT EXISTS(SELECT 1 FROM context_semantic_rows n WHERE n.owner_session_id=r.owner_session_id
-          AND n.source_sequence=r.source_sequence AND n.source_index=r.source_index AND n.revision>r.revision)
-    ORDER BY r.source_sequence,r.source_index,r.revision LIMIT ?8";
-
-pub(super) async fn stable_changes(
-    db: &mut SqliteWorkerConnection<'_>,
-    stored: &StoredEvent,
-    previous: Option<RowPosition>,
-    next: RowPosition,
-) -> Result<(), StoreError> {
-    let previous = previous.unwrap_or(RowPosition {
-        source_sequence: 0,
-        item_index: 0,
-    });
-    if previous >= next {
-        return Ok(());
-    }
-    let owner = &stored.event.invocation.session_id;
-    // Revisions are nonnegative, so -1 includes the initial source position.
-    let mut cursor = (
-        previous.source_sequence as i64,
-        previous.item_index as i64,
-        -1,
-    );
-    loop {
-        let records: Vec<(i64, i64, i64, String, bool)> = sqlx::query_as(STABLE_CHANGES_SQL)
-            .bind(owner)
-            .bind(&stored.event.invocation.invocation_id)
-            .bind(cursor.0)
-            .bind(cursor.1)
-            .bind(cursor.2)
-            .bind(next.source_sequence as i64)
-            .bind(next.item_index as i64)
-            .bind(METADATA_PAGE_ROWS)
-            .fetch_all(&mut *db)
-            .await?;
-        if records.is_empty() {
-            break;
-        }
-        for (sequence, index, revision, json, inherited) in records {
-            cursor = (sequence, index, revision);
-            let mut row: SemanticRow = decode(&json)?;
-            row.revision = stored.sequence;
-            change(
-                db,
-                owner,
-                &row,
-                row.order,
-                &stored.event.invocation.invocation_id,
-                inherited,
-                false,
-            )
-            .await?;
-        }
-    }
-    Ok(())
-}
 
 async fn unknown_dispatch(
     db: &mut SqliteWorkerConnection<'_>,
@@ -697,7 +579,6 @@ pub(crate) async fn record(
         Some(json) => decode(json)?,
         None => Frontier::default(),
     };
-    let previous_cut = frontier.stable_cut;
     let settled_dispatch = match &stored.event.fact {
         Fact::ToolSettled { operation_id, .. } => frontier
             .calls
@@ -769,17 +650,6 @@ pub(crate) async fn record(
             .bind(sequence)
             .bind(cut.source_sequence as i64)
             .bind(cut.item_index as i64)
-            .execute(&mut *db)
-            .await?;
-        stable_changes(db, stored, previous_cut, cut).await?;
-    }
-    if let Some(checkpoint) = transition.checkpoint {
-        sqlx::query("INSERT INTO context_semantic_checkpoints VALUES(?,?,?,?,?)")
-            .bind(owner)
-            .bind(sequence)
-            .bind(&stored.event.id)
-            .bind(&stored.event.invocation.invocation_id)
-            .bind(json(&checkpoint)?)
             .execute(&mut *db)
             .await?;
     }

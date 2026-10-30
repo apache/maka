@@ -719,22 +719,6 @@ impl MessageCursor<'_> {
         }
     }
 }
-#[cfg(test)]
-async fn compile(
-    message: MessageRecipe,
-    language: Language,
-    plaintext: Option<PlaintextResponses>,
-    options: &serde_json::Value,
-    budget: Arc<dyn SourceBudget>,
-) -> Result<Vec<SourceItem>, ModelError> {
-    let mut cursor = open(message, language, plaintext, options, budget);
-    let mut items = Vec::new();
-    while let Some(item) = cursor.next().await? {
-        items.push(item)
-    }
-    Ok(items)
-}
-
 async fn replay_text(
     template: JsonSource,
     value: TextSource,

@@ -20,19 +20,6 @@
 use crate::prompt::{ContentPart, Message, ToolOutput};
 use maka_agent_facts::language::Language;
 
-/// Chat has text-only tool messages. Keep the entire result group together and
-/// carry media in the following user message, never between parallel results.
-#[cfg(test)]
-pub(super) fn project(messages: Vec<Message>, language: Language) -> Vec<Message> {
-    let mut projector = Projector::new(language);
-    let mut projected = Vec::new();
-    for message in messages {
-        projected.extend(projector.push(message));
-    }
-    projected.extend(projector.finish());
-    projected
-}
-
 /// Carries only the pending tool media across consecutive result messages.
 /// The request encoder drains each returned message before reading more history.
 pub(super) struct Projector {

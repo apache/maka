@@ -130,7 +130,7 @@ async fn refresh_cas_preserves_generation_across_races_logout_aba_and_reopen() {
     drop((original, current, relogged));
     let before_reopen = fixture.store.catalog().await.unwrap();
     let Fixture {
-        temp,
+        _temp: temp,
         store,
         target,
     } = fixture;

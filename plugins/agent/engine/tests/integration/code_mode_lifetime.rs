@@ -106,7 +106,34 @@ async fn verify_yielded(continuation: bool) {
         CodeExecutor::new(CellLimits::default()).unwrap(),
     )
     .unwrap();
-    let mut request = input(&base, "yielded", effect.clone());
+    use maka_tools::{
+        ToolCatalog, ToolDefinition, ToolHandler, ToolMode, ToolNesting, ToolRegistration,
+        ToolSemantics,
+    };
+    let mut request = crate::support::invocation::input(
+        &base,
+        "yielded",
+        maka_agent_engine::RunWork::Message {
+            allow_prior_unknown: false,
+            source_messages: Vec::new(),
+            message: "question yielded".into(),
+            tools: ToolCatalog::new([ToolRegistration {
+                definition: ToolDefinition {
+                    freeform: None,
+                    output_schema: None,
+                    provider: None,
+                    name: "slow".into(),
+                    description: "controlled answer".into(),
+                    input_schema: json!({"type":"object"}),
+                },
+                nesting: ToolNesting::Nestable,
+                semantics: ToolSemantics::Parallel,
+                handler: ToolHandler::Immediate(effect.clone()),
+            }])
+            .unwrap(),
+        },
+    );
+    request.configuration.tool_mode = ToolMode::CodeMode;
     if continuation {
         use maka_agent_facts::event::EventWrite;
         use maka_agent_facts::event::InvocationInput;

@@ -567,40 +567,6 @@ fn connection_error(error: &ToolError) -> ToolError {
     }
 }
 
-#[cfg(test)]
-pub(super) fn fixture_operation_unknown(operation: u128) -> ToolError {
-    let observation = serde_json::json!({
-        "reference": {
-            "source": {
-                "stateDomain": "a".repeat(64),
-                "deployment": uuid::Uuid::from_u128(1),
-                "revision": 3,
-            },
-            "namespace": [uuid::Uuid::from_u128(2)],
-            "export": "Service",
-            "method": "apply",
-            "operation": uuid::Uuid::from_u128(operation),
-            "fingerprint": format!("sha256-{}", "b".repeat(64)),
-            "contract": {
-                "name": "fixture.Service",
-                "version": 1,
-                "transport": "remote",
-                "digest": format!("sha256-{}", "c".repeat(64)),
-            },
-            "recovery": "journal_v1",
-        },
-        "receipt": {
-            "kind": "recorded",
-            "outcome": { "kind": "unknown", "diagnostic": "original fixture outcome" },
-            "cleanup": { "kind": "confirmed" },
-        },
-    });
-    ToolError::OperationUnknown {
-        message: "original result remains unknown".into(),
-        observation: serde_json::from_value(observation).unwrap(),
-    }
-}
-
 async fn windows_executable() -> Result<PathBuf, ToolError> {
     if let Some(path) = std::env::var_os("MAKA_CUA_WINDOWS_EXECUTABLE") {
         let path = PathBuf::from(path);

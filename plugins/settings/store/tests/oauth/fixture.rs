@@ -34,7 +34,7 @@ pub(super) fn credential(secret: &str) -> Credential {
 }
 
 pub(super) struct Fixture {
-    _temp: tempfile::TempDir,
+    pub(super) _temp: tempfile::TempDir,
     pub(super) store: Arc<ConfigurationStore>,
     pub(super) target: ConnectionCredentialTarget,
 }

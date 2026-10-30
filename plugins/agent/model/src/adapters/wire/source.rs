@@ -567,15 +567,6 @@ mod tests {
             Box::pin(async move { Ok(ChargedBuffer::new(vec![0; minimum], ())) })
         }
     }
-    async fn collect(fragment: SourceFragment) -> Vec<u8> {
-        let mut cursor = FragmentCursor::new(fragment);
-        let mut result = Vec::new();
-        while let Some(bytes) = cursor.next(Arc::new(Budget)).await.expect("encode fixture") {
-            assert!(bytes.len() <= 16 * 1024, "bounded provider chunk");
-            result.extend_from_slice(&bytes);
-        }
-        result
-    }
     struct Chunked {
         bytes: Bytes,
         limit: usize,

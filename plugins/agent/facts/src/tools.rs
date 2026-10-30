@@ -32,10 +32,13 @@ mod journal;
 mod preparation;
 mod provider;
 use crate::tool_call::ToolCallIdentity;
-pub use journal::{PublishedTool, ToolJournal};
+pub use journal::{
+    AdmittedTool, ApprovalContinuation, PublishedTool, ToolContinuation, ToolJournal,
+};
 pub use preparation::{
-    EffectAdmission, ExecutionCustody, PreparationFuture, PreparedEffect, ToolCallContext,
-    ToolHandler, ToolNesting, ToolPreparer, ToolRegistration, ToolSemantics,
+    ApprovalAnswerFuture, EffectAdmission, EstablishNativeApproval, EstablishedApproval, Execute,
+    ExecutionCustody, PreparationFuture, PreparedEffect, PreparedExecution, PreparedNativeApproval,
+    ToolCallContext, ToolHandler, ToolNesting, ToolPreparer, ToolRegistration, ToolSemantics,
 };
 pub use provider::{ModelToolContext, ProviderTool, ProviderToolProtocol};
 

@@ -782,7 +782,7 @@ impl PreparedUpload {
     }
 
     async fn stage(
-        &self,
+        &mut self,
         cancellation: &CancellationToken,
     ) -> Result<cua_driver_core::browser::ExtensionRetainedUpload, ToolError> {
         let descriptors = self.descriptors()?;
@@ -837,8 +837,16 @@ impl PreparedUpload {
         }
         // Retain ACK is intentionally before DOM dispatch. Backing survives
         // success, caller loss, turn completion and detach, not merely this RPC.
-        self.control(self.control.retain_upload_for_selection(&stage))
-            .await
+        let retained = self
+            .control(self.control.retain_upload_for_selection(&stage))
+            .await?;
+        // Every source read and native write is joined. This exact retain ACK
+        // confirms the independent browser-host backing; DOM selection no
+        // longer consumes the Host snapshots or their packing reservations.
+        // Drop only this chooser's references. Other resource consumers retain
+        // their own Arcs, and selected native backing remains with its owner.
+        self.files.clear();
+        Ok(retained)
     }
 
     async fn check_authority(&self, cancellation: &CancellationToken) -> Result<(), ToolError> {
@@ -990,7 +998,7 @@ impl Browsers {
             .get_mut(&handle)
             .expect("checked file chooser tab");
         tab.last_turn = invocation.turn().into();
-        let upload = tab
+        let mut upload = tab
             .prepare_file_upload(
                 self.owner,
                 chooser,
@@ -1004,7 +1012,7 @@ impl Browsers {
             let retained=upload.stage(cancellation).await?;
             upload.check(cancellation).await?;
             let paths=retained.paths().iter().map(|path|path.to_str().map(str::to_owned).ok_or_else(||failed("Browser-host upload path is not valid Unicode"))).collect::<Result<Vec<_>,_>>()?;
-            if paths.len()!=upload.files.len() {return Err(failed("Browser-host upload path count does not match the approved files"));}
+            if paths.len()!=upload.request.files.len() {return Err(failed("Browser-host upload path count does not match the approved files"));}
             // These paths came only from this actual native-host retain ACK.
             // No caller pathname or guessed cross-OS mapping reaches Chrome.
             match upload.socket.raw_call(None,"DOM.setFileInputFiles",json!({"backendNodeId":upload.selection.backend_node,"files":paths})).await {

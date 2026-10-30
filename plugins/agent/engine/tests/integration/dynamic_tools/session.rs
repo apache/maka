@@ -79,14 +79,6 @@ fn loaded(request: &Value, mode: ToolMode) {
         }
     );
 }
-fn echo(mode: ToolMode, id: &str) -> Value {
-    if mode == ToolMode::Direct {
-        call(id, "echo", json!({"n":2}))
-    } else {
-        call(id, "exec", json!({"code":"text(await tools.echo({n:2}));"}))
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn continuation_admission_rejects_changed_loading_before_claiming_the_source() {
     use maka_agent_facts::event::EventWrite;

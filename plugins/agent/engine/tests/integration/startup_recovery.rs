@@ -96,6 +96,7 @@ async fn unknown_dispatch_stays_unknown_and_blocks_next_admission_after_reopen()
         .run(
             log.store(),
             RunInput {
+                native_activation_basis: None,
                 model_source: None,
                 model_revision: None,
                 provider_id: "fixture".into(),

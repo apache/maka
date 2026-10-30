@@ -2970,6 +2970,7 @@ mod actual_call_scope_tests {
             "renew",
             "cross_turn",
             "policy_changed",
+            "missing_current_factory",
             "new_pending_same_context",
             "new_ack_same_context",
         ] {
@@ -3071,7 +3072,11 @@ mod actual_call_scope_tests {
                     popup_enabled: case != "policy_changed",
                     ..Default::default()
                 });
-            let invocation = invocation.with_browser_host_effects(fresh_factory.clone());
+            let invocation = if case == "missing_current_factory" {
+                invocation
+            } else {
+                invocation.with_browser_host_effects(fresh_factory.clone())
+            };
             let admission = actual_retention_request(&scope, &prepared.receipt);
             let reply = async {
                 let frame = read_frame(&mut fixture.server).await;
@@ -3158,7 +3163,10 @@ mod actual_call_scope_tests {
                         dispatch: &dispatch,
                     },
                 );
-                let refused = matches!(case, "new_pending_same_context" | "new_ack_same_context");
+                let refused = matches!(
+                    case,
+                    "missing_current_factory" | "new_pending_same_context" | "new_ack_same_context"
+                );
                 assert_eq!(outcome.is_err(), refused, "case {case}: {outcome:?}");
                 let state = ledger
                     .fixed_state(initial.owner, &initial.identity)

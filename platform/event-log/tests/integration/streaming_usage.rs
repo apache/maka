@@ -50,7 +50,7 @@ fn event(fact: Fact) -> EventWrite {
     ))
     .unwrap()
 }
-async fn request(log: &EventLog, step: &str, items: bool) {
+async fn request(log: &EventLog, step: &str, items: bool) -> EventWrite {
     let source = log
         .scoped_prefix(LogScope::Session { id: "s".into() }, 100, 128 * 1024)
         .await
@@ -83,9 +83,9 @@ async fn request(log: &EventLog, step: &str, items: bool) {
         context: None,
         effective_source_digest: None,
     });
-    log.append(&write.with_composition(composition).unwrap())
-        .await
-        .unwrap();
+    let write = write.with_composition(composition).unwrap();
+    log.append(&write).await.unwrap();
+    write
 }
 fn writer(step: &str) -> AttemptWriter {
     AttemptWriter::new(
@@ -257,4 +257,214 @@ async fn early_tool_results_and_retained_interrupted_items_invalidate_stale_usag
         .await
         .unwrap();
     }
+}
+
+#[tokio::test]
+async fn committed_composition_survives_reopen_and_cannot_rebind_missing_or_foreign_sources() {
+    use maka_agent_facts::composition::CompositionEvidence;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("composition.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    log.create_session("s", "create", &json!({}), 1)
+        .await
+        .unwrap();
+    log.append(&event(Fact::InvocationOpened {
+        configuration: None,
+        input: InvocationInput::Message {
+            content: "question".into(),
+            request_fingerprint: None,
+            source_messages: vec![],
+        },
+    }))
+    .await
+    .unwrap();
+    let original = request(&log, "first", false).await;
+    let expected = log
+        .request_composition("s", &original.event().id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut evidence = original.composition().unwrap().clone();
+    evidence.committed(original.event().id.clone());
+    let mut retry_event = original.event().clone();
+    retry_event.id = uuid::Uuid::new_v4().to_string();
+    let Fact::ModelRequested { step_id, .. } = &mut retry_event.fact else {
+        unreachable!()
+    };
+    *step_id = "retry".into();
+    log.append(&event(Fact::ModelInterrupted {
+        step_id: "first".into(),
+        status: ModelInterruption::RetryableFailure,
+        partial: None,
+        model_failure: None,
+        diagnostic: None,
+    }))
+    .await
+    .unwrap();
+    drop(original);
+    log.close().await.unwrap();
+    let log = EventLog::open(&path).await.unwrap();
+    for bad in [
+        CompositionEvidence::Committed {
+            event_id: "missing".into(),
+            digest: evidence.digest().into(),
+        },
+        CompositionEvidence::Committed {
+            event_id: match &evidence {
+                CompositionEvidence::Committed { event_id, .. } => event_id.clone(),
+                _ => unreachable!(),
+            },
+            digest: maka_agent_facts::artifact::content_digest(b"different"),
+        },
+    ] {
+        assert!(
+            log.append(
+                &EventWrite::plain(retry_event.clone())
+                    .unwrap()
+                    .with_composition(bad)
+                    .unwrap()
+            )
+            .await
+            .is_err()
+        );
+    }
+    let retry = EventWrite::plain(retry_event)
+        .unwrap()
+        .with_composition(evidence.clone())
+        .unwrap();
+    let sequence = log.append(&retry).await.unwrap();
+    assert_eq!(
+        log.append(&retry).await.unwrap(),
+        sequence,
+        "reference replay is exact"
+    );
+    assert_eq!(
+        log.request_composition("s", &retry.event().id)
+            .await
+            .unwrap(),
+        Some(expected.clone())
+    );
+    log.append(&event(Fact::ModelInterrupted {
+        step_id: "retry".into(),
+        status: ModelInterruption::RetryableFailure,
+        partial: None,
+        model_failure: None,
+        diagnostic: None,
+    }))
+    .await
+    .unwrap();
+    log.append(&event(Fact::InvocationEnded {
+        outcome: InvocationOutcome::Completed,
+    }))
+    .await
+    .unwrap();
+    // Another live owner retains identical bytes, never the original request locator.
+    let mut foreign_open = event(Fact::InvocationOpened {
+        configuration: None,
+        input: InvocationInput::Message {
+            content: "other".into(),
+            request_fingerprint: None,
+            source_messages: vec![],
+        },
+    })
+    .into_event();
+    foreign_open.invocation.session_id = "other".into();
+    foreign_open.invocation.invocation_id = "other".into();
+    foreign_open.invocation.turn_id = "other-turn".into();
+    foreign_open.invocation.run_id = "other-run".into();
+    log.append(&EventWrite::plain(foreign_open).unwrap())
+        .await
+        .unwrap();
+    let mut foreign = retry.event().clone();
+    foreign.id = uuid::Uuid::new_v4().to_string();
+    foreign.invocation.session_id = "other".into();
+    foreign.invocation.invocation_id = "other".into();
+    foreign.invocation.turn_id = "other-turn".into();
+    foreign.invocation.run_id = "other-run".into();
+    let Fact::ModelRequested {
+        source_scope,
+        source_high_water,
+        source_digest,
+        step_id,
+        ..
+    } = &mut foreign.fact
+    else {
+        unreachable!()
+    };
+    let prefix = log
+        .scoped_prefix(LogScope::Session { id: "other".into() }, 100, 128 * 1024)
+        .await
+        .unwrap();
+    *source_scope = prefix.scope;
+    *source_high_water = prefix.high_water;
+    *source_digest = prefix.digest;
+    *step_id = "other-first".into();
+    let live_event_id = foreign.id.clone();
+    let inline = Arc::new(expected.clone().freeze().unwrap());
+    log.append(
+        &EventWrite::plain(foreign.clone())
+            .unwrap()
+            .with_composition(inline)
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut interrupted = event(Fact::ModelInterrupted {
+        step_id: "other-first".into(),
+        status: ModelInterruption::RetryableFailure,
+        partial: None,
+        model_failure: None,
+        diagnostic: None,
+    })
+    .into_event();
+    interrupted.invocation = foreign.invocation.clone();
+    log.append(&EventWrite::plain(interrupted).unwrap())
+        .await
+        .unwrap();
+    foreign.id = uuid::Uuid::new_v4().to_string();
+    let Fact::ModelRequested { step_id, .. } = &mut foreign.fact else {
+        unreachable!()
+    };
+    *step_id = "other-retry".into();
+    let foreign = EventWrite::plain(foreign)
+        .unwrap()
+        .with_composition(evidence.clone())
+        .unwrap();
+    let error = log.append(&foreign).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("committed request composition reference"),
+        "{error}"
+    );
+    let revision = log
+        .get_session::<serde_json::Value>("s")
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    log.begin_session_removal("s", revision).await.unwrap();
+    log.finish_session_retirement("s").await.unwrap();
+    while matches!(
+        log.collect_session_material(None).await.unwrap(),
+        maka_event_log::sessions::MaterialCollection::Collected
+    ) {}
+    let CompositionEvidence::Committed { event_id, .. } = &evidence else {
+        unreachable!()
+    };
+    assert_eq!(log.request_composition("s", event_id).await.unwrap(), None);
+    assert_eq!(
+        log.request_composition("other", &live_event_id)
+            .await
+            .unwrap(),
+        Some(expected)
+    );
+    let error = log.append(&foreign).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("committed request composition reference"),
+        "{error}"
+    );
+    log.close().await.unwrap();
 }

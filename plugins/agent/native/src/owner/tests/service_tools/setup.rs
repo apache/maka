@@ -37,7 +37,6 @@ enum Service {
     Skills(Skills),
     Images(images::Source),
     Web,
-    Computer(Arc<dyn Handler>),
     Jev,
 }
 struct Skills {
@@ -191,13 +190,6 @@ impl Setup {
         self.granted = false;
         self
     }
-    pub(in crate::owner::tests) fn computer(handler: Arc<dyn Handler>) -> Self {
-        Self::new(Service::Computer(handler))
-    }
-
-    pub(super) fn export(&self) -> &str {
-        self.service.export()
-    }
     pub(in crate::owner::tests) fn selections(&self) -> Vec<contract::ServiceTool> {
         self.primary_selections()
     }
@@ -215,7 +207,6 @@ impl Setup {
                 ("edit", "AdjustDocument"),
                 ("applyPatch", "PatchDocument"),
             ],
-            Service::Computer(_) => vec![("evaluate", "cua_repl"), ("reset", "cua_reset")],
             Service::Web => vec![("fetch", "WebFetch"), ("search", "WebSearch")],
             Service::Skills(skills) => {
                 if skills.preparation.is_some() {
@@ -246,7 +237,6 @@ impl Setup {
                 selection.name = name.into();
                 match &self.service {
                     Service::FileEditors => selection.presentation = None,
-                    Service::Computer(_) => selection.result = contract::ToolResult::Computer,
                     Service::Skills(_) => selection.input = contract::ToolInput::Skill,
                     Service::Processes { .. } => {
                         selection.input = if method == "execute" {
@@ -466,12 +456,6 @@ impl Setup {
 }
 
 impl Service {
-    fn capture(&self) -> Option<&Arc<dyn Handler>> {
-        match self {
-            Self::Computer(handler) => Some(handler),
-            _ => None,
-        }
-    }
     fn contract(&self) -> Contract {
         match self {
             Self::Counter { .. } => counter_contract(),
@@ -484,7 +468,6 @@ impl Service {
             Self::Skills(_) => maka_skills_api::contract(),
             Self::Images(source) => source.contract(),
             Self::Web => maka_web_api::contract(),
-            Self::Computer(_) => maka_workspace_api::computer::contract(),
             Self::Jev => maka_workspace_api::jev::contract(),
         }
     }
@@ -500,7 +483,6 @@ impl Service {
             Self::Skills(_) => maka_skills_api::EXPORT,
             Self::Images(_) => "Images",
             Self::Web => maka_web_api::EXPORT,
-            Self::Computer(_) => maka_workspace_api::computer::EXPORT,
             Self::Jev => maka_workspace_api::jev::EXPORT,
         }
     }
@@ -517,7 +499,7 @@ impl Service {
             Self::Skills(_) => "search",
             Self::Images(_) => "produce",
             Self::Web => "fetch",
-            Self::Computer(_) | Self::Jev => "evaluate",
+            Self::Jev => "evaluate",
         }
     }
     fn implementation(&self) -> Value {
@@ -537,14 +519,12 @@ impl Service {
                 return json!({"kind":"javascript","module":"images.mjs","realm":"shared"});
             }
             Self::Web => maka_web_api::IMPLEMENTATION,
-            Self::Computer(_) => maka_workspace_api::computer::IMPLEMENTATION,
             Self::Jev => maka_workspace_api::jev::IMPLEMENTATION,
         };
         json!({"kind":"native","implementation":name})
     }
     fn schema(&self) -> Value {
         match self {
-            Self::Computer(_) => maka_workspace_api::computer::configuration_schema(),
             Self::Jev => maka_workspace_api::jev::configuration_schema(),
             Self::Web => maka_web_api::configuration_schema(),
             Self::Skills(_) => maka_skills_api::configuration_schema(),
@@ -556,7 +536,6 @@ impl Service {
     }
     fn configuration(&self, roots: Value) -> Value {
         match self {
-            Self::Computer(_) => json!({"desktop":"local"}),
             Self::Web | Self::Jev => json!({"network":"allowed"}),
             Self::Skills(skills) => {
                 json!({"bundled":false,"home":skills.standard.then_some(&skills.path),"projectRoots":if skills.standard{roots}else{json!([])},
@@ -579,45 +558,12 @@ impl Service {
                 ..
             }) => &["prepare", "search"],
             Self::Web => &["capture"],
-            Self::Computer(_) => &["state"],
             #[cfg(target_os = "macos")]
             Self::Protocol => &["run", "input"],
             _ => &[],
         }
     }
     fn provide(&self, registry: &mut NativeRegistry) {
-        if let Some(handler) = self.capture() {
-            let handler = handler.clone();
-            let contract = self.contract();
-            let export = self.export().to_owned();
-            let implementation = self.implementation()["implementation"]
-                .as_str()
-                .unwrap()
-                .to_owned();
-            registry
-                .insert(
-                    implementation,
-                    Arc::new(move |_, _| {
-                        let handler = handler.clone();
-                        let contract = contract.clone();
-                        let export = export.clone();
-                        Box::pin(async move {
-                            NativeActivation {
-                                exports: Ok(BTreeMap::from([(
-                                    export,
-                                    Published {
-                                        contract,
-                                        value: handler,
-                                    },
-                                )])),
-                                owner: Arc::new(()),
-                            }
-                        })
-                    }),
-                )
-                .unwrap();
-            return;
-        }
         match self {
             Self::Counter {
                 handler: Some(counter),
@@ -645,7 +591,7 @@ impl Service {
                     )
                     .unwrap();
             }
-            Self::Counter { handler: None, .. } | Self::Computer(_) => {}
+            Self::Counter { handler: None, .. } => {}
             Self::Questions => maka_interactions_native::questions::provide(registry).unwrap(),
             Self::Forms => maka_interactions_native::forms::provide(registry).unwrap(),
             Self::File(_) | Self::FileEditors => maka_files_native::provide(registry).unwrap(),

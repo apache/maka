@@ -186,6 +186,24 @@ async fn fallback_waits_for_retry_budget_and_gets_one_bounded_budget_of_its_own(
             .collect();
         assert_eq!(requests.len(), expected.len());
         assert!(requests.iter().all(|request| request == &requests[0]));
+        let mut frozen = None;
+        for event in &prefix.events {
+            if matches!(event.event.fact, Fact::ModelRequested { .. }) {
+                let composition = log
+                    .request_composition("session", &event.event.id)
+                    .await
+                    .unwrap()
+                    .expect("each retry retains canonical composition");
+                if let Some(original) = &frozen {
+                    assert_eq!(
+                        &composition, original,
+                        "retry must preserve the entire surface"
+                    );
+                } else {
+                    frozen = Some(composition);
+                }
+            }
+        }
     }
 }
 

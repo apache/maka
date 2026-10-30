@@ -407,3 +407,26 @@ async fn pin_partition(
         .await?;
     Ok(owner.scoped(Arc::new((session_pins, binding_pins))))
 }
+
+impl RootStore {
+    pub async fn ready_native_approval_sessions(&self) -> Result<Vec<String>, StoreError> {
+        self.require_open()?;
+        let mut sessions = Vec::new();
+        for partition in &self.partitions {
+            sessions.extend(partition.ready_native_approval_sessions().await?);
+        }
+        sessions.sort();
+        sessions.dedup();
+        Ok(sessions)
+    }
+}
+
+impl RootStore {
+    pub async fn reconcile_native_approval_controls(&self) -> Result<(), StoreError> {
+        self.require_open()?;
+        for partition in &self.partitions {
+            partition.reconcile_native_approval_controls().await?;
+        }
+        Ok(())
+    }
+}

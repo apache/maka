@@ -435,6 +435,7 @@ impl Owner {
             return Err("graph_session_unavailable".into());
         }
         if runs.busy(&session.id)
+            || self.has_parked_invocation(&session.id).await?
             || !self
                 .store
                 .session(&session.id)
