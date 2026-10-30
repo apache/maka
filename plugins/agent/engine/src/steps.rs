@@ -642,7 +642,9 @@ async fn approval_frontier(
                     through: inner.log.committed_sequence().await?,
                     engine: serde_json::to_value(&point)
                         .map_err(|error| RunError::Internal(error.to_string()))?,
-                    native_basis: native_basis.clone(),
+                    native_basis: native_basis
+                        .checkpoint_value()
+                        .map_err(RunError::Checkpoint)?,
                 };
                 match inner
                     .log

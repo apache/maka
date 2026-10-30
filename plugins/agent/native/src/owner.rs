@@ -126,6 +126,11 @@ struct MessageBasis {
     #[serde(default, skip_serializing_if = "Language::is_english")]
     language: Language,
 }
+impl maka_agent_engine::NativeActivationBasis for MessageBasis {
+    fn checkpoint_value(&self) -> serde_json::Result<Value> {
+        serde_json::to_value(self)
+    }
+}
 fn is_agent_collaboration(mode: &CollaborationMode) -> bool {
     *mode == CollaborationMode::Agent
 }
@@ -162,7 +167,7 @@ struct Control {
     preview:
         tokio::sync::watch::Receiver<Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>>,
     invocation: Invocation,
-    basis: MessageBasis,
+    basis: Arc<MessageBasis>,
     cancellation: CancellationToken,
     failure: Option<&'static str>,
 }
@@ -1389,6 +1394,7 @@ impl Owner {
                 }
             }
         }
+        let basis = Arc::new(basis);
         let input = self
             .input(invocation.clone(), backend, basis.clone(), delivered)
             .await?;

@@ -343,6 +343,16 @@ async fn native_approval_releases_worker_and_resumes_original_operation_once() {
         .await;
         let session = fixture.create("Park original native approval").await;
         let accepted = fixture.send(&session).await.unwrap();
+        let accepted_basis = fixture
+            .owner
+            .runs
+            .state()
+            .await
+            .controls
+            .get(&session)
+            .expect("accepted invocation owns its immutable basis")
+            .basis
+            .clone();
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
         tool_response_input(&mut socket, json!({"amount":7})).await;
@@ -352,6 +362,11 @@ async fn native_approval_releases_worker_and_resumes_original_operation_once() {
         eprintln!("approval fixture: waiting physical park session={session}");
         let checkpoint = parked(&fixture, &session).await;
         eprintln!("approval fixture: physical park confirmed session={session}");
+        assert_eq!(
+            checkpoint.checkpoint.native_basis,
+            serde_json::to_value(accepted_basis.as_ref()).unwrap(),
+            "persistent park must preserve the exact accepted activation basis"
+        );
         assert_eq!(
             checkpoint.checkpoint.invocation.invocation_id,
             accepted["invocationId"]
@@ -375,6 +390,7 @@ async fn native_approval_releases_worker_and_resumes_original_operation_once() {
             1
         );
 
+        let held_admission = fixture.owner.runs.ordered(&session).await;
         let answer = json!({"sessionId":session,"requestId":approval.request_id,
             "answer":{"kind":"service_approval","decision":"allow"}});
         eprintln!("approval fixture: recording duplicate answers session={session}");
@@ -384,6 +400,21 @@ async fn native_approval_releases_worker_and_resumes_original_operation_once() {
                 .await
                 .unwrap();
         }
+        for _ in 0..2 {
+            fixture.owner.schedule_native_approvals().await.unwrap();
+        }
+        assert!(
+            fixture
+                .owner
+                .runs
+                .state()
+                .await
+                .preparing
+                .contains_key(&session),
+            "ready approval must retain its waiter while ordinary admission holds the gate"
+        );
+        assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
+        drop(held_admission);
         let mut socket = next_model_socket(&listener, &fixture, &session).await;
         let next = request(&mut socket).await;
         assert!(

@@ -233,19 +233,24 @@ impl EventLog {
                     } else {
                         None
                     };
-                    if retired_basis.is_some() {
+                    let approval_revoked = if retired_basis.is_some() {
                         crate::native_approvals::revoke_for_session(
                             &mut tx,
                             &id,
                             permission_time.expect("permission retirement has a timestamp"),
                         )
-                        .await?;
-                    }
+                        .await?
+                    } else {
+                        false
+                    };
                     advance_catalog(&mut tx).await?;
                     let record = read(&mut tx, &id)
                         .await?
                         .ok_or(StoreError::SessionNotFound)?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    if approval_revoked {
+                        commits.native_approvals();
+                    }
                     if let (Some(control), Some(old), Some(now)) =
                         (root_app_control, retired_basis, permission_time)
                     {

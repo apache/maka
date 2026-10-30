@@ -58,11 +58,18 @@ impl Statement for WriteAppend {
         connection: &mut SqliteConnection,
     ) -> crate::connection::BoxFuture<'_, Result<Prepared<Self::Value>, StoreError>> {
         Box::pin(async move {
-            let (sequences, inserted) = prepare_request(connection, &self.events).await?;
+            let (sequences, inserted, approval_settled) =
+                prepare_request(connection, &self.events).await?;
             Ok(Prepared {
                 value: sequences,
                 changed: inserted.is_some(),
-                notification: inserted.map_or(Notification::None, Notification::Sequence),
+                notification: inserted.map_or(Notification::None, |sequence| {
+                    if approval_settled {
+                        Notification::NativeApprovalSequence(sequence)
+                    } else {
+                        Notification::Sequence(sequence)
+                    }
+                }),
             })
         })
     }
@@ -102,13 +109,19 @@ impl Statement for WriteAppend {
 async fn prepare_request(
     connection: &mut SqliteConnection,
     events: &[EventWrite],
-) -> Result<(Vec<u64>, Option<u64>), StoreError> {
+) -> Result<(Vec<u64>, Option<u64>, bool), StoreError> {
     let mut sequences = Vec::with_capacity(events.len());
     let mut inserted = None;
+    let mut approval_settled = false;
     for event in events {
         sequences.push(
             match EventLog::append_in_transaction(connection, event).await? {
                 AppendResult::Existing(sequence) => sequence,
+                AppendResult::NativeApprovalSettled(sequence) => {
+                    approval_settled = true;
+                    inserted = Some(sequence);
+                    sequence
+                }
                 AppendResult::Inserted(sequence) => {
                     inserted = Some(sequence);
                     sequence
@@ -117,7 +130,7 @@ async fn prepare_request(
         );
     }
     crate::context::validate_batch(connection, events).await?;
-    Ok((sequences, inserted))
+    Ok((sequences, inserted, approval_settled))
 }
 
 #[cfg(test)]

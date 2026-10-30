@@ -143,7 +143,8 @@ pub(crate) async fn apply(
     for write in &writes {
         last = match EventLog::append_in_transaction(tx, write).await? {
             crate::append::AppendResult::Existing(sequence)
-            | crate::append::AppendResult::Inserted(sequence) => sequence,
+            | crate::append::AppendResult::Inserted(sequence)
+            | crate::append::AppendResult::NativeApprovalSettled(sequence) => sequence,
         };
     }
     crate::context::validate_batch(tx, &writes).await?;
