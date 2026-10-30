@@ -115,7 +115,7 @@ import { finitePositive } from './context-budget-helpers.js';
 import type {
   AutomaticMemoryCompactionDecision,
   AutomaticMemoryCompactionDispatch,
-  ProviderImageBudget,
+  ProviderAttachmentBudget,
 } from './ai-sdk-compaction.js';
 import {
   contextDiagnosticsCompactionOf,
@@ -641,7 +641,11 @@ export class AiSdkTurn {
   private handoffPaused = false;
   watchdog: StreamWatchdog | null = null;
   runTrace: RunTrace | null = null;
-  readonly imageBudget: ProviderImageBudget = { used: 0, decisions: new Map() };
+  readonly attachmentBudget: ProviderAttachmentBudget = {
+    used: { image: 0, pdf: 0, total: 0 },
+    decisions: new Map(),
+    invalidMediaTypes: new Map(),
+  };
   injectedSteeringMessages: ModelMessage[] = [];
   memoryExtractRequested = false;
   memorySourceMessages: readonly ModelMessage[] | undefined;
@@ -1223,6 +1227,20 @@ export class AiSdkTurn {
     let resolvedSystemPrompt: ResolvedSystemPrompt = { sourceRevisions: [] };
     let systemPrompt: string | undefined;
 
+    // Reserve the shared binary allowance for the user's current attachments
+    // before historical replay materializes its own copies. Message order is
+    // restored below; only the budget admission order changes.
+    const currentUserContent = input.continuation
+      ? undefined
+      : await this.deps.messageProjection.buildCurrentUserContent(
+          this.attachmentBudget,
+          input.text,
+          input.attachments,
+          input.directoryReferences,
+          input.quotes,
+          input.headAnchorRuntimeEvent?.id,
+        );
+
     // --- Build messages from RuntimeEvent history and its compatibility projection. ---
     const priorReplayResult = await this.buildPriorMessages(input, priorUnknownProjection);
     if (this.aborted) {
@@ -1346,16 +1364,6 @@ export class AiSdkTurn {
           next.start();
         };
         const activeTools = plan.activeTools;
-        const currentUserContent = input.continuation
-          ? undefined
-          : await this.deps.messageProjection.buildCurrentUserContent(
-              this.imageBudget,
-              input.text,
-              input.attachments,
-              input.directoryReferences,
-              input.quotes,
-              input.headAnchorRuntimeEvent?.id,
-            );
         const messages =
           currentUserContent === undefined
             ? [...priorReplay.messages]
@@ -1450,7 +1458,7 @@ export class AiSdkTurn {
           const currentTurnMessages =
             await this.deps.messageProjection.materializeRuntimeReplayPlan(
               replayPlan,
-              this.imageBudget,
+              this.attachmentBudget,
               effectiveProjectionCheckpoint,
               compatibleProviderReasoningReplayEventIds(
                 replayEvents,
@@ -2956,7 +2964,7 @@ export class AiSdkTurn {
       isProviderHistoryCompactCheckpoint(projectedHistoryCompactCheckpoint);
     const materializeReplayFallback = (): Promise<ModelMessage[]> =>
       this.deps.messageProjection.materializeRuntimeReplayTextOnly(
-        this.imageBudget,
+        this.attachmentBudget,
         plan,
         projectedHistoryCompactCheckpoint,
       );
@@ -2991,7 +2999,7 @@ export class AiSdkTurn {
         status: 'ready',
         messages: await this.deps.messageProjection.materializeRuntimeReplayPlan(
           plan,
-          this.imageBudget,
+          this.attachmentBudget,
           projectedHistoryCompactCheckpoint,
           providerReasoningReplayEventIds,
         ),
@@ -3015,7 +3023,7 @@ export class AiSdkTurn {
           degradedPlan.items.length > 0 || hasProviderHistoryCompactCheckpoint
             ? await this.deps.messageProjection.materializeRuntimeReplayPlan(
                 degradedPlan,
-                this.imageBudget,
+                this.attachmentBudget,
                 projectedHistoryCompactCheckpoint,
                 providerReasoningReplayEventIds,
               )
@@ -3034,7 +3042,7 @@ export class AiSdkTurn {
       status: 'ready',
       messages: await this.deps.messageProjection.materializeRuntimeReplayPlan(
         plan,
-        this.imageBudget,
+        this.attachmentBudget,
         projectedHistoryCompactCheckpoint,
         providerReasoningReplayEventIds,
       ),
@@ -3140,8 +3148,8 @@ export class AiSdkTurn {
         // Materialize provider content before publishing the durable event.
         // After consumption there must be no fallible gap before ack/injection.
         const eventId = this.deps.newId();
-        const providerContent = await this.deps.messageProjection.appendImageParts(
-          this.imageBudget,
+        const providerContent = await this.deps.messageProjection.appendAttachmentParts(
+          this.attachmentBudget,
           buildSteeringEnvelope(formatTextWithInlineRefs(lease.content.text, lease.content)),
           lease.content.attachments,
           `steering:${eventId}`,
