@@ -146,11 +146,13 @@ impl Owner {
             None => None,
         };
         // This read-only basis selects tool names; it never renders or admits model work.
+        let selected_catalog = self
+            .mcp_projects
+            .available(&session.configuration.workspace)
+            .await?;
         let basis = MessageBasis {
-            mcp_revision: self
-                .mcp_projects
-                .available(&session.configuration.workspace)
-                .await?,
+            mcp_revision: selected_catalog.revision.clone(),
+            mcp_catalog: Some(selected_catalog),
             language: Language::En,
             compaction_prompt: None,
             graph,

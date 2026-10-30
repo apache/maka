@@ -44,6 +44,7 @@ maka-agent-api.workspace = true
 maka-interactions-api.workspace = true
 base64 = "0.23.1"
 cap-std.workspace = true
+cap-fs-ext.workspace = true
 maka-agent-engine.workspace = true
 maka-assistant.workspace = true
 maka-config.workspace = true

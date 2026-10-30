@@ -358,6 +358,26 @@ async fn native_approval_releases_worker_and_resumes_original_operation_once() {
         );
         assert_eq!(checkpoint.pending.len(), 1);
         assert_eq!(checkpoint.pending[0].interaction_id, approval.request_id);
+        let retained = fixture
+            .store
+            .accepted_execution_references(&fixture.owner.prefix, "fingerprint")
+            .await
+            .unwrap();
+        assert!(
+            retained.contains(
+                checkpoint.checkpoint.native_basis["fingerprint"]
+                    .as_str()
+                    .unwrap()
+            )
+        );
+        assert!(
+            fixture
+                .store
+                .accepted_execution_references("foreign-owner", "fingerprint")
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let operation = checkpoint.pending[0].operation_id.clone();
         let before = stored_facts(&fixture, &session).await;
         assert!(
@@ -444,6 +464,14 @@ async fn native_approval_releases_worker_and_resumes_original_operation_once() {
                 .is_none()
         );
         assert!(!fixture.owner.runs.state().await.busy(&session));
+        assert!(
+            fixture
+                .store
+                .accepted_execution_references(&fixture.owner.prefix, "fingerprint")
+                .await
+                .unwrap()
+                .is_empty()
+        );
         eprintln!("approval fixture: waiting Host shutdown session={session}");
         fixture.app.shutdown().await.unwrap();
         eprintln!("approval fixture: Host shutdown complete session={session}");

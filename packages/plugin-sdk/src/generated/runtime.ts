@@ -169,16 +169,21 @@ export type RuntimeProtocol =
   | CredentialMutationResult
   | SetDefaultConnectionTargetInput
   | CatalogMutationResult
+  | AgentMcpConfigurations
+  | AgentMcpConfigurationList
+  | AgentMcpConfigurationChange
+  | AgentMcpConfigurationResult
   | SkillLibraryConfiguration
   | SkillLibraryList
   | SkillLibraryPage
   | SkillLibraryRead
   | SkillLibraryDocument
-  | SkillLibraryChange
-  | SkillLibraryReview
-  | SkillLibraryPreview
+  | SkillLibraryDiscoverSource
+  | SkillLibraryDiscoveredSource
+  | SkillLibraryInstall
+  | SkillLibraryInstallResult
+  | SkillLibraryManageSkill
   | SkillLibraryChangeResult
-  | SkillLibraryOutcome
   | SkillLibrarySetPreference
   | SkillLibraryPreferenceResult
   | SkillModelSearch
@@ -2053,10 +2058,34 @@ export type CatalogMutationResult =
       kind: 'invalid_default_target';
       target: ConnectionTarget;
     };
+/**
+ * Standard user/project configuration locations, ordered from highest precedence.
+ */
+export type ConfigurationLocation = 'project:maka' | 'project:agents' | 'user:maka' | 'user:agents';
+export type AgentMcpServerChange =
+  | {
+      kind: 'save';
+      configuration: unknown;
+    }
+  | {
+      kind: 'delete';
+    };
+export type AgentMcpConfigurationResult =
+  | {
+      kind: 'saved';
+    }
+  | {
+      kind: 'changed';
+    }
+  | {
+      kind: 'rejected';
+      reason: string;
+    };
 export type SkillLibraryPage =
   | {
       kind: 'page';
       writable: boolean;
+      targets: SkillLibraryTarget[];
       preferencesWritable: boolean;
       preferenceRevision: number;
       revision: string;
@@ -2066,6 +2095,20 @@ export type SkillLibraryPage =
     }
   | {
       kind: 'changed';
+    };
+/**
+ * The exact source snapshot selected during discovery, or last installed.
+ */
+export type SkillLibrarySourceSnapshot =
+  | {
+      kind: 'git';
+      url: string;
+      reference?: string | null;
+      revision: string;
+    }
+  | {
+      kind: 'directory';
+      path: string;
     };
 export type SkillLibraryDocument =
   | {
@@ -2087,31 +2130,20 @@ export type SkillLibraryDocument =
   | {
       kind: 'unavailable';
     };
-export type SkillLibraryChangeKind = 'install' | 'update' | 'delete';
-export type SkillLibraryPreview =
+export type SkillLibraryInstallOutcome =
   | {
-      kind: 'ready';
-      review: SkillLibraryReview;
-      target: string;
-      entries: number;
-      paths: string[];
-      pathsTruncated: boolean;
-      locallyModified: boolean;
-    }
-  | {
-      kind: 'changed';
+      kind: 'installed';
+      reference: string;
     }
   | {
       kind: 'rejected';
+      directory: string;
       reason: string;
     };
 export type SkillLibraryChangeResult =
   | {
       kind: 'applied';
       reference: string;
-    }
-  | {
-      kind: 'changed';
     }
   | {
       kind: 'rejected';
@@ -6904,6 +6936,30 @@ export interface SetDefaultConnectionTargetInput {
   expectedCatalogRevision: number;
   target: ConnectionTarget | null;
 }
+export interface AgentMcpConfigurations {
+  workspace?: AgentWorkspace | null;
+}
+export interface AgentMcpConfigurationList {
+  locations: AgentMcpConfigurationLocation[];
+}
+export interface AgentMcpConfigurationLocation {
+  location: ConfigurationLocation;
+  path: string;
+  revision: string;
+  servers: AgentMcpConfigurationEntry[];
+}
+export interface AgentMcpConfigurationEntry {
+  name: string;
+  configuration: unknown;
+  shadowedBy?: ConfigurationLocation | null;
+}
+export interface AgentMcpConfigurationChange {
+  workspace?: AgentWorkspace | null;
+  location: ConfigurationLocation;
+  name: string;
+  revision: string;
+  change: AgentMcpServerChange;
+}
 /**
  * Installation-selected skill collections. No ambient home or workspace scan.
  */
@@ -6921,7 +6977,7 @@ export interface SkillLibraryConfiguration {
    */
   bundled?: boolean;
   /**
-   * Enable installation into this instance's own private collection.
+   * Allow management of the configured standard user and project skill directories.
    */
   manage?: boolean;
   /**
@@ -6948,13 +7004,15 @@ export interface SkillLibraryCursor {
   query: string;
   offset: number;
 }
+export interface SkillLibraryTarget {
+  location: ConfigurationLocation;
+  path: string;
+}
 export interface SkillLibraryEntry {
   bundled: boolean;
-  installed: boolean;
-  /**
-   * Imported authoring source; unavailable to the model until explicitly installed.
-   */
-  imported: boolean;
+  location?: ConfigurationLocation | null;
+  path: string;
+  installation?: SkillLibraryInstallation | null;
   preference: SkillPreference;
   reference: string;
   source: string;
@@ -6963,6 +7021,10 @@ export interface SkillLibraryEntry {
   valid: boolean;
   shadowedBy?: string | null;
   issues: string[];
+}
+export interface SkillLibraryInstallation {
+  source: SkillLibrarySourceSnapshot;
+  directory: string;
 }
 export interface SkillPreference {
   enabled: boolean;
@@ -6977,26 +7039,31 @@ export interface SkillLibraryRead {
   revision: string;
   offset: number;
 }
-export interface SkillLibraryChange {
+export interface SkillLibraryDiscoverSource {
   workspace?: AgentWorkspace | null;
-  kind: SkillLibraryChangeKind;
+  source: string;
+}
+export interface SkillLibraryDiscoveredSource {
+  source: SkillLibrarySourceSnapshot;
+  skills: SkillLibrarySourceSkill[];
+}
+export interface SkillLibrarySourceSkill {
+  directory: string;
+  name: string;
+  description: string;
+}
+export interface SkillLibraryInstall {
+  workspace?: AgentWorkspace | null;
+  location: ConfigurationLocation;
+  source: SkillLibrarySourceSnapshot;
+  skills: string[];
+}
+export interface SkillLibraryInstallResult {
+  results: SkillLibraryInstallOutcome[];
+}
+export interface SkillLibraryManageSkill {
+  workspace?: AgentWorkspace | null;
   reference: string;
-  revision: string;
-}
-export interface SkillLibraryReview {
-  change: SkillLibraryChange;
-  digest: string;
-}
-/**
- * Canonical publication evidence alongside the unmodified original Host facts.
- */
-export interface SkillLibraryOutcome {
-  original: OperationReply;
-  published?: SkillLibraryChangeResult | null;
-}
-export interface OperationReply {
-  reference: RecoveryRef;
-  receipt: Receipt;
 }
 export interface SkillLibrarySetPreference {
   reference: string;
@@ -8627,6 +8694,10 @@ export interface OperationObservation {
   reference: RecoveryRef;
   outcome: OperationOutcome;
   cleanup: OperationCleanup;
+}
+export interface OperationReply {
+  reference: RecoveryRef;
+  receipt: Receipt;
 }
 export interface ResourceMetadata {
   type: ResourceType;

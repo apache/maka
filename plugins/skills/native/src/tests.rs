@@ -492,18 +492,10 @@ async fn execution_basis_preserves_real_captures_and_rejects_replaced_skill_dire
         .unwrap()
     };
     let mut first = open();
-    first.managed = Some(
-        management::Managed::open(root.clone(), "stable".into())
-            .await
-            .unwrap(),
-    );
+    first.managed = Some(management::Managed::open(root.clone(), store.clone()));
     let basis = first.execution_basis().unwrap();
     let mut same = open();
-    same.managed = Some(
-        management::Managed::open(root.clone(), "stable".into())
-            .await
-            .unwrap(),
-    );
+    same.managed = Some(management::Managed::open(root.clone(), store.clone()));
     assert_eq!(same.execution_basis().unwrap(), basis);
     write(
         &path.join("custom"),
@@ -514,13 +506,6 @@ async fn execution_basis_preserves_real_captures_and_rejects_replaced_skill_dire
     let mut other_namespace = first.clone();
     other_namespace.preferences = preferences::Store::new(store.clone(), "other/".into());
     assert_ne!(other_namespace.execution_basis().unwrap(), basis);
-    let mut other_managed = first.clone();
-    other_managed.managed = Some(
-        management::Managed::open(root.clone(), "other".into())
-            .await
-            .unwrap(),
-    );
-    assert_ne!(other_managed.execution_basis().unwrap(), basis);
     for name in ["custom", "home", "projects"] {
         if let Err(error) = std::fs::rename(path.join(name), path.join(format!("original-{name}")))
         {

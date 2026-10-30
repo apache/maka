@@ -19,7 +19,6 @@
   "workspace-files": "plugins/workspace/workspace-files",
   "forms": "plugins/interactions/forms",
   "questions": "plugins/interactions/questions",
-  "skill-outcomes": "plugins/skills/skill-outcomes",
   "receipts": "plugins/application/receipts",
   "gateway": "plugins/application/gateway",
   "conversations": "plugins/agent/conversations",

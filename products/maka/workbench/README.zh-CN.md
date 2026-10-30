@@ -44,3 +44,9 @@ MAKA_NSH_EVIDENCE=/tmp/maka-nsh-evidence cargo nextest run --locked --workspace 
 这会运行真实 Host 测试，不是独立的类型生成器，也不对应用做 TypeScript 类型检查。
 
 在会话操作菜单中选择 **置顶会话**，会话会出现在列表顶部的 **已置顶** 分组；选择 **取消置顶** 可恢复普通列表位置。Host 持久化这一选择，并在不同界面和重启后保持一致的分页顺序。
+
+**设置 → 技能**可从 GitHub `owner/repository`、Git URL、GitHub 子目录 URL，或所连接 Host 上的目录发现技能。选择技能后，可安装到全局或项目的 `.agents/skills`、`.maka/skills`。同名技能按项目 `.maka`、项目 `.agents`、全局 `.maka`、全局 `.agents` 的顺序整体覆盖；卡片保留每个位置的实例并标明是否生效。删除高优先级实例后，下一层自动生效。
+
+只有通过 Maka 安装的技能显示更新按钮。更新从登记的来源替换整个目录及其资源，并覆盖本地修改。四个标准目录中的其他技能同样可以查看和删除。来源登记保存在 Host 数据库中，不创建 npx lockfile 或另一套私有技能副本。
+
+**设置 → MCP 服务器**通过命令和 HTTP 表单管理上述四个目录的 `mcp.json`，保留其他条目和自定义字段。选择项目无需创建会话。下载、文件修改和来源登记均在所连接的 Host 上完成；保存项目 MCP 配置不会自动授予信任。

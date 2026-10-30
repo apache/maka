@@ -135,6 +135,9 @@ async fn add_product_ui(plan: &mut Value, packages: &mut Vec<Package>, deploymen
         "agent":plan["instances"]["agent"]["configuration"]["values"],
         "hostDeployment":deployment
     });
+    if let Some(skills) = plan["instances"].get("skills") {
+        configuration["skills"] = skills["configuration"]["values"].clone();
+    }
     if let Some(processes) = plan["instances"].get("processes") {
         configuration["processes"] = processes["configuration"]["values"].clone();
     }
@@ -271,6 +274,7 @@ pub struct Options {
     pub images: bool,
     pub catalog: Catalog,
     pub plugins: bool,
+    pub skills: bool,
     pub login_handler: Option<Arc<dyn Handler>>,
     pub file_tool: Option<Value>,
     pub services: Services,
@@ -310,6 +314,7 @@ impl Fixture {
             images,
             catalog,
             plugins,
+            skills,
             login_handler,
             file_tool,
             services,
@@ -380,7 +385,6 @@ impl Fixture {
         let terminal_contract = maka_workspace_api::terminal::contract();
         let management_contract =
             maka_plugin_core::deployment::management::deployment_manager_contract();
-        let outcomes_contract = maka_skills_api::outcomes::contract();
         let logs_contract = maka_host_runtime::application::logs::contract();
         let empty = json!({"type":"object","additionalProperties":false});
         let mut agent_imports = if has_files {
@@ -468,12 +472,15 @@ impl Fixture {
             "setup":{"contract":setup_contract,"cardinality":{"kind":"one"}},
             "receipts":{"contract":receipts_contract,"cardinality":{"kind":"one"}},
             "management":{"contract":management_contract,"cardinality":{"kind":"one"}},
-            "skillOutcomes":{"contract":outcomes_contract,"cardinality":{"kind":"one"}},
             "hostLogs":{"contract":logs_contract,"cardinality":{"kind":"one"}}
         });
         if terminals {
             gateway_imports["terminal"] =
                 json!({"contract":terminal_contract,"cardinality":{"kind":"one"}});
+        }
+        if skills {
+            gateway_imports["skills"] =
+                json!({"contract":maka_skills_api::contract(),"cardinality":{"kind":"one"}});
         }
         let gateway = package(
             "test.nsh.gateway",
@@ -571,6 +578,20 @@ impl Fixture {
             gateway,
             manager,
         ];
+        if skills {
+            let package = product_package("skills").await;
+            plan["instances"]["skills"] = node(
+                &package,
+                21,
+                json!({"home":home,"projectRoots":[{"label":"Workspace","path":workspace}],"bundled":false,"manage":true,"preferences":true,"sources":[]}),
+                json!({}),
+            );
+            plan["instances"]["gateway"]["bindings"]["skills"] =
+                json!([{"kind":"instance","path":["skills"],"export":"skills"}]);
+            plan["instances"]["settings"]["configuration"]["values"]["workspaceLocations"]["skills"] =
+                json!("skills");
+            packages.push(package);
+        }
         if computer_tools {
             let computer = package(
                 "test.nsh.computer",
@@ -588,15 +609,11 @@ impl Fixture {
                 json!([{"kind":"instance","path":["computer"],"export":"computer"}]);
             packages.push(computer);
         }
-        let outcomes = product_package("skill-outcomes").await;
         let logs = product_package("host-logs").await;
-        plan["instances"]["skill-outcomes"] = node(&outcomes, 15, json!({}), json!({}));
         plan["instances"]["host-logs"] = node(&logs, 16, json!({}), json!({}));
-        plan["instances"]["gateway"]["bindings"]["skillOutcomes"] =
-            json!([{"kind":"instance","path":["skill-outcomes"],"export":"Outcomes"}]);
         plan["instances"]["gateway"]["bindings"]["hostLogs"] =
             json!([{"kind":"instance","path":["host-logs"],"export":"HostLogs"}]);
-        packages.extend([outcomes, logs]);
+        packages.push(logs);
         if has_files {
             plan["instances"]["files"] = node(&files, 5, json!({}), json!({}));
             packages.push(files);
@@ -680,6 +697,9 @@ impl Fixture {
                                 "recall",
                                 "projects",
                                 "directories",
+                                "selectWorkspace",
+                                "mcpConfigurations",
+                                "manageMcpServer",
                                 "create",
                                 "selectBackend",
                                 "compact",
@@ -775,10 +795,6 @@ impl Fixture {
                     ),
                     ("receipts".into(), endpoint("receipts", &["read"], true)),
                     (
-                        "skillOutcomes".into(),
-                        endpoint("skillOutcomes", &["read"], true),
-                    ),
-                    (
                         "hostLogs".into(),
                         endpoint("hostLogs", &["read", "watch"], false),
                     ),
@@ -825,6 +841,24 @@ impl Fixture {
                                 "release",
                             ],
                             false,
+                        ),
+                    )
+                }))
+                .chain(skills.then(|| {
+                    (
+                        "skills".into(),
+                        endpoint(
+                            "skills",
+                            &[
+                                "list",
+                                "read",
+                                "discoverSource",
+                                "install",
+                                "update",
+                                "delete",
+                                "setPreference",
+                            ],
+                            true,
                         ),
                     )
                 }))
@@ -1712,7 +1746,6 @@ impl ReplyGate {
             None,
         )
     }
-    #[cfg(feature = "desktop-tests")]
     pub fn start(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "send", "mutation", false, None)
     }

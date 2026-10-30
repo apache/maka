@@ -308,7 +308,7 @@ impl Owner {
             Err(_) => return Ok(parked(Reason::SourceNotResumable)),
         };
         drop(runs);
-        let mcp_revision = self.mcp_projects.capture(workspace).await?;
+        let selected_catalog = self.mcp_projects.capture(workspace).await?;
         runs = self.runs.lock().await;
         if runs.closing || self.stop.is_cancelled() {
             return Ok(parked(Reason::Closed));
@@ -333,9 +333,9 @@ impl Owner {
             return Ok(parked(Reason::AlreadyContinued));
         }
 
-        let selected_catalog = self.mcp_projects.catalog(mcp_revision.as_deref())?;
         let basis = MessageBasis {
-            mcp_revision,
+            mcp_revision: selected_catalog.revision.clone(),
+            mcp_catalog: Some(selected_catalog.clone()),
             language: configuration.language,
             compaction_prompt: configuration.compaction_prompt.clone(),
             graph,

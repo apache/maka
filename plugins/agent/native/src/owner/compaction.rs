@@ -225,6 +225,7 @@ impl Owner {
         };
         let basis = MessageBasis {
             mcp_revision: None,
+            mcp_catalog: None,
             language,
             compaction_prompt: Some(prompt),
             graph: None,

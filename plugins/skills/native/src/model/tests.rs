@@ -106,7 +106,7 @@ fn schema(method: &str, value: &Value) {
     );
 }
 #[tokio::test]
-async fn model_resolution_uses_original_eligibility_preferences_and_identity_before_names() {
+async fn model_eligibility_and_preferences_apply_to_the_effective_named_skill() {
     let dir = tempfile::tempdir().unwrap();
     let a = dir.path().join("a");
     let b = dir.path().join("b");
@@ -145,7 +145,7 @@ async fn model_resolution_uses_original_eligibility_preferences_and_identity_bef
     for (revision, name, preference) in [
         (
             0,
-            "disabled",
+            "alias",
             maka_skills::Preference {
                 enabled: false,
                 pinned: false,
@@ -178,7 +178,7 @@ async fn model_resolution_uses_original_eligibility_preferences_and_identity_bef
     }
     let result = search(&library, &call, json!(["Read"])).await;
     schema("search", &result);
-    assert_eq!(result["totalEligible"], 3);
+    assert_eq!(result["totalEligible"], 2);
     assert_eq!(result["matches"][0]["ref"], "source:a:pinned");
     let revision = &result["revision"];
     let prepared = library
@@ -219,6 +219,7 @@ async fn model_resolution_uses_original_eligibility_preferences_and_identity_bef
     let prompt = prepared["record"]["metadataPrompt"].as_str().unwrap();
     assert!(prompt.contains("source:a:pinned"));
     assert!(!prompt.contains("source:a:disabled"));
+    assert!(!prompt.contains("source:a:alias"));
     assert!(!prompt.contains("source:a:network"));
     assert!(!prompt.contains("fresh search"));
     let ordinary = library
@@ -297,7 +298,7 @@ async fn model_resolution_uses_original_eligibility_preferences_and_identity_bef
     );
     assert_eq!(loaded["receipt"]["ref"], "source:a:review");
     let absent = search(&library, &call, json!([])).await;
-    assert_eq!(absent["totalEligible"], 2);
+    assert_eq!(absent["totalEligible"], 1);
     assert_eq!(
         load(
             &library,

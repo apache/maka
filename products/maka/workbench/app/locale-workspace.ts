@@ -236,10 +236,10 @@ export const workspaceMessages = {
     '此工作区不是 Git 工作区。',
     '此工作區不是 Git 工作區。',
   ],
-  'Open a location, then choose the folder where the conversation can work.': [
-    'Open a location, then choose the folder where the conversation can work.',
-    '打开一个位置，然后选择对话可以使用的文件夹。',
-    '開啟一個位置，然後選擇對話可以使用的資料夾。',
+  'Open a location, then choose a workspace folder.': [
+    'Open a location, then choose a workspace folder.',
+    '打开一个位置，然后选择工作区文件夹。',
+    '開啟一個位置，然後選擇工作區資料夾。',
   ],
   'Open conversation {title}': [
     'Open conversation {title}',

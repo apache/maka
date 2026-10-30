@@ -123,16 +123,15 @@ impl Owner {
             return Err("agent_fork_cancelled".into());
         }
         let parent = source.configuration;
-        let revision = if parent
+        let catalog = if parent
             .tools
             .as_ref()
             .is_some_and(|names| names.iter().any(|name| name.starts_with("mcp__")))
         {
             self.mcp_projects.capture(&parent.workspace).await?
         } else {
-            None
+            self.mcp_projects.base.clone()
         };
-        let catalog = self.mcp_projects.catalog(revision.as_deref())?;
         let tools = parent.tools.map(|names| {
             names
                 .into_iter()

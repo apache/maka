@@ -19,4 +19,3 @@
 
 mod discovery;
 mod invocation;
-mod publication;

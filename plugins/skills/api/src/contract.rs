@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+mod management;
+pub use management::*;
 mod model;
 pub use model::*;
 mod preparation;
@@ -42,7 +44,7 @@ pub struct Configuration {
     /// Include the immutable skill instructions and resources shipped with this build.
     #[serde(default)]
     pub bundled: bool,
-    /// Enable installation into this instance's own private collection.
+    /// Allow management of the configured standard user and project skill directories.
     #[serde(default)]
     pub manage: bool,
     /// Allow edits to enabled/pinned preferences, independently of file management.
@@ -84,9 +86,9 @@ pub struct List {
 #[schemars(rename = "SkillLibraryEntry")]
 pub struct Entry {
     pub bundled: bool,
-    pub installed: bool,
-    /// Imported authoring source; unavailable to the model until explicitly installed.
-    pub imported: bool,
+    pub location: Option<maka_skills::LocationId>,
+    pub path: String,
+    pub installation: Option<Installation>,
     pub preference: maka_skills::Preference,
     pub reference: String,
     pub source: String,
@@ -107,6 +109,7 @@ pub struct Entry {
 pub enum Page {
     Page {
         writable: bool,
+        targets: Vec<Target>,
         preferences_writable: bool,
         preference_revision: u64,
         revision: String,
@@ -154,70 +157,10 @@ pub enum Document {
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(rename = "SkillLibraryImportSource")]
-pub struct ImportSource {
-    #[schemars(range(min = 1))]
-    pub bytes: usize,
-    #[schemars(length(min = 71, max = 71))]
-    pub digest: String,
-}
-
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-#[schemars(rename = "SkillLibraryChangeKind")]
-pub enum ChangeKind {
-    Install,
-    Update,
-    Delete,
-}
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "SkillLibraryChange")]
-pub struct Change {
-    pub workspace: Option<maka_agent_api::contract::Workspace>,
-    pub kind: ChangeKind,
-    #[schemars(length(min = 1))]
-    pub reference: String,
-    #[schemars(length(min = 1))]
-    pub revision: String,
-}
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "SkillLibraryReview")]
-pub struct Review {
-    pub change: Change,
-    #[schemars(length(min = 71, max = 71))]
-    pub digest: String,
-}
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-#[schemars(rename = "SkillLibraryPreview")]
-pub enum Preview {
-    Ready {
-        review: Box<Review>,
-        target: String,
-        entries: usize,
-        paths: Vec<String>,
-        paths_truncated: bool,
-        locally_modified: bool,
-    },
-    Changed,
-    Rejected {
-        reason: String,
-    },
-}
-#[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "SkillLibraryChangeResult")]
 pub enum ChangeResult {
     Applied { reference: String },
-    Changed,
     Rejected { reason: String },
 }
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -237,14 +180,6 @@ pub enum PreferenceResult {
     Applied { revision: u64 },
     Changed,
     Rejected { reason: String },
-}
-/// Canonical publication evidence alongside the unmodified original Host facts.
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(rename = "SkillLibraryOutcome")]
-pub struct Outcome {
-    pub original: maka_plugin_core::operation::OperationReply,
-    pub published: Option<ChangeResult>,
 }
 pub fn configuration_schema() -> Value {
     schemars::schema_for!(Configuration).into()
@@ -297,50 +232,41 @@ pub fn contract() -> Contract {
                     },
                 ),
                 (
-                    "preview".into(),
+                    "discoverSource".into(),
                     Method {
                         progress: None,
                         mode: MethodMode::Query,
-                        input: schemars::schema_for!(Change).into(),
-                        output: schemars::schema_for!(Preview).into(),
+                        input: schemars::schema_for!(DiscoverSource).into(),
+                        output: schemars::schema_for!(DiscoveredSource).into(),
                         resources: BTreeMap::new(),
                     },
                 ),
                 (
-                    "apply".into(),
+                    "install".into(),
                     Method {
                         progress: None,
                         mode: MethodMode::Mutation,
-                        input: schemars::schema_for!(Review).into(),
+                        input: schemars::schema_for!(Install).into(),
+                        output: schemars::schema_for!(InstallResult).into(),
+                        resources: BTreeMap::new(),
+                    },
+                ),
+                (
+                    "update".into(),
+                    Method {
+                        progress: None,
+                        mode: MethodMode::Mutation,
+                        input: schemars::schema_for!(ManageSkill).into(),
                         output: schemars::schema_for!(ChangeResult).into(),
                         resources: BTreeMap::new(),
                     },
                 ),
                 (
-                    "importSource".into(),
+                    "delete".into(),
                     Method {
                         progress: None,
                         mode: MethodMode::Mutation,
-                        input: schemars::schema_for!(ImportSource).into(),
-                        output: schemars::schema_for!(ChangeResult).into(),
-                        resources: BTreeMap::from([
-                            (
-                                "file".into(),
-                                maka_plugin_core::contract::binary_resource_type().required(),
-                            ),
-                            (
-                                "id".into(),
-                                maka_plugin_core::contract::text_resource_type().required(),
-                            ),
-                        ]),
-                    },
-                ),
-                (
-                    "deleteSource".into(),
-                    Method {
-                        progress: None,
-                        mode: MethodMode::Mutation,
-                        input: schemars::schema_for!(Review).into(),
+                        input: schemars::schema_for!(ManageSkill).into(),
                         output: schemars::schema_for!(ChangeResult).into(),
                         resources: BTreeMap::new(),
                     },

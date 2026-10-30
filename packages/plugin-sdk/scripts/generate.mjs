@@ -159,6 +159,7 @@ const services = Object.fromEntries(
     'settingsSetup',
     'deploymentManager',
     'terminal',
+    'skillLibrary',
   ].map((service) => [
     service,
     object(

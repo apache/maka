@@ -45,7 +45,6 @@ export const packageNames = [
   'settings',
   'settings-authentication',
   'settings-setup',
-  'skill-outcomes',
   'receipts',
   'gateway',
   'agent',
@@ -164,6 +163,7 @@ const settingsUiImports = [
   'setup',
   'management',
   'receipts',
+  'skills',
 ];
 const workspaceUiImports = ['agent', 'terminal'];
 
@@ -227,7 +227,6 @@ export function updateDefaultUi(
   for (const [name, packageName, exportName] of [
     ['management', 'host-deployment-manager', 'Management'],
     ['receipts', 'receipts', 'Receipts'],
-    ['skillOutcomes', 'skill-outcomes', 'Outcomes'],
   ] as const) {
     const provider = findOwned(packageName, 'host');
     if (fallback[name] === undefined && provider)
@@ -373,13 +372,11 @@ function settingsComposition(configuration: CompositionConfiguration) {
       }),
       'settings-authentication': node('settings-authentication'),
       'settings-setup': node('settings-setup'),
-      'skill-outcomes': node('skill-outcomes'),
       receipts: node('receipts'),
       'recovery-gateway': node(
         'recovery-gateway',
         {},
         {
-          skillOutcomes: [local('skill-outcomes', 'Outcomes')],
           receipts: [local('receipts', 'Receipts')],
         },
       ),
@@ -440,7 +437,6 @@ function settingsComposition(configuration: CompositionConfiguration) {
       true,
     ),
     setup: expose('gateway', 'setup', Object.keys(contracts.settingsSetup.interface.methods), true),
-    skillOutcomes: expose('recovery-gateway', 'skillOutcomes', ['read'], true),
   };
   return { host, endpoints, local, node, expose };
 }
@@ -455,7 +451,6 @@ export function composition(configuration: CompositionConfiguration): Applicatio
       { kind: 'instance' as const, path: ['host-deployment-manager'], export: 'Management' },
     ],
     receipts: [{ kind: 'instance' as const, path: ['receipts'], export: 'Receipts' }],
-    skillOutcomes: [{ kind: 'instance' as const, path: ['skill-outcomes'], export: 'Outcomes' }],
   };
   source.host.instances['conversations-ui']!.bindings = bindings;
   source.host.instances['settings-ui']!.bindings = selectUiBindings(bindings, settingsUiImports);
@@ -680,9 +675,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
         [
           'list',
           'read',
-          ...(configuration.skills.manage
-            ? ['preview', 'apply', 'importSource', 'deleteSource']
-            : []),
+          ...(configuration.skills.manage ? ['discoverSource', 'install', 'update', 'delete'] : []),
           ...(configuration.skills.preferences ? ['setPreference'] : []),
         ],
         !!(configuration.skills.manage || configuration.skills.preferences),

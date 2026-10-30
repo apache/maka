@@ -233,6 +233,30 @@ impl Owner {
         Ok(result)
     }
 
+    pub(crate) async fn select_workspace(
+        self: &Arc<Self>,
+        selection: DirectorySelection,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<Option<Workspace>, String> {
+        self.resource_work(scope, move |owner, _scope| {
+            Box::pin(async move {
+                let root = owner
+                    .store
+                    .owned_root()
+                    .map_err(|error| error.to_string())?;
+                workspace::initialize(
+                    &owner.workspace_roots,
+                    selection,
+                    &owner.managed_worktrees,
+                    root.canonical_path(),
+                    root.control_directory(),
+                )
+                .await
+            })
+        })
+        .await
+    }
+
     pub(super) async fn create_project_workspace(
         &self,
         selection: DirectorySelection,

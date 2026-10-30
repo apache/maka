@@ -93,6 +93,8 @@ pub(crate) fn resolve_session(
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MessageBasis {
+    #[serde(skip)]
+    mcp_catalog: Option<Arc<crate::mcp::Catalog>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mcp_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -363,16 +365,6 @@ impl Owner {
         let native_language = maka_config::language::native_language();
         let skills = skills::Library::select(&context, &settings, revision.clone())?;
         let instruction_home = assistant::open_home(settings.assistant.as_ref())?;
-        let mcp_configurations = crate::mcp::global(
-            &settings.mcp_servers,
-            instruction_home.as_deref().zip(
-                settings
-                    .assistant
-                    .as_ref()
-                    .and_then(|assistant| assistant.home.as_deref())
-                    .map(std::path::Path::new),
-            ),
-        )?;
         let executors = crate::executor::Executors::capture(&context, &settings.executors)?;
         let configuration = Arc::new(
             ConfigurationStore::for_root(root)
@@ -432,7 +424,7 @@ impl Owner {
             additional.extend(todo.tools());
         }
         let mut mcp = match crate::mcp::Servers::open(
-            &mcp_configurations,
+            &settings.mcp_servers,
             persistence.store().clone(),
             &configuration,
         )
@@ -546,14 +538,21 @@ impl Owner {
         .map_err(|error| error.to_string())?;
         let mcp_projects = Arc::new(crate::mcp::Projects::new(
             crate::mcp::Catalog {
+                revision: None,
                 tools: tools.clone(),
                 definitions: Arc::new(internal_tools),
                 bindings: Arc::new(internal_bindings),
                 planning: planning_tools.clone(),
             },
             prefix.clone(),
-            mcp_configurations,
             mcp.names.clone(),
+            instruction_home.clone().zip(
+                settings
+                    .assistant
+                    .as_ref()
+                    .and_then(|assistant| assistant.home.as_ref())
+                    .map(std::path::PathBuf::from),
+            ),
             persistence.store().clone(),
             configuration.clone(),
             workers.clone(),
@@ -811,8 +810,7 @@ impl Owner {
             && names.iter().any(|name| !self.tools.contains(name))
         {
             // A ceiling containing only baseline tools never starts project servers.
-            let revision = self.mcp_projects.available(&selected).await?;
-            let catalog = self.mcp_projects.catalog(revision.as_deref())?;
+            let catalog = self.mcp_projects.available(&selected).await?;
             if names
                 .iter()
                 .any(|name| !self.tools.contains(name) && !catalog.tools.contains(name))
@@ -1013,10 +1011,19 @@ impl Owner {
             }
         }
     }
-    pub(super) fn tool_names(&self) -> crate::contract::ToolNames {
-        crate::contract::ToolNames {
-            names: self.tools.names(),
-        }
+    pub(super) async fn tool_names(
+        self: &Arc<Self>,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<crate::contract::ToolNames, String> {
+        self.resource_work(scope, |owner, _scope| {
+            Box::pin(async move {
+                let catalog = owner.mcp_projects.capture_global().await?;
+                Ok(crate::contract::ToolNames {
+                    names: catalog.tools.names(),
+                })
+            })
+        })
+        .await
     }
     fn selected_tools(
         &self,
@@ -1024,7 +1031,10 @@ impl Owner {
         discovery: bool,
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> Result<maka_tools::ToolCatalog, String> {
-        let catalog = self.mcp_projects.catalog(basis.mcp_revision.as_deref())?;
+        let catalog = match &basis.mcp_catalog {
+            Some(catalog) => catalog.clone(),
+            None => self.mcp_projects.catalog(basis.mcp_revision.as_deref())?,
+        };
         let selected = plan::select(&catalog.tools, basis, &catalog.planning);
         let selected = if basis.graph.is_some() {
             selected
@@ -1196,8 +1206,8 @@ impl Owner {
         let language = self.resolve_language(&snapshot);
         // Preserve ordinary send ordering. Only actual external startup leaves
         // the admission gate; parsing and a cached catalog do not reorder work.
-        let (admission, queued, mcp_revision) = if external {
-            (admission, queued, None)
+        let (admission, queued, selected_catalog) = if external {
+            (admission, queued, self.mcp_projects.base.clone())
         } else {
             match self
                 .mcp_projects
@@ -1243,9 +1253,9 @@ impl Owner {
                 }
             }
         };
-        let selected_catalog = self.mcp_projects.catalog(mcp_revision.as_deref())?;
         let mut basis = MessageBasis {
-            mcp_revision,
+            mcp_revision: selected_catalog.revision.clone(),
+            mcp_catalog: Some(selected_catalog.clone()),
             language,
             compaction_prompt: Some(self.effective_compaction_prompt(
                 session.configuration.compaction_prompt.as_deref(),

@@ -21,6 +21,4 @@
 
 [简体中文](README.zh-CN.md)
 
-Defines the skill-library service contract, configuration and publication outcomes. Both native execution and SDK generation use these declarations. Start with `contract`; `outcomes` describes durable publication results.
-
-[Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
+Defines skill discovery, source snapshots, installation provenance and management operations. Native execution and SDK generation share `contract`. Mutations use the Host’s ordinary operation receipts.

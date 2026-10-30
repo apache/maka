@@ -394,6 +394,9 @@ impl Owner {
                     let mut runs = self.runs.state().await;
                     runs.controls.remove(&session);
                     drop(runs);
+                    if let Err(error) = self.mcp_projects.prune().await {
+                        tracing::warn!(cause = %error, "MCP snapshot cleanup failed");
+                    }
                     // An answer can commit while the previous activation still owns
                     // admission. Recheck only after that worker confirms cleanup.
                     if let Err(error) = self.schedule_native_approvals().await {
@@ -401,7 +404,11 @@ impl Owner {
                     }
                     return;
                 }
-                match self.advance(&session, Some(&invocation), None).await {
+                let next = self.advance(&session, Some(&invocation), None).await;
+                if let Err(error) = self.mcp_projects.prune().await {
+                    tracing::warn!(cause = %error, "MCP snapshot cleanup failed");
+                }
+                match next {
                     Ok(Some(next)) => running = next,
                     Ok(None) => return,
                     Err(error) => {
@@ -449,10 +456,15 @@ impl Owner {
         cancellation: &CancellationToken,
     ) -> Result<Option<(RunningInvocation, MessageBasis)>, RunError> {
         let invocation = checkpoint.checkpoint.invocation.clone();
-        let basis: MessageBasis =
+        let mut basis: MessageBasis =
             serde_json::from_value(checkpoint.checkpoint.native_basis.clone()).map_err(
                 |error| RunError::InvalidInput(format!("invalid native approval basis: {error}")),
             )?;
+        basis.mcp_catalog = Some(
+            self.mcp_projects
+                .catalog(basis.mcp_revision.as_deref())
+                .map_err(RunError::InvalidInput)?,
+        );
         let store = self.store.session(&invocation.session_id).await?;
         let mut configuration = store
             .invocation_configuration(&invocation)
@@ -478,6 +490,9 @@ impl Owner {
             ApprovalPolicy::Never
         };
         let tool_names = self
+            .mcp_projects
+            .catalog(basis.mcp_revision.as_deref())
+            .map_err(RunError::InvalidInput)?
             .tools
             .names()
             .into_iter()
@@ -665,6 +680,7 @@ impl Owner {
             basis.tools = self.tool_basis.clone();
             basis.internal_tools = selected_catalog.definitions.clone();
             basis.internal_bindings = selected_catalog.bindings.clone();
+            basis.mcp_catalog = Some(selected_catalog);
         }
         let session = self.session(&invocation.session_id).await?;
         basis.validate_background_target(&session)?;

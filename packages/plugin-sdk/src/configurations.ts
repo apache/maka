@@ -1131,7 +1131,8 @@ export const configurations = {
       },
       manage: {
         type: 'boolean',
-        description: "Enable installation into this instance's own private collection.",
+        description:
+          'Allow management of the configured standard user and project skill directories.',
         default: false,
       },
       preferences: {

@@ -7375,6 +7375,7 @@ name = "maka-agent-native"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
+ "cap-fs-ext",
  "cap-std",
  "futures-util",
  "hex",
@@ -8493,8 +8494,6 @@ dependencies = [
 name = "maka-skills"
 version = "0.2.0"
 dependencies = [
- "cap-fs-ext",
- "cap-std",
  "futures-util",
  "libc",
  "maka-agent-facts",
@@ -8532,27 +8531,31 @@ dependencies = [
  "cap-std",
  "futures-util",
  "jsonschema 0.60.1",
+ "libc",
  "maka-agent-api",
  "maka-agent-facts",
  "maka-capabilities",
+ "maka-config",
  "maka-event-log",
  "maka-fs-tools",
- "maka-host-js",
  "maka-host-runtime",
- "maka-packages",
+ "maka-network",
  "maka-plugin-core",
+ "maka-process",
  "maka-sandbox",
  "maka-skills",
  "maka-skills-api",
- "maka-ui-support",
  "maka-workspace-support",
+ "percent-encoding",
  "schemars 1.2.3",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",
+ "url",
  "uuid",
+ "which 8.0.6",
 ]
 
 [[package]]

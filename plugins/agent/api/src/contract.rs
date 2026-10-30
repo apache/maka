@@ -18,11 +18,13 @@
  */
 
 use maka_agent_facts::execution::DirectoryIdentity;
+mod mcp_management;
 use maka_agent_facts::execution::WorkspaceIdentity;
 use maka_agent_facts::history::RowPosition;
 use maka_agent_ports::session::history::Cursor;
 use maka_agent_ports::session::history::Role;
 use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
+pub use mcp_management::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1698,9 +1700,15 @@ pub fn contract() -> Contract {
                     "project".into(),
                     method::<ProjectChange, ProjectResult>(MethodMode::Mutation),
                 ),
+                ("mcpConfigurations".into(), method::<McpConfigurations, McpConfigurationList>(MethodMode::Query)),
+                ("manageMcpServer".into(), method::<McpConfigurationChange, McpConfigurationResult>(MethodMode::Mutation)),
                 (
                     "directories".into(),
                     method::<Directories, DirectoryPage>(MethodMode::Query),
+                ),
+                (
+                    "selectWorkspace".into(),
+                    method::<DirectorySelection, Option<Workspace>>(MethodMode::Mutation),
                 ),
                 (
                     "observe".into(),

@@ -25,6 +25,7 @@ mod compaction;
 mod composer_completion;
 #[cfg(feature = "native-desktop")]
 mod computer;
+mod configuration_management;
 #[cfg(feature = "desktop-tests")]
 mod desktop_new_session;
 mod final_actions;

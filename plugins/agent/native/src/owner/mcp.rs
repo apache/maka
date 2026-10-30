@@ -18,6 +18,7 @@
  */
 
 use super::*;
+mod management;
 impl Owner {
     pub(crate) async fn project_mcp(
         self: &Arc<Self>,

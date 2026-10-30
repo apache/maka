@@ -134,7 +134,7 @@ impl Handler for Agent {
                         .await?,
                 ),
                 "fileCandidates" => owner.file_candidates(decode(input)?, context).await,
-                "tools" => encode(owner.tool_names()),
+                "tools" => encode(owner.tool_names(context.scope()).await?),
                 "plan" => encode(owner.plan(decode(input)?).await?),
                 "planHistory" => encode(owner.plan_history(decode(input)?).await?),
                 "planReceipt" => encode(owner.plan_receipt(decode(input)?).await?),
@@ -294,6 +294,36 @@ impl Handler for Agent {
                 "project" => {
                     context.operation().ok_or("agent_mutation_required")?;
                     encode(owner.project(decode(input)?).await?)
+                }
+                "mcpConfigurations" | "manageMcpServer" => {
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_mcp_user_action_required".into());
+                    }
+                    if method == "manageMcpServer" {
+                        context.operation().ok_or("agent_mutation_required")?;
+                        encode(
+                            owner
+                                .manage_mcp_server(decode(input)?, context.scope())
+                                .await?,
+                        )
+                    } else {
+                        encode(
+                            owner
+                                .mcp_configurations(decode(input)?, context.scope())
+                                .await?,
+                        )
+                    }
+                }
+                "selectWorkspace" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_workspace_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .select_workspace(decode(input)?, context.scope())
+                            .await?,
+                    )
                 }
                 "directories" => encode(
                     maka_workspace_support::query(owner.workspace_roots.clone(), decode(input)?)

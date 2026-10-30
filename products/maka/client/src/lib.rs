@@ -68,8 +68,14 @@ const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
 const TERMINAL_KIND: &str = "terminal";
 const TERMINAL_METHODS: [&str; 4] = ["start", "stop", "control", "release"];
-const SETTINGS_ENDPOINTS: [&str; 5] =
-    ["settings", "agent", "setup", "management", "authentication"];
+const SETTINGS_ENDPOINTS: [&str; 6] = [
+    "settings",
+    "agent",
+    "skills",
+    "setup",
+    "management",
+    "authentication",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ServiceOwner {
@@ -101,7 +107,12 @@ const SETTINGS_METHODS: [&str; 10] = [
 ];
 fn settings_route(endpoint: &str, method: &str) -> bool {
     (endpoint == "settings" && SETTINGS_METHODS.contains(&method))
-        || (endpoint == "agent" && method == "updateGlobalInstructions")
+        || (endpoint == "agent"
+            && matches!(
+                method,
+                "updateGlobalInstructions" | "selectWorkspace" | "manageMcpServer"
+            ))
+        || (endpoint == "skills" && matches!(method, "install" | "update" | "delete"))
         || (endpoint == "setup" && method == "discoverModels")
         || (endpoint == "management" && matches!(method, "setEnabled" | "configure"))
         || (endpoint == "authentication" && method == "loginCredential")

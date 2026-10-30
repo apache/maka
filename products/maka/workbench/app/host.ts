@@ -38,6 +38,7 @@ export const uiHost = nativeHost as UiHost;
 
 type Services = {
   agent: ServiceMethods['agent'];
+  skills: ServiceMethods['skillLibrary'];
   settings: ServiceMethods['settings'];
   authentication: ServiceMethods['settingsAuthentication'];
   setup: ServiceMethods['settingsSetup'];
@@ -45,16 +46,16 @@ type Services = {
   terminal: ServiceMethods['terminal'];
 };
 type Endpoint = keyof Services;
-type Method<E extends Endpoint, Mode extends string> = {
+export type Method<E extends Endpoint, Mode extends string> = {
   [M in keyof Services[E]]: Services[E][M] extends { mode: Mode } ? M : never;
 }[keyof Services[E]] &
   string;
-type Input<E extends Endpoint, M extends string> = M extends keyof Services[E]
+export type Input<E extends Endpoint, M extends string> = M extends keyof Services[E]
   ? Services[E][M] extends { input: infer I }
     ? I
     : never
   : never;
-type Output<E extends Endpoint, M extends string> = M extends keyof Services[E]
+export type Output<E extends Endpoint, M extends string> = M extends keyof Services[E]
   ? Services[E][M] extends { output: infer O }
     ? O
     : never

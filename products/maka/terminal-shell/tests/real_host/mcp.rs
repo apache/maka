@@ -25,10 +25,11 @@ async fn project_mcp_confirmation_preserves_draft_and_starts_only_after_trust() 
         let client = fixture.client().await;
         let selected = support::mutate(&client,"selectBackend",json!({"sessionId":fixture.session,"backend":{"kind":"model","connectionId":fixture.selection["connectionId"],"modelId":"fixture-model","thinkingLevel":null}})).await;
         assert_eq!(selected["kind"],"committed");
-        let file = fixture.directory.path().join("workspace/.mcp.json");
+        let file = fixture.directory.path().join("workspace/.maka/mcp.json");
         let record = fixture.directory.path().join("mcp-record");
         let server = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../plugins/agent/mcp/tests/server.mjs");
         let mut config = json!({"mcpServers":{"local_fixture":{"command":"node","args":[server,"normal",record],"tools":["echo"],"readOnlyTools":["echo"],"preapproved":true,"env":{"SECRET":"HIDDEN_CREDENTIAL"}}}});
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file,serde_json::to_vec(&config).unwrap()).unwrap();
         let (mut view, bindings) = fixture.view(fixture.client().await,Some(fixture.session.clone()));
         view.resize(150,60);

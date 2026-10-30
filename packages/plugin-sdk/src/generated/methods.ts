@@ -495,10 +495,20 @@ export interface ServiceMethods {
       input: Runtime.AgentFileListRead;
       output: Runtime.AgentFilePage;
     };
+    manageMcpServer: {
+      mode: 'mutation';
+      input: Runtime.AgentMcpConfigurationChange;
+      output: Runtime.AgentMcpConfigurationResult;
+    };
     markRead: {
       mode: 'mutation';
       input: Runtime.AgentMarkRead;
       output: Runtime.AgentMarkReadResult;
+    };
+    mcpConfigurations: {
+      mode: 'query';
+      input: Runtime.AgentMcpConfigurations;
+      output: Runtime.AgentMcpConfigurationList;
     };
     metadata: {
       mode: 'mutation';
@@ -642,6 +652,11 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.AgentSelectBackend;
       output: Runtime.AgentMetadataResult;
+    };
+    selectWorkspace: {
+      mode: 'mutation';
+      input: Runtime.AgentDirectorySelection;
+      output: Runtime.AgentWorkspace | null;
     };
     send: {
       mode: 'mutation';
@@ -1374,6 +1389,82 @@ export interface ServiceMethods {
       mode: 'subscription';
       input: Runtime.TerminalOutputRequest;
       output: Runtime.TerminalOutcome_TerminalOutputEvent;
+    };
+  };
+  skillLibrary: {
+    delete: {
+      mode: 'mutation';
+      input: Runtime.SkillLibraryManageSkill;
+      output: Runtime.SkillLibraryChangeResult;
+    };
+    discoverSource: {
+      mode: 'query';
+      input: Runtime.SkillLibraryDiscoverSource;
+      output: Runtime.SkillLibraryDiscoveredSource;
+    };
+    install: {
+      mode: 'mutation';
+      input: Runtime.SkillLibraryInstall;
+      output: Runtime.SkillLibraryInstallResult;
+    };
+    list: {
+      mode: 'query';
+      input: Runtime.SkillLibraryList;
+      output: Runtime.SkillLibraryPage;
+    };
+    load: {
+      mode: 'query';
+      /**
+       * Actual Agent registrations are supplied outside model-controlled arguments.
+       * These names describe compatibility and confer no execution authority.
+       */
+      input: {
+        workspace?: Runtime.AgentWorkspace | null;
+        tools: string[];
+        input: Runtime.SkillModelLoad;
+      };
+      output: Runtime.SkillModelLoadResult;
+    };
+    prepare: {
+      mode: 'query';
+      /**
+       * Actual Agent registrations are supplied outside model-controlled arguments.
+       * These names describe compatibility and confer no execution authority.
+       */
+      input: {
+        workspace?: Runtime.AgentWorkspace | null;
+        tools: string[];
+        input: Runtime.SkillPrepare;
+      };
+      output: Runtime.SkillPreparation;
+    };
+    read: {
+      mode: 'query';
+      input: Runtime.SkillLibraryRead;
+      output: Runtime.SkillLibraryDocument;
+    };
+    search: {
+      mode: 'query';
+      /**
+       * Actual Agent registrations are supplied outside model-controlled arguments.
+       * These names describe compatibility and confer no execution authority.
+       */
+      input: {
+        workspace?: Runtime.AgentWorkspace | null;
+        tools: string[];
+        input: Runtime.SkillModelSearch;
+      };
+      output: Runtime.SkillModelSearchResult;
+    };
+    setPreference: {
+      mode: 'mutation';
+      input: Runtime.SkillLibrarySetPreference;
+      output: Runtime.SkillLibraryPreferenceResult;
+    };
+    update: {
+      mode: 'mutation';
+      input: Runtime.SkillLibraryManageSkill;
+      output: Runtime.SkillLibraryChangeResult;
     };
   };
 }
