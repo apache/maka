@@ -81,10 +81,19 @@ fn generated(value: impl serde::Serialize) -> SourceFragment {
 pub(in crate::adapters::wire) struct Compiler {
     options: Arc<StreamOptions>,
     language: Language,
+    inspection: MediaInspection,
 }
 impl Compiler {
     pub(in crate::adapters::wire) fn new(options: Arc<StreamOptions>, language: Language) -> Self {
-        Self { options, language }
+        Self {
+            options,
+            language,
+            inspection: MediaInspection::Wire,
+        }
+    }
+    pub(in crate::adapters::wire) fn directory(mut self) -> Self {
+        self.inspection = MediaInspection::Directory;
+        self
     }
     pub(in crate::adapters::wire) async fn open(
         &self,
@@ -945,20 +954,14 @@ impl Compiler {
                 media,
                 provider_options,
             } => {
-                self.media(
-                    media,
-                    provider_options,
-                    result,
-                    MediaInspection::Wire,
-                    budget,
-                )
-                .await
+                self.media(media, provider_options, result, self.inspection, budget)
+                    .await
             }
         }
     }
     async fn media(
         &self,
-        media: MediaSource,
+        mut media: MediaSource,
         options: Option<JsonSource>,
         result: bool,
         inspection: MediaInspection,
@@ -1029,6 +1032,11 @@ impl Compiler {
         }
         let resolved =
             resolve_media_type(media.media_type.clone(), &media.bytes, budget.clone()).await?;
+        // Directory admission counts retained metadata, not encoded image bytes.
+        // Real wire emission constructs a fresh plan from the unchanged source.
+        if image && inspection == MediaInspection::Directory {
+            media.bytes = SourceBytes::Inline(Bytes::new());
+        }
         let plain = json::text_eq(&media.media_type, "text/plain", budget.clone())
             .await
             .map_err(failure)?;
@@ -1117,7 +1125,7 @@ impl Compiler {
             }
             if citations == Some(true) {
                 plan.field("citations", vec![literal(b"{\"enabled\":true}")]);
-                if inspection == MediaInspection::Wire && (declared_pdf || plain) {
+                if inspection != MediaInspection::Allocation && (declared_pdf || plain) {
                     plan.document = Some(DocumentMetadata {
                         title: identify(static_text("Untitled Document"), budget.clone()).await?,
                         filename: None,
@@ -1424,6 +1432,7 @@ impl Compiler {
                         source,
                         options: self.options.clone(),
                         language: self.language,
+                        inspection: self.inspection,
                     }))),
                     bytes,
                 )]
@@ -1657,6 +1666,7 @@ impl Compiler {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MediaInspection {
     Wire,
+    Directory,
     Allocation,
 }
 pub(in crate::adapters::wire) struct UserPartBound {
@@ -1781,6 +1791,7 @@ struct ContentSource {
     source: Arc<dyn RecipeSource<ContentRecipe>>,
     options: Arc<StreamOptions>,
     language: Language,
+    inspection: MediaInspection,
 }
 impl ByteSource for ContentSource {
     fn len(&self) -> Option<u64> {
@@ -1792,6 +1803,7 @@ impl ByteSource for ContentSource {
             compiler: Compiler {
                 options: self.options.clone(),
                 language: self.language,
+                inspection: self.inspection,
             },
             budget,
             fragments: VecDeque::from([literal(b"[")]),

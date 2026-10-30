@@ -151,6 +151,10 @@ fn explicit_catalog_association_keeps_wire_identity_account_facts_and_captured_d
                 input_limit: Some(6144),
                 max_output_tokens: Some(2048),
                 api_protocol: Some(ApiProtocol::AnthropicMessages),
+                image_input: Some(maka_agent_facts::configuration::ImageInput {
+                    max_width: Some(8192),
+                    ..Default::default()
+                }),
                 thinking_levels: Some(vec![High]),
                 default_thinking_level: Some(High),
                 supports_reasoning_summary: Some(true),
@@ -177,6 +181,18 @@ fn explicit_catalog_association_keeps_wire_identity_account_facts_and_captured_d
     assert_eq!(effective.max_output_tokens, Some(2048));
     assert_eq!(effective.capabilities.unwrap().vision, Some(false));
     assert_eq!(effective.capabilities.unwrap().function_calling, Some(true));
+    assert_eq!(
+        effective.image_input, None,
+        "a catalog association cannot move another provider's route limits"
+    );
+    let same_provider_alias = snapshot
+        .model_base("catalog-provider", "wire-alias", Some(&reference))
+        .unwrap();
+    assert_eq!(
+        same_provider_alias.image_input.as_ref().unwrap().max_width,
+        Some(8192),
+        "same provider/API binding keeps declared limits despite a display/wire alias"
+    );
     assert_eq!(effective.api_protocol, None);
     assert_eq!(effective.thinking_levels, None);
     assert_eq!(effective.default_thinking_level, None);
@@ -226,5 +242,114 @@ fn explicit_catalog_association_keeps_wire_identity_account_facts_and_captured_d
     assert_eq!(
         absent.resolve("openai-compatible", reported.clone(), Some(&missing)),
         reported
+    );
+}
+
+#[test]
+fn image_declarations_stay_exact_and_route_local() {
+    let catalog = json!({"image-provider":{"id":"image-provider","models":{
+        "exact-image":{"id":"exact-image","modalities":{"input":["text","image/png","image/avif"],"output":["text"]},
+            "limit":{"request_bytes":12000000,"image":{"max_per_message":8,"max_per_request":12,"max_bytes":4000000,"min_width":16,"min_height":20,"max_width":8192,"max_height":4096}}},
+        "generic-image":{"id":"generic-image","modalities":{"input":["image"],"output":["text"]}},
+        "unknown":{"id":"unknown"}
+    }}});
+    let snapshot = from_values(Some(&catalog), None).unwrap();
+    let model = snapshot.get("image-provider", "exact-image").unwrap();
+    assert_eq!(model.capabilities.unwrap().vision, Some(true));
+    assert_eq!(
+        model.image_input,
+        Some(maka_agent_facts::configuration::ImageInput {
+            mime_types: Some(vec!["image/png".into(), "image/avif".into()]),
+            max_per_message: Some(8),
+            max_per_request: Some(12),
+            max_bytes: Some(4000000),
+            min_width: Some(16),
+            min_height: Some(20),
+            max_width: Some(8192),
+            max_height: Some(4096),
+            request_bytes: Some(12000000),
+        })
+    );
+    assert_eq!(
+        snapshot
+            .get("image-provider", "generic-image")
+            .unwrap()
+            .image_input,
+        None
+    );
+    assert_eq!(
+        snapshot
+            .get("image-provider", "unknown")
+            .unwrap()
+            .capabilities
+            .unwrap()
+            .vision,
+        None
+    );
+    assert!(snapshot.get("openai-compatible", "exact-image").is_none());
+}
+
+#[test]
+fn invalid_image_constraints_reject_catalog_without_inventing_defaults() {
+    for limits in [
+        json!({"max_bytes":-1}),
+        json!({"max_width":1.5}),
+        json!({"min_width":100,"max_width":50}),
+    ] {
+        let catalog =
+            json!({"test":{"id":"test","models":{"m":{"id":"m","limit":{"image":limits}}}}});
+        assert!(
+            from_values(Some(&catalog), None).is_err(),
+            "limits {limits}"
+        );
+    }
+    let catalog = json!({"test":{"id":"test","models":{"m":{"id":"m","limit":{"image":{"max_per_request":0}}}}}});
+    assert_eq!(
+        from_values(Some(&catalog), None)
+            .unwrap()
+            .get("test", "m")
+            .unwrap()
+            .image_input
+            .as_ref()
+            .unwrap()
+            .max_per_request,
+        Some(0)
+    );
+}
+
+#[test]
+fn live_gateway_mime_and_exact_route_limits_survive_catalog_merge() {
+    let catalog = json!({"openrouter":{"id":"openrouter","models":{
+        "vendor/image":{"id":"vendor/image","limit":{"image":{"max_width":8192}}}
+    }}});
+    let router = json!({"data":[{"id":"vendor/image","architecture":{"input_modalities":["text","image/png"],"output_modalities":["text"]}}]});
+    let snapshot = from_values(Some(&catalog), Some(&router)).unwrap();
+    let image = snapshot
+        .get("openrouter", "vendor/image")
+        .unwrap()
+        .image_input
+        .as_ref()
+        .unwrap();
+    assert_eq!(image.max_width, Some(8192));
+    assert_eq!(
+        image.mime_types.as_deref(),
+        Some(["image/png".to_owned()].as_slice())
+    );
+    assert_eq!(
+        snapshot
+            .get("openai-compatible", "vendor/image")
+            .unwrap()
+            .image_input,
+        None
+    );
+    let explicit = maka_agent_facts::configuration::ModelOverride {
+        image_input: Some(maka_agent_facts::configuration::ImageInput::default()),
+        ..Default::default()
+    };
+    assert_eq!(
+        explicit
+            .apply(snapshot.get("openrouter", "vendor/image").unwrap())
+            .image_input,
+        explicit.image_input
     );
 }

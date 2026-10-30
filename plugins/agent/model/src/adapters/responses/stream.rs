@@ -18,6 +18,7 @@
  */
 
 //! Responses dispatch. Protocol code never enters the model V8 isolate.
+use super::super::error::QuotaScope;
 use super::{
     decode::Decoder,
     transport::{Exchange, ResponsesLane, Shared},
@@ -121,10 +122,14 @@ async fn request_http(
 async fn emit(
     decoder: &mut Decoder,
     value: Value,
+    quota_scope: QuotaScope,
     sender: &Arc<dyn Events>,
     cancellation: &CancellationToken,
 ) -> Result<(), ModelError> {
-    for event in decoder.push(value).map_err(failure)? {
+    for event in decoder
+        .push(value)
+        .map_err(|error| failure(error, quota_scope))?
+    {
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
@@ -146,11 +151,13 @@ async fn run(
         idle_timeout,
         transport: network,
     } = context;
+    let quota_scope = QuotaScope::endpoint(&request.provider.base_url);
     let plaintext = match request.provider.kind {
         ProviderKind::OpenResponses(p) => Some(p),
         _ => None,
     };
-    let mut body = super::body::RequestBody::new(&request, plaintext, skip).map_err(failure)?;
+    let mut body = super::body::RequestBody::new(&request, plaintext, skip)
+        .map_err(|error| failure(error, quota_scope))?;
     let mut url = reqwest::Url::parse(&request.provider.base_url)
         .map_err(|_| ModelError::Adapter("invalid Responses endpoint".into()))?;
     url.set_path(&format!("{}/responses", url.path().trim_end_matches('/')));
@@ -176,7 +183,7 @@ async fn run(
             super::Error::Interrupted(message) => {
                 interruption(&decoder, ProviderFailureReason::Network, message)
             }
-            error => failure(error),
+            error => failure(error, quota_scope),
         })? {
             Some(full) => body = full,
             None => {
@@ -186,16 +193,16 @@ async fn run(
                         super::Error::Interrupted(message) => {
                             interruption(&decoder, ProviderFailureReason::StreamTruncated, message)
                         }
-                        error => failure(error),
+                        error => failure(error, quota_scope),
                     })?
                 {
                     sender.progress();
                     let value = serde_json::from_str(&frame).map_err(|_| {
                         ModelError::Adapter("invalid Responses WebSocket JSON".into())
                     })?;
-                    emit(&mut decoder, value, &sender, &cancellation).await?;
+                    emit(&mut decoder, value, quota_scope, &sender, &cancellation).await?;
                 }
-                return decoder.end().map_err(failure);
+                return decoder.end().map_err(|error| failure(error, quota_scope));
             }
         }
     }
@@ -220,6 +227,7 @@ async fn run(
         idle_timeout,
         &cancellation,
         retry_at,
+        quota_scope,
     )
     .await
     .map_err(|error| match error {
@@ -242,6 +250,7 @@ async fn read_response(
     idle_timeout: Duration,
     cancellation: &CancellationToken,
     retry_at: Option<u64>,
+    quota_scope: QuotaScope,
 ) -> Result<(), ModelError> {
     let content_type = header(&response.head, "content-type");
     // Some Responses endpoints omit Content-Type even for a valid event
@@ -254,9 +263,13 @@ async fn read_response(
     });
     if !(200..300).contains(&response.head.status) || !event_stream {
         let status = response.head.status;
-        let body_failure = || {
-            super::super::error::Evidence::default().provider(
-                super::super::error::http_error(status, &[]),
+        let body_failure = |message: String| {
+            super::super::error::Evidence {
+                quota_scope,
+                ..Default::default()
+            }
+            .provider(
+                super::super::error::http_body_error(status, message),
                 false,
                 retry_at,
             )
@@ -268,13 +281,17 @@ async fn read_response(
                 if matches!(error, ModelError::Cancelled) {
                     error
                 } else {
-                    body_failure()
+                    body_failure(error.to_string())
                 }
             })?
             .map_err(|error| match error {
                 http::Error::Denied => ModelError::Cancelled,
                 http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
-                _ => body_failure(),
+                http::Error::Failed(message) => body_failure(
+                    ProviderFailure::new(ProviderFailureReason::Network, message, false, None)
+                        .to_string(),
+                ),
+                error => body_failure(error.to_string()),
             })?
         {
             bytes.extend_from_slice(&chunk);
@@ -290,7 +307,11 @@ async fn read_response(
                         })
                     })
             }) {
-                return Err(super::super::error::Evidence::default().provider(
+                return Err(super::super::error::Evidence {
+                    quota_scope,
+                    ..Default::default()
+                }
+                .provider(
                     super::super::error::http_error(status, &bytes),
                     false,
                     retry_at,
@@ -305,7 +326,11 @@ async fn read_response(
                 "Responses HTTP {status} returned {content_type}, expected text/event-stream: {message}"
             )));
         }
-        return Err(super::super::error::Evidence::default().provider(
+        return Err(super::super::error::Evidence {
+            quota_scope,
+            ..Default::default()
+        }
+        .provider(
             super::super::error::http_error(status, &bytes),
             false,
             retry_at,
@@ -343,9 +368,12 @@ async fn read_response(
         })?
     {
         for byte in chunk {
-            if let Some(value) = sse.push(byte).map_err(|error| failure(error.into()))? {
+            if let Some(value) = sse
+                .push(byte)
+                .map_err(|error| failure(error.into(), quota_scope))?
+            {
                 received_event = true;
-                emit(decoder, value, sender, cancellation).await?;
+                emit(decoder, value, quota_scope, sender, cancellation).await?;
                 if decoder.finished() {
                     return Ok(());
                 }
@@ -357,7 +385,7 @@ async fn read_response(
         // interruption, whether it ends, stalls, or disconnects.
         return Err(missing_events());
     }
-    decoder.end().map_err(failure)
+    decoder.end().map_err(|error| failure(error, quota_scope))
 }
 
 fn headers(request: &ModelRequest) -> Result<BTreeMap<String, String>, ModelError> {
@@ -392,7 +420,7 @@ fn headers(request: &ModelRequest) -> Result<BTreeMap<String, String>, ModelErro
     }
     Ok(headers)
 }
-fn failure(error: super::Error) -> ModelError {
+fn failure(error: super::Error, quota_scope: QuotaScope) -> ModelError {
     use super::Error;
     match error {
         Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
@@ -415,6 +443,7 @@ fn failure(error: super::Error) -> ModelError {
             retained_output_safe,
         } => {
             let evidence = super::super::error::Evidence {
+                quota_scope,
                 observed: observed_output,
                 unsafe_replay: !replay_safe,
                 ..Default::default()
@@ -535,6 +564,57 @@ mod upload_settlement_tests {
                 assert!(matches!(result, Err(ModelError::Cancelled)));
             }
             assert!(network.settled.load(Ordering::SeqCst));
+        }
+    }
+}
+
+#[cfg(test)]
+mod quota_tests {
+    use super::*;
+    use futures_util::future::BoxFuture;
+    use maka_agent_ports::model::Emission;
+    use serde_json::json;
+
+    struct NoEvents;
+    impl Events for NoEvents {
+        fn emit(&self, _: Emission) -> BoxFuture<'_, Result<(), ModelError>> {
+            Box::pin(async { panic!("a failed response must not emit model output") })
+        }
+    }
+
+    // SSE and WebSocket frames both enter this decoder/emission boundary.
+    #[tokio::test]
+    async fn responses_quota_frame_keeps_scope_diagnostics_and_replay_safety() {
+        let sender: Arc<dyn Events> = Arc::new(NoEvents);
+        for (endpoint, reason) in [
+            (
+                "https://api.z.ai/api/paas/v4",
+                ProviderFailureReason::QuotaExhausted,
+            ),
+            ("https://other.invalid", ProviderFailureReason::RateLimit),
+        ] {
+            let mut decoder = Decoder::new(None, &[]);
+            decoder
+                .push(json!({"type":"response.future_call.in_progress"}))
+                .unwrap();
+            let error = emit(
+                &mut decoder,
+                json!({"type":"response.failed","response":{"error":{"type":"rate_limit_error","code":"1308","message":"original quota diagnostic"}}}),
+                QuotaScope::endpoint(endpoint),
+                &sender,
+                &CancellationToken::new(),
+            ).await.unwrap_err();
+            let ModelError::Provider(failure) = error else {
+                panic!("expected typed response failure: {error}")
+            };
+            assert_eq!(failure.reason(), reason);
+            assert_eq!(failure.message(), "original quota diagnostic");
+            assert_eq!(failure.code(), Some("1308"));
+            assert!(!failure.replay_safe());
+            assert_eq!(
+                failure.retryable(),
+                reason == ProviderFailureReason::RateLimit
+            );
         }
     }
 }

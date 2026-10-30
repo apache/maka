@@ -142,6 +142,7 @@ async fn run_inner(
     shared: Arc<Shared>,
     response_body: &mut Option<Arc<dyn http::Body>>,
 ) -> Result<(), ModelError> {
+    let quota_scope = error::QuotaScope::endpoint(&request.provider.base_url);
     let mut prepared = tokio::select! {
         biased;
         _ = context.cancellation.cancelled() => return Err(ModelError::Cancelled),
@@ -162,6 +163,7 @@ async fn run_inner(
             .remove("stream_options");
     }
     let mut events = events::Events::new(prepared.anthropic);
+    events.evidence.quota_scope = quota_scope;
     let mut retried = remembered;
     loop {
         let response = dispatch(
@@ -221,7 +223,7 @@ async fn run_inner(
                                 if failure.reason() == ProviderFailureReason::Network)) =>
                 {
                     return Err(events.evidence.provider(
-                        error::http_error(status, &[]),
+                        error::http_body_error(status, error),
                         prepared.anthropic,
                         retry_after,
                     ));
@@ -434,9 +436,9 @@ async fn read_body(
         .map_err(|error| match error {
             http::Error::Denied => ModelError::Cancelled,
             http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
-            http::Error::Failed(_) => ModelError::Provider(crate::ProviderFailure::new(
+            http::Error::Failed(message) => ModelError::Provider(crate::ProviderFailure::new(
                 ProviderFailureReason::Network,
-                "error body interrupted",
+                message,
                 true,
                 None,
             )),
@@ -450,4 +452,141 @@ async fn read_body(
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod quota_scope_tests {
+    use super::*;
+    use futures_util::{StreamExt, future::BoxFuture};
+    use maka_agent_ports::model::{Connect, Credentials, Events, Provider, Socket, Transport};
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
+
+    struct NoEvents;
+    impl Events for NoEvents {
+        fn emit(&self, _: Emission) -> BoxFuture<'_, Result<(), ModelError>> {
+            Box::pin(async { panic!("a rejected request cannot emit model output") })
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Rejection {
+        read: Arc<AtomicBool>,
+        closed: Arc<AtomicBool>,
+    }
+    impl http::Body for Rejection {
+        fn next(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, http::Error>> {
+            Box::pin(async move {
+                Ok((!self.read.swap(true, Ordering::SeqCst)).then(|| {
+                    br#"{"error":{"code":"1308","message":"original quota diagnostic"}}"#.to_vec()
+                }))
+            })
+        }
+        fn cancel(&self) {}
+        fn close(&self) -> BoxFuture<'_, Result<(), http::Error>> {
+            Box::pin(async move {
+                self.closed.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+    impl Transport for Rejection {
+        fn identity(&self) -> u64 {
+            1
+        }
+        fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, ModelError>> {
+            Box::pin(async { panic!("the HTTP quota boundary cannot open a WebSocket") })
+        }
+        fn request(
+            &self,
+            request: http::Request,
+            _: CancellationToken,
+        ) -> BoxFuture<'_, Result<http::Response, ModelError>> {
+            Box::pin(async move {
+                let mut upload = request.body.into_stream();
+                while let Some(bytes) = upload.next().await {
+                    bytes.unwrap();
+                }
+                Ok(http::Response {
+                    head: http::Head {
+                        status: 429,
+                        url: request.url,
+                        headers: vec![
+                            ("content-type".into(), b"application/json".to_vec()),
+                            ("retry-after".into(), b"18000".to_vec()),
+                        ],
+                    },
+                    body: Arc::new(self.clone()),
+                })
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http_dispatch_keeps_quota_scope_original_diagnostics_and_retry_deadline() {
+        for (endpoint, reason) in [
+            (
+                "https://api.z.ai/api/coding/paas/v4",
+                ProviderFailureReason::QuotaExhausted,
+            ),
+            (
+                "https://foreign.invalid/v1",
+                ProviderFailureReason::RateLimit,
+            ),
+        ] {
+            let response = Rejection::default();
+            let context = Context {
+                transport: Arc::new(response.clone()),
+                events: Arc::new(NoEvents),
+                cancellation: CancellationToken::new(),
+                idle_timeout: Duration::from_secs(10),
+            };
+            let before = crate::ProviderFailure::now_unix_ms();
+            let start = tokio::time::Instant::now();
+            let error = run(
+                Request {
+                    language: Default::default(),
+                    provider: Provider {
+                        kind: crate::ProviderKind::OpenaiCompatible {
+                            name: "fixture".into(),
+                        },
+                        model: "quota-fixture".into(),
+                        base_url: endpoint.into(),
+                        auth: Credentials::ApiKey("fixture".into()),
+                        headers: Default::default(),
+                        body_overlay: None,
+                    },
+                    prompt: vec![crate::prompt::Message::user("hello")].into(),
+                    tools: vec![],
+                    provider_options: serde_json::Value::Null,
+                    max_output_tokens: None,
+                },
+                &context,
+                Arc::new(Shared::default()),
+            )
+            .await
+            .unwrap_err();
+            let after = crate::ProviderFailure::now_unix_ms();
+            let ModelError::Provider(failure) = error else {
+                panic!("typed quota evidence lost: {error}")
+            };
+            assert_eq!(failure.reason(), reason);
+            assert_eq!(
+                failure.retryable(),
+                reason == ProviderFailureReason::RateLimit
+            );
+            assert!(failure.replay_safe());
+            assert_eq!(failure.status(), Some(429));
+            assert_eq!(failure.code(), Some("1308"));
+            assert_eq!(failure.message(), "original quota diagnostic");
+            assert!(
+                (before + 18_000_000..=after + 18_000_000)
+                    .contains(&failure.retry_at_unix_ms().unwrap())
+            );
+            assert_eq!(start.elapsed(), Duration::ZERO);
+            assert!(response.closed.load(Ordering::SeqCst));
+        }
+    }
 }

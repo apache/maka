@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::support::image_projection as support;
+use crate::support::{http::read_request, image_projection as support};
 
 use crate::support::store::SessionFixture;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -37,9 +37,6 @@ use support::*;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-const IMAGE_BYTES: usize = 64 * 1024 + 1;
-const LARGE_TOOL_IMAGE_BYTES: usize = 50 * 1024 * 1024 + 1;
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authority() {
     tokio::time::timeout(Duration::from_secs(180), async {
@@ -47,13 +44,16 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         let path = directory.path().join("events.sqlite");
         let log = SessionFixture::open(&path).await.unwrap();
 
-        for id in ["historical", "tool", "fits"] { artifact(&log, id, IMAGE_BYTES, true).await; }
-        artifact(&log, "invalid", IMAGE_BYTES + 1, false).await;
-        artifact(&log, "overflow", 8, true).await;
+        let image = png(160, 160).await;
+        assert!(image.len() > 64 * 1024, "real encoded media crosses the transport quantum");
+        let tiny = png(1, 1).await;
+        for id in ["historical", "tool", "fits"] { artifact(&log, id, image.clone()).await; }
+        artifact(&log, "invalid", vec![0; image.len()]).await;
+        artifact(&log, "tiny", tiny.clone()).await;
 
         let prior = identity("historical");
         let mut historical = attachment("historical");
-        historical["bytes"] = json!(IMAGE_BYTES);
+        historical["bytes"] = json!(image.len());
         let message = serde_json::from_value(json!({"text":"historical", "attachments":[historical]})).unwrap();
         let facts = [
             Fact::InvocationOpened { input: InvocationInput::Message { source_messages: Vec::new(), content: message, request_fingerprint: None }, configuration: None },
@@ -69,10 +69,10 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         for fact in facts { log.append(&EventWrite::plain(RuntimeEvent::new(prior.clone(), fact)).unwrap()).await.unwrap(); }
         log.append(&EventWrite::tool_success("prior-result".into(), std::time::SystemTime::now(), prior.clone(), "prior-step:read".into(),
             ToolOutput::Image(ImageOutput { detail: Some(maka_agent_facts::tool_output::ImageDetail::High), mime_type: "image/png".into(), reference: serde_json::from_value(attachment("tool")["ref"].clone()).unwrap() }).into()).unwrap().0).await.unwrap();
-        // Header-only storage fixture: native tests separately prove complete image decoding.
-        // This must be generated tool evidence, rather than an upload with a larger allowance.
-        let mut large_bytes = vec![0; LARGE_TOOL_IMAGE_BYTES];
-        large_bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        let large_bytes = png(3840, 3840).await;
+        assert!(large_bytes.len() > 50 * 1024 * 1024, "accepted original remains above 50 MiB");
+        let original_size = large_bytes.len() as u64;
+        let original_digest = maka_agent_facts::artifact::content_digest(&large_bytes);
         let (large_result, _) = EventWrite::tool_success(
             "prior-large-result".into(), std::time::SystemTime::now(), prior.clone(),
             "prior-step:read-large".into(), ToolSuccess::image(large_bytes, "image/png".into()).unwrap(),
@@ -81,6 +81,7 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         let generated_id = large_result.projection_artifacts()[0].artifact().id.clone();
         log.append(&large_result).await.unwrap();
         drop(large_result);
+        assert_stored_png(&log, &generated_id, original_size, &original_digest).await;
         log.append(&EventWrite::plain(RuntimeEvent::new(prior, Fact::InvocationEnded { outcome: InvocationOutcome::Completed })).unwrap()).await.unwrap();
 
         let revision = log.get_session::<Value>("session").await.unwrap().unwrap().revision;
@@ -98,7 +99,7 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         let observed_log = log.clone();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let body = request(&mut socket).await;
+            let body = read_request(&mut socket).await;
 
             let prefix = observed_log.prefix(100, 128 * 1024).await.unwrap();
             assert!(prefix.events.iter().any(|stored| stored.event.invocation.invocation_id == "invocation-current"
@@ -112,15 +113,15 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         workspace["ref"] = json!({"kind":"workspace_file", "relativePath":"historical"});
         let engine = engine();
         engine.run(log.store(), input(&base, json!([attachment("invalid"), attachment("missing"), foreign, workspace,
-            attachment("fits"), attachment("overflow")])), CancellationToken::new()).await.unwrap();
+            attachment("fits"), attachment("tiny")])), CancellationToken::new()).await.unwrap();
 
         let body = server.await.unwrap();
         let mut urls = Vec::new();
         collect_images(&body["messages"], &mut urls);
         assert_eq!(urls.len(), 5, "prior user, typed and generated Read images, and both current images reach the provider");
-        for (url, size) in urls.into_iter().zip([IMAGE_BYTES, IMAGE_BYTES, LARGE_TOOL_IMAGE_BYTES, IMAGE_BYTES, 8]) {
-            assert_fixture_image(url, size);
-        }
+        for index in [0, 1, 3] { assert_eq!(provider_png(urls[index]), image); }
+        assert_eq!(provider_png(urls[4]), tiny);
+        let view_digest = assert_whole_image(provider_png(urls[2])).await;
         assert!(body["messages"].as_array().unwrap().iter().any(|message| {
             message["content"].as_array().is_some_and(|parts| {
                 parts.iter().any(|part| part["image_url"]["detail"] == "high")
@@ -149,7 +150,7 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let copied_request = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let body = request(&mut socket).await;
+            let body = read_request(&mut socket).await;
 
             respond(&mut socket).await;
             body
@@ -165,9 +166,8 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         let mut inherited_images = Vec::new();
         collect_images(&copied_request["messages"], &mut inherited_images);
         assert_eq!(inherited_images.len(), 3, "copy retains the deleted user upload and both protected tool images through destination-owned references");
-        for (url, size) in inherited_images.into_iter().zip([IMAGE_BYTES, IMAGE_BYTES, LARGE_TOOL_IMAGE_BYTES]) {
-            assert_fixture_image(url, size);
-        }
+        for url in &inherited_images[..2] { assert_eq!(provider_png(url), image); }
+        assert_eq!(assert_whole_image(provider_png(inherited_images[2])).await, view_digest);
         let reference = branch.resolve_history_artifact("branch", "session", "historical").await.unwrap().unwrap();
         assert!(message_text(&copied_request["messages"]).any(|text| text.contains(&reference.resource_ref().unwrap())),
             "Read must receive the destination-owned resource URI");
@@ -180,6 +180,7 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         let generated_reference = branch.resolve_history_artifact("branch", "session", &generated_id).await.unwrap().unwrap();
         let maka_agent_facts::attachment::StorageRef::SessionFile { session_id, relative_path } = generated_reference else { panic!("owned generated image") };
         assert_eq!(session_id, "branch");
+        assert_stored_png(&branch, &relative_path, original_size, &original_digest).await;
         assert!(branch.read_tool_result("branch", "prior-large-result").await.unwrap().unwrap().serialized_result.contains(&relative_path),
             "generated tool evidence keeps destination-owned authority after copying");
         let original = log.prefix(100, 128 * 1024).await.unwrap();
@@ -193,19 +194,32 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
     }).await.expect("image projection must make bounded progress");
 }
 
-fn assert_fixture_image(url: &str, size: usize) {
-    let data = url.strip_prefix("data:image/png;base64,").unwrap();
-    let bytes = STANDARD.decode(data).unwrap();
-    assert_eq!(
-        bytes.len(),
-        size,
-        "provider image length differs from the accepted artifact"
-    );
-    assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
-    assert!(
-        bytes[8..].iter().all(|byte| *byte == 0),
-        "provider image bytes differ from the accepted artifact"
-    );
+fn provider_png(url: &str) -> Vec<u8> {
+    STANDARD
+        .decode(url.strip_prefix("data:image/png;base64,").unwrap())
+        .unwrap()
+}
+
+async fn assert_whole_image(bytes: Vec<u8>) -> String {
+    tokio::task::spawn_blocking(move || {
+        let image = image::load_from_memory(&bytes).unwrap().to_rgba8();
+        assert_eq!(image.dimensions(), (2000, 2000));
+        for (x, y, color) in [
+            (0, 0, [255, 0, 0, 255]),
+            (1999, 0, [0, 255, 0, 255]),
+            (0, 1999, [0, 0, 255, 255]),
+            (1999, 1999, [255, 255, 0, 255]),
+        ] {
+            assert_eq!(
+                image.get_pixel(x, y).0,
+                color,
+                "whole source corner at {x},{y}"
+            );
+        }
+        maka_agent_facts::artifact::content_digest(&bytes)
+    })
+    .await
+    .unwrap()
 }
 
 fn message_text(messages: &Value) -> impl Iterator<Item = &str> {
@@ -260,28 +274,28 @@ async fn summary_overflow_keeps_media_multipart_and_checkpoint_corrections_as_ev
             .unwrap(),
     );
 
-    artifact(&log, "summary-evidence", 128, true).await;
-    artifact(&log, "summary-tool-evidence", 256, true).await;
+    artifact(&log, "summary-evidence", png(8, 8).await).await;
+    artifact(&log, "summary-tool-evidence", png(9, 8).await).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
-        request(&mut socket).await;
+        read_request(&mut socket).await;
         context::respond(&mut socket, "initial work", "stop").await;
         let (mut socket, _) = listener.accept().await.unwrap();
-        let baseline = request(&mut socket).await;
+        let baseline = read_request(&mut socket).await;
         assert!(baseline["messages"].to_string().contains(CHECKPOINT));
         context::respond(&mut socket, CHECKPOINT, "stop").await;
         let (mut socket, _) = listener.accept().await.unwrap();
-        let recent = request(&mut socket).await;
+        let recent = read_request(&mut socket).await;
         assert!(recent["messages"].to_string().contains(CORRECTION));
         context::respond(&mut socket, "recent answer", "stop").await;
         let (mut socket, _) = listener.accept().await.unwrap();
-        let full = request(&mut socket).await;
+        let full = read_request(&mut socket).await;
         let body = json!({"error":{"message":"context exceeded","type":"invalid_request_error","code":"context_length_exceeded"}}).to_string();
         socket.write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
-        let fitted = request(&mut socket).await;
+        let fitted = read_request(&mut socket).await;
         context::respond(&mut socket, "continued checkpoint", "stop").await;
         (recent, full, fitted)
     });

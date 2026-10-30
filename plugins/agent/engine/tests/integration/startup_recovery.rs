@@ -110,6 +110,7 @@ async fn unknown_dispatch_stays_unknown_and_blocks_next_admission_after_reopen()
                 },
                 request_fingerprint: None,
                 provider: ProviderConfig {
+                    image_input: None,
                     adapter: None,
                     capabilities: Default::default(),
                     kind: ProviderKind::OpenaiChatCompletions,

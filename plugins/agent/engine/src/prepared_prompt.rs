@@ -25,6 +25,7 @@ use maka_agent_facts::model::prompt_source::source::{
 };
 use maka_model::prompt::{Prompt, PromptCursor, PromptSource};
 use std::{collections::VecDeque, sync::Arc};
+mod media;
 mod owned_overlay;
 mod wire;
 pub(crate) use owned_overlay::OwnedOverlay;
@@ -32,6 +33,7 @@ pub(crate) use owned_overlay::OwnedOverlay;
 #[derive(Clone)]
 pub(super) struct PreparedPrompt {
     body: Prompt,
+    media_view: Option<Arc<media::MediaView>>,
     resources: Option<maka_model::ModelPreparationResources>,
     arena: Option<crate::history::capture_arena::CaptureArena>,
     resident_bytes: usize,
@@ -50,6 +52,7 @@ impl PreparedPrompt {
         let recipe_source = body.recipes().cloned();
         Self {
             body,
+            media_view: None,
             resources: None,
             arena: None,
             resident_bytes: 0,
@@ -103,10 +106,22 @@ impl PreparedPrompt {
             .preparation
             .as_ref()
             .ok_or_else(|| crate::RunError::Internal("source lacks its staging account".into()))?;
+        let peak = peak
+            .checked_add(self.media_view.as_ref().map_or(0, |view| view.peak_bytes()))
+            .ok_or_else(|| {
+                crate::RunError::Preparation(std::io::Error::other(
+                    "media preparation peak overflows",
+                ))
+            })?;
         preparation
             .promote(peak, cancellation)
             .await
-            .map_err(crate::RunError::preparation)
+            .map_err(crate::RunError::preparation)?;
+        if let Some(view) = &self.media_view {
+            view.materialize(self.active().expect("promoted request"), cancellation)
+                .await?;
+        }
+        Ok(())
     }
     pub fn resident_bytes(&self) -> usize {
         self.resident_bytes
@@ -236,6 +251,35 @@ impl PreparedPrompt {
                     .then(|| Arc::new(OwnedList(self.suffix.clone())) as Arc<dyn MessageSource>),
             ],
         }));
+    }
+
+    pub async fn fit_image_request(
+        &mut self,
+        language: maka_agent_facts::language::Language,
+        provider: &maka_model::ProviderConfig,
+        options: &serde_json::Value,
+        tools: &[maka_model::ToolDefinition],
+        max_output_tokens: Option<u64>,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), crate::RunError> {
+        media::fit_request(
+            self,
+            language,
+            provider,
+            options,
+            tools,
+            max_output_tokens,
+            cancellation,
+        )
+        .await
+    }
+
+    pub async fn prepare_media(
+        &mut self,
+        provider: &maka_model::ProviderConfig,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), crate::RunError> {
+        media::prepare(self, provider, cancellation).await
     }
 
     pub async fn compile_wire(

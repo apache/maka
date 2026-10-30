@@ -113,10 +113,7 @@ pub enum RunError {
 struct PreparationCancelled(&'static str);
 
 fn preparation_cancelled(message: &'static str) -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::Interrupted,
-        PreparationCancelled(message),
-    )
+    std::io::Error::other(PreparationCancelled(message))
 }
 
 impl RunError {

@@ -210,6 +210,7 @@ async fn source_request_bytes(messages: &[crate::prompt::Message]) -> Vec<u8> {
     use futures_util::StreamExt;
     use maka_agent_facts::model::prompt_source::source::generated::GeneratedMessages;
     let provider = ProviderConfig {
+        image_input: None,
         adapter: None,
         capabilities: Default::default(),
         network: Default::default(),

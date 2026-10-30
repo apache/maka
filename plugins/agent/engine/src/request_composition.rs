@@ -234,6 +234,7 @@ mod tests {
             work: (),
             request_fingerprint: None,
             provider: maka_model::ProviderConfig {
+                image_input: None,
                 adapter: None,
                 capabilities: Default::default(),
                 network: Default::default(),

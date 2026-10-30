@@ -550,7 +550,8 @@ impl<R: BufRead + Seek> WebPDecoder<R> {
 
     /// Sets the maximum amount of memory that the decoder is allowed to allocate at once.
     ///
-    /// TODO: Some allocations currently ignore this limit.
+    /// Metadata reads and lossless Huffman tables honor this limit. Pixel planes,
+    /// transform buffers, and lossy partitions must be budgeted by the caller.
     pub fn set_memory_limit(&mut self, limit: usize) {
         self.memory_limit = limit;
     }
@@ -679,7 +680,8 @@ impl<R: BufRead + Seek> WebPDecoder<R> {
             self.animation = saved;
             result?;
         } else if let Some(range) = self.chunks.get(&WebPRiffChunk::VP8L) {
-            let mut decoder = LosslessDecoder::new(range_reader(&mut self.r, range.clone())?);
+            let mut decoder = LosslessDecoder::new(range_reader(&mut self.r, range.clone())?)
+                .with_huffman_limit(self.memory_limit);
 
             if self.has_alpha {
                 decoder.decode_frame(self.width, self.height, false, buf)?;
@@ -713,6 +715,7 @@ impl<R: BufRead + Seek> WebPDecoder<R> {
                     &mut range_reader(&mut self.r, range)?,
                     self.width as u16,
                     self.height as u16,
+                    self.memory_limit,
                 )?;
 
                 for y in 0..frame.height {
@@ -813,7 +816,8 @@ impl<R: BufRead + Seek> WebPDecoder<R> {
             }
             WebPRiffChunk::VP8L => {
                 let reader = (&mut self.r).take(chunk_size);
-                let mut lossless_decoder = LosslessDecoder::new(reader);
+                let mut lossless_decoder =
+                    LosslessDecoder::new(reader).with_huffman_limit(self.memory_limit);
                 let mut rgba_frame = vec![0; frame_width as usize * frame_height as usize * 4];
                 lossless_decoder.decode_frame(frame_width, frame_height, false, &mut rgba_frame)?;
                 (rgba_frame, true)
@@ -826,8 +830,12 @@ impl<R: BufRead + Seek> WebPDecoder<R> {
                 // read alpha
                 let next_chunk_start = self.r.stream_position()? + chunk_size_rounded;
                 let mut reader = (&mut self.r).take(chunk_size);
-                let alpha_chunk =
-                    read_alpha_chunk(&mut reader, frame_width as u16, frame_height as u16)?;
+                let alpha_chunk = read_alpha_chunk(
+                    &mut reader,
+                    frame_width as u16,
+                    frame_height as u16,
+                    self.memory_limit,
+                )?;
 
                 // read opaque
                 self.r.seek(io::SeekFrom::Start(next_chunk_start))?;
@@ -872,7 +880,11 @@ impl<R: BufRead + Seek> WebPDecoder<R> {
         // fill starting canvas with clear color
         if self.animation.canvas.is_none() {
             self.animation.canvas = {
-                let mut canvas = vec![0; (self.width * self.height * 4) as usize];
+                let length = (self.width as usize)
+                    .checked_mul(self.height as usize)
+                    .and_then(|pixels| pixels.checked_mul(4))
+                    .ok_or(DecodingError::ImageTooLarge)?;
+                let mut canvas = vec![0; length];
                 if let Some(color) = info.background_color.as_ref() {
                     canvas
                         .chunks_exact_mut(4)

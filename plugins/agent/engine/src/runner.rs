@@ -342,6 +342,12 @@ fn failure_class(error: &RunError) -> &'static str {
         RunError::Model(maka_model::ModelError::Http { .. }) => "model_http",
         RunError::Model(maka_model::ModelError::TimedOut) => "model_timeout",
         RunError::Model(maka_model::ModelError::Adapter(_)) => "model_adapter",
+        RunError::Model(maka_model::ModelError::ImageInputRejected { .. }) => {
+            "image_input_rejected"
+        }
+        RunError::Model(maka_model::ModelError::ImageInputPayloadTooLarge { .. }) => {
+            "image_input_payload_too_large"
+        }
         RunError::Model(maka_model::ModelError::Provider(failure))
             if failure.reason()
                 == maka_agent_facts::model::error::ProviderFailureReason::TimedOut =>

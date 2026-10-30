@@ -205,7 +205,7 @@ async fn responses_http_preserves_reasoning_and_raw_tool_identity_across_steps()
         for index in 0..2 {
             let request = ModelRequest {
                 language: maka_agent_facts::language::Language::En,
-                provider: ProviderConfig { adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenaiResponses, model: "gpt-5".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()), headers: BTreeMap::from([("x-test-provider".into(), "responses".into())]), body_overlay: Some(serde_json::Map::from_iter([("fixture_context".into(), json!({"route":"responses"}))])) },
+                provider: ProviderConfig { image_input: None, adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenaiResponses, model: "gpt-5".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()), headers: BTreeMap::from([("x-test-provider".into(), "responses".into())]), body_overlay: Some(serde_json::Map::from_iter([("fixture_context".into(), json!({"route":"responses"}))])) },
                 prompt: serde_json::from_value::<Vec<maka_model::prompt::Message>>(json!(prompt)).unwrap().into(),
                 tools: vec![maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Echo text".into(), input_schema: schema.clone() }],
                 provider_options: json!({"openai":{"store":false,"reasoningEffort":"low","reasoningSummary":"auto"}}),
@@ -459,7 +459,7 @@ async fn plaintext_responses_replays_only_its_declared_carrier_after_a_tool_step
                 let executor = ModelExecutor::new(Duration::from_secs(5)).unwrap();
                 let request = ModelRequest {
                     language: maka_agent_facts::language::Language::En,
-                    provider: ProviderConfig { adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenResponses(contract),
+                    provider: ProviderConfig { image_input: None, adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenResponses(contract),
                         model: "plain".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()),
                         headers: BTreeMap::from([("x-test-provider".into(),"responses".into())]), body_overlay: None },
                     prompt: prompt.clone().into(), tools: vec![maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Search tools".into(), input_schema: json!({"type":"object"}) }],
@@ -524,7 +524,7 @@ async fn plaintext_responses_does_not_turn_transport_eof_into_success() {
         let executor = ModelExecutor::new(Duration::from_secs(3)).unwrap();
         let mut stream = executor.stream(ModelRequest {
             language: maka_agent_facts::language::Language::En,
-            provider: ProviderConfig { adapter: None, capabilities: Default::default(), network: Default::default(),
+            provider: ProviderConfig { image_input: None, adapter: None, capabilities: Default::default(), network: Default::default(),
                 kind: ProviderKind::OpenResponses(PlaintextResponses { reasoning_replay: PlaintextReasoningReplay::PlaintextSummary, compatibility: None }),
                 model: "plain".into(), base_url, auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()),
                 headers: BTreeMap::from([("x-test-provider".into(), "responses".into())]), body_overlay: None },

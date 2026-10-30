@@ -71,6 +71,7 @@ pub fn input(
         },
         request_fingerprint: None,
         provider: maka_model::ProviderConfig {
+            image_input: None,
             adapter: None,
             capabilities: Default::default(),
             kind: maka_model::ProviderKind::OpenaiChatCompletions,

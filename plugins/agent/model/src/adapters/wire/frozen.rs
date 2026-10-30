@@ -347,7 +347,12 @@ async fn emit<'a>(
     let mut metadata = source.open_metadata(0);
     let anthropic_compiler = match encoding.options.as_ref() {
         WireOptions::Anthropic(options) => {
-            Some(anthropic::Compiler::new(options.clone(), encoding.language))
+            let compiler = anthropic::Compiler::new(options.clone(), encoding.language);
+            Some(if matches!(&sink, Sink::Count(_)) {
+                compiler.directory()
+            } else {
+                compiler
+            })
         }
         _ => None,
     };
@@ -895,5 +900,164 @@ impl wire::WireMetadataCursor for MetadataCursor {
             }
             Ok(None)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::model::{
+        prompt::Message,
+        prompt_source::source::{
+            self, ByteCursor, ByteSource, ChargedBuffer, MessageMetadata, MessageRecipe,
+            ReadSource, RecipeCursor, RecipeIdentity, RecipeSource,
+            generated::{GeneratedMessages, GeneratedRecipes},
+        },
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Counted {
+        bytes: Bytes,
+        reads: Arc<AtomicUsize>,
+    }
+    struct Read {
+        bytes: Bytes,
+        offset: usize,
+        reads: Arc<AtomicUsize>,
+    }
+    impl ByteSource for Counted {
+        fn len(&self) -> Option<u64> {
+            Some(self.bytes.len() as u64)
+        }
+        fn open(&self, _budget: Arc<dyn SourceBudget>) -> Box<dyn ByteCursor> {
+            Box::new(Read {
+                bytes: self.bytes.clone(),
+                offset: 0,
+                reads: self.reads.clone(),
+            })
+        }
+        fn slice(&self, range: std::ops::Range<u64>) -> std::io::Result<Arc<dyn ByteSource>> {
+            Ok(Arc::new(Self {
+                bytes: self.bytes.slice(range.start as usize..range.end as usize),
+                reads: self.reads.clone(),
+            }))
+        }
+    }
+    impl ByteCursor for Read {
+        fn read_chunk(&mut self, mut buffer: ChargedBuffer) -> ReadSource<'_> {
+            Box::pin(async move {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                let length = buffer.as_mut().len().min(self.bytes.len() - self.offset);
+                buffer.as_mut()[..length]
+                    .copy_from_slice(&self.bytes[self.offset..self.offset + length]);
+                self.offset += length;
+                Ok(source::SourceRead {
+                    buffer,
+                    bytes_read: length,
+                    eof: self.offset == self.bytes.len(),
+                })
+            })
+        }
+    }
+    struct Messages {
+        recipes: GeneratedRecipes<MessageRecipe>,
+        metadata: GeneratedMessages,
+    }
+    impl RecipeSource<MessageRecipe> for Messages {
+        fn len(&self) -> usize {
+            self.recipes.len()
+        }
+        fn open(&self, start: usize) -> Box<dyn RecipeCursor<MessageRecipe>> {
+            self.recipes.open(start)
+        }
+    }
+    impl MessageSource for Messages {
+        fn open_metadata(&self, start: usize) -> Box<dyn RecipeCursor<MessageMetadata>> {
+            self.metadata.open_metadata(start)
+        }
+        fn prefix_identity(&self, count: usize) -> RecipeIdentity<'_> {
+            self.metadata.prefix_identity(count)
+        }
+    }
+    #[tokio::test]
+    async fn image_directory_count_defers_payload_reads_until_admitted_wire_build() {
+        for kind in [
+            crate::ProviderKind::OpenaiChatCompletions,
+            crate::ProviderKind::OpenaiResponses,
+            crate::ProviderKind::Anthropic,
+        ] {
+            let resources = ModelPreparationResources::new(Default::default()).unwrap();
+            let provider = crate::ProviderConfig {
+                adapter: None,
+                capabilities: Default::default(),
+                image_input: None,
+                network: Default::default(),
+                kind,
+                model: "fixture".into(),
+                base_url: "https://example.invalid".into(),
+                auth: crate::ProviderAuth::ApiKey("fixture".into()),
+                headers: Default::default(),
+                body_overlay: None,
+            };
+            let encoding = WireEncoding::new(
+                maka_agent_facts::language::Language::En,
+                &provider,
+                &serde_json::Value::Null,
+                &[],
+            )
+            .unwrap();
+            let reads = Arc::new(AtomicUsize::new(0));
+            let input = Arc::new(Messages {
+                recipes: GeneratedRecipes::new(vec![MessageRecipe::User {
+                    content: Arc::new(GeneratedRecipes::new(vec![source::ContentRecipe::Media {
+                        media: source::MediaSource {
+                            bytes: source::SourceBytes::Source(Arc::new(Counted {
+                                bytes: Bytes::from_static(b"payload"),
+                                reads: reads.clone(),
+                            })),
+                            media_type: source::generated::text("image/png"),
+                            detail: None,
+                        },
+                        provider_options: None,
+                    }])),
+                    provider_options: None,
+                }]),
+                metadata: GeneratedMessages::new(&[Message::user("metadata")]),
+            });
+            let plan = encoding
+                .count_source(input, resources.clone())
+                .await
+                .unwrap();
+            assert_eq!(
+                reads.load(Ordering::SeqCst),
+                0,
+                "directory planning must not open image bytes before admission: {:?}",
+                provider.kind
+            );
+            let allocation = plan.allocation();
+            let active = resources
+                .reserve_staging(0)
+                .await
+                .unwrap()
+                .promote(allocation)
+                .await
+                .unwrap();
+            let frozen = encoding
+                .prepare_source_with_plan(plan, active.directory(allocation).unwrap(), resources)
+                .await
+                .unwrap();
+            assert!(
+                reads.load(Ordering::SeqCst) > 0,
+                "actual wire build must consume the original image bytes"
+            );
+            let mut bytes = Vec::new();
+            let mut cursor = frozen.source.open(0);
+            while let Some(chunk) = cursor.next().await.unwrap() {
+                bytes.extend_from_slice(&chunk.bytes);
+            }
+            assert!(
+                String::from_utf8(bytes).unwrap().contains("cGF5bG9hZA=="),
+                "frozen wire and replay must contain the complete actual image payload"
+            );
+        }
     }
 }

@@ -35,6 +35,7 @@ pub(super) fn request(kind: ProviderKind, base_url: String) -> ModelRequest {
     ModelRequest {
         language: maka_agent_facts::language::Language::En,
         provider: ProviderConfig {
+            image_input: None,
             adapter: None,
             capabilities: Default::default(),
             kind,
@@ -647,4 +648,54 @@ async fn prepared_native_upload_never_opens_semantic_history() {
         assert_eq!(body["max_tokens"], 128);
     }).await.unwrap();
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn error_body_deadlines_and_network_loss_keep_distinct_causes() {
+    use maka_model::{ModelError, ProviderFailureReason};
+    tokio::time::timeout(Duration::from_secs(15), async {
+        for kind in [ProviderKind::OpenaiChatCompletions, ProviderKind::OpenaiResponses] {
+            for status in [400, 429] {
+                for silent in [false, true] {
+                    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+                    let server = tokio::spawn(async move {
+                        let (mut socket, _) = listener.accept().await.unwrap();
+                        read_request(&mut socket).await;
+                        socket.write_all(format!("HTTP/1.1 {status} Error\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                        if silent {
+                            assert_eq!(socket.read(&mut [0]).await.unwrap(), 0, "deadline closes the original body");
+                        }
+                    });
+                    let models = ModelExecutor::new(Duration::from_millis(200)).unwrap();
+                    let mut stream = models.stream(request(kind.clone(), base), CancellationToken::new()).await.unwrap();
+                    let error = stream.next().await.unwrap().unwrap_err();
+                    let diagnostic = match (status, &error) {
+                        (400 | 401, ModelError::Http { status: actual, message: Some(message) }) => {
+                            assert_eq!(*actual, status);
+                            assert_eq!(error.failure_cause(), Some(maka_agent_facts::model::error::ModelFailureCause::Http { status }));
+                            message.as_str()
+                        }
+                        (429 | 503, ModelError::Provider(failure)) => {
+                            assert_eq!(failure.reason(), if status == 429 { ProviderFailureReason::RateLimit } else { ProviderFailureReason::ProviderUnavailable });
+                            assert_eq!(failure.status(), Some(status));
+                            assert!(failure.replay_safe(), "an explicit HTTP rejection retains its existing replay evidence");
+                            failure.message()
+                        }
+                        (_, error) => panic!("body read failure discarded status evidence: {error:?}"),
+                    };
+                    assert!(diagnostic.starts_with("response body read failed: "), "{diagnostic}");
+                    if silent {
+                        assert!(diagnostic.contains("idle timeout exceeded"), "actual deadline diagnostic lost: {diagnostic}");
+                        assert!(!diagnostic.contains("(Network)"), "timeout relabeled as network loss: {diagnostic}");
+                    } else {
+                        assert!(diagnostic.contains("(Network)"), "actual network diagnostic lost: {diagnostic}");
+                        assert!(!diagnostic.contains("idle timeout exceeded"), "network loss relabeled as timeout: {diagnostic}");
+                    }
+                    stream.cancel_and_wait().await.unwrap();
+                    server.await.unwrap();
+                }
+            }
+        }
+    }).await.expect("body errors preserve the actual failure cause");
 }

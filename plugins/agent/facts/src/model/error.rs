@@ -212,6 +212,18 @@ pub enum ModelError {
     TimedOut,
     #[error("model input exceeds provider capacity (observed output: {observed_output})")]
     ContextOverflow { observed_output: bool },
+    #[error("image input request payload exceeds provider limit ({bytes} bytes, limit {limit})")]
+    ImageInputPayloadTooLarge { bytes: u64, limit: u64 },
+    #[error("provider rejected image input{status_detail}{code_detail}: {message}", status_detail = status.as_ref().map(|status| format!(" (status {status})")).unwrap_or_default(), code_detail = code.as_ref().map(|code| format!(" (code {code})")).unwrap_or_default())]
+    ImageInputRejected {
+        message: String,
+        index: Option<usize>,
+        replay_safe: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
     #[error(transparent)]
     Provider(ProviderFailure),
     #[error("model adapter failed: {0}")]
@@ -232,7 +244,10 @@ impl ModelError {
                 reason: failure.reason(),
                 retry_at_unix_ms: failure.retry_at_unix_ms,
             },
-            Self::Adapter(_) | Self::CleanupUnconfirmed => ModelFailureCause::Adapter,
+            Self::Adapter(_)
+            | Self::CleanupUnconfirmed
+            | Self::ImageInputPayloadTooLarge { .. }
+            | Self::ImageInputRejected { .. } => ModelFailureCause::Adapter,
         })
     }
 }

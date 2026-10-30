@@ -78,7 +78,7 @@ impl Session for Subscription {
     }
 }
 
-async fn prepare(request: &mut Request) -> Result<(), Error> {
+pub(super) async fn prepare(request: &mut Request) -> Result<(), Error> {
     if !matches!(request.provider.kind, model::ProviderKind::OpenaiResponses) {
         return Err(Error::Adapter(
             "subscription requires the Responses protocol".into(),

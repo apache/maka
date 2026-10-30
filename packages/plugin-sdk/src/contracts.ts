@@ -37976,6 +37976,18 @@ export const contracts = {
                   vision: {
                     type: 'boolean',
                   },
+                  imageInput: {
+                    description:
+                      'Explicit route image declarations; replaces catalog image constraints.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ImageInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   contextWindow: {
                     description:
                       'Override total input-plus-output capacity, without subtracting a reply budget.',
@@ -38051,6 +38063,61 @@ export const contracts = {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              ImageInput: {
+                description: 'Route declarations for image input; absent fields remain unknown.',
+                type: 'object',
+                properties: {
+                  mimeTypes: {
+                    description:
+                      'Exact MIME declarations. A generic image modality leaves this unknown.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  maxPerMessage: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxPerRequest: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  minWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  minHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  requestBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               ApiProtocol: {
                 type: 'string',
@@ -38428,6 +38495,18 @@ export const contracts = {
                   vision: {
                     type: 'boolean',
                   },
+                  imageInput: {
+                    description:
+                      'Explicit route image declarations; replaces catalog image constraints.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ImageInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   contextWindow: {
                     description:
                       'Override total input-plus-output capacity, without subtracting a reply budget.',
@@ -38503,6 +38582,61 @@ export const contracts = {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              ImageInput: {
+                description: 'Route declarations for image input; absent fields remain unknown.',
+                type: 'object',
+                properties: {
+                  mimeTypes: {
+                    description:
+                      'Exact MIME declarations. A generic image modality leaves this unknown.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  maxPerMessage: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxPerRequest: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  minWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  minHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  requestBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               ApiProtocol: {
                 type: 'string',
@@ -40361,6 +40495,18 @@ export const contracts = {
                   vision: {
                     type: 'boolean',
                   },
+                  imageInput: {
+                    description:
+                      'Explicit route image declarations; replaces catalog image constraints.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ImageInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   contextWindow: {
                     description:
                       'Override total input-plus-output capacity, without subtracting a reply budget.',
@@ -40436,6 +40582,61 @@ export const contracts = {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              ImageInput: {
+                description: 'Route declarations for image input; absent fields remain unknown.',
+                type: 'object',
+                properties: {
+                  mimeTypes: {
+                    description:
+                      'Exact MIME declarations. A generic image modality leaves this unknown.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  maxPerMessage: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxPerRequest: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  minWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  minHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  requestBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               ApiProtocol: {
                 type: 'string',
@@ -41336,6 +41537,18 @@ export const contracts = {
                   vision: {
                     type: 'boolean',
                   },
+                  imageInput: {
+                    description:
+                      'Explicit route image declarations; replaces catalog image constraints.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ImageInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   contextWindow: {
                     description:
                       'Override total input-plus-output capacity, without subtracting a reply budget.',
@@ -41411,6 +41624,61 @@ export const contracts = {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              ImageInput: {
+                description: 'Route declarations for image input; absent fields remain unknown.',
+                type: 'object',
+                properties: {
+                  mimeTypes: {
+                    description:
+                      'Exact MIME declarations. A generic image modality leaves this unknown.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  maxPerMessage: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxPerRequest: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  minWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  minHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  requestBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               ApiProtocol: {
                 type: 'string',

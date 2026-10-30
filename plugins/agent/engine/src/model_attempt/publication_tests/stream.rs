@@ -131,6 +131,7 @@ async fn ready_with_cleanup(
     let request = ModelRequest {
         language: Language::En,
         provider: ProviderConfig {
+            image_input: None,
             adapter: None,
             capabilities: Default::default(),
             network: Default::default(),

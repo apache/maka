@@ -299,6 +299,7 @@ impl Source {
             provider: ProviderConfig {
                 adapter: Some(model.adapter),
                 capabilities,
+                image_input: model.info.image_input.clone(),
                 kind: model.protocol,
                 model: self.accepted.binding.model.clone(),
                 base_url: model.base_url,
