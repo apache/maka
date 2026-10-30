@@ -183,8 +183,15 @@ pub(super) async fn project_row(
             ))
         }
         (RowDirectory::AssistantPart { .. }, PayloadDirectory::Part(part)) => {
-            if let PartDirectory::Text { text_kind, .. } = part {
-                check_route(row, matches!(text_kind, TextKind::Thinking), context).await?;
+            if matches!(
+                part,
+                PartDirectory::Text {
+                    text_kind: TextKind::Thinking,
+                    ..
+                }
+            ) && !reasoning_matches_route(row, context).await?
+            {
+                return Ok(ProjectedRow::Skip);
             }
             assistant(part, context).await
         }
@@ -349,12 +356,11 @@ async fn assistant(part: &PartDirectory, context: &ProjectContext<'_>) -> io::Re
         }
     }
 }
-async fn check_route(
+async fn reasoning_matches_route(
     row: &RowDirectory,
-    thinking: bool,
     context: &ProjectContext<'_>,
-) -> io::Result<()> {
-    if thinking && let Some(replay) = context.replay {
+) -> io::Result<bool> {
+    if let Some(replay) = context.replay {
         let RowDirectory::AssistantPart {
             model_id,
             route_identity,
@@ -376,13 +382,10 @@ async fn check_route(
             )
             .await?
         {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "continuation reasoning belongs to another provider route or model",
-            ));
+            return Ok(false);
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 async fn call_kind(

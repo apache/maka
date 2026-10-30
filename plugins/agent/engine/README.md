@@ -23,7 +23,7 @@
 
 Coordinates Agent runs, model steps, tools, handoffs and recovery. `Engine` consumes explicit business ports and authorized resources; `RunInput` and `RunWork` describe admitted work. Model history projection is separate from UI presentation. The native Agent service owns activation and delegates execution here; platform Host and UI crates do not depend on this engine.
 
-Resuming a run preserves its original input and settled history. New model steps use the current authorized tool state.
+Resuming a run preserves its original input and settled history. Replay omits interrupted partial output and reasoning from a different provider route or model without deleting canonical history. New model steps use the current authorized tool state.
 
 Model requests include the current Session ID and admitted working directory as JSON data in the frozen composition's dynamic context. Main requests, summaries and continuation replay use the same rendering and accounting. Forked sessions use their own ID. Summaries use the current admitted directory even when reusing an earlier request's static prompt after project relocation; earlier request evidence remains unchanged.
 

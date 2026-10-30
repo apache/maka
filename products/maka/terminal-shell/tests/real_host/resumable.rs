@@ -54,7 +54,14 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
         replace_input(&mut view, "Message composer", "ORIGINAL_RESUME_INPUT").await;
         support::click_button(&mut view, "Send message").await;
         support::wait_enabled_button(&mut view, "Pause response").await;
-        let request = fixture.next_request().await;
+        let mut request = fixture.next_request().await;
+        request
+            .thinking("THOUGHT_INTERRUPTED_BEFORE_TOOL_DISPATCH")
+            .await;
+        wait_view(&mut view, |screen| {
+            screen.contains("THOUGHT_INTERRUPTED_BEFORE_TOOL_DISPATCH")
+        })
+        .await;
         let active = client
             .query("agent", "observe", json!({"sessionId":fixture.session}))
             .await
@@ -83,6 +90,12 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
                 .contains("ORIGINAL_RESUME_INPUT")
         );
         assert!(!continuation.body.to_string().contains("UNSENT_NEW_REQUEST"));
+        assert!(
+            !continuation
+                .body
+                .to_string()
+                .contains("THOUGHT_INTERRUPTED_BEFORE_TOOL_DISPATCH")
+        );
         support::wait_enabled_button(&mut view, "Pause response").await;
         let resumed = client
             .query("agent", "observe", json!({"sessionId":fixture.session}))

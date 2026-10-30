@@ -617,3 +617,71 @@ async fn resumable_observes_without_admission_and_resume_rechecks_the_observed_s
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn resume_filters_incompatible_reasoning_but_preserves_portable_history() {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
+        let session=fixture.create("Reasoning stop").await;
+        selection::edit(&fixture, |changes| {
+            changes.enabled_model_ids = Some(vec!["fixture-model".into(), "older-model".into()]);
+        }).await;
+        fixture.send(&session).await.unwrap();
+        let (mut route_socket, _) = listener.accept().await.unwrap();
+        request(&mut route_socket).await;
+        response_with_thinking(&mut route_socket, "portable old route answer", Some("incompatible old route reasoning")).await;
+        fixture.drained().await;
+        let current_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        selection::edit(&fixture, |changes| {
+            changes.configuration = Some(json!({"baseUrl":format!("http://{}/v1", current_listener.local_addr().unwrap())}));
+        }).await;
+        let listener = current_listener;
+        let mut older = fixture.selection().await;
+        older.model_id = "older-model".into();
+        fixture.mutation(2, "send", json!({"sessionId":session,"message":"old question","model":older}), Uuid::new_v4()).await.unwrap();
+        let (mut old_socket, _) = listener.accept().await.unwrap();
+        request(&mut old_socket).await;
+        response_with_thinking(&mut old_socket, "portable old answer", Some("incompatible old reasoning")).await;
+        fixture.drained().await;
+        fixture.send(&session).await.unwrap();
+        let (mut same_socket, _) = listener.accept().await.unwrap();
+        request(&mut same_socket).await;
+        response_with_thinking(&mut same_socket, "portable current answer", Some("compatible current reasoning")).await;
+        fixture.drained().await;
+        let sent=fixture.send(&session).await.unwrap();
+        let(mut socket,_)=listener.accept().await.unwrap();request(&mut socket).await;
+        let mut preview=fixture.owner.preview_reader(&session).await.unwrap();
+        let delta=json!({"id":"thinking","choices":[{"index":0,"delta":{"reasoning_content":"unfinished reasoning"},"finish_reason":null}]});
+        let body=format!("data: {delta}\n\n");
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{body}\r\n",body.len()).as_bytes()).await.unwrap();
+        loop {
+            let visible=preview.borrow_and_update().as_ref().is_some_and(|cut|cut.parts.iter().any(|part|matches!(part,maka_agent_facts::model::assembly::PreviewPart::Text{text,..} if text.to_string() == "unfinished reasoning")));
+            if visible {break;}
+            preview.changed().await.unwrap();
+        }
+        fixture.mutation(2,"stop",json!({"sessionId":session,"invocationId":sent["invocationId"]}),Uuid::new_v4()).await.unwrap();
+        fixture.drained().await;
+        let result=fixture.query("resumable",json!({"sessionId":session,"model":fixture.selection().await})).await;
+        assert_eq!(result.as_ref().unwrap()["kind"],"ready","{result:?}");
+        let source = &result.unwrap()["source"];
+        let resumed = fixture.mutation(2,"resume",resume_input(&fixture, source).await,Uuid::new_v4()).await.unwrap();
+        assert_eq!(resumed["kind"], "started");
+        assert_ne!(resumed["execution"]["turnId"], source["turnId"]);
+        let (mut resumed_socket, _) = listener.accept().await.unwrap();
+        let wire = request(&mut resumed_socket).await.to_string();
+        for retained in ["old question", "portable old answer", "portable old route answer", "portable current answer", "compatible current reasoning"] {
+            assert!(wire.contains(retained), "missing {retained}");
+        }
+        for omitted in ["incompatible old reasoning", "incompatible old route reasoning", "unfinished reasoning"] {
+            assert!(!wire.contains(omitted), "replayed {omitted}");
+        }
+        response(&mut resumed_socket).await;
+        fixture.drained().await;
+        let facts = serde_json::to_string(&service_tools::facts(&fixture, &session).await).unwrap();
+        assert!(facts.contains("incompatible old reasoning"));
+        assert!(facts.contains("incompatible old route reasoning"));
+        assert!(facts.contains("unfinished reasoning"));
+        fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
