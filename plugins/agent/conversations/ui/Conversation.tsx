@@ -475,9 +475,30 @@ export function Conversation(props: ConversationProps) {
     // The Bot's reply to a Turn is what it sent with SendUser during that Turn,
     // shown after the Turn's own entries.
     let openTurn: string | undefined;
+    let workingShown = false;
+    // Chat hides the model's own output. Until the running Turn has its own header,
+    // show that the Bot is at work, where that header will appear so it replaces
+    // this row in place instead of arriving above an already shown reply.
+    const working = (turnId: string | undefined) => {
+      const running = runTurn();
+      if (run() !== 'running' || workingShown || (turnId !== undefined && turnId !== running))
+        return;
+      const headed = result.some(
+        (item) =>
+          running !== null &&
+          ((item.kind === 'process' && item.group.turnId === running) ||
+            (item.kind === 'summary' && item.turnId === running)),
+      );
+      if (headed) return;
+      workingShown = true;
+      result.push({ kind: 'botWorking', key: 'bot/working' });
+    };
     const speak = () => {
-      if (openTurn !== undefined && bot.forTurn(openTurn).length > 0)
-        result.push({ kind: 'bot', key: `bot/${openTurn}`, turnId: openTurn });
+      if (openTurn !== undefined) {
+        working(openTurn);
+        if (bot.forTurn(openTurn).length > 0)
+          result.push({ kind: 'bot', key: `bot/${openTurn}`, turnId: openTurn });
+      }
       openTurn = undefined;
     };
     for (const entry of projection().entries) {
@@ -534,16 +555,8 @@ export function Conversation(props: ConversationProps) {
     }
     if (botChat) {
       speak();
-      // Chat hides the model's own output. Until the running Turn has its own
-      // header, show that the Bot is at work; afterwards the header says so.
-      const running = runTurn();
-      const headed = result.some(
-        (item) =>
-          running !== null &&
-          ((item.kind === 'process' && item.group.turnId === running) ||
-            (item.kind === 'summary' && item.turnId === running)),
-      );
-      if (run() === 'running' && !headed) result.push({ kind: 'botWorking', key: 'bot/working' });
+      // The running Turn may not be projected yet (its message is still pending).
+      working(undefined);
     }
     return result;
   });
