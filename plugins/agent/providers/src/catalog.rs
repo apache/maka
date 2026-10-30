@@ -245,7 +245,32 @@ impl Snapshot {
                 .or_default()
                 .insert(entry.model.id.clone(), entry.model);
         }
-        for model in router {
+        for mut model in router {
+            if let Some(declared) = snapshot
+                .models
+                .get("openrouter")
+                .and_then(|models| models.get(&model.id))
+                .and_then(|model| model.image_input.as_ref())
+            {
+                let image = model.image_input.get_or_insert_default();
+                image.mime_types = image
+                    .mime_types
+                    .take()
+                    .or_else(|| declared.mime_types.clone());
+                macro_rules! fill_limit {
+                    ($($field:ident),* $(,)?) => { $(image.$field = image.$field.or(declared.$field);)* };
+                }
+                fill_limit!(
+                    max_per_message,
+                    max_per_request,
+                    max_bytes,
+                    min_width,
+                    min_height,
+                    max_width,
+                    max_height,
+                    request_bytes
+                );
+            }
             snapshot
                 .models
                 .entry("openrouter".into())
@@ -311,6 +336,9 @@ impl Snapshot {
             model.thinking_levels = None;
             model.default_thinking_level = None;
             model.supports_reasoning_summary = None;
+            if reference.provider != provider {
+                model.image_input = None;
+            }
             return Some(Cow::Owned(model));
         }
         self.get(provider, model_id).map(Cow::Borrowed)
@@ -377,10 +405,16 @@ pub(super) fn modalities(
         for value in values {
             let modality = match value.as_str() {
                 Some("text") => ModelModality::Text,
-                Some("image") => ModelModality::Image,
-                Some("audio") => ModelModality::Audio,
-                Some("pdf") => ModelModality::Pdf,
-                Some("video") => ModelModality::Video,
+                Some(value) if value == "image" || value.starts_with("image/") => {
+                    ModelModality::Image
+                }
+                Some(value) if value == "audio" || value.starts_with("audio/") => {
+                    ModelModality::Audio
+                }
+                Some("pdf" | "application/pdf") => ModelModality::Pdf,
+                Some(value) if value == "video" || value.starts_with("video/") => {
+                    ModelModality::Video
+                }
                 _ => continue,
             };
             if !result.contains(&modality) {

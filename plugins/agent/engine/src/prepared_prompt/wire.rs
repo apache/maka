@@ -52,7 +52,7 @@ pub(super) async fn compile(
         .ok_or_else(|| RunError::Internal("request lacks Host preparation resources".into()))?
         .clone();
     let logical = prompt.model();
-    let plan = tokio::select! {
+    let mut plan = tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err(RunError::Cancelled),
         plan = encoding.count_prompt(&logical, resources.clone()) => plan?,
@@ -70,20 +70,49 @@ pub(super) async fn compile(
         .map_or(resources.policy().resident_bytes, |active| {
             active.capacity()
         });
-    let use_backing = source_bytes
-        .checked_add(plan.allocation())
+    let media_peak = prompt
+        .media_view
+        .as_ref()
+        .map_or(0, |view| view.peak_bytes());
+    let wire_copies = if provider
+        .image_input
+        .as_ref()
+        .is_some_and(|limits| limits.request_bytes.is_some())
+    {
+        2
+    } else {
+        1
+    };
+    let use_backing = plan
+        .allocation()
+        .checked_mul(wire_copies)
+        .and_then(|wire| source_bytes.checked_add(wire))
+        .and_then(|peak| peak.checked_add(media_peak))
         .is_none_or(|peak| peak > capacity);
     let wire_bytes = if use_backing {
         backed::resident_bytes()
     } else {
         plan.allocation()
     };
-    let peak = source_bytes.checked_add(wire_bytes).ok_or_else(|| {
-        RunError::Preparation(std::io::Error::other(
-            "complete request allocation peak overflow",
-        ))
-    })?;
+    let peak = wire_bytes
+        .checked_mul(wire_copies)
+        .and_then(|wire| source_bytes.checked_add(wire))
+        .ok_or_else(|| {
+            RunError::Preparation(std::io::Error::other(
+                "complete request allocation peak overflow",
+            ))
+        })?;
     prompt.promote(peak, cancellation).await?;
+    if prompt.media_view.is_some() {
+        plan = encoding
+            .count_prompt(&prompt.model(), resources.clone())
+            .await?;
+        if !use_backing && plan.allocation() > wire_bytes {
+            return Err(RunError::Preparation(std::io::Error::other(
+                "materialized image metadata exceeds its planned wire envelope",
+            )));
+        }
+    }
     let active = prompt.active().ok_or_else(|| {
         RunError::Internal("request lacks its complete active preparation".into())
     })?;

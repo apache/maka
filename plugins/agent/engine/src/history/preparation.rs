@@ -64,6 +64,21 @@ impl RequestPreparation {
             )),
         }
     }
+    pub fn plan_directory(&self, bytes: usize) -> io::Result<maka_model::DirectoryLease> {
+        let phase = self
+            .phase
+            .lock()
+            .expect("request preparation lock poisoned");
+        match &*phase {
+            Phase::Staged(staged) => staged.plan_directory(bytes),
+            Phase::Active { preparation, .. } => preparation.directory(bytes),
+            Phase::Promoting | Phase::Closed => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "request planning is closed",
+            )),
+        }
+    }
+
     pub fn active(&self) -> Option<Arc<ActivePreparation>> {
         let phase = self
             .phase

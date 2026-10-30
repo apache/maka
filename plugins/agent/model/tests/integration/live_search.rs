@@ -69,6 +69,7 @@ async fn sglang_protocols_preserve_reasoning_tools_and_replay() {
         ),
     ] {
         let provider = ProviderConfig {
+            image_input: None,
             adapter: None,
             capabilities: Default::default(),
             network: Default::default(),
@@ -231,6 +232,7 @@ async fn codex_search_preserves_real_provider_calls_and_citations() {
         let request = ModelRequest {
             language: maka_agent_facts::language::Language::En,
             provider: ProviderConfig {
+                image_input: None,
                 adapter: Some(maka_providers::codex::ADAPTER.into()),
                 capabilities: Default::default(),
                 kind: ProviderKind::OpenaiResponses,

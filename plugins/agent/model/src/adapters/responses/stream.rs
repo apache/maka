@@ -254,9 +254,9 @@ async fn read_response(
     });
     if !(200..300).contains(&response.head.status) || !event_stream {
         let status = response.head.status;
-        let body_failure = || {
+        let body_failure = |message: String| {
             super::super::error::Evidence::default().provider(
-                super::super::error::http_error(status, &[]),
+                super::super::error::http_body_error(status, message),
                 false,
                 retry_at,
             )
@@ -268,13 +268,17 @@ async fn read_response(
                 if matches!(error, ModelError::Cancelled) {
                     error
                 } else {
-                    body_failure()
+                    body_failure(error.to_string())
                 }
             })?
             .map_err(|error| match error {
                 http::Error::Denied => ModelError::Cancelled,
                 http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
-                _ => body_failure(),
+                http::Error::Failed(message) => body_failure(
+                    ProviderFailure::new(ProviderFailureReason::Network, message, false, None)
+                        .to_string(),
+                ),
+                error => body_failure(error.to_string()),
             })?
         {
             bytes.extend_from_slice(&chunk);

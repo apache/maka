@@ -210,10 +210,21 @@ impl ApiProvider {
     fn prepare(&self, request: Resolve) -> Result<Model, Error> {
         let configuration = Configuration::read(&request.connection)?;
         let ModelMetadata {
-            info,
+            mut info,
             thinking_levels,
             default_thinking_level,
         } = self.model_metadata(request.model, request.overrides.as_ref());
+        // Public route limits describe the provider endpoint, not a model name
+        // served by an arbitrary user-selected gateway.
+        let canonical_endpoint =
+            maka_agent_facts::configuration::validation::normalize_base_url(&self.facts.base_url)
+                .ok();
+        if canonical_endpoint.as_deref() != Some(configuration.base_url.as_str()) {
+            info.image_input = request
+                .overrides
+                .as_ref()
+                .and_then(|overrides| overrides.image_input.clone());
+        }
         let selection = Selection {
             provider: self.id,
             connection: &request.connection,

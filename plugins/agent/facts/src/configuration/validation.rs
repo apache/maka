@@ -116,6 +116,9 @@ pub fn model_override(id: &str, p: &ModelOverride) -> ValidationResult {
             }
         }
     }
+    if let Some(image) = &p.image_input {
+        image.validate()?;
+    }
     if let Some(adapter) = &p.adapter {
         text(adapter)?;
         if adapter.chars().any(char::is_control) {

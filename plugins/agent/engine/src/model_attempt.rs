@@ -109,7 +109,7 @@ pub(super) async fn prompt<W>(
         &inner.log,
         selection,
         input.configuration.language,
-        input.supports_vision,
+        true,
         &input.provider.kind,
         cancellation,
         inner.shared.preparation_resources.clone(),
@@ -137,6 +137,13 @@ pub(super) async fn prompt<W>(
         )
         .await
     {
+        prompt
+            .close()
+            .await
+            .map_err(crate::cleanup::preparation_failed)?;
+        return Err(error);
+    }
+    if let Err(error) = prompt.prepare_media(&input.provider, cancellation).await {
         prompt
             .close()
             .await
@@ -420,6 +427,16 @@ pub(super) async fn execute_once(
             &input.provider,
             &input.provider_options,
             &definitions,
+            cancellation,
+        )
+        .await?;
+    prompt
+        .fit_image_request(
+            input.configuration.language,
+            &input.provider,
+            &input.provider_options,
+            &definitions,
+            surface.max_output_tokens,
             cancellation,
         )
         .await?;

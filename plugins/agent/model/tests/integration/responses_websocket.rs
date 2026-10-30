@@ -45,6 +45,7 @@ fn request(base_url: &str, text: &str) -> ModelRequest {
     ModelRequest {
         language: maka_agent_facts::language::Language::En,
         provider: ProviderConfig {
+            image_input: None,
             adapter: None,
             capabilities: Default::default(),
             kind: ProviderKind::OpenaiResponses,

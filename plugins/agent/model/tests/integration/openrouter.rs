@@ -48,6 +48,7 @@ async fn run(protocol: &str, kind: ProviderKind) {
     {
         let options = json!({});
         let provider = ProviderConfig {
+            image_input: None,
             adapter: None,
             capabilities: Default::default(),
             network: Default::default(),

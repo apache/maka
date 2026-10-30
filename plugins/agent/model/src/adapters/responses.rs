@@ -19,7 +19,7 @@
 
 //! Responses execution, canonical projection, and disposable connection state.
 mod adapter;
-mod body;
+pub(super) mod body;
 mod budget;
 mod decode;
 mod lane;

@@ -223,7 +223,7 @@ async fn run_inner(
                                 if failure.reason() == ProviderFailureReason::Network)) =>
                 {
                     return Err(events.evidence.provider(
-                        error::http_error(status, &[]),
+                        error::http_body_error(status, error),
                         prepared.anthropic,
                         retry_after,
                     ));
@@ -436,9 +436,9 @@ async fn read_body(
         .map_err(|error| match error {
             http::Error::Denied => ModelError::Cancelled,
             http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
-            http::Error::Failed(_) => ModelError::Provider(crate::ProviderFailure::new(
+            http::Error::Failed(message) => ModelError::Provider(crate::ProviderFailure::new(
                 ProviderFailureReason::Network,
-                "error body interrupted",
+                message,
                 true,
                 None,
             )),

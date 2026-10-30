@@ -46,6 +46,7 @@ fn provider() -> ProviderConfig {
         network = maka_network::Policy::from_settings(&proxy, None).unwrap();
     }
     ProviderConfig {
+        image_input: None,
         adapter: Some(maka_providers::codex::ADAPTER.into()),
         capabilities: Default::default(),
         kind: ProviderKind::OpenaiResponses,

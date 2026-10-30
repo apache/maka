@@ -66,6 +66,7 @@ fn input(
         },
         request_fingerprint: None,
         provider: ProviderConfig {
+            image_input: None,
             adapter: None,
             capabilities: Default::default(),
             kind: ProviderKind::OpenaiChatCompletions,

@@ -582,7 +582,10 @@ mod tests {
             },
         ] {
             let result = describe(recipe, &budget, Arc::new(()), &cancellation).await;
-            assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::Interrupted));
+            assert!(matches!(
+                result.map_err(crate::RunError::preparation),
+                Err(crate::RunError::Cancelled)
+            ));
         }
     }
 
