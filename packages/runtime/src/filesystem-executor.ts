@@ -374,6 +374,28 @@ interface WorkspaceFilesystemBackend {
 }
 
 /**
+ * Fail closed when the pinned read of an existing target produced no content
+ * (#6401): `content: null` means the descriptor read failed (e.g. a
+ * write-only target) and the operation never saw the file's text. Folding
+ * null into '' made Edit report a misleading "old_string not found" (whose
+ * documented recovery is overwriting the whole unread file with Write),
+ * FormatJson report invalid JSON and apply-patch reject its context — all
+ * against content that was never read. Throwing from the transform happens
+ * before any truncation, so the file stays byte-for-byte untouched and the
+ * model is told the read — not its edit — failed.
+ */
+function pinnedReadContent(content: string | null, label: string): string {
+  if (content === null) {
+    throw new Error(
+      `${label} could not read the current file contents; the file was not modified. ` +
+        'It may not be readable (for example write-only permissions). ' +
+        'Read the file to confirm its state before retrying.',
+    );
+  }
+  return content;
+}
+
+/**
  * Run an operation directly against the host (or an isolated workspace), with the
  * path scope the caller derived from the boundary. This backend enforces the
  * scope it is given and decides nothing else.
@@ -483,7 +505,8 @@ function createWorkspaceFilesystemExecutor(
               ...common,
               path,
               approvedIdentity: expectedIdentity,
-              transform: (ctx) => applyUpdateToContent(ctx.content ?? '', operation.diff),
+              transform: (ctx) =>
+                applyUpdateToContent(pinnedReadContent(ctx.content, 'ApplyPatch'), operation.diff),
             });
             return { kind: 'apply_patch', ok: true, path };
           }
@@ -516,7 +539,7 @@ function createWorkspaceFilesystemExecutor(
               scope,
               approvedIdentity: expectedIdentity,
               transform: (ctx) => {
-                originalContent = ctx.content ?? '';
+                originalContent = pinnedReadContent(ctx.content, 'Edit');
                 edited = computeEditedSource(
                   originalContent,
                   operation.oldString,
@@ -579,7 +602,7 @@ function createWorkspaceFilesystemExecutor(
               scope,
               approvedIdentity: expectedIdentity,
               transform: (ctx) => {
-                original = ctx.content ?? '';
+                original = pinnedReadContent(ctx.content, 'FormatJson');
                 try {
                   return formatJsonText(original, operation.sortKeys ?? false);
                 } catch (error) {
