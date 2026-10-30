@@ -261,3 +261,59 @@ The worker keeps one Session, receives UTC and a last-successful-check/start-of-
 The shared notebook also retains actual quick-discovery message deliveries and explicitly linked `DiscoveryFeedback` replies. Receipt synchronization runs before each quick or two-stage wake and before `QuickDiscoveryNotebook` reads. It replays the Bot's durable receipts with stable IDs, so a crash or worker Session replacement does not lose delivery memory or duplicate entries. Unsent reports, filtered candidates and ordinary conversation are excluded. Quick receipts without a notebook topic appear separately, without inventing research topics; feedback may establish rules for future related topics. The quick worker remains read-only.
 
 The quick-discovery, exploration and judgement Sessions use native history compaction, not timed Session replacement. Their default proactive threshold is 70% of the model input window, without a fixed token cap (no fallback threshold is inferred if the window is unknown). An explicit model compaction threshold takes precedence. Runtime usage triggers compaction at a safe request boundary, retaining a durable summary and current work; this is not a time or execution limit. Bot, Matter and ordinary Session policies are unchanged. Notebook receipts and user feedback live outside compacted history and are available on later wakes. Controlled tests verify the plumbing, not a guarantee that compaction improves discovery quality.
+
+### Continuous event intake (opt-in)
+
+`QuickDiscoveryControl({action:"enable", eventIntake:true,
+intakeModelKey:"connection-slug::model-id"})` enables the input path alongside the
+existing quick-discovery worker. `eventIntake:false` disables input processing;
+`pause` disables both paths. The existing global assistant switch still closes
+all background work. No source is installed or authorized implicitly. Omit
+`intakeModelKey` to use the owner model; a configured small model is recommended
+for the single tool-free classification call. An invalid model target fails
+visibly, never silently falls back. Calls use the Host credential/usage path.
+
+Every five seconds the input reader checks supported sources without invoking a
+model. Sources implementing `changes(cursor, limit, caller)` provide durable
+adapter-owned positions and original references, including changes to old
+objects. First contact establishes the current position instead of treating all
+history as new activity. Scope changes establish a new baseline. This is an
+input receipt position, **not** `coveredCursor` and never advances an index.
+Unsupported sources retain periodic discovery; generated memory is context,
+not an independent activity trigger.
+
+Each received page and its cursor commit together to the private quick-discovery
+SQLite database. Replays are deduplicated by source/event ID. A short burst is
+grouped by source/conversation and rotated fairly across groups. Each bounded
+model request decides once per group, with recent and lexically related older
+conversation, authorized retained originals, cached index excerpts and current
+tasks. The cache read does not enumerate sources or advance index coverage.
+Oldest and newest pending records both make progress; unselected records remain
+pending. Each group gets a share before spare space is reused. The model sees
+content, occurrence time, kind/title and short batch-local group IDs, not repeated
+receipt hashes or opaque authorization locators. Full originals and mappings stay
+in SQLite. Queued investigations are permission-checked context too, so background
+clues already being handled need not start a second investigation. There are no tools in this call. It can
+retain a clue as context or request investigation; retained clues are not closed
+user tasks. Related later events recover retained originals; a new user message
+can reconsider matching retained input. Lexical matches are partial context,
+not a guarantee of relevance or complete knowledge. Invalid/partial output or
+provider failure leaves the input pending and backs off those groups only.
+Source failures retain positions, report through Bot and do not block healthy
+sources. Permission is rechecked before both model stages. Source text is
+untrusted evidence, never an authorization to act.
+
+Receipts coalesce for 1.5 seconds; an approved assessment immediately tries to
+wake the existing quick worker, without waiting for another periodic tick or the
+15-minute cadence. New input continues to be collected while that worker runs.
+The worker can read indexes/originals and uses QuickDiscoveryReport -> Bot; Bot
+keeps its existing SendUser/Matter routing. Previously investigated originals remain retrievable as context. Worker failures retain the original batch and
+reuse existing durable delivery IDs. Idle exploration remains independently
+scheduled: event completion does not postpone its deadline. A due periodic check
+can accompany an event wake. Wakes carry only a batch identity and count, never event bodies or assembled investigation context. `QuickDiscoveryEvents` reads authorized originals in byte-bounded pages, including explicit content continuations for long records. Reads do not consume events. `QuickDiscoveryReport` accepts `batchId` and `processedEventIds`; acknowledgements and the report outbox commit together, and empty messages acknowledge a considered no-notification outcome. The finish hook asks the worker to account for unprocessed accessible events. Unavailable sources stay queued for retry; normal exit alone never marks a whole batch investigated. Existing persisted batches remain readable through their IDs after restart. `QuickDiscoveryStatus.intake` exposes queue counts, source errors and
+last model/input size; characters are not represented as token accounting.
+
+The optional `scripts/plugins/codex-source` adapter supports Codex session changes
+and Computer History appended complete records. Files/database updates are polled
+locally; this is not a live subscription to all applications or private messages.
+No change feed can recover observations never recorded by its upstream source.

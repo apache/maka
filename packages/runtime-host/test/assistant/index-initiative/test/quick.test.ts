@@ -210,12 +210,18 @@ test('reports are idempotent Bot handoffs, not notebook edits or delegated tasks
     await f.q.control({ action: 'check' });
     await f.q.tick();
     await until(() => !!release);
-    const report = { key: 'expense', messages: ['这笔材料已经交了，要不要我帮你盯回复？'] };
-    f.q.report(report, 'worker');
-    f.q.report(report, 'worker');
+    const report = {
+      key: 'expense',
+      messages: ['这笔材料已经交了，要不要我帮你盯回复？'],
+    };
+    await f.q.report(report, 'worker');
+    await f.q.report(report, 'worker');
     assert.equal(f.delivered.size, 1);
-    assert.throws(() => f.q.report({ ...report, messages: ['different'] }, 'worker'), /different/);
-    assert.throws(() => f.q.report(report, 'owner'), /active/);
+    await assert.rejects(
+      () => f.q.report({ ...report, messages: ['different'] }, 'worker'),
+      /different/,
+    );
+    await assert.rejects(() => f.q.report(report, 'owner'), /active/);
     release();
     await f.q.running;
   } finally {
@@ -421,7 +427,11 @@ test('new activity and explicit checks bypass quiet hours; changing cadence pres
     await f.q.control({ action: 'check' });
     await f.run();
     assert.equal(f.calls(), 3);
-    await f.q.control({ action: 'configure', intervalMinutes: 20, idleMinutes: 90 });
+    await f.q.control({
+      action: 'configure',
+      intervalMinutes: 20,
+      idleMinutes: 90,
+    });
     assert.deepEqual(f.q.state().quietHours, hours);
     f.advance(90 * 60000);
     await f.run();
@@ -464,8 +474,15 @@ test('quiet window validation rejects ambiguous times and invalid zones without 
   const f = await fixture();
   try {
     await f.remote('assistant.bind', { sessionId: 'owner' });
-    const quietHours = { start: '01:00', end: '08:30', timeZone: 'Asia/Shanghai' };
-    await f.remote('assistant.quick-discovery', { action: 'configure', quietHours });
+    const quietHours = {
+      start: '01:00',
+      end: '08:30',
+      timeZone: 'Asia/Shanghai',
+    };
+    await f.remote('assistant.quick-discovery', {
+      action: 'configure',
+      quietHours,
+    });
     for (const invalid of [
       { ...quietHours, start: '25:00' },
       { ...quietHours, start: '1:00' },
@@ -473,7 +490,10 @@ test('quiet window validation rejects ambiguous times and invalid zones without 
       { ...quietHours, timeZone: 'Invalid/Zone' },
     ]) {
       await assert.rejects(
-        f.remote('assistant.quick-discovery', { action: 'configure', quietHours: invalid }),
+        f.remote('assistant.quick-discovery', {
+          action: 'configure',
+          quietHours: invalid,
+        }),
       );
     }
     assert.deepEqual(
@@ -689,7 +709,7 @@ test('a quick run that hands a report to the Bot is recorded as reported', async
   try {
     await withCostLedger(f, async (ledger) => {
       f.agent.whenIdle = async () => {
-        f.q.report({ key: 'offer', messages: ['我可以帮你对比这两项。'] }, 'worker');
+        await f.q.report({ key: 'offer', messages: ['我可以帮你对比这两项。'] }, 'worker');
       };
       await f.q.control({ action: 'check' });
       await f.run();

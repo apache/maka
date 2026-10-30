@@ -2178,6 +2178,7 @@ export async function createExecutionRuntimeHostComposition(
         pluginModel.generate({
           sessionId: invocation.sessionId,
           prompt: input.prompt,
+          ...(input.modelKey ? { modelKey: input.modelKey } : {}),
           ...(input.system ? { system: input.system } : {}),
           ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
           abortSignal: input.signal ?? invocation.abortSignal,

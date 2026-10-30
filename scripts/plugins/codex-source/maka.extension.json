@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.maka.codex-source",
+  "displayName": "Codex 会话、记忆与电脑活动 Source",
+  "description": "只读接入 Codex 会话、本地记忆与 Computer History，支持增量与原文引用。",
+  "runtime": {
+    "entry": "dist/host.mjs"
+  },
+  "configuration": {
+    "properties": {
+      "codexHome": {
+        "type": "string",
+        "description": "Codex 数据目录，默认 ~/.codex。只读 state_5.sqlite 与 thread_history_1.sqlite。"
+      },
+      "startTime": {
+        "type": "number",
+        "description": "记录发生时间下界，Unix 毫秒；必填。"
+      },
+      "dataDirectory": {
+        "type": "string",
+        "description": "分页元数据与增量事件日志缓存目录；增量日志保存新事件摘录以支持续读。"
+      },
+      "memoriesEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "读取 codexHome/memories 中的 Markdown 记忆和电脑活动摘要；不包含 instructions.md。"
+      },
+      "computerHistoryDirectory": {
+        "type": "string",
+        "description": "通过 Computer History 状态接口确认的 eventStreamRootPath；显式配置后只读其活动片段。不会开启录制或修改权限。"
+      }
+    }
+  },
+  "composition": {
+    "patch": "maka.composition.json"
+  }
+}

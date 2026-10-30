@@ -153,6 +153,7 @@ export type HostSessionEffectModelInput = Omit<HostGoalEvaluatorInput, 'readSess
 export interface HostPluginModel {
   generate(input: {
     readonly sessionId: string;
+    readonly modelKey?: string;
     readonly prompt: string;
     readonly system?: string;
     readonly maxOutputTokens?: number;
@@ -166,12 +167,25 @@ export function createHostPluginModel(input: HostGoalEvaluatorInput): HostPlugin
   return Object.freeze({
     generate: async ({
       sessionId,
+      modelKey,
       prompt,
       system,
       maxOutputTokens,
       abortSignal,
     }: Parameters<HostPluginModel['generate']>[0]) => {
-      const header = await input.readSessionHeader(sessionId);
+      const saved = await input.readSessionHeader(sessionId);
+      const target = modelKey ? parseDailyReviewModelKey(modelKey) : undefined;
+      if (modelKey && !target)
+        throw new AuxiliaryModelCallConfigurationError('Invalid auxiliary model key');
+      const header = target
+        ? {
+            ...saved,
+            llmConnectionId: undefined,
+            llmConnectionSlug: target.connectionSlug,
+            model: target.modelId,
+            thinkingLevel: 'off' as const,
+          }
+        : saved;
       return runHostAuxiliaryModelCall(authority, {
         transportContextId: sessionId,
         telemetrySessionId: sessionId,
