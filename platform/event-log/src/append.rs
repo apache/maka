@@ -339,9 +339,15 @@ impl EventLog {
         crate::message_admissions::consume(transaction, event).await?;
         if matches!(event.fact, Fact::InvocationEnded { .. }) {
             crate::interactions::lifecycle::require_closed(transaction, &event.invocation).await?;
+            crate::native_approvals::require_terminal(transaction, &event.invocation).await?;
         }
         let sequence =
             ingress::insert(transaction, event, json, ingress::Position::Admitted).await?;
+        crate::native_approvals::append_settlement(transaction, event).await?;
+        crate::native_approvals::append_model_request(transaction, event).await?;
+        if matches!(event.fact, Fact::InvocationEnded { .. }) {
+            crate::native_approvals::retire_terminal(transaction, &event.invocation).await?;
+        }
         crate::message_sources::insert(transaction, event).await?;
         crate::tool_payloads::insert(transaction, write).await?;
         crate::artifacts::freeze_tool_media(transaction, event, sequence).await?;

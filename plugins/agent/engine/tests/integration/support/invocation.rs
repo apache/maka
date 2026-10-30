@@ -58,6 +58,7 @@ pub fn input(
 ) -> maka_agent_engine::RunInput {
     maka_agent_engine::RunInput {
         model_source: None,
+        native_activation_basis: None,
         model_revision: None,
         provider_id: "fixture".into(),
         main_output_limit: None,

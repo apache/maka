@@ -189,6 +189,7 @@ impl Owner {
             return Ok(parked(Reason::Archived));
         }
         if runs.busy(&input.session_id)
+            || self.has_parked_invocation(&input.session_id).await?
             || !self
                 .store
                 .session(&input.session_id)
@@ -316,7 +317,7 @@ impl Owner {
         if current.configuration != session.configuration || current.archived {
             return Ok(parked(Reason::WorkspaceChanged));
         }
-        if runs.busy(&input.session_id) {
+        if runs.busy(&input.session_id) || self.has_parked_invocation(&input.session_id).await? {
             return Ok(parked(Reason::Busy));
         }
         if self
@@ -382,6 +383,9 @@ impl Owner {
             configuration.editing_tools,
         )?;
         let run = RunInput {
+            native_activation_basis: Some(
+                serde_json::to_value(&basis).map_err(|_| "agent_message_basis_invalid")?,
+            ),
             invocation: invocation.clone(),
             model_source: Some(Arc::new(source)),
             model_revision: Some(prepared.revision),

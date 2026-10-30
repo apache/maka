@@ -58,3 +58,12 @@ impl RootStore {
         self.subscribe_catalog_changes()
     }
 }
+
+impl RootStore {
+    pub fn subscribe_control_changes(&self) -> RootSubscription {
+        RootSubscription {
+            receivers: vec![self.control.subscribe_catalog_changes()],
+            stop: self.gates.cancellation(),
+        }
+    }
+}

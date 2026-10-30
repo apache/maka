@@ -46,6 +46,7 @@ pub async fn recover_invocations(log: &EventLog) -> Result<usize, RecoveryError>
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| RecoveryError::Clock(error.to_string()))?
         .as_millis();
+    let parked = log.prepare_native_approval_recovery().await?;
     log.close_abandoned_interactions(
         u64::try_from(now).map_err(|error| RecoveryError::Clock(error.to_string()))?,
     )
@@ -58,6 +59,9 @@ pub async fn recover_invocations(log: &EventLog) -> Result<usize, RecoveryError>
             return Ok(recovered);
         }
         for invocation in &page.invocations {
+            if parked.contains(&invocation.invocation_id) {
+                continue;
+            }
             let state = log.invocation_recovery(invocation).await?;
             let append = |fact| {
                 let event = RuntimeEvent::new(invocation.clone(), fact);
@@ -100,8 +104,8 @@ pub async fn recover_invocations(log: &EventLog) -> Result<usize, RecoveryError>
                 },
             })
             .await?;
+            recovered += 1;
         }
-        recovered += page.invocations.len();
         after_sequence = page.through_sequence;
     }
 }

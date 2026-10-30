@@ -52,6 +52,7 @@ fn input(
     effect: Arc<dyn maka_agent_facts::tools::ToolExecutor>,
 ) -> RunInput {
     RunInput {
+        native_activation_basis: None,
         model_source: None,
         model_revision: None,
         provider_id: "fixture".into(),

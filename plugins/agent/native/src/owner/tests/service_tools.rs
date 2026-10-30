@@ -29,6 +29,7 @@ use maka_plugin_core::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod approval_park;
 mod continuation_ancestry;
 
 mod continuation_observations;

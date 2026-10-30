@@ -23,8 +23,89 @@ use maka_tools::RunTools;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-#[allow(clippy::too_many_arguments)] // Admission policy must remain visible across the step loop.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelResumePoint {
+    pub opening_id: String,
+    pub context: Option<maka_agent_facts::context::ModelRequestContext>,
+    pub provider_options: serde_json::Value,
+    pub main_output_limit: Option<u64>,
+    pub supports_vision: bool,
+    pub tools: maka_agent_facts::handoff::HandoffTools,
+    pub compaction: maka_agent_facts::handoff::CompactionBudget,
+    pub replay_base: Option<u64>,
+    pub prior_unknown: bool,
+    pub inspected_through: u64,
+    pub main_progress: bool,
+    pub finish_turn: bool,
+}
+
+pub(super) enum StepExit {
+    Terminal(maka_agent_facts::event::InvocationOutcome),
+    Parked(maka_event_log::native_approvals::ParkedActivationReceipt),
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run(
+    inner: &Arc<RunContext>,
+    input: &mut RunSettings,
+    work: crate::runner::ModelWork,
+    opening_id: &str,
+    cancellation: &CancellationToken,
+    continuation_base: Option<u64>,
+    handoff: &crate::HandoffGate,
+    prior_unknown: bool,
+    inspected_through: u64,
+    effects: &maka_event_log::root_store::InvocationEffects,
+) -> Result<StepExit, RunError> {
+    run_from(
+        inner,
+        input,
+        work,
+        opening_id,
+        cancellation,
+        continuation_base,
+        handoff,
+        prior_unknown,
+        inspected_through,
+        effects,
+        None,
+    )
+    .await
+}
+
+pub(super) async fn resume(
+    inner: &Arc<RunContext>,
+    input: &mut RunSettings,
+    work: crate::runner::ModelWork,
+    point: ModelResumePoint,
+    cancellation: &CancellationToken,
+    handoff: &crate::HandoffGate,
+    effects: &maka_event_log::root_store::InvocationEffects,
+) -> Result<StepExit, RunError> {
+    input.context = point.context.clone();
+    input.provider_options = point.provider_options.clone();
+    input.main_output_limit = point.main_output_limit;
+    input.supports_vision = point.supports_vision;
+    let opening_id = point.opening_id.clone();
+    run_from(
+        inner,
+        input,
+        work,
+        &opening_id,
+        cancellation,
+        point.replay_base,
+        handoff,
+        point.prior_unknown,
+        point.inspected_through,
+        effects,
+        Some(point),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)] // Admission policy must remain visible across the step loop.
+async fn run_from(
     inner: &Arc<RunContext>,
     input: &mut RunSettings,
     work: crate::runner::ModelWork,
@@ -35,7 +116,8 @@ pub(super) async fn run(
     prior_unknown: bool,
     mut inspected_through: u64,
     effects: &maka_event_log::root_store::InvocationEffects,
-) -> Result<maka_agent_facts::event::InvocationOutcome, RunError> {
+    resume: Option<ModelResumePoint>,
+) -> Result<StepExit, RunError> {
     let crate::runner::ModelWork {
         tools: catalog,
         restored,
@@ -60,10 +142,20 @@ pub(super) async fn run(
     let mut handoff_cleanup = None;
     let result = std::panic::AssertUnwindSafe(async {
         use maka_agent_facts::handoff::CompactionBudget;
-        let mut compaction = CompactionBudget::Available;
+        let mut compaction = resume
+            .as_ref()
+            .map_or(CompactionBudget::Available, |point| point.compaction);
         // This tracks work after this physical opening, not after the logical root.
         // A successor may compact the sealed prefix with a PreTurn boundary.
-        let mut main_progress = false;
+        let mut main_progress = resume.as_ref().is_some_and(|point| point.main_progress);
+        if let Some(point) = &resume {
+            tools.restore(&point.tools)?;
+            if point.finish_turn {
+                return Ok(StepExit::Terminal(
+                    maka_agent_facts::event::InvocationOutcome::Completed,
+                ));
+            }
+        }
         if let Some((checkpoint, budget)) = restored {
             tools.restore(&checkpoint)?;
             compaction = budget;
@@ -141,7 +233,9 @@ pub(super) async fn run(
                 })
                 .await
             {
-                return Ok(maka_agent_facts::event::InvocationOutcome::HandoffPaused { pause });
+                return Ok(StepExit::Terminal(
+                    maka_agent_facts::event::InvocationOutcome::HandoffPaused { pause },
+                ));
             }
             if let Some(error) = handoff_cleanup.take() {
                 return Err(error);
@@ -268,7 +362,7 @@ pub(super) async fn run(
                 main_progress = true;
                 compaction = CompactionBudget::Available;
             }
-            let output = match result {
+            let mut output = match result {
                 Ok(model_attempt::Outcome::Response(output)) => output,
                 Ok(model_attempt::Outcome::FinishedByTool) => {
                     crate::interactions::wait_until_clear(
@@ -277,7 +371,9 @@ pub(super) async fn run(
                         cancellation,
                     )
                     .await?;
-                    return Ok(maka_agent_facts::event::InvocationOutcome::Completed);
+                    return Ok(StepExit::Terminal(
+                        maka_agent_facts::event::InvocationOutcome::Completed,
+                    ));
                 }
                 Err(
                     error @ RunError::Model(maka_model::ModelError::ContextOverflow {
@@ -314,6 +410,37 @@ pub(super) async fn run(
                 }
                 Err(error) => return Err(error),
             };
+            if !output.approvals.is_empty() {
+                let resume = ModelResumePoint {
+                    opening_id: opening_id.to_owned(),
+                    context: input.context.clone(),
+                    provider_options: input.provider_options.clone(),
+                    main_output_limit: input.main_output_limit,
+                    supports_vision: input.supports_vision,
+                    tools: tools.checkpoint()?,
+                    compaction: CompactionBudget::Available,
+                    replay_base: continuation_base,
+                    prior_unknown,
+                    inspected_through,
+                    main_progress: true,
+                    finish_turn: request_tools.finished(),
+                };
+                if let Some(receipt) = approval_frontier(
+                    inner,
+                    input,
+                    &tools,
+                    &request_tools,
+                    &mut output.approvals,
+                    &mut pending,
+                    resume,
+                    cancellation,
+                    effects,
+                )
+                .await?
+                {
+                    return Ok(StepExit::Parked(receipt));
+                }
+            }
             // Only accepted Main progress renews the budget. Summary events
             // never replenish their own attempts, even though the log advances.
             compaction = CompactionBudget::Available;
@@ -322,7 +449,9 @@ pub(super) async fn run(
                     main_progress = true;
                     continue;
                 }
-                return Ok(maka_agent_facts::event::InvocationOutcome::Completed);
+                return Ok(StepExit::Terminal(
+                    maka_agent_facts::event::InvocationOutcome::Completed,
+                ));
             }
             // An exec/wait observation can settle while its cell is still
             // asking the user. Pause before advancing. First settle/reject
@@ -337,7 +466,9 @@ pub(super) async fn run(
                 prune::run(inner, input, cancellation, &mut inspected_through).await?;
             }
             if request_tools.finished() {
-                return Ok(maka_agent_facts::event::InvocationOutcome::Completed);
+                return Ok(StepExit::Terminal(
+                    maka_agent_facts::event::InvocationOutcome::Completed,
+                ));
             }
             if !cancellation.is_cancelled() && lane.needs_confirmation() {
                 let context =
@@ -398,7 +529,9 @@ pub(super) async fn run(
     summary_cleanup?;
     if matches!(
         result,
-        Ok(maka_agent_facts::event::InvocationOutcome::Completed)
+        Ok(StepExit::Terminal(
+            maka_agent_facts::event::InvocationOutcome::Completed
+        ))
     ) && !prior_unknown
     {
         // The last Main can finish while a background Summary fails. Drain first,
@@ -430,6 +563,163 @@ pub(super) async fn run(
             })?;
     }
     result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn approval_frontier(
+    inner: &Arc<RunContext>,
+    input: &RunSettings,
+    tools: &RunTools,
+    request: &maka_tools::RequestTools<'_>,
+    approvals: &mut futures_util::stream::FuturesUnordered<maka_tools::PendingCall>,
+    summary: &mut Option<auto_context::Pending>,
+    mut point: ModelResumePoint,
+    cancellation: &CancellationToken,
+    effects: &maka_event_log::root_store::InvocationEffects,
+) -> Result<Option<maka_event_log::native_approvals::ParkedActivationReceipt>, RunError> {
+    use futures_util::{StreamExt, stream::FuturesUnordered};
+    use maka_event_log::native_approvals::ParkResult;
+    let mut changes = inner
+        .log
+        .subscribe_session_commits(&input.invocation.session_id)?;
+    let mut running = FuturesUnordered::new();
+    let mut failure = None;
+    // Summary cleanup may await physical provider work. Keep answering the
+    // original calls while that independent owner confirms its cleanup.
+    {
+        let cleanup = auto_context::drain(summary);
+        tokio::pin!(cleanup);
+        loop {
+            tokio::select! {
+                result = &mut cleanup => {
+                    if let Err(error) = result {
+                        cancellation.cancel();
+                        failure = Some(error);
+                    }
+                    break;
+                }
+                execution = approvals.next(), if !approvals.is_empty() => {
+                    running.push(model_attempt::catch_tool(execution.expect("nonempty approval set")));
+                }
+                result = running.next(), if !running.is_empty() => {
+                    if let Err(error) = model_attempt::tool_result(result.expect("nonempty native execution set")) {
+                        cancellation.cancel();
+                        failure = Some(error);
+                    }
+                }
+            }
+        }
+    }
+    let mut reconsider = true;
+    loop {
+        // Poll answers before capturing the immutable transaction proposal.
+        while let Some(Some(execution)) = approvals.next().now_or_never() {
+            running.push(model_attempt::catch_tool(execution));
+        }
+        if approvals.is_empty() && running.is_empty() {
+            return failure.map_or(Ok(None), Err);
+        }
+        if failure.is_none() && cancellation.is_cancelled() {
+            failure = Some(RunError::Cancelled);
+        }
+        if reconsider
+            && failure.is_none()
+            && running.is_empty()
+            && tools.code_idle()
+            && effects.is_idle()
+            && let Some(native_basis) = input.native_activation_basis.as_ref()
+        {
+            let pending: Vec<_> = approvals
+                .iter()
+                .map(|call| call.pending().clone())
+                .collect();
+            let proposal = async {
+                point.tools = tools.checkpoint()?;
+                point.finish_turn = request.finished();
+                let checkpoint = maka_agent_facts::native_approval::ActivationCheckpoint {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    invocation: input.invocation.clone(),
+                    through: inner.log.committed_sequence().await?,
+                    engine: serde_json::to_value(&point)
+                        .map_err(|error| RunError::Internal(error.to_string()))?,
+                    native_basis: native_basis.clone(),
+                };
+                match inner
+                    .log
+                    .park_native_approvals(checkpoint.clone(), pending.clone())
+                    .await
+                {
+                    Ok(ParkResult::Parked(receipt)) => Ok(Some(receipt)),
+                    Ok(ParkResult::Changed) => Ok(None),
+                    Err(
+                        maka_event_log::StoreError::CommitUnknown(_)
+                        | maka_event_log::StoreError::OperationUnknown,
+                    ) => {
+                        // Until an authoritative observation resolves this exact
+                        // proposal, neither physical owner may start an effect.
+                        loop {
+                            match inner
+                                .log
+                                .confirm_native_approval_park(&checkpoint, &pending)
+                                .await
+                            {
+                                Ok(receipt) => return Ok(receipt),
+                                Err(_) => {
+                                    if changes.changed().await.is_err() {
+                                        std::future::pending::<()>().await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => Err(error.into()),
+                }
+            };
+            tokio::pin!(proposal);
+            let proposal = loop {
+                tokio::select! {
+                    result = &mut proposal => break result,
+                    execution = approvals.next(), if !approvals.is_empty() => {
+                        // Answer reads may own queued fair permits needed by the
+                        // proposal. Keep polling them, but freeze original effects
+                        // until this exact proposal has an authoritative result.
+                        running.push(model_attempt::catch_tool(execution.expect("nonempty approval set")));
+                    }
+                }
+            };
+            match proposal {
+                Ok(Some(receipt)) => return Ok(Some(receipt)),
+                Ok(None) => reconsider = false,
+                Err(error) => {
+                    cancellation.cancel();
+                    failure = Some(error);
+                }
+            }
+        }
+        tokio::select! {
+            execution = approvals.next(), if !approvals.is_empty() => {
+                running.push(model_attempt::catch_tool(execution.expect("nonempty approval set")));
+                reconsider = true;
+            }
+            result = running.next(), if !running.is_empty() => {
+                if let Err(error) = model_attempt::tool_result(result.expect("nonempty native execution set")) {
+                    cancellation.cancel();
+                    failure = Some(error);
+                }
+                reconsider = true;
+            }
+            changed = changes.changed(), if failure.is_none() => {
+                if let Err(error) = changed {
+                    cancellation.cancel();
+                    failure = Some(RunError::Internal(error.to_string()));
+                }
+                reconsider = true;
+            }
+            _ = cancellation.cancelled(), if failure.is_none() => {
+                failure = Some(RunError::Cancelled);
+            }
+        }
+    }
 }
 
 async fn capture_surface<'tools>(

@@ -233,6 +233,14 @@ impl EventLog {
                     } else {
                         None
                     };
+                    if retired_basis.is_some() {
+                        crate::native_approvals::revoke_for_session(
+                            &mut tx,
+                            &id,
+                            permission_time.expect("permission retirement has a timestamp"),
+                        )
+                        .await?;
+                    }
                     advance_catalog(&mut tx).await?;
                     let record = read(&mut tx, &id)
                         .await?
