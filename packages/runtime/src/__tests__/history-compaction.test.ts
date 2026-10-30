@@ -431,6 +431,124 @@ describe('plan context compaction', () => {
     assert.equal(result.decision, 'fail_open');
   });
 
+  test('a capacity error with no proven boundary retries once through the text fallback', async () => {
+    // A migrated or copied session has no same-route accepted reply, so the
+    // native retreat has no boundary to shrink to. The portable text
+    // summarizer never carries the reasoning blobs the native request does,
+    // so it may fit where the native request did not (#6415).
+    const events = [user('old-user', 'old-turn'), model('old-model', 'old-turn', 'old result')];
+    let nativeCalls = 0;
+    let textCalls = 0;
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: events,
+        reserveTailEvents: 0,
+        summarize: () => {
+          nativeCalls += 1;
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+        summarizeTextFallback: () => {
+          textCalls += 1;
+          return structuredSummary('A portable text summary.');
+        },
+      }),
+    );
+
+    assert.equal(nativeCalls, 1);
+    assert.equal(textCalls, 1);
+    assert.equal(result.decision, 'compacted');
+    if (result.decision !== 'compacted') return;
+    assert.ok('summary' in result.checkpoint);
+    if (!('summary' in result.checkpoint)) return;
+    assert.equal(result.checkpoint.summary, structuredSummary('A portable text summary.'));
+    assert.deepEqual(
+      result.coveredRuntimeEvents.map((event) => event.id),
+      ['old-user', 'old-model'],
+    );
+  });
+
+  test('a refusing text fallback still fails open', async () => {
+    const events = [user('old-user', 'old-turn'), model('old-model', 'old-turn', 'old result')];
+    let textCalls = 0;
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: events,
+        reserveTailEvents: 0,
+        summarize: () => {
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+        summarizeTextFallback: () => {
+          textCalls += 1;
+          throw new HistoryCompactSummarizerError('provider_error');
+        },
+      }),
+    );
+
+    assert.equal(textCalls, 1);
+    assert.equal(result.decision, 'fail_open');
+    if (result.decision !== 'fail_open') return;
+    assert.equal(result.diagnosticReason, 'provider_error');
+  });
+
+  test('a refused proven retreat still spends the text fallback on the proven span', async () => {
+    // A proven boundary keeps the native retreat first, but once that retreat
+    // is itself refused, native is exhausted exactly as in the no-boundary
+    // corner: no smaller proven span remains, and the portable text summarizer
+    // may still fit where the native request did not (#6415, #6425 review).
+    // The fallback folds that same proven span - never a smaller guess
+    // (#4559) - and its own refusal still fails open.
+    const events = [
+      user('old-user', 'old-turn'),
+      model('old-model', 'old-turn', 'old result'),
+      user('recent-user', 'recent-turn'),
+      model('recent-model', 'recent-turn', 'recent result'),
+    ];
+    let nativeCalls = 0;
+    let textCalls = 0;
+    const textCoverage: string[][] = [];
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: events,
+        invocations: RUNS_A,
+        acceptedRoute: ROUTE_A,
+        reserveTailEvents: 0,
+        summarize: () => {
+          nativeCalls += 1;
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+        summarizeTextFallback: ({ coveredRuntimeEvents }) => {
+          textCalls += 1;
+          textCoverage.push(coveredRuntimeEvents.map((event) => event.id));
+          return structuredSummary('A portable text summary.');
+        },
+      }),
+    );
+
+    // Two native attempts (full span, then the retreat to the proven
+    // boundary), then a single text call for the refused proven span.
+    assert.equal(nativeCalls, 2);
+    assert.equal(textCalls, 1);
+    assert.equal(result.decision, 'compacted');
+    if (result.decision !== 'compacted') return;
+    assert.ok('summary' in result.checkpoint);
+    if (!('summary' in result.checkpoint)) return;
+    assert.equal(result.checkpoint.summary, structuredSummary('A portable text summary.'));
+    // The fallback receives the retreated proven span, not the original
+    // coverage, and the fold keeps the newest reply out verbatim.
+    assert.deepEqual(textCoverage, [['old-user', 'old-model', 'recent-user']]);
+    assert.deepEqual(
+      result.coveredRuntimeEvents.map((event) => event.id),
+      ['old-user', 'old-model', 'recent-user'],
+    );
+    assert.deepEqual(
+      result.tailRuntimeEvents.map((event) => event.id),
+      ['recent-model'],
+    );
+  });
+
   test('fails open without retrying when no accepted reply proves a boundary', async () => {
     // No model reply anywhere, so no request has ever been accepted on this
     // ledger; inventing a boundary would be the guess this change removes.
