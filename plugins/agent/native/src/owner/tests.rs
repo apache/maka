@@ -18,6 +18,7 @@
  */
 
 mod http_fixture;
+mod memory_release;
 
 mod plan_tests;
 
