@@ -26,12 +26,19 @@ import test from 'node:test';
 import {
   applyHeader,
   auditTree,
+  commentStylesFor,
   HeaderNotWritableError,
   listSourceFiles,
   renderHeader,
 } from './asf-license-headers.mjs';
 
 const block = readFileSync(new URL(import.meta.url), 'utf8').split('\n\n', 1)[0] + '\n';
+const dash =
+  block
+    .split('\n')
+    .slice(1, -2)
+    .map((line) => `--${line.slice(2).replace(/[ \t]+/g, ' ')}`)
+    .join('\n') + '\n';
 
 function tree(t, files) {
   const root = mkdtempSync(join(tmpdir(), 'asf-headers-'));
@@ -45,16 +52,17 @@ function tree(t, files) {
 
 test('applying a canonical license preserves declarations and source bytes and is idempotent', () => {
   assert.equal(renderHeader('block'), block);
-  for (const [style, declaration, body] of [
-    ['block', '#!/usr/bin/env node\n', 'main();\n'],
-    ['html', '<!doctype html>\n', '<html></html>\n'],
-    ['html', '---\nname: skill\n---\n', '# Title\n'],
-    ['hash', '', '# a note\nvalue: true\n'],
-    ['slash', '', 'const value = 7;\n'],
+  for (const [styles, declaration, body] of [
+    [['block'], '#!/usr/bin/env node\n', 'main();\n'],
+    [['html'], '<!doctype html>\n', '<html></html>\n'],
+    [['html'], '---\nname: skill\n---\n', '# Title\n'],
+    [['hash'], '', '# a note\nvalue: true\n'],
+    [['slash'], '', 'const value = 7;\n'],
+    [commentStylesFor('new.sql'), '', 'SELECT 1;\n'],
   ]) {
-    const result = applyHeader(declaration + body, style);
-    assert.equal(result, declaration + renderHeader(style) + '\n' + body);
-    assert.equal(applyHeader(result, style), result);
+    const result = applyHeader(declaration + body, styles);
+    assert.equal(result, declaration + renderHeader(styles[0]) + '\n' + body);
+    assert.equal(applyHeader(result, styles), result);
   }
 });
 
@@ -65,12 +73,25 @@ test('existing noncanonical or duplicated licenses are rejected without stacking
     block + '\n' + block + '\nmain();\n',
     'main();\n' + block,
   ])
-    assert.throws(() => applyHeader(source, 'block'), HeaderNotWritableError);
+    assert.throws(() => applyHeader(source, ['block']), HeaderNotWritableError);
+  for (const source of [
+    dash.replace('NOTICE', 'NOTICES') + '\nSELECT 1;\n',
+    dash.replace('-- Licensed to the Apache Software', '-- Licensed to the Apache\n-- Software') +
+      '\nSELECT 1;\n',
+    'SELECT 1;\n' + dash,
+    block + '\n' + dash + '\nSELECT 1;\n',
+    dash.replace('-- with the License.', '// with the License.') + '\nSELECT 1;\n',
+  ])
+    assert.throws(
+      () => applyHeader(source, commentStylesFor('invalid.sql')),
+      HeaderNotWritableError,
+    );
 });
 
 test('an extracted tree audits every file and repairs leave a clean result', (t) => {
   const root = tree(t, {
     'good.rs': block + '\nfn main() {}\n',
+    'migrations/current.sql': dash + '\nCREATE TABLE current (id INTEGER);\n',
     'missing.ts': 'const value = 1;\n',
     'noncanonical.py': renderHeader('hash').replace('http://', 'https://') + '\npass\n',
     'duplicated.rs': block + '\n' + block,
@@ -83,7 +104,9 @@ test('an extracted tree audits every file and repairs leave a clean result', (t)
   symlinkSync('good.rs', join(root, 'LINK.md'));
   const report = auditTree({ root });
   assert.equal(report.mode, 'archive');
-  assert.equal(report.covered, 6);
+  const sql = readFileSync(join(root, 'migrations/current.sql'), 'utf8');
+  assert.equal(applyHeader(sql, commentStylesFor('migrations/current.sql')), sql);
+  assert.equal(report.covered, 7);
   assert.deepEqual(report.missing.sort(), ['missing.ts', 'third-party/sqlx-sqlite/src/new.rs']);
   assert.deepEqual(report.unrecognized, ['noncanonical.py']);
   assert.deepEqual(report.duplicated, ['duplicated.rs']);
@@ -112,7 +135,7 @@ test('an extracted tree audits every file and repairs leave a clean result', (t)
   ]) {
     assert.deepEqual(repaired[key], [], key);
   }
-  assert.equal(repaired.covered, 6);
+  assert.equal(repaired.covered, 7);
 });
 
 test('checkout enumeration includes new source files and omits deleted index entries', (t) => {

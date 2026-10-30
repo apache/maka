@@ -27,7 +27,7 @@
  *      recorded reason, or an audit failure. Nothing is dropped from the tree
  *      under audit; the enumeration only decides which tree that is.
  *   2. In every covered file the ASF license text occurs exactly once, and
- *      that occurrence is the canonical rendering at the top of the file.
+ *      that occurrence has accepted syntax at the top of the file.
  *
  * Both are properties of the artifact, stated without reference to what
  * `write` produces. That separation is the point: an audit defined as "starts
@@ -36,10 +36,10 @@
  *
  * So detection is deliberately loose and acceptance deliberately strict.
  * `countLicenseText` finds the license text through any comment syntax,
- * indentation, or line wrapping; only the exact canonical rendering is
- * accepted. `write` is correspondingly dumb — it inserts a header where there
- * is none and refuses every other state, because every other state is a
- * decision a person has to make.
+ * indentation, or line wrapping; acceptance preserves the license lines,
+ * allowing only horizontal spacing differences inside an accepted syntax.
+ * `write` inserts a header where there is none and refuses every other state,
+ * because every other state is a decision a person has to make.
  *
  * See `.github/ASF_SOURCE_HEADERS.md` for the policy this file implements.
  */
@@ -90,6 +90,7 @@ export const licenseLines = [
 const commentStyles = {
   block: { open: '/*', line: ' *', close: ' */', prefixPattern: /^#![^\n]*\n/ },
   slash: { linePrefix: '//' },
+  dash: { linePrefix: '--' },
   hash: { linePrefix: '#', prefixPattern: /^#![^\n]*\n/ },
   // A doctype must open an HTML file, and YAML front matter must open a
   // Markdown file, so the header follows either one.
@@ -106,40 +107,40 @@ const commentStyles = {
 
 /**
  * File extensions covered by the header policy, and the comment syntax used
- * for each. A covered file must carry the header; nothing else may.
+ * for each, in writer preference order. A covered file must carry the header.
  */
 const coveredExtensions = new Map([
-  ['.astro', 'astro'],
-  ['.cjs', 'block'],
-  ['.css', 'block'],
-  ['.ftl', 'hash'],
-  ['.html', 'html'],
-  ['.js', 'block'],
-  ['.jsonc', 'slash'],
-  ['.md', 'html'],
-  ['.mjs', 'block'],
-  ['.mts', 'block'],
-  ['.nsh', 'hash'],
-  ['.ps1', 'hash'],
-  ['.py', 'hash'],
-  ['.rc', 'block'],
-  ['.rs', 'block'],
-  ['.sh', 'hash'],
-  ['.sql', 'block'],
-  ['.svg', 'html'],
-  ['.swift', 'block'],
-  ['.toml', 'hash'],
-  ['.ts', 'block'],
-  ['.tsx', 'block'],
-  ['.yaml', 'hash'],
-  ['.yml', 'hash'],
+  ['.astro', ['astro']],
+  ['.cjs', ['block']],
+  ['.css', ['block']],
+  ['.ftl', ['hash']],
+  ['.html', ['html']],
+  ['.js', ['block']],
+  ['.jsonc', ['slash']],
+  ['.md', ['html']],
+  ['.mjs', ['block']],
+  ['.mts', ['block']],
+  ['.nsh', ['hash']],
+  ['.ps1', ['hash']],
+  ['.py', ['hash']],
+  ['.rc', ['block']],
+  ['.rs', ['block']],
+  ['.sh', ['hash']],
+  ['.sql', ['block', 'dash']],
+  ['.svg', ['html']],
+  ['.swift', ['block']],
+  ['.toml', ['hash']],
+  ['.ts', ['block']],
+  ['.tsx', ['block']],
+  ['.yaml', ['hash']],
+  ['.yml', ['hash']],
 ]);
 
 /** Covered files whose name carries no extension. */
 const coveredNames = new Map([
-  ['Dockerfile', 'hash'],
-  ['pre-commit', 'hash'],
-  ['justfile', 'hash'],
+  ['Dockerfile', ['hash']],
+  ['pre-commit', ['hash']],
+  ['justfile', ['hash']],
 ]);
 
 const startsWith = (prefix) => (path) => path === prefix || path.startsWith(`${prefix}/`);
@@ -365,7 +366,7 @@ export function renderHeader(styleName) {
   return `${style.open}\n${body}\n${style.close}\n`;
 }
 
-export function commentStyleFor(path) {
+export function commentStylesFor(path) {
   const name = basename(path);
   if (coveredNames.has(name)) return coveredNames.get(name);
   const extension = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
@@ -380,23 +381,41 @@ export function commentStyleFor(path) {
 export function classifyPath(path) {
   const rule = exclusionRules.find((candidate) => candidate.matches(path));
   if (rule) return { rule: rule.id, status: 'excluded' };
-  const style = commentStyleFor(path);
-  if (style) return { status: 'covered', style };
+  const styles = commentStylesFor(path);
+  if (styles) return { status: 'covered', styles };
   return { status: 'unclassified' };
 }
 
-/**
- * Acceptance, strictly: the canonical rendering byte for byte, first in the
- * file apart from a shebang, a doctype, or Markdown front matter.
- */
-export function findHeaderOffset(contents, styleName) {
-  const style = commentStyles[styleName];
-  const prefix = style.prefixPattern?.exec(contents)?.[0] ?? '';
-  return contents.startsWith(renderHeader(styleName), prefix.length) ? prefix.length : -1;
+/** Accepted syntax at the top, with unchanged license lines apart from horizontal spacing. */
+export function findHeaderOffset(contents, styleNames) {
+  const normalize = (line) => line.replace(/^[ \t]+|[ \t]+$/g, '').replace(/[ \t]+/g, ' ');
+  for (const styleName of styleNames) {
+    const style = commentStyles[styleName];
+    const prefix = style.prefixPattern?.exec(contents)?.[0] ?? '';
+    const bodyStart = style.open ? 1 : 0;
+    const lineCount = licenseLines.length + (style.open ? 2 : 0);
+    const lines = contents.slice(prefix.length).split('\n', lineCount + 1);
+    if (lines.length <= lineCount) continue;
+    if (style.open && (lines[0] !== style.open || lines[lineCount - 1] !== style.close)) continue;
+    const marker = style.linePrefix ?? style.line;
+    if (
+      licenseLines.every((expected, index) => {
+        const line = lines[bodyStart + index];
+        const body = line.startsWith(marker)
+          ? line.slice(marker.length)
+          : marker.trim() === '' && line === ''
+            ? ''
+            : undefined;
+        return body !== undefined && normalize(body) === normalize(expected);
+      })
+    )
+      return prefix.length;
+  }
+  return -1;
 }
 
-export function hasHeader(contents, styleName) {
-  return findHeaderOffset(contents, styleName) >= 0;
+export function hasHeader(contents, styleNames) {
+  return findHeaderOffset(contents, styleNames) >= 0;
 }
 
 /** The opening line of the ASF header, which every rendering of it contains. */
@@ -405,11 +424,11 @@ const licenseMarker = licenseLines[0];
 /**
  * Detection, loosely: comment punctuation and line wrapping flattened away, so
  * the license text is found whatever syntax it was written in — a `//` header,
- * a JSDoc block, `#`, an HTML comment, any indentation, an `https` variant of
+ * a JSDoc block, `#`, SQL `--`, an HTML comment, an `https` variant of
  * the URL, or a rewrapped paragraph.
  */
 export function countLicenseText(contents) {
-  const flattened = contents.replace(/[*#/]/g, ' ').replace(/\s+/g, ' ');
+  const flattened = contents.replace(/[*#/-]/g, ' ').replace(/\s+/g, ' ');
   let count = 0;
   let index = flattened.indexOf(licenseMarker);
   while (index >= 0) {
@@ -423,11 +442,11 @@ export function countLicenseText(contents) {
  * How a covered file stands against property 2. Only `absent` is safe for a
  * program to act on; every other state is one a person has to resolve.
  */
-export function classifyHeader(contents, styleName, { textAsData = false } = {}) {
+export function classifyHeader(contents, styleNames, { textAsData = false } = {}) {
   const occurrences = countLicenseText(contents);
   if (occurrences === 0) return 'absent';
   if (occurrences > 1 && !textAsData) return 'duplicated';
-  return hasHeader(contents, styleName) ? 'canonical' : 'unrecognized';
+  return hasHeader(contents, styleNames) ? 'canonical' : 'unrecognized';
 }
 
 export class HeaderNotWritableError extends Error {
@@ -435,7 +454,7 @@ export class HeaderNotWritableError extends Error {
     super(
       status === 'duplicated'
         ? 'the file already contains the ASF license text more than once; remove the extra copy by hand'
-        : 'the file already carries the ASF license text in a form this policy does not render; reconcile it by hand',
+        : 'the file already carries the ASF license text in a form this policy does not recognize; reconcile it by hand',
     );
     this.name = 'HeaderNotWritableError';
     this.status = status;
@@ -447,10 +466,11 @@ export class HeaderNotWritableError extends Error {
  * license text in some other shape is left alone and reported, because
  * rewriting it would mean deciding what someone else's rendering meant.
  */
-export function applyHeader(contents, styleName, options) {
-  const status = classifyHeader(contents, styleName, options);
+export function applyHeader(contents, styleNames, options) {
+  const status = classifyHeader(contents, styleNames, options);
   if (status === 'canonical') return contents;
   if (status !== 'absent') throw new HeaderNotWritableError(status);
+  const styleName = styleNames[0];
   const style = commentStyles[styleName];
   const prefix = style.prefixPattern?.exec(contents)?.[0] ?? '';
   const rest = contents.slice(prefix.length);
@@ -611,7 +631,7 @@ export function auditTree({ root = defaultRepoRoot } = {}) {
     const classification = classifyPath(path);
     if (classification.status !== 'covered') continue;
     const contents = readFileSync(join(root, path), 'utf8');
-    const status = classifyHeader(contents, classification.style, {
+    const status = classifyHeader(contents, classification.styles, {
       textAsData: licenseTextAsData.has(path),
     });
     if (status === 'absent') result.missing.push(path);
@@ -643,7 +663,7 @@ export function auditStaged({ root = defaultRepoRoot } = {}) {
       encoding: 'utf8',
       maxBuffer: maxCommandBuffer,
     });
-    const status = classifyHeader(contents, classification.style, {
+    const status = classifyHeader(contents, classification.styles, {
       textAsData: licenseTextAsData.has(path),
     });
     if (status === 'absent') result.missing.push(path);
@@ -669,7 +689,7 @@ export function writeHeaders({ root = defaultRepoRoot } = {}) {
     const contents = readFileSync(absolutePath, 'utf8');
     let updated;
     try {
-      updated = applyHeader(contents, classification.style, {
+      updated = applyHeader(contents, classification.styles, {
         textAsData: licenseTextAsData.has(path),
       });
     } catch (error) {
@@ -719,7 +739,7 @@ function runCheck({ report, root, staged = false }) {
     ],
     [
       result.unrecognized,
-      'carry the ASF license text in a form this policy does not render. Reconcile each one by hand rather than adding a second header',
+      'carry the ASF license text in a form this policy does not recognize. Reconcile each one by hand rather than adding a second header',
     ],
     [
       result.unreviewedProvenance,
