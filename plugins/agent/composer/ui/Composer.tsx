@@ -42,6 +42,7 @@ import {
   controlStyle,
 } from '../../../../products/maka/workbench/app/ui';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
+import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
 import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
@@ -684,7 +685,26 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               pending={pending()?.permissions ?? null}
             />
             <If when={props.session() !== null || pending() !== null}>
-              <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'box-none' }]}>
+              <View
+                style={[
+                  platform.isTerminal
+                    ? { flex: 1, minWidth: 0 }
+                    : {
+                        flex: 1,
+                        minWidth: 0,
+                        flexDirection: 'row',
+                        justifyContent: 'flex-end',
+                        alignItems: 'center',
+                        gap: 4,
+                      },
+                  { pointerEvents: 'box-none' },
+                ]}
+              >
+                {/* The desktop shows context use beside the model; the terminal
+                    keeps it in the line under the composer. */}
+                <If when={!platform.isTerminal && props.session()?.contextUsage?.()}>
+                  <ContextGauge usage={() => props.session()!.contextUsage!()!} />
+                </If>
                 {props.models}
               </View>
             </If>
@@ -755,7 +775,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             </If>
           </View>
         </If>
-        <If when={props.session()?.metrics()}>
+        <If when={platform.isTerminal && props.session()?.metrics()}>
           <Text style={[{ color: C.muted, fontSize: 12, paddingTop: 4 }, { numberOfLines: 1 }]}>
             {props.session()?.metrics()}
           </Text>

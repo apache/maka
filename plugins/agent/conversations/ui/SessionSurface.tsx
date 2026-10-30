@@ -2189,6 +2189,7 @@ function projectComposerSession(
     resuming: owner.resuming,
     resume: owner.resume,
     metrics: owner.metrics,
+    contextUsage: owner.contextUsage,
     changeDraft: owner.changeDraft,
     submit: owner.submit,
     sendRendered: owner.sendRendered,
