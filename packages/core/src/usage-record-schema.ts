@@ -333,7 +333,9 @@ export function isLastRequestAnchor(value: unknown): value is LastRequestAnchor 
       (isFiniteNumber(value.outputTokens) && value.outputTokens >= 0)) &&
     (value.completedAt === undefined ||
       (isFiniteNumber(value.completedAt) && value.completedAt >= 0)) &&
-    (value.payloadChars === undefined || isFiniteNumber(value.payloadChars))
+    (value.payloadChars === undefined || isFiniteNumber(value.payloadChars)) &&
+    isOptionalString(value.modelId) &&
+    isOptionalString(value.connectionId)
   );
 }
 
