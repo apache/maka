@@ -100,7 +100,7 @@
     "plugins/workspace/workspace-computer/package.ts": "710fe896e7181b2b5b5b8d8ddfd6bc4108cbcd6f3eff438e6667117df5410c67",
     "plugins/workspace/workspace-files/engine/Cargo.toml": "81f4ef26f630e81b1afb417fa1f99cfea898e9084801bd37c8e71f6d8beb24eb",
     "plugins/workspace/workspace-files/native/Cargo.toml": "0b0d88c7d5f7140fa42e8e17e1d75bd0fa53ec8e0fbb85efc1b5503a0869acb0",
-    "plugins/workspace/workspace-files/package.ts": "609c2f1201740d8d3417daf5f07a7d085e01660123cb03a4b68ba984fce4f68e",
+    "plugins/workspace/workspace-files/package.ts": "e932456ace8094c2c6477897794213160e837b7ef72bed088e4600e2c8ce6a97",
     "plugins/workspace/workspace-files/patch/Cargo.toml": "42eb38a2840378c2da08b2336201b677db3a93c9e94883635560f070d6eb6da1",
     "plugins/workspace/workspace-files/ui/resources.ts": "891d16831a80cff7217e506f4f980de6c22b1153d07103c644da9fc4fa700a74",
     "plugins/workspace/workspace-jev/engine/Cargo.toml": "6b70fece8433a7c443ef432cb3350672863a1877b1537d782b566cfb8fc5b4e5",
