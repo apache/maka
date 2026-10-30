@@ -17,9 +17,9 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 |---|---:|
 | windows-backend-gap | 27 |
 | portable-candidate | 60 |
-| platform-contract | 49 |
+| platform-contract | 50 |
 
-Total Windows-excluded declarations: **136**
+Total Windows-excluded declarations: **137**
 
 ## Inventory
 
@@ -90,6 +90,7 @@ Total Windows-excluded declarations: **136**
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-process-runner.test.ts` filesystem worker rejects boundedly when a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-smoke.test.ts` macOS filesystem worker smoke | `process.platform !== 'darwin'` |
 | platform-contract | `packages/runtime/src/__tests__/glob-search.test.ts` both Glob paths report permission failures and recover after permissions are restored | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
+| platform-contract | `packages/runtime/src/__tests__/image-file.test.ts` model reads reject workspace FIFOs fast on every route instead of blocking on open | `process.platform === 'win32'` |
 | platform-contract | `packages/runtime/src/__tests__/image-file.test.ts` chat reads reject FIFOs without waiting for a writer | `process.platform === 'win32'` |
 | portable-candidate | `packages/runtime/src/__tests__/node-pty-write-lifecycle.test.ts` does not carry queued Unix PTY writes past native exit | `process.platform === 'win32' ? 'Unix PTY file-descriptor lifecycle only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` POSIX cancellation delivers SIGTERM exactly once to the owned command | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |

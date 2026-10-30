@@ -62,11 +62,10 @@ export async function readWorkspaceFile(
   options: WorkspaceFileReadOptions = {},
 ): Promise<{ content: string } | { bytes: Uint8Array; mimeType: ImageMimeType }> {
   options.abortSignal?.throwIfAborted();
-  // Chat capture must never block opening a FIFO or read an unbounded text file.
-  const file = await open(
-    path,
-    options.imagePurpose ? constants.O_RDONLY | constants.O_NONBLOCK : 'r',
-  );
+  // Every reader opens non-blocking: a workspace FIFO must fail fast instead
+  // of hanging the turn waiting for a writer. O_NONBLOCK has no effect on
+  // regular-file reads.
+  const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
     options.abortSignal?.throwIfAborted();
     if (options.imagePurpose) {
@@ -80,6 +79,9 @@ export async function readWorkspaceFile(
         options.imagePurpose,
       );
     }
+    // The non-blocking open succeeds on a FIFO, so reject non-regular files
+    // before any read; a plain open here would otherwise block forever.
+    if (!(await file.stat()).isFile()) throw new Error('Read path is not a regular file.');
     const prefix = Buffer.alloc(ATTACHMENT_MIME_SNIFF_BYTES);
     // A positioned read leaves the descriptor's offset at zero for readFile.
     const { bytesRead } = await file.read(prefix, 0, prefix.length, 0);

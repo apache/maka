@@ -159,6 +159,63 @@ for (const route of ['workspace', 'worker'] as const) {
   });
 }
 
+test('model reads reject workspace FIFOs fast on every route instead of blocking on open', {
+  skip: process.platform === 'win32',
+  timeout: 5000,
+}, async (t) => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-read-fifo-')));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const path = join(cwd, 'pipe');
+  execFileSync('mkfifo', [path]);
+  // The per-test `timeout` option does not fail the run when the awaited
+  // promise never settles (node keeps waiting for it), so a regression here
+  // would hang the suite instead of going red. Race each route against a
+  // sentinel so the regression is an assertion failure in seconds.
+  const failFast = <T>(pending: Promise<T>, label: string): Promise<T> => {
+    let giveUp: (reason: Error) => void = () => undefined;
+    const timer = setTimeout(
+      () =>
+        giveUp(new Error(`${label} did not fail fast; a read blocked on open instead of erroring`)),
+      4_000,
+    );
+    timer.unref();
+    return Promise.race([
+      pending,
+      new Promise<T>((_, rej) => {
+        giveUp = rej;
+      }),
+    ]);
+  };
+  await assert.rejects(failFast(readWorkspaceFile(path), 'model read'), /not a regular file/i);
+  await assert.rejects(
+    failFast(new LocalWorkspaceExecutor().readFile({ cwd, path }), 'executor read'),
+    /not a regular file/i,
+  );
+  const response = await failFast(
+    executeFilesystemWorkerRequest({
+      version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+      requestId: 'read-fifo',
+      operation: { kind: 'read', cwd, path },
+      operationBoundary: {
+        filesystem: { entries: [{ path: cwd, access: 'read', scope: 'subtree' }] },
+      },
+      expectedTarget: {
+        enforcementPath: path,
+        access: 'read',
+        scope: 'exact',
+        targetType: 'other',
+        identity: 'unchecked',
+      },
+    }),
+    'worker read',
+  );
+  assert.equal(response.ok, false);
+  if (!response.ok) {
+    assert.equal(response.error.code, 'filesystem_error');
+    assert.match(response.error.message, /not a regular file/i);
+  }
+});
+
 test('chat reads reject FIFOs without waiting for a writer', {
   skip: process.platform === 'win32',
   timeout: 1000,
