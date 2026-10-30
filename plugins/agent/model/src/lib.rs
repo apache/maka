@@ -77,7 +77,7 @@ pub struct ModelRequest {
     pub language: maka_agent_facts::language::Language,
     pub provider: ProviderConfig,
     pub prompt: prompt::Prompt,
-    pub tools: Vec<ToolDefinition>,
+    pub tools: Vec<Arc<ToolDefinition>>,
     pub provider_options: Value,
     pub max_output_tokens: Option<u64>,
 }

@@ -21,6 +21,7 @@
 use crate::context::{ContextBucket, ContextCounts, PreparedContextBreakdown};
 use crate::model::ToolInput;
 use crate::model::prompt::{AssistantPart, ContentPart, Message, ToolOutput};
+use std::sync::Arc;
 
 /// A preflight estimate, never measured provider usage. Attachment encodings
 /// are not text tokens; provider overflow is handled by fitting a smaller request.
@@ -30,7 +31,7 @@ pub fn estimate(prompt: &[Message]) -> u64 {
 
 pub fn breakdown(
     prompt: &[Message],
-    tools: &[crate::tools::ToolDefinition],
+    tools: &[Arc<crate::tools::ToolDefinition>],
 ) -> PreparedContextBreakdown {
     let mut measured = prompt_breakdown(prompt);
     measured.counts.tools = tools.len() as u64;

@@ -403,7 +403,7 @@ pub(super) async fn execute_once(
     input: &RunSettings,
     source: &RequestSource,
     mut prompt: PreparedPrompt,
-    definitions: Vec<ToolDefinition>,
+    definitions: Vec<Arc<ToolDefinition>>,
     attempt: Attempt<'_>,
     cancellation: &CancellationToken,
     progressed: &mut bool,
@@ -559,7 +559,7 @@ pub(super) fn route_identity<W>(input: &RunInput<W>) -> Result<String, RunError>
 pub(super) fn prepare_request<W>(
     input: &RunInput<W>,
     prompt: PreparedPrompt,
-    definitions: Vec<ToolDefinition>,
+    definitions: Vec<Arc<ToolDefinition>>,
     max_output_tokens: Option<u64>,
     purpose: ModelPurpose,
 ) -> Result<PreparedRequest, RunError> {
@@ -601,7 +601,7 @@ pub(super) fn prepare_request<W>(
         wire_codec: &'a str,
         wire_root: &'a str,
         route_identity: &'a str,
-        tools: &'a [ToolDefinition],
+        tools: &'a [Arc<ToolDefinition>],
         provider_options: &'a serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         max_output_tokens: Option<u64>,

@@ -723,7 +723,7 @@ pub(super) async fn fit_request(
     language: maka_agent_facts::language::Language,
     provider: &ProviderConfig,
     options: &serde_json::Value,
-    tools: &[maka_model::ToolDefinition],
+    tools: &[Arc<maka_model::ToolDefinition>],
     max_output_tokens: Option<u64>,
     cancellation: &CancellationToken,
 ) -> Result<(), RunError> {

@@ -193,6 +193,12 @@ impl ToolCatalog {
         self.entries.values().map(|entry| entry.definition.as_ref())
     }
 
+    pub fn shared_definitions(&self) -> impl Iterator<Item = Arc<ToolDefinition>> + '_ {
+        self.entries
+            .values()
+            .map(|entry| Arc::clone(&entry.definition))
+    }
+
     /// Narrow registered Host tools without changing plugin scope or authority.
     pub fn excluding(&self, names: &[&str]) -> Self {
         self.select(|name| !names.contains(&name))

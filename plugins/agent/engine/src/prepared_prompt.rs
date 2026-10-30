@@ -258,7 +258,7 @@ impl PreparedPrompt {
         language: maka_agent_facts::language::Language,
         provider: &maka_model::ProviderConfig,
         options: &serde_json::Value,
-        tools: &[maka_model::ToolDefinition],
+        tools: &[Arc<maka_model::ToolDefinition>],
         max_output_tokens: Option<u64>,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<(), crate::RunError> {
@@ -287,7 +287,7 @@ impl PreparedPrompt {
         language: maka_agent_facts::language::Language,
         provider: &maka_model::ProviderConfig,
         options: &serde_json::Value,
-        tools: &[maka_model::ToolDefinition],
+        tools: &[Arc<maka_model::ToolDefinition>],
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<(), crate::RunError> {
         wire::compile(self, language, provider, options, tools, cancellation).await

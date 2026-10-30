@@ -76,7 +76,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             .tools
             .into_iter()
             .map(|tool| {
-                let definition = if let Some(provider) = tool.provider {
+                let definition = if let Some(provider) = &tool.provider {
                     let hosted =
                         anthropic::HostedTool::from_definition(&provider.id, &provider.args)
                             .map_err(failure)?;
@@ -98,8 +98,8 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
                 } else {
                     anthropic::Tool::Function(anthropic::FunctionTool {
                         name: tool.name.clone(),
-                        description: Some(tool.description),
-                        input_schema: tool.input_schema,
+                        description: Some(tool.description.clone()),
+                        input_schema: tool.input_schema.clone(),
                         cache_control: None,
                         strict: None,
                         defer_loading: None,
@@ -109,7 +109,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
                     })
                 };
                 Ok(anthropic::request::ToolBinding {
-                    name: tool.name,
+                    name: tool.name.clone(),
                     definition,
                 })
             })
@@ -183,9 +183,9 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
                     ));
                 }
                 Ok(chat_completions::request::Tool::Function {
-                    name: tool.name,
-                    description: Some(tool.description),
-                    schema: tool.input_schema,
+                    name: tool.name.clone(),
+                    description: Some(tool.description.clone()),
+                    schema: tool.input_schema.clone(),
                     strict: None,
                 })
             })

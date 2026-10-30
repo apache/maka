@@ -146,7 +146,7 @@ impl RunTools {
     pub fn replay_selected(
         &self,
         active: &std::collections::BTreeSet<String>,
-    ) -> Vec<ToolDefinition> {
+    ) -> Vec<Arc<ToolDefinition>> {
         self.request_selected(self.availability.clone(), active)
             .definitions()
     }
@@ -207,7 +207,7 @@ impl<'a> RequestTools<'a> {
         &self.digest
     }
 
-    pub fn definitions(&self) -> Vec<ToolDefinition> {
+    pub fn definitions(&self) -> Vec<Arc<ToolDefinition>> {
         if self.run.mode == ToolMode::CodeMode {
             let mut exec = cell::definition(self.run.cells.language());
             exec.description.push('\n');
@@ -215,13 +215,13 @@ impl<'a> RequestTools<'a> {
                 self.described.definitions(),
                 self.run.cells.language(),
             ));
-            std::iter::once(exec)
-                .chain(std::iter::once(cell::wait_definition()))
-                .chain(self.direct.definitions().cloned())
+            std::iter::once(Arc::new(exec))
+                .chain(std::iter::once(Arc::new(cell::wait_definition())))
+                .chain(self.direct.shared_definitions())
                 .collect()
         } else {
-            let mut definitions: Vec<_> = self.catalog.definitions().cloned().collect();
-            definitions.extend(self.availability.definition());
+            let mut definitions: Vec<_> = self.catalog.shared_definitions().collect();
+            definitions.extend(self.availability.definition().map(Arc::new));
             definitions
         }
     }

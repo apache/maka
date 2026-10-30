@@ -28,6 +28,7 @@ use maka_provider_protocol::{
     responses::{self as wire, Event, ItemMetadata, PartMetadata},
 };
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 pub struct Decoder {
     inner: wire::decode::Decoder,
@@ -37,7 +38,7 @@ pub struct Decoder {
 }
 
 impl Decoder {
-    pub fn new(plaintext: Option<PlaintextResponses>, tools: &[ToolDefinition]) -> Self {
+    pub fn new(plaintext: Option<PlaintextResponses>, tools: &[Arc<ToolDefinition>]) -> Self {
         let search_name = tools
             .iter()
             .find(|tool| {

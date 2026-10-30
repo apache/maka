@@ -47,14 +47,14 @@ pub(super) fn request(kind: ProviderKind, base_url: String) -> ModelRequest {
             body_overlay: None,
         },
         prompt: vec![maka_model::prompt::Message::user("hello")].into(),
-        tools: vec![maka_model::ToolDefinition {
+        tools: vec![Arc::new(maka_model::ToolDefinition {
             freeform: None,
             output_schema: None,
             provider: None,
             name: "echo".into(),
             description: "echo".into(),
             input_schema: json!({"type":"object","properties":{}}),
-        }],
+        })],
         provider_options: json!({}),
         max_output_tokens: Some(128),
     }
