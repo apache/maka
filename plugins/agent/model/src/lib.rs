@@ -493,6 +493,7 @@ impl ModelExecutor {
                     .await
             };
             tokio::pin!(operation);
+            let operation_started = tokio::time::Instant::now();
             let mut cleanup = Ok(());
             let result = loop {
                 let deadline = *progress.borrow_and_update() + idle_timeout;
@@ -506,17 +507,35 @@ impl ModelExecutor {
                 adapter_cancel.cancel();
                 // Give the original adapter a bounded cleanup window. Expiry
                 // reports unknown physical cleanup; its owner must keep its fence.
-                match tokio::time::timeout(Duration::from_secs(6), &mut operation).await {
-                    Err(_) => cleanup = Err(StreamCleanupError),
-                    Ok(Err(error)) if error.cleanup_unconfirmed() => {
-                        cleanup = Err(StreamCleanupError)
-                    }
-                    _ => {}
+                let cleanup_started = tokio::time::Instant::now();
+                let outcome =
+                    match tokio::time::timeout(Duration::from_secs(6), &mut operation).await {
+                        Err(_) => Some("timeout"),
+                        Ok(Err(error)) if error.cleanup_unconfirmed() => {
+                            Some("adapter_cleanup_unconfirmed")
+                        }
+                        _ => None,
+                    };
+                if let Some(outcome) = outcome {
+                    tracing::error!(
+                        stage = "model_adapter_cancel",
+                        outcome,
+                        timeout_ms = 6000_u64,
+                        elapsed_ms = cleanup_started.elapsed().as_millis(),
+                        "cleanup unconfirmed"
+                    );
+                    cleanup = Err(StreamCleanupError);
                 }
                 break Err(cause);
             };
             if let Err(error) = result {
                 if error.cleanup_unconfirmed() {
+                    tracing::error!(
+                        stage = "model_adapter_stream",
+                        outcome = "adapter_cleanup_unconfirmed",
+                        elapsed_ms = operation_started.elapsed().as_millis(),
+                        "cleanup unconfirmed"
+                    );
                     cleanup = Err(StreamCleanupError);
                 }
                 let _ = failure_sender.send(Err(error)).await;
