@@ -127,6 +127,10 @@ async fn open(path: &std::path::Path) -> Arc<EventLog> {
         event(
             "requested",
             Fact::ModelRequested {
+                source_capture: maka_agent_facts::event::SourceCapture {
+                    publication_watermark: 0,
+                    prior_unknown: false,
+                },
                 context_breakdown: None,
                 item_acceptance: true,
                 purpose: maka_agent_facts::context::ModelPurpose::Main,
@@ -317,6 +321,10 @@ async fn queued_model_boundaries_share_commit_and_keep_checkpoint_proof_rejectio
         let late = event(
             "late-checkpoint",
             Fact::ModelRequested {
+                source_capture: maka_agent_facts::event::SourceCapture {
+                    publication_watermark: 0,
+                    prior_unknown: false,
+                },
                 context_breakdown: None,
                 item_acceptance: false,
                 purpose: maka_agent_facts::context::ModelPurpose::Main,

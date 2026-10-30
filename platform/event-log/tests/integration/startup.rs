@@ -269,6 +269,10 @@ async fn startup_recovers_model_and_call_cuts_across_multiple_pages_in_opening_o
             let operation = format!("{step}:{call}");
             let source = log.prefix(32, 64 * 1024).await.unwrap();
             log.append(&write(Fact::ModelRequested {
+                source_capture: maka_agent_facts::event::SourceCapture {
+                    publication_watermark: source.high_water,
+                    prior_unknown: false,
+                },
                 context_breakdown: None,
                 item_acceptance: true,
                 purpose: ModelPurpose::Main,

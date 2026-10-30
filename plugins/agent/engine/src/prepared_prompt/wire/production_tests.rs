@@ -210,3 +210,127 @@ async fn two_captured_requests_reach_send_ready_and_last_output_retains_full_cha
     .await
     .expect("source capture, admission and final output release must make progress");
 }
+
+#[tokio::test]
+async fn direct_catalog_definitions_release_after_cancelled_wire_admission() {
+    use maka_agent_facts::tools::{ToolExecutor, ToolFuture};
+    use maka_tools::{
+        CodeExecutor, RunTools, ToolCatalog, ToolHandler, ToolMode, ToolNesting, ToolRegistration,
+        ToolSemantics, availability::LoadedTools,
+    };
+
+    struct Handler;
+    impl ToolExecutor for Handler {
+        fn names(&self) -> Vec<String> {
+            vec!["fixture".into()]
+        }
+        fn invoke(&self, _: String, input: serde_json::Value, _: CancellationToken) -> ToolFuture {
+            Box::pin(async move { Ok(input) })
+        }
+    }
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let directory = tempfile::tempdir().unwrap();
+        let (root, log, execution, selection) = source(directory.path()).await;
+        let catalog = ToolCatalog::new([ToolRegistration {
+            definition: ToolDefinition {
+                name: "fixture".into(),
+                description: "shared catalog definition".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                output_schema: None,
+                provider: None,
+                freeform: None,
+            },
+            nesting: ToolNesting::DirectOnly,
+            semantics: ToolSemantics::Parallel,
+            handler: ToolHandler::Immediate(Arc::new(Handler)),
+        }])
+        .unwrap();
+        let definition = catalog.shared_definitions().next().unwrap();
+        let weak = Arc::downgrade(&definition);
+        let tools = RunTools::new(
+            Language::En,
+            log.clone(),
+            Invocation {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                run_id: "run".into(),
+                invocation_id: "invocation".into(),
+            },
+            catalog,
+            ToolMode::Direct,
+            CodeExecutor::new(maka_code_runtime::CellLimits::default()).unwrap(),
+            LoadedTools::temporary().unwrap(),
+        );
+        let request = tools.capture(".", CancellationToken::new()).await.unwrap();
+        let definitions = request.definitions();
+        assert_eq!(definitions.len(), 1);
+        assert!(Arc::ptr_eq(&definition, &definitions[0]));
+
+        let policy = PreparationPolicy::default();
+        let resources = ModelPreparationResources::new(PreparationPolicy {
+            progress_bytes: policy.work_bytes,
+            ..policy
+        })
+        .unwrap();
+        let resident = resources
+            .reserve_staging(1)
+            .await
+            .unwrap()
+            .promote(policy.resident_bytes)
+            .await
+            .unwrap();
+        let mut prompt = capture(&log, selection, resources.clone()).await;
+        let provider = provider();
+        let options = serde_json::Value::Null;
+        let cancellation = CancellationToken::new();
+        let owners = Arc::strong_count(&definition);
+        {
+            let work = resources.acquire_work().await.unwrap();
+            let compilation = async {
+                let attempt_definitions = request.definitions();
+                assert!(Arc::ptr_eq(&definition, &attempt_definitions[0]));
+                prompt
+                    .compile_wire(
+                        Language::En,
+                        &provider,
+                        &options,
+                        &attempt_definitions,
+                        &cancellation,
+                    )
+                    .await
+            };
+            tokio::pin!(compilation);
+            assert!(matches!(poll!(&mut compilation), Poll::Pending));
+            let counted = resources.acquire_work();
+            tokio::pin!(counted);
+            assert!(matches!(poll!(&mut counted), Poll::Pending));
+            drop(work);
+            let counted = tokio::select! {
+                result = &mut compilation => panic!("resident admission must wait: {result:?}"),
+                result = &mut counted => result.unwrap(),
+            };
+            // The sole work envelope is released only after counting, before promotion.
+            assert!(matches!(poll!(&mut compilation), Poll::Pending));
+            assert!(Arc::strong_count(&definition) > owners);
+            cancellation.cancel();
+            assert!(matches!(compilation.await, Err(RunError::Cancelled)));
+            drop(counted);
+        }
+        assert_eq!(Arc::strong_count(&definition), owners);
+        drop(resident);
+        prompt.close().await.unwrap();
+        drop(prompt);
+        drop(definitions);
+        drop(request);
+        tools.shutdown().await.unwrap();
+        drop(tools);
+        drop(definition);
+        assert!(weak.upgrade().is_none());
+        drop(log);
+        execution.finish();
+        root.shutdown().await.unwrap();
+    })
+    .await
+    .expect("blocked wire admission must release shared definitions on cancellation");
+}

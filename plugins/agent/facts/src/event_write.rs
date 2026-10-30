@@ -25,6 +25,7 @@ use std::{sync::Arc, time::SystemTime};
 /// One checked transaction submission: successful facts cannot omit their bytes.
 #[derive(Clone, Debug)]
 pub struct EventWrite {
+    retry_consumption: Option<crate::model_retry::ModelRetryConsumption>,
     composition: Option<crate::composition::CompositionEvidence>,
     quote: Option<crate::pricing::Quote>,
     event: Arc<RuntimeEvent>,
@@ -61,6 +62,26 @@ impl ProjectionArtifactWrite {
 }
 
 impl EventWrite {
+    /// Carry exact retry ownership into the request's atomic append.
+    pub fn with_model_retry_consumption(
+        mut self,
+        evidence: crate::model_retry::ModelRetryConsumption,
+    ) -> Result<Self, CommitError> {
+        if !matches!(self.event.fact, Fact::ModelRequested { .. })
+            || evidence.checkpoint_id.is_empty()
+        {
+            return Err(CommitError::Rejected(
+                "retry consumption requires a model request and checkpoint identity".into(),
+            ));
+        }
+        self.retry_consumption = Some(evidence);
+        Ok(self)
+    }
+
+    pub fn model_retry_consumption(&self) -> Option<&crate::model_retry::ModelRetryConsumption> {
+        self.retry_consumption.as_ref()
+    }
+
     pub fn plain(event: RuntimeEvent) -> Result<Self, CommitError> {
         match &event.fact {
             Fact::ModelCompleted { output, .. } => {
@@ -250,6 +271,7 @@ impl EventWrite {
             ));
         }
         Ok(Self {
+            retry_consumption: None,
             composition: None,
             quote: None,
             event: Arc::new(event),
@@ -278,6 +300,7 @@ impl EventWrite {
         };
         Ok((
             Self {
+                retry_consumption: None,
                 composition: None,
                 quote: None,
                 event: Arc::new(RuntimeEvent {

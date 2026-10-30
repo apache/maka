@@ -31,13 +31,14 @@ use maka_provider_protocol::responses::{
     request::{Content, Input, Reasoning, SearchKind, Tool},
 };
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 /// Canonical projection for Responses. Network state belongs to the session.
 pub struct Request<'a> {
     pub language: Language,
     pub model: &'a str,
     pub prompt: &'a [Message],
-    pub tools: &'a [ToolDefinition],
+    pub tools: &'a [Arc<ToolDefinition>],
     pub options: &'a Value,
     pub max_output_tokens: Option<u64>,
     pub plaintext: Option<PlaintextResponses>,

@@ -35,7 +35,7 @@ pub(super) struct Job {
     mode: CheckpointMode,
     prompt: crate::prepared_prompt::PreparedPrompt,
     surface: Arc<crate::request_composition::Surface>,
-    definitions: Vec<maka_model::ToolDefinition>,
+    definitions: Vec<Arc<maka_model::ToolDefinition>>,
     instruction: crate::prepared_prompt::OwnedOverlay,
 }
 
@@ -248,6 +248,8 @@ impl Job {
                     cancellation,
                     &mut false,
                     &mut None,
+                    &mut None,
+                    None,
                 )
                 .await;
                 let output = match result {
@@ -308,7 +310,7 @@ async fn reserve_summary(
     prompt: &crate::prepared_prompt::PreparedPrompt,
     instruction: &crate::prepared_prompt::OwnedOverlay,
     input: &RunSettings,
-    definitions: &[maka_model::ToolDefinition],
+    definitions: &[Arc<maka_model::ToolDefinition>],
     tokens: u64,
     cancellation: &CancellationToken,
 ) -> Result<(), RunError> {

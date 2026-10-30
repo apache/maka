@@ -401,7 +401,7 @@ async fn native_approval_releases_worker_and_resumes_original_operation_once() {
                 .unwrap();
         }
         for _ in 0..2 {
-            fixture.owner.schedule_native_approvals().await.unwrap();
+            fixture.owner.schedule_activations(now()).await.unwrap();
         }
         assert!(
             fixture
@@ -411,7 +411,7 @@ async fn native_approval_releases_worker_and_resumes_original_operation_once() {
                 .await
                 .preparing
                 .contains_key(&session),
-            "ready approval must retain its waiter while ordinary admission holds the gate"
+            "ready activation must retain its waiter while ordinary admission holds the gate"
         );
         assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
         drop(held_admission);
@@ -1525,4 +1525,396 @@ async fn owner_shutdown_retains_blocking_continuation_preparation_and_real_work_
         eprintln!("approval fixture: Host shutdown complete session={session}");
         fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
+}
+
+#[tokio::test]
+async fn frozen_retry_preparation_reacquires_current_ceiling_and_rejects_changed_bindings() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let counter = Counter::new(Behavior::Returned);
+        let mut setup = Setup::native(counter.clone(), true);
+        setup.confirmation = contract::ToolConfirmation::Required;
+        let fixture = Fixture::with_services(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            Some(setup),
+        )
+        .await;
+        let session = fixture.create("Frozen retry accepted capabilities").await;
+        fixture.send(&session).await.unwrap();
+        let mut socket = next_model_socket(&listener, &fixture, &session).await;
+        request(&mut socket).await;
+        tool_response(&mut socket).await;
+        pending_approval(&fixture, &session).await;
+        let checkpoint = parked(&fixture, &session).await;
+        let invocation = &checkpoint.checkpoint.invocation;
+        let accepted = &checkpoint.checkpoint.native_basis;
+        let accepted_basis =
+            Arc::new(serde_json::from_value::<MessageBasis>(accepted.clone()).unwrap());
+        let cancellation = CancellationToken::new();
+        let original = fixture
+            .owner
+            .prepare_frozen_retry(invocation, accepted_basis.clone(), &cancellation)
+            .await
+            .unwrap();
+        let current = fixture.owner.session(&session).await.unwrap();
+        let boundary_revision = current.configuration.boundary_revision + 1;
+        let changed = fixture
+            .session(&session)
+            .await
+            .update_session_metadata(
+                &session,
+                current.revision,
+                move |configuration: &mut StoredSessionConfiguration| {
+                    configuration.permissions = WorkspacePermissions {
+                        access: WorkspaceAccess::ReadOnly,
+                        request_permissions: false,
+                    };
+                    configuration.boundary_revision = boundary_revision;
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            changed,
+            maka_event_log::sessions::SessionMutation::Committed(_)
+        ));
+        let resumed = fixture
+            .owner
+            .prepare_frozen_retry(invocation, accepted_basis.clone(), &cancellation)
+            .await
+            .unwrap();
+        assert_eq!(
+            resumed.settings.configuration.sandbox_mode,
+            SandboxMode::ReadOnly
+        );
+        assert_eq!(
+            resumed.settings.configuration.approval_policy,
+            ApprovalPolicy::Never
+        );
+        assert_eq!(
+            resumed.settings.configuration.boundary_revision,
+            boundary_revision
+        );
+        assert_eq!(
+            resumed.settings.configuration.workspace_binding,
+            original.settings.configuration.workspace_binding
+        );
+        assert_eq!(
+            resumed
+                .settings
+                .native_activation_basis
+                .as_ref()
+                .unwrap()
+                .checkpoint_value()
+                .unwrap(),
+            *accepted
+        );
+
+        let mut replaced: MessageBasis = serde_json::from_value(accepted.clone()).unwrap();
+        replaced.binding.id = Uuid::new_v4();
+        let replaced = Arc::new(replaced);
+        assert!(
+            matches!(fixture.owner.prepare_frozen_retry(invocation, replaced, &cancellation).await,
+            Err(RunError::InvalidInput(reason)) if reason == "agent_session_configuration_changed")
+        );
+
+        super::super::selection::edit(&fixture, |changes| changes.enabled = Some(false)).await;
+        assert!(
+            fixture
+                .owner
+                .prepare_frozen_retry(invocation, accepted_basis.clone(), &cancellation)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            counter.effects.load(Ordering::SeqCst),
+            0,
+            "reacquiring capabilities must not execute an old accepted tool call"
+        );
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn actual_host_startup_resumes_due_model_retry_once() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let setup = Setup::javascript();
+        let policy = setup.policy();
+        let mut fixture = Fixture::with_services(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            Some(setup),
+        )
+        .await;
+        let session = fixture
+            .create("Restart due model retry through Native dispatcher")
+            .await;
+        fixture.send(&session).await.unwrap();
+        let (prime, basis) = {
+            let runs = fixture.owner.runs.state().await;
+            let control = runs.controls.get(&session).unwrap();
+            (control.invocation.clone(), control.basis.clone())
+        };
+        let store = fixture.session(&session).await;
+        let mut commits = store.subscribe_commits().unwrap();
+        let mut socket = next_model_socket(&listener, &fixture, &session).await;
+        request(&mut socket).await;
+        response(&mut socket).await;
+        drop(socket);
+        loop {
+            if stored_facts(&fixture, &session).await.iter().any(|stored| {
+                stored.event.invocation == prime
+                    && matches!(stored.event.fact, Fact::InvocationEnded { .. })
+            }) {
+                break;
+            }
+            commits.changed().await.unwrap();
+        }
+        fixture.drained().await;
+        let configuration = store
+            .invocation_configuration(&prime)
+            .await
+            .unwrap()
+            .unwrap();
+        let held_admission = fixture.owner.runs.ordered(&session).await;
+        let identity = Uuid::new_v4();
+        let invocation = maka_agent_facts::event::Invocation {
+            session_id: session.clone(),
+            turn_id: format!("retry-turn-{identity}"),
+            run_id: format!("retry-run-{identity}"),
+            invocation_id: format!("retry-invocation-{identity}"),
+        };
+        let source = crate::model::Source::restore(
+            fixture.owner.configuration.clone(),
+            fixture.owner.credentials.clone(),
+            basis.model.clone().unwrap(),
+            session.clone(),
+            fixture.owner.revision.clone(),
+        )
+        .unwrap();
+        let prepared = source.capture().await.unwrap();
+        let tools = fixture
+            .owner
+            .selected_tools(
+                &basis,
+                configuration.tool_discovery,
+                configuration.editing_tools,
+            )
+            .unwrap();
+        let input = maka_agent_engine::RunInput {
+            invocation: invocation.clone(),
+            model_source: Some(Arc::new(source)),
+            model_revision: Some(prepared.revision),
+            provider_id: prepared.provider_id,
+            context: prepared.context,
+            provider: prepared.provider,
+            provider_options: prepared.options,
+            main_output_limit: prepared.main_output_limit,
+            supports_vision: prepared.supports_vision,
+            request_fingerprint: Some(basis.fingerprint.clone()),
+            native_activation_basis: Some(basis),
+            configuration,
+            work: maka_agent_engine::RunWork::Message {
+                message: "Hello".into(),
+                source_messages: vec![],
+                tools,
+                allow_prior_unknown: false,
+            },
+        };
+        let seeded = maka_agent_engine::retry_fixture::seed_due_model_retry(
+            &fixture.owner.engine,
+            store.clone(),
+            input,
+        )
+        .await
+        .unwrap();
+        let deployment = fixture
+            .app
+            .client()
+            .snapshot()
+            .effective
+            .unwrap()
+            .deployment;
+        fixture.app.shutdown().await.unwrap();
+        drop(held_admission);
+        let preserved = store
+            .activation_checkpoint(&session)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(preserved.checkpoint, seeded.checkpoint.checkpoint);
+        assert_eq!(preserved.receipt, seeded.checkpoint.receipt);
+        assert_eq!(fixture.store.recover_invocations().await.unwrap(), 0);
+        let recovered = store
+            .activation_checkpoint(&session)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.checkpoint, seeded.checkpoint.checkpoint);
+        assert_eq!(recovered.receipt, seeded.checkpoint.receipt);
+        assert!(
+            futures_util::FutureExt::now_or_never(listener.accept()).is_none(),
+            "old Host must join without sending the seeded historical request"
+        );
+
+        let mut native = NativeRegistry::default();
+        provide_all(&mut native).unwrap();
+        maka_settings_native::provide(&mut native, bundled_catalog()).unwrap();
+        fixture.app = Application::start_from_store(
+            fixture.store.clone(),
+            deployment,
+            native,
+            fixture.issuer.clone(),
+            Arc::new(Grant(fixture.issuer.clone(), Some(policy))),
+            Some(maka_host_js::factory(Default::default())),
+        )
+        .await
+        .unwrap();
+        fixture.app.ready().await.unwrap();
+        let mut socket = loop {
+            assert!(
+                !stored_facts(&fixture, &session)
+                    .await
+                    .iter()
+                    .any(|stored| stored.event.invocation == invocation
+                        && matches!(stored.event.fact, Fact::InvocationEnded { .. })),
+                "retry terminated before its actual transport send"
+            );
+            tokio::select! {
+                socket = listener.accept() => break socket.unwrap().0,
+                changed = commits.changed() => changed.unwrap(),
+            }
+        };
+        let sent = request(&mut socket).await;
+        assert_eq!(sent["model"], "fixture-model");
+        response(&mut socket).await;
+        drop(socket);
+        loop {
+            if stored_facts(&fixture, &session).await.iter().any(|stored| {
+                stored.event.invocation == invocation
+                    && matches!(stored.event.fact, Fact::InvocationEnded { .. })
+            }) {
+                break;
+            }
+            commits.changed().await.unwrap();
+        }
+        fixture.app.shutdown().await.unwrap();
+        let events: Vec<_> = stored_facts(&fixture, &session)
+            .await
+            .into_iter()
+            .filter(|stored| stored.event.invocation == invocation)
+            .collect();
+        let requested: Vec<_> = events
+            .iter()
+            .filter(|stored| matches!(stored.event.fact, Fact::ModelRequested { .. }))
+            .collect();
+        assert_eq!(
+            requested.len(),
+            2,
+            "one historical request and exactly one resumed send"
+        );
+        assert_eq!(requested[0].event.id, seeded.request_event_id);
+        assert_ne!(requested[0].event.id, requested[1].event.id);
+        let mut resumed = requested[1].event.fact.clone();
+        match (&requested[0].event.fact, &mut resumed) {
+            (
+                Fact::ModelRequested {
+                    step_id: original_step,
+                    input_digest,
+                    ..
+                },
+                Fact::ModelRequested {
+                    step_id: resumed_step,
+                    ..
+                },
+            ) => {
+                assert_ne!(original_step.as_str(), resumed_step.as_str());
+                assert_eq!(input_digest, &seeded.input_digest);
+                *resumed_step = original_step.clone();
+            }
+            _ => unreachable!("both canonical requests were selected above"),
+        }
+        assert_eq!(
+            requested[0].event.fact, resumed,
+            "frozen source, input and route evidence must be preserved"
+        );
+        assert_eq!(
+            store
+                .request_composition(&session, &requested[0].event.id)
+                .await
+                .unwrap()
+                .unwrap(),
+            store
+                .request_composition(&session, &requested[1].event.id)
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|stored| matches!(
+                    stored.event.fact,
+                    Fact::ModelInterrupted {
+                        status: maka_agent_facts::event::ModelInterruption::RetryableFailure,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|stored| matches!(stored.event.fact, Fact::ModelCompleted { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|stored| matches!(
+                    stored.event.fact,
+                    Fact::InvocationEnded {
+                        outcome: maka_agent_facts::event::InvocationOutcome::Completed
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|stored| matches!(stored.event.fact, Fact::InvocationEnded { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|stored| matches!(stored.event.fact, Fact::ToolDispatched { .. }))
+        );
+        assert!(
+            store
+                .activation_checkpoint(&session)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            futures_util::FutureExt::now_or_never(listener.accept()).is_none(),
+            "joined Host must not have produced an additional transport send"
+        );
+        fixture.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }

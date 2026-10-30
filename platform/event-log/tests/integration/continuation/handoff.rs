@@ -76,6 +76,10 @@ async fn handoff_rejects_unresolved_provider_effects_but_accepts_effect_free_sum
             &RuntimeEvent::new(
                 source.invocation.clone(),
                 Fact::ModelRequested {
+                    source_capture: maka_agent_facts::event::SourceCapture {
+                        publication_watermark: 0,
+                        prior_unknown: false,
+                    },
                     context_breakdown: None,
                     item_acceptance: false,
                     step_id: "step".into(),

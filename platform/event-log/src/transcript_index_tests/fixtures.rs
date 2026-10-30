@@ -68,6 +68,10 @@ pub(super) fn opening() -> Fact {
 }
 pub(super) fn request(session: &str) -> Fact {
     Fact::ModelRequested {
+        source_capture: maka_agent_facts::event::SourceCapture {
+            publication_watermark: 0,
+            prior_unknown: false,
+        },
         context_breakdown: None,
         item_acceptance: false,
         purpose: maka_agent_facts::context::ModelPurpose::Main,

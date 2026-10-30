@@ -47,4 +47,13 @@ pub struct ActivationCheckpoint {
     pub through: u64,
     pub engine: Value,
     pub native_basis: Value,
+    pub suspension: ActivationSuspension,
+}
+
+/// The durable reason that owns the next activation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ActivationSuspension {
+    NativeApprovals,
+    ModelRetry { plan: crate::model_retry::RetryPlan },
 }

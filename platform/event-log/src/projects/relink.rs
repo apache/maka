@@ -179,7 +179,7 @@ impl EventLog {
                     if updated_bindings != 0 {
                         commits.metadata_scope(&owner_scope);
                         if permission_changed {
-                            commits.native_approvals();
+                            commits.activations();
                         }
                     }
                     Ok(ProjectRelink {

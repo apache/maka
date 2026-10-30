@@ -387,11 +387,15 @@ async fn captured_source_reads_admitted_canonical_bytes_at_its_frozen_cut() {
         .await
         .unwrap();
     let context = session
-        .capture_model_context("session", Some("invocation"), 100, 65536)
+        .read_model_view("session", Some("invocation"))
         .await
         .unwrap();
     session
         .append(&write(Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: context.selection.captured_through,
+                prior_unknown: context.selection.prior_unknown,
+            },
             item_acceptance: true,
             step_id: "step".into(),
             model_id: "model".into(),

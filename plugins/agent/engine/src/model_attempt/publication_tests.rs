@@ -216,6 +216,10 @@ impl Fixture {
                 },
             },
             Fact::ModelRequested {
+                source_capture: maka_agent_facts::event::SourceCapture {
+                    publication_watermark: 0,
+                    prior_unknown: false,
+                },
                 item_acceptance: true,
                 effective_source_digest: None,
                 purpose: ModelPurpose::Main,

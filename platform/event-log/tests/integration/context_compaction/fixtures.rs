@@ -106,6 +106,10 @@ pub(super) fn request(id: &str, source: &ModelContextSource) -> EventWrite {
     event(
         id,
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             effective_source_digest: Some(source.effective_source_digest.clone()),
@@ -144,6 +148,10 @@ pub(super) async fn closed(
     log.append(&event(
         id,
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             effective_source_digest: None,

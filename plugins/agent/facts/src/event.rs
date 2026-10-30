@@ -24,6 +24,14 @@ use serde_json::Value;
 use std::time::SystemTime;
 use uuid::Uuid;
 
+/// Projection visibility captured by the source reader, before request publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceCapture {
+    pub publication_watermark: u64,
+    pub prior_unknown: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Invocation {
     pub session_id: String,
@@ -131,6 +139,7 @@ pub enum Fact {
         model_id: String,
         source_scope: LogScope,
         source_high_water: u64,
+        source_capture: SourceCapture,
         source_digest: String,
         input_digest: String,
         route_identity: String,

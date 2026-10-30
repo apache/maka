@@ -220,15 +220,6 @@ async fn native_process_partial_permission_never_launches_and_full_once_grant_do
     .await
     .unwrap();
 }
-fn alive(pid: u32) -> bool {
-    std::process::Command::new("/bin/kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap()
-        .success()
-}
 #[tokio::test]
 async fn native_process_revocation_or_stop_withdraws_permission_without_launch() {
     tokio::time::timeout(Duration::from_secs(90), async {

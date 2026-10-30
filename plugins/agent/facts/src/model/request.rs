@@ -22,6 +22,7 @@ use crate::tools::ToolDefinition;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -101,7 +102,7 @@ pub struct Request {
     pub language: crate::language::Language,
     pub provider: Provider,
     pub prompt: Prompt,
-    pub tools: Vec<ToolDefinition>,
+    pub tools: Vec<Arc<ToolDefinition>>,
     pub provider_options: Value,
     pub max_output_tokens: Option<u64>,
 }
