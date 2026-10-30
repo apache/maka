@@ -82,7 +82,7 @@ import type {
 } from '../../../../products/maka/workbench/app/modelSelection';
 import { CompactionDivider } from '../../../../products/maka/workbench/app/CompactionDivider';
 import { createBotTranscript } from '../../../../products/maka/workbench/app/botTranscript';
-import { BotReply } from '../../../../products/maka/workbench/app/BotReply';
+import { BotReply, BotWorking } from '../../../../products/maka/workbench/app/BotReply';
 import {
   MessageRow,
   type MessageViewState,
@@ -466,7 +466,8 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'summary'; key: string; turnId: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
     | { kind: 'row'; key: string; rowId: string; repeats?: number }
-    | { kind: 'bot'; key: string; turnId: string };
+    | { kind: 'bot'; key: string; turnId: string }
+    | { kind: 'botWorking'; key: string };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
@@ -524,7 +525,11 @@ export function Conversation(props: ConversationProps) {
         result.push({ kind: 'row', key: entry.key, rowId: entry.rowId, repeats: entry.repeats });
       }
     }
-    if (botChat) speak();
+    if (botChat) {
+      speak();
+      // Chat hides the model's own output, so show that the Bot is at work.
+      if (run() === 'running') result.push({ kind: 'botWorking', key: 'bot/working' });
+    }
     return result;
   });
   let previouslyVisible = new Set<string>();
@@ -2519,6 +2524,19 @@ export function Conversation(props: ConversationProps) {
                           />
                         );
                       }
+                      if (initial.kind === 'botWorking')
+                        return (
+                          <BotWorking
+                            detail={() => {
+                              const tool = latestToolActivity(
+                                toolActivity(),
+                                invocation(),
+                                runTurn(),
+                              );
+                              return tool ? `${tool.name}` : '';
+                            }}
+                          />
+                        );
                       if (initial.kind === 'bot')
                         return (
                           <BotReply

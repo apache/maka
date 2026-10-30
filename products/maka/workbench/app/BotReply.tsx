@@ -21,7 +21,9 @@ import { View } from 'nsh';
 import { TextView } from 'nsh/base';
 import type { BotTranscriptMessage } from './botTranscript';
 import { tr } from './locale';
-import { C, bodyTextStyle } from './ui';
+import { Text } from 'nsh';
+import { Icon } from './Icon';
+import { C, bodyTextStyle, captionTextStyle } from './ui';
 
 /** Messages the Bot sent with `SendUser`, shown as its reply in the Chat view. */
 export function BotReply(props: {
@@ -50,6 +52,18 @@ export function BotReply(props: {
           />
         )}
       </Each>
+    </View>
+  );
+}
+
+/** Shown at the end of the Bot's Chat while it is working on a Turn. */
+export function BotWorking(props: { detail: () => string }) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }}>
+      <Icon name="activity" color={C.accent} />
+      <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
+        {props.detail() ? `${tr('Working…')} · ${props.detail()}` : tr('Working…')}
+      </Text>
     </View>
   );
 }
