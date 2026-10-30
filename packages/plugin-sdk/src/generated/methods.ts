@@ -1297,6 +1297,11 @@ export interface AgentBotOutboxOutput_AgentBotMessage {
    * Milliseconds since the Unix epoch when the message was recorded.
    */
   at: number;
+  /**
+   * The Turn whose work sent this message, so clients can show it as that
+   * Turn's reply.
+   */
+  turnId?: string | null;
 }
 /**
  * Canonical physical execution receipt, independent of the current Session tip.
@@ -1371,6 +1376,11 @@ export interface AgentWatchBotOutboxOutput_AgentBotMessage {
    * Milliseconds since the Unix epoch when the message was recorded.
    */
   at: number;
+  /**
+   * The Turn whose work sent this message, so clients can show it as that
+   * Turn's reply.
+   */
+  turnId?: string | null;
 }
 export interface SettingsUpdateInput_ConnectionVersionBasis {
   connectionId: string;

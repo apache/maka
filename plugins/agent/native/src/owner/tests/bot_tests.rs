@@ -274,6 +274,15 @@ async fn send_user_is_the_only_voice_idempotent_and_durable() {
         let texts: Vec<_> = page["messages"].as_array().unwrap().iter().map(|m| (m["sequence"].as_u64().unwrap(), m["text"].as_str().unwrap().to_owned())).collect();
         assert_eq!(texts, vec![(1, "CI is green.".to_owned()), (2, "PR #123 needs review.".to_owned())]);
         assert!(!page.to_string().contains("Internal reasoning"));
+        let turn = f.owner.runs.lock().await.controls.get(&bot).map(|c| c.invocation.turn_id.clone());
+        assert!(turn.is_none(), "the turn has ended");
+        let turns: std::collections::BTreeSet<_> = page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["turnId"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(turns.len(), 1, "both messages belong to the turn that sent them");
         assert_eq!(f.query("botOutbox", json!({"after":1})).await.unwrap()["messages"].as_array().unwrap().len(), 1);
 
         // The outbox and the Bot record survive a restart.

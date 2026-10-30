@@ -27,36 +27,16 @@ export type BotTranscriptMessage = {
   index: number;
   text: string;
   at: number;
+  turnId?: string;
 };
 
-const SEND_USER = 'SendUser';
-const MESSAGE_ID = /"messageId"\s*:\s*"((?:[^"\\]|\\.)*)"/;
-
-/** The `messageId` of a `SendUser` call row, read from its (possibly partial) arguments. */
-export function sendUserMessageId(row: { role: string; text: string; tool?: any }): string | null {
-  if (row.role !== 'tool_call' || row.tool?.call?.name !== SEND_USER) return null;
-  try {
-    const value = JSON.parse(row.text);
-    if (typeof value?.messageId === 'string') return value.messageId.trim();
-  } catch {
-    // Partial arguments: fall back to the field itself.
-  }
-  const match = MESSAGE_ID.exec(row.text);
-  if (!match) return null;
-  try {
-    return (JSON.parse(`"${match[1]}"`) as string).trim();
-  } catch {
-    return null;
-  }
-}
-
 /**
- * What the Bot deliberately told its user, keyed by `SendUser` messageId. Only the
+ * What the Bot deliberately told its user, grouped by the Turn that sent it. Only the
  * Bot Session subscribes; other Sessions make one head lookup and stop.
  */
 export function createBotTranscript(host: Host, sessionId: string) {
   const isBot = signal(false);
-  const byMessage = signal<ReadonlyMap<string, BotTranscriptMessage[]>>(new Map());
+  const byTurn = signal<ReadonlyMap<string, BotTranscriptMessage[]>>(new Map());
   let alive = true;
   let stream: { close(): Promise<void> } | null = null;
   let cursor = 0;
@@ -64,12 +44,13 @@ export function createBotTranscript(host: Host, sessionId: string) {
     while (alive && cursor < through) {
       const page = await host.query('agent', 'botOutbox', { after: cursor });
       if (!alive || page.sessionId !== sessionId || page.messages.length === 0) return;
-      const next = new Map(byMessage());
+      const next = new Map(byTurn());
       for (const message of page.messages) {
-        next.set(message.messageId, [...(next.get(message.messageId) ?? []), message]);
         cursor = message.sequence;
+        if (!message.turnId) continue;
+        next.set(message.turnId, [...(next.get(message.turnId) ?? []), message]);
       }
-      byMessage.set(next);
+      byTurn.set(next);
       if (page.nextAfter === null || page.nextAfter === undefined) return;
     }
   };
@@ -95,7 +76,7 @@ export function createBotTranscript(host: Host, sessionId: string) {
   })();
   return {
     isBot: () => isBot(),
-    messages: (messageId: string) => byMessage().get(messageId),
+    forTurn: (turnId: string) => byTurn().get(turnId) ?? [],
     close() {
       alive = false;
       const previous = stream;

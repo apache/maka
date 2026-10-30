@@ -263,6 +263,7 @@ impl Bot {
     pub(super) async fn append(
         &self,
         session: &str,
+        turn: &str,
         message_id: &str,
         fingerprint: &str,
         texts: &[String],
@@ -322,6 +323,7 @@ impl Bot {
                             index: index as u32,
                             text: text.clone(),
                             at,
+                            turn_id: Some(turn.into()),
                         },
                     )
                     .map_err(storage)?,
@@ -470,6 +472,7 @@ impl ToolPreparer for Bot {
                             .bot
                             .append(
                                 &context.invocation.session_id,
+                                &context.invocation.turn_id,
                                 &message_id,
                                 &fingerprint,
                                 &texts,

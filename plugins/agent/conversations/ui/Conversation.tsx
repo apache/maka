@@ -81,10 +81,7 @@ import type {
   ModelDetails,
 } from '../../../../products/maka/workbench/app/modelSelection';
 import { CompactionDivider } from '../../../../products/maka/workbench/app/CompactionDivider';
-import {
-  createBotTranscript,
-  sendUserMessageId,
-} from '../../../../products/maka/workbench/app/botTranscript';
+import { createBotTranscript } from '../../../../products/maka/workbench/app/botTranscript';
 import { BotReply } from '../../../../products/maka/workbench/app/BotReply';
 import {
   MessageRow,
@@ -469,22 +466,27 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'summary'; key: string; turnId: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
     | { kind: 'row'; key: string; rowId: string; repeats?: number }
-    | { kind: 'bot'; key: string; messageId: string };
+    | { kind: 'bot'; key: string; turnId: string };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
     const botChat = bot.isBot() && reading() === 'chat';
-    const spoken = new Set<string>();
-    const speak = (row: { role: string; text: string; tool?: any } | undefined) => {
-      const messageId = row ? sendUserMessageId(row) : null;
-      if (!messageId || spoken.has(messageId) || !bot.messages(messageId)?.length) return;
-      spoken.add(messageId);
-      result.push({ kind: 'bot', key: `bot/${messageId}`, messageId });
+    // The Bot's reply to a Turn is what it sent with SendUser during that Turn,
+    // shown after the Turn's own entries.
+    let openTurn: string | undefined;
+    const speak = () => {
+      if (openTurn !== undefined && bot.forTurn(openTurn).length > 0)
+        result.push({ kind: 'bot', key: `bot/${openTurn}`, turnId: openTurn });
+      openTurn = undefined;
     };
     for (const entry of projection().entries) {
       const row = entry.kind === 'message' ? projection().rowsById.get(entry.rowId) : undefined;
       const turnId = entry.kind === 'process' ? entry.turnId : row?.turnId;
       const turn = turnId ? projection().turns.get(turnId) : undefined;
+      if (botChat && turnId !== openTurn) {
+        speak();
+        openTurn = turnId;
+      }
       if (
         turn &&
         (entry.kind === 'process' ||
@@ -502,14 +504,11 @@ export function Conversation(props: ConversationProps) {
         });
       }
       if (entry.kind === 'process') {
-        if (botChat) for (const rowId of entry.rowIds) speak(projection().rowsById.get(rowId));
         if (!turn || !turnExpanded(turn)) continue;
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
-        if (botChat && (row.role === 'assistant' || sendUserMessageId(row) !== null)) {
-          speak(row);
-          continue;
-        }
+        // The model's own text stays in Trajectory for the Bot.
+        if (botChat && row.role === 'assistant') continue;
         if (entry.processTurnId && turn && !turnExpanded(turn)) continue;
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
@@ -525,6 +524,7 @@ export function Conversation(props: ConversationProps) {
         result.push({ kind: 'row', key: entry.key, rowId: entry.rowId, repeats: entry.repeats });
       }
     }
+    if (botChat) speak();
     return result;
   });
   let previouslyVisible = new Set<string>();
@@ -2522,7 +2522,7 @@ export function Conversation(props: ConversationProps) {
                       if (initial.kind === 'bot')
                         return (
                           <BotReply
-                            messages={() => bot.messages(initial.messageId) ?? []}
+                            messages={() => bot.forTurn(initial.turnId)}
                             openLink={props.openLink}
                             userScroll={() => cancelNavigation()}
                           />

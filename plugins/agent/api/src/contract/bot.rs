@@ -92,6 +92,10 @@ pub struct BotMessage {
     pub text: String,
     /// Milliseconds since the Unix epoch when the message was recorded.
     pub at: i64,
+    /// The Turn whose work sent this message, so clients can show it as that
+    /// Turn's reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]

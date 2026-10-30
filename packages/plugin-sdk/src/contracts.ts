@@ -322,6 +322,11 @@ export const contracts = {
                     type: 'integer',
                     format: 'int64',
                   },
+                  turnId: {
+                    description:
+                      "The Turn whose work sent this message, so clients can show it as that\nTurn's reply.",
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
                 required: ['sequence', 'messageId', 'index', 'text', 'at'],
@@ -22905,6 +22910,11 @@ export const contracts = {
                     description: 'Milliseconds since the Unix epoch when the message was recorded.',
                     type: 'integer',
                     format: 'int64',
+                  },
+                  turnId: {
+                    description:
+                      "The Turn whose work sent this message, so clients can show it as that\nTurn's reply.",
+                    type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
