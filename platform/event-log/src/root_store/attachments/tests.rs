@@ -354,19 +354,14 @@ async fn cross_partition_image_freezes_at_target_consumption_and_survives_bundle
         .await
         .unwrap();
     let context = target
-        .capture_model_context(
-            target.id(),
-            Some(&invocation.invocation_id),
-            100_000,
-            64 * 1024 * 1024,
-        )
+        .read_model_view(target.id(), Some(&invocation.invocation_id))
         .await
         .unwrap();
     target
         .append(&event(Fact::ModelRequested {
             source_capture: maka_agent_facts::event::SourceCapture {
-                publication_watermark: 0,
-                prior_unknown: false,
+                publication_watermark: context.selection.captured_through,
+                prior_unknown: context.selection.prior_unknown,
             },
             context_breakdown: None,
             item_acceptance: false,

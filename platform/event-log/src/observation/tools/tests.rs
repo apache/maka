@@ -19,7 +19,8 @@
 
 use super::*;
 use maka_agent_facts::{
-    event::{Fact, Invocation, LogScope, RuntimeEvent, StoredEvent, ToolOutcome},
+    context::ModelPurpose,
+    event::{Fact, Invocation, LogScope, RuntimeEvent, SourceCapture, StoredEvent, ToolOutcome},
     input::InvocationInput,
     tool_call::ToolCallIdentity,
 };
@@ -100,11 +101,28 @@ async fn append(db: &mut SqliteConnection, fact: Fact) -> (u64, String) {
     (sequence, id)
 }
 
-fn request(step: &str, acceptance: bool, purpose: &str) -> Fact {
-    serde_json::from_value(json!({"kind":"model_requested","step_id":step,"model_id":"test",
-        "item_acceptance":acceptance,"purpose":purpose,
-        "source_scope":serde_json::to_value(LogScope::Session{id:"session".into()}).unwrap(),
-        "source_high_water":0,"source_digest":"fixture","input_digest":"fixture","route_identity":"fixture"})).unwrap()
+fn request(step: &str, acceptance: bool) -> Fact {
+    Fact::ModelRequested {
+        source_capture: SourceCapture {
+            publication_watermark: 0,
+            prior_unknown: false,
+        },
+        context_breakdown: None,
+        item_acceptance: acceptance,
+        purpose: ModelPurpose::Main,
+        context: None,
+        checkpoint_event_id: None,
+        step_id: step.into(),
+        model_id: "test".into(),
+        source_scope: LogScope::Session {
+            id: "session".into(),
+        },
+        source_high_water: 0,
+        source_digest: "fixture".into(),
+        effective_source_digest: None,
+        input_digest: "fixture".into(),
+        route_identity: "fixture".into(),
+    }
 }
 
 fn call(id: &str, provider: bool) -> Value {
@@ -200,7 +218,7 @@ fn expected(sequence: u64, operation: &str) -> (u64, String) {
 async fn settled_round(db: &mut SqliteConnection, index: usize) {
     let step = format!("history-{index}");
     let operation = format!("{step}:call");
-    append(db, request(&step, false, "main")).await;
+    append(db, request(&step, false)).await;
     append(
         db,
         complete(
@@ -221,7 +239,7 @@ async fn settled_same_run_history_does_not_grow_active_seed_work() {
         for index in 0..history {
             settled_round(&mut db, index).await;
         }
-        append(&mut db, request("pending:step", true, "main")).await;
+        append(&mut db, request("pending:step", true)).await;
         let (start, _) = append(
             &mut db,
             observed("pending:step", 0, call("tiny:call", false)),
@@ -258,7 +276,7 @@ async fn approval_replay_keeps_original_call_across_step_end_dispatch_and_interr
         .filename(directory.path().join("seeds.sqlite"))
         .create_if_missing(true);
     let mut db = initialize(SqliteConnection::connect_with(&options).await.unwrap()).await;
-    append(&mut db, request("approval:step", true, "main")).await;
+    append(&mut db, request("approval:step", true)).await;
     let (start, id) = append(
         &mut db,
         observed("approval:step", 0, call("call:original", false)),
@@ -296,7 +314,7 @@ async fn approval_replay_keeps_original_call_across_step_end_dispatch_and_interr
     append(&mut db, settle(operation)).await;
     assert_eq!(seeds(&mut db).await, vec![]);
 
-    append(&mut db, request("interrupted", true, "main")).await;
+    append(&mut db, request("interrupted", true)).await;
     append(
         &mut db,
         observed("interrupted", 0, call("never-dispatched", false)),
@@ -339,7 +357,7 @@ async fn native_nested_and_rejected_tools_keep_their_original_seeds() {
         parent_tool_call_id: "host:sdk".into(),
     };
     let (child, _) = append(&mut db, cell).await;
-    append(&mut db, request("rejected", true, "main")).await;
+    append(&mut db, request("rejected", true)).await;
     append(&mut db, observed("rejected", 0, call("call", false))).await;
     append(
         &mut db,

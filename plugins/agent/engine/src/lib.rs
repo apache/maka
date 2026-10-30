@@ -361,9 +361,10 @@ impl RunContext {
             let effects = Arc::new(effects);
             let result = cleanup
                 .scope(async {
-                    let result = std::panic::AssertUnwindSafe(async {
+                    // Keep the worker future out of the tracking and cleanup wrapper frames.
+                    let result = std::panic::AssertUnwindSafe(Box::pin(async {
                         run(worker_cancellation.clone(), admitted, effects.clone()).await
-                    })
+                    }))
                     .catch_unwind()
                     .await
                     .unwrap_or_else(|_| {

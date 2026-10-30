@@ -419,7 +419,7 @@ async fn session_auxiliary_counts_once_and_bundle_import_uses_the_same_settlemen
         .await
         .unwrap();
     let captured = source
-        .capture_model_context("source", Some("invocation"), 100_000, 64 * 1024 * 1024)
+        .read_model_view("source", Some("invocation"))
         .await
         .unwrap();
     source
@@ -427,8 +427,8 @@ async fn session_auxiliary_counts_once_and_bundle_import_uses_the_same_settlemen
             event(
                 Fact::ModelRequested {
                     source_capture: maka_agent_facts::event::SourceCapture {
-                        publication_watermark: 0,
-                        prior_unknown: false,
+                        publication_watermark: captured.selection.captured_through,
+                        prior_unknown: captured.selection.prior_unknown,
                     },
                     context_breakdown: None,
                     item_acceptance: false,
