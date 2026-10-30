@@ -21,7 +21,8 @@ use super::support::{Fixture, ModelRequest, Options, ReplyGate};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui::{
     AppContext, Application, ApplicationHandle, Bounds, Focusable, Keystroke, Modifiers,
-    PlatformInput, TextInputTarget, WindowBounds, WindowHandle, WindowOptions, point, px, size,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, TextInputTarget,
+    WindowBounds, WindowHandle, WindowOptions, point, px, size,
 };
 use maka_app_client::Client;
 use maka_plugin_core::operation::{OperationOutcome, Receipt};
@@ -255,6 +256,49 @@ impl Desktop {
         self.target_after(picker).await;
     }
 
+    /// Where the window shows controls labelled `label`.
+    fn controls(&self, label: &str) -> Vec<Bounds<gpui::Pixels>> {
+        self.app.update(|cx| {
+            self.window
+                .update(cx, |view, _, _| view.pressable_bounds(label))
+                .unwrap()
+        })
+    }
+
+    /// Clicks the one control labelled `label` once the window shows it.
+    async fn press(&self, label: &str) {
+        let bounds = self
+            .until(&format!("no single control labelled {label}"), || {
+                let found = self.controls(label);
+                (found.len() == 1).then(|| found[0])
+            })
+            .await;
+        let position = bounds.center();
+        for input in [
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+        ] {
+            self.platform.dispatch_input(input).unwrap();
+            self.pump();
+        }
+    }
+
     async fn held(&self, gate: &ReplyGate) {
         self.wait(
             "the original Host result was not held",
@@ -476,6 +520,81 @@ async fn desktop_retries_a_failed_first_submission_in_the_same_session() {
     assert_eq!(sessions.len(), 2);
     assert!(sessions.iter().any(|entry| entry["id"] == session));
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_retries_a_failed_turn_in_place() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("RETRIED_IN_PLACE_MESSAGE").await;
+    desktop.key("enter", false);
+    let failed = desktop.request(&mut fixture).await;
+    failed
+        .http_error(
+            json!({"error":{"type":"invalid_request_error","message":"FIXTURE_TURN_FAILED"}}),
+        )
+        .await;
+    desktop.press("Retry").await;
+    let retry = desktop.request(&mut fixture).await;
+    let users: Vec<_> = retry.body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "user")
+        .collect();
+    assert!(
+        users
+            .last()
+            .is_some_and(|message| message.to_string().contains("RETRIED_IN_PLACE_MESSAGE")),
+        "{}",
+        retry.body
+    );
+    retry.finish().await;
+    let sessions = desktop.sessions().await;
+    assert_eq!(sessions.len(), 2);
+    let session = sessions
+        .iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    fixture.idle(&desktop.client, session).await;
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_opens_a_conversation_beside_the_current_one() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("MAIN_PANE_MESSAGE").await;
+    desktop.key("enter", false);
+    desktop.request(&mut fixture).await.finish().await;
+    desktop.press("Actions for NSH real Agent").await;
+    desktop.press("Open to the side").await;
+    desktop
+        .until(
+            "the conversation did not open beside the current one",
+            || {
+                (desktop.controls("Focus message composer").len() == 2
+                    && desktop.controls("Close side pane").len() == 1)
+                    .then_some(())
+            },
+        )
+        .await;
+    desktop.press("Close side pane").await;
+    desktop
+        .until("the side pane did not close", || {
+            (desktop.controls("Focus message composer").len() == 1
+                && desktop.controls("Close side pane").is_empty())
+            .then_some(())
+        })
+        .await;
     desktop.close().await;
     fixture.finish().await;
 }

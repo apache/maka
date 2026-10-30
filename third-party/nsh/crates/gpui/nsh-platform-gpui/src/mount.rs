@@ -25,6 +25,11 @@ impl Views {
         self.0.borrow().get(&id).cloned()
     }
 
+    /// Every live view.
+    pub(crate) fn all(&self) -> Vec<NshView> {
+        self.0.borrow().values().cloned().collect()
+    }
+
     fn insert(&self, id: NodeId, view: NshView) {
         self.0.borrow_mut().insert(id, view);
     }
