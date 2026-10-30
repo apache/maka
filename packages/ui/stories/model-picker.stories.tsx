@@ -23,7 +23,7 @@ import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ExecutorCatalogEntry, ExecutorSelection } from '@maka/core/executor-catalog';
 import type { SessionSummary } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import { ProviderBrandMark } from '../../../apps/desktop/src/renderer/settings/provider-brand-marks.js';
+import { ProviderBrandMark } from '../../../apps/desktop/src/renderer/features/connection-settings/index.js';
 import { Composer } from '../src/composer.js';
 import { ModelPicker } from '../src/model-picker.js';
 import { modelChoiceValue, modelMenuGroups, type ChatModelChoice } from '../src/chat-model-helpers.js';
