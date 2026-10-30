@@ -463,7 +463,11 @@ async fn active_stream_outlives_idle_budget_but_silence_closes_the_socket() {
             }
             stream.cancel_and_wait().await.expect("actual stream cleanup");
             if silent {
-                assert!(matches!(failure, Some(maka_model::ModelError::TimedOut)), "{failure:?}");
+                assert!(
+                    matches!(&failure, Some(maka_model::ModelError::Provider(failure))
+                        if failure.reason() == maka_model::ProviderFailureReason::TimedOut),
+                    "{failure:?}"
+                );
             } else {
                 assert!(failure.is_none(), "{failure:?}");
                 assert_eq!(deltas, 1);

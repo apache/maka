@@ -107,15 +107,29 @@ async fn observed(log: &EventLog, accepted: bool) -> (u64, ModelCompletion) {
 }
 
 async fn visible(log: &EventLog, through: u64) -> Vec<Value> {
-    crate::transcript_cache::materialize_all_rows(log, "a", through)
+    use crate::transcript::{TranscriptDirection, TranscriptRead};
+
+    let headers = log
+        .transcript_headers(
+            "a",
+            &TranscriptRead {
+                through,
+                position: None,
+                direction: TranscriptDirection::Newer,
+                limit: 7,
+            },
+        )
         .await
         .unwrap();
-    crate::test_store::inspect_cache(log, |db| rows(db, "a"))
-        .await
-        .into_iter()
-        .skip(2)
-        .map(|row| serde_json::from_slice(&row.1).unwrap())
-        .collect()
+    let mut parts = Vec::new();
+    for header in headers.into_iter().skip(2) {
+        let bytes = log
+            .transcript_fragment("a", header.position, 0, header.total_bytes)
+            .await
+            .unwrap();
+        parts.push(serde_json::from_slice(&bytes).unwrap());
+    }
+    parts
 }
 
 fn assert_parts(parts: &[Value]) {

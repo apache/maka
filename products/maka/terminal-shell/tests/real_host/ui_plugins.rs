@@ -21,7 +21,8 @@ use super::*;
 use maka_app_client::Client;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_custom_root_starts_without_an_agent_in_its_source_or_parent_catalogue() {
+async fn a_custom_root_reloads_its_private_state_without_an_agent_in_its_source_or_parent_catalogue()
+ {
     use maka_app_client::Journal;
     use maka_event_log::{
         root::{RootNamespaces, RootOwner, private_directory},
@@ -72,8 +73,11 @@ async fn a_custom_root_starts_without_an_agent_in_its_source_or_parent_catalogue
             })).unwrap()),
             ("ui.js".into(), br#"
 import { Text, View, signal } from 'nsh';
+import { Button } from 'nsh/base';
 export function activate(context) {
-  return { exports: {
+  const restored = context.restored?.note ?? 'EMPTY';
+  const note = signal(restored);
+  return { prepareReload: () => ({ note: note() }), exports: {
   embedded: { kind: 'view', contract: 'test.embedded', render(props) {
     return Text({ children: props.input.caption + (props.runtime === context.runtime ? ':SHARED_RUNTIME' : ':FOREIGN_RUNTIME') });
   } },
@@ -89,7 +93,11 @@ export function activate(context) {
     return View({ style: { flex: 1 }, get children() { return [
       Text({ style: { fontSize: 14, lineHeight: 20 }, get children() { return result(); } }),
       context.runtime.renderView({ path: ['ui'], id: 'embedded' }, { id: 'test.embedded' }, { caption: 'EMBEDDED_SELECTED' }),
-      Text({ children: rejected ? 'VIEW_CONTRACT_REJECTED' : 'VIEW_CONTRACT_UNCHECKED' })
+      Text({ children: rejected ? 'VIEW_CONTRACT_REJECTED' : 'VIEW_CONTRACT_UNCHECKED' }),
+      Text({ get children() { return 'VERSION_A private:' + note() + ' restored:' + restored; } }),
+      Button({ accessibilityLabel: 'Edit private plugin state', style: { height: 32, flexShrink: 0 },
+        onPress: () => note.set('PRIVATE_PLUGIN_STATE'),
+        children: Text({ children: 'Edit private plugin state' }) })
     ]; } });
   } } } };
 }
@@ -124,7 +132,7 @@ export function activate(context) {
             },
         };
         let host = Host::open(
-            store,
+            store.clone(),
             deployment,
             NativeRegistry::default(),
             None,
@@ -170,6 +178,7 @@ export function activate(context) {
             screen.contains("CUSTOM_ROOT_WITHOUT_AGENT_READY")
                 && screen.contains("EMBEDDED_SELECTED:SHARED_RUNTIME")
                 && screen.contains("VIEW_CONTRACT_REJECTED")
+                && screen.contains("Edit private plugin state")
         })
         .await;
         assert!(
@@ -178,6 +187,62 @@ export function activate(context) {
                 .iter()
                 .any(|node| node.label == "Message composer")
         );
+        let mut requests = bindings.reload().take_requests();
+        support::click_button(&mut view, "Edit private plugin state").await;
+        wait_view(&mut view, |screen| {
+            screen.contains("VERSION_A private:PRIVATE_PLUGIN_STATE restored:EMPTY")
+        }).await;
+        let loaded = store.load_application(deployment).await.unwrap().unwrap();
+        let mut input = loaded.source().input.clone();
+        let previous = loaded.packages().iter()
+            .find(|package| package.manifest().id == "test.nsh.no-agent-root").unwrap();
+        let mut files = previous.files().clone();
+        let next_module = String::from_utf8(files["ui.js"].clone()).unwrap()
+            .replace("VERSION_A", "VERSION_B");
+        files.insert("ui.js".into(), next_module.into_bytes());
+        let replacement = Package::new(files).unwrap();
+        input.instances.get_mut("ui").unwrap().package = replacement.application_ref().into();
+        let mut packages: Vec<_> = loaded.packages().iter()
+            .filter(|package| package.manifest().id != "test.nsh.no-agent-root")
+            .cloned().collect();
+        packages.push(replacement);
+        store.commit_application(
+            deployment, loaded.source().reference.revision, input,
+            loaded.source().remote_exports.clone(), packages,
+        ).await.unwrap();
+        let mut paused = false;
+        loop {
+            view.poll().unwrap();
+            support::tick(&mut view);
+            assert!(view.last_error().is_none(), "{:?}", view.last_error());
+            match requests.try_recv() {
+                Ok(maka_workbench::reload::Request::Pause(ready)) => {
+                    assert!(!paused, "one update must pause the original UI once");
+                    paused = true;
+                    ready.send(Ok(())).unwrap();
+                }
+                Ok(maka_workbench::reload::Request::Reload) => {
+                    assert!(paused, "snapshots must be captured after pausing input");
+                    break;
+                }
+                Ok(maka_workbench::reload::Request::Resume) => panic!("updated package was not reloaded"),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                Err(error) => panic!("UI reload request channel ended: {error}"),
+            }
+        }
+        drop(view);
+        let mut view = AppView::new(AppOptions {
+            size: (100, 24),
+            data_dir: Some(directory.path().join("nsh")),
+            ..Default::default()
+        });
+        support::load_application(&mut view, &bindings, None);
+        wait_view(&mut view, |screen| {
+            screen.contains("VERSION_B private:PRIVATE_PLUGIN_STATE restored:PRIVATE_PLUGIN_STATE")
+                && screen.contains("CUSTOM_ROOT_WITHOUT_AGENT_READY")
+        }).await;
         drop(view);
         bindings.close().await.unwrap();
         host.shutdown().await.unwrap();

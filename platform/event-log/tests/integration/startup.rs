@@ -264,6 +264,9 @@ async fn startup_recovers_model_and_call_cuts_across_multiple_pages_in_opening_o
         .await
         .unwrap();
         if n < 4 {
+            let step = format!("step-{n}");
+            let call = format!("call-{n}");
+            let operation = format!("{step}:{call}");
             let source = log.prefix(32, 64 * 1024).await.unwrap();
             log.append(&write(Fact::ModelRequested {
                 context_breakdown: None,
@@ -271,7 +274,7 @@ async fn startup_recovers_model_and_call_cuts_across_multiple_pages_in_opening_o
                 purpose: ModelPurpose::Main,
                 context: None,
                 checkpoint_event_id: None,
-                step_id: "step".into(),
+                step_id: step.clone(),
                 model_id: "model".into(),
                 source_scope: source.scope,
                 source_high_water: source.high_water,
@@ -284,18 +287,18 @@ async fn startup_recovers_model_and_call_cuts_across_multiple_pages_in_opening_o
             .unwrap();
             if n > 0 {
                 log.append(&write(Fact::ModelObserved {
-                    step_id: "step".into(),
+                    step_id: step.clone(),
                     event: ModelObservation::Part(ModelPartRecord {
                         ordinal: 0,
                         message_id: maka_agent_facts::tool_call::tool_use_id(
                             &invocation.invocation_id,
-                            "step:call",
+                            &operation,
                         ),
                         started_at: std::time::UNIX_EPOCH,
                         provider_part_id: None,
                         part: Arc::new(ModelPart::ToolCall {
                             call: ModelToolCall {
-                                id: "call".into(),
+                                id: call.clone(),
                                 name: "write_file".into(),
                                 input: json!({"path":"effect.txt"}).into(),
                                 provider_options: None,
@@ -311,8 +314,8 @@ async fn startup_recovers_model_and_call_cuts_across_multiple_pages_in_opening_o
                 log.append(&write(Fact::ToolDispatched {
                     presentation: None,
                     title: None,
-                    operation_id: "step:call".into(),
-                    call: ToolCallIdentity::provider("step".into(), "call".into()),
+                    operation_id: operation.clone(),
+                    call: ToolCallIdentity::provider(step.clone(), call.clone()),
                     name: "write_file".into(),
                     input: json!({"path":"effect.txt"}),
                 }))
@@ -321,7 +324,7 @@ async fn startup_recovers_model_and_call_cuts_across_multiple_pages_in_opening_o
             }
             if n == 3 {
                 log.append(&write(Fact::ToolSettled {
-                    operation_id: "step:call".into(),
+                    operation_id: operation.clone(),
                     outcome: ToolOutcome::Failed {
                         message: "known failure".into(),
                     },
@@ -364,6 +367,8 @@ async fn startup_recovers_model_and_call_cuts_across_multiple_pages_in_opening_o
     );
     for n in 0..4 {
         let id = format!("i-{n}");
+        let step = format!("step-{n}");
+        let operation = format!("{step}:call-{n}");
         let facts = prefix
             .events
             .iter()
@@ -371,12 +376,12 @@ async fn startup_recovers_model_and_call_cuts_across_multiple_pages_in_opening_o
             .map(|stored| &stored.event.fact)
             .collect::<Vec<_>>();
         assert!(facts.iter().any(|fact| matches!(fact,
-            Fact::ModelInterrupted { step_id, status: ModelInterruption::Failed, .. } if step_id == "step")));
+            Fact::ModelInterrupted { step_id, status: ModelInterruption::Failed, .. } if step_id == &step)));
         assert_eq!(
             facts
                 .iter()
                 .filter(|fact| matches!(fact, Fact::ToolRejected {
-            operation_id, reason: ToolRejection::Cancelled, .. } if operation_id == "step:call"))
+            operation_id, reason: ToolRejection::Cancelled, .. } if operation_id == &operation))
                 .count(),
             usize::from(n == 1)
         );
@@ -401,7 +406,7 @@ async fn startup_recovers_model_and_call_cuts_across_multiple_pages_in_opening_o
         assert!(state.unfinished_model_steps.is_empty());
         assert_eq!(
             state.uncertain_operations,
-            if n == 2 { vec!["step:call"] } else { vec![] }
+            if n == 2 { vec![operation] } else { vec![] }
         );
     }
     assert!(

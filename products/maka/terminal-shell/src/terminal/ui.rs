@@ -564,7 +564,7 @@ mod tests {
         use maka_workbench::reload::Request;
         use serde_json::json;
 
-        let options = config(
+        let mut options = config(
             r#"
             import { host, mount, signal } from "nsh";
             import { element, prop, bindProp, append, insert } from "nsh:rt";
@@ -589,6 +589,11 @@ mod tests {
             });
         "#,
         );
+        let App::Js(bundle) = &mut options.app else {
+            unreachable!("the reload fixture is JavaScript");
+        };
+        bundle.policy.declared =
+            Some(nsh_core::access::Capabilities::from_json(&json!({"host":["observed"]})).unwrap());
         let host = options.host.clone();
         host.set_params(json!({"generation":"old"}).as_object().unwrap().clone());
         let observed = Arc::new(Mutex::new(Vec::new()));

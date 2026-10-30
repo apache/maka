@@ -107,6 +107,7 @@ async fn commit_native_events(view: &mut AppView) {
 }
 
 async fn activate(view: &mut AppView, label: &str) {
+    tab_to_label(view, label).await;
     support::click_button(view, label).await;
     commit_native_events(view).await;
 }

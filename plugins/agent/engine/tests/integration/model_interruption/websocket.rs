@@ -460,10 +460,35 @@ impl maka_agent_facts::tools::ToolExecutor for Overlap {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn parallel_calls_overlap_while_the_model_stream_is_still_open() {
     use maka_tools::{ToolCatalog, ToolHandler, ToolNesting, ToolRegistration, ToolSemantics};
+    let directory = tempfile::tempdir().unwrap();
+    let log = Arc::new(
+        SessionFixture::open(&directory.path().join("events.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (started, mut arrivals) = tokio::sync::mpsc::unbounded_channel();
+    let mut input = input(&base, "parallel");
+    input.provider.kind = ProviderKind::OpenaiResponses;
+    input.provider_options = json!({"openai":{"store":false}});
+    if let maka_agent_engine::RunWork::Message { tools, .. } = &mut input.work {
+        *tools = ToolCatalog::new([ToolRegistration {
+            definition: serde_json::from_value(
+                json!({"name":"echo","description":"echo","inputSchema":{"type":"object"}}),
+            )
+            .unwrap(),
+            nesting: ToolNesting::Nestable,
+            semantics: ToolSemantics::Parallel,
+            handler: ToolHandler::Immediate(Arc::new(Overlap {
+                started,
+                both: Arc::new(tokio::sync::Barrier::new(2)),
+            })),
+        }])
+        .unwrap();
+    }
+    let worker = engine();
     tokio::time::timeout(Duration::from_secs(10),async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1",listener.local_addr().unwrap());
-        let (started,mut arrivals) = tokio::sync::mpsc::unbounded_channel();
         let server = tokio::spawn(async move {
             let (socket,_) = listener.accept().await.unwrap();
             let mut socket = accept_async(socket).await.unwrap();
@@ -479,23 +504,11 @@ async fn parallel_calls_overlap_while_the_model_stream_is_still_open() {
             assert_eq!(next["input"].as_array().unwrap().iter().filter(|item|item["type"]=="function_call_output").count(),2);
             socket.send(Message::Text(json!({"type":"response.completed","response":{"id":"answer","output":[{"type":"message","id":"text","content":[{"type":"output_text","text":"done"}]}]}}).to_string().into())).await.unwrap();
         });
-        let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
-        let mut input = input(&base,"parallel");
-        input.provider.kind = ProviderKind::OpenaiResponses;
-        input.provider_options = json!({"openai":{"store":false}});
-        if let maka_agent_engine::RunWork::Message {tools,..} = &mut input.work {
-            *tools = ToolCatalog::new([ToolRegistration {
-                definition:serde_json::from_value(json!({"name":"echo","description":"echo","inputSchema":{"type":"object"}})).unwrap(),
-                nesting:ToolNesting::Nestable,semantics:ToolSemantics::Parallel,
-                handler:ToolHandler::Immediate(Arc::new(Overlap {started,both:Arc::new(tokio::sync::Barrier::new(2))})),
-            }]).unwrap();
-        }
-        let worker = engine();
         worker.run(log.store(), input,CancellationToken::new()).await.unwrap();
         worker.drain().await;
         server.await.unwrap();
     }).await.expect("parallel tools must not block each other's model-stream admission");
+    log.shutdown().await.unwrap();
 }
 
 struct Finisher(bool);
@@ -524,53 +537,65 @@ impl maka_agent_facts::tools::ToolExecutor for Finisher {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn successful_finish_turn_is_authoritative_after_stream_interruption() {
+    check_interrupted_finish(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refused_finish_turn_recovers_after_stream_interruption() {
+    check_interrupted_finish(false).await;
+}
+
+async fn check_interrupted_finish(success: bool) {
     use maka_tools::{ToolCatalog, ToolHandler, ToolNesting, ToolRegistration, ToolSemantics};
+    let directory = tempfile::tempdir().unwrap();
+    let log = Arc::new(
+        SessionFixture::open(&directory.path().join("events.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let observed = log.clone();
+    let mut commits = log.subscribe_commits();
+    let mut input = input(&base, "finish-turn");
+    input.provider.kind = ProviderKind::OpenaiResponses;
+    input.provider_options = json!({"openai":{"store":false}});
+    if let maka_agent_engine::RunWork::Message { tools, .. } = &mut input.work {
+        *tools = ToolCatalog::new([ToolRegistration {
+            definition:serde_json::from_value(json!({"name":"finish","description":"end this turn","inputSchema":{"type":"object"}})).unwrap(),
+            nesting:ToolNesting::DirectOnly,semantics:ToolSemantics::FinishTurn,
+            handler:ToolHandler::Immediate(Arc::new(Finisher(success))),
+        }]).unwrap();
+    }
+    let worker = engine();
     tokio::time::timeout(Duration::from_secs(10),async {
-        for success in [true,false] {
-            let directory = tempfile::tempdir().unwrap();
-            let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let base = format!("http://{}/v1",listener.local_addr().unwrap());
-            let observed = log.clone();
-            let mut commits = log.subscribe_commits();
-            let server = tokio::spawn(async move {
+        let server = tokio::spawn(async move {
+            let (socket,_) = listener.accept().await.unwrap();
+            let mut socket = accept_async(socket).await.unwrap();
+            socket.next().await.unwrap().unwrap();
+            socket.send(Message::Text(json!({"type":"response.output_item.done","item":{"type":"function_call","id":"finish-item","call_id":"finish-call","name":"finish","arguments":"{}"}}).to_string().into())).await.unwrap();
+            loop {
+                if observed.prefix(100,128*1024).await.unwrap().events.iter().any(|event| matches!(event.event.fact,Fact::ToolSettled {..})) {break;}
+                commits.changed().await.unwrap();
+            }
+            socket.close(None).await.unwrap();
+            drop(socket);
+            if !success {
                 let (socket,_) = listener.accept().await.unwrap();
                 let mut socket = accept_async(socket).await.unwrap();
                 socket.next().await.unwrap().unwrap();
-                socket.send(Message::Text(json!({"type":"response.output_item.done","item":{"type":"function_call","id":"finish-item","call_id":"finish-call","name":"finish","arguments":"{}"}}).to_string().into())).await.unwrap();
-                loop {
-                    if observed.prefix(100,128*1024).await.unwrap().events.iter().any(|event| matches!(event.event.fact,Fact::ToolSettled {..})) {break;}
-                    commits.changed().await.unwrap();
-                }
-                socket.close(None).await.unwrap();
-                drop(socket);
-                if !success {
-                    let (socket,_) = listener.accept().await.unwrap();
-                    let mut socket = accept_async(socket).await.unwrap();
-                    socket.next().await.unwrap().unwrap();
-                    socket.send(Message::Text(json!({"type":"response.completed","response":{"id":"done","output":[{"type":"message","id":"answer","content":[{"type":"output_text","text":"finished after refusal"}]}]}}).to_string().into())).await.unwrap();
-                }
-                listener
-            });
-            let mut input = input(&base,"finish-turn");
-            input.provider.kind = ProviderKind::OpenaiResponses;
-            input.provider_options = json!({"openai":{"store":false}});
-            if let maka_agent_engine::RunWork::Message {tools,..} = &mut input.work {
-                *tools = ToolCatalog::new([ToolRegistration {
-                    definition:serde_json::from_value(json!({"name":"finish","description":"end this turn","inputSchema":{"type":"object"}})).unwrap(),
-                    nesting:ToolNesting::DirectOnly,semantics:ToolSemantics::FinishTurn,
-                    handler:ToolHandler::Immediate(Arc::new(Finisher(success))),
-                }]).unwrap();
+                socket.send(Message::Text(json!({"type":"response.completed","response":{"id":"done","output":[{"type":"message","id":"answer","content":[{"type":"output_text","text":"finished after refusal"}]}]}}).to_string().into())).await.unwrap();
             }
-            let worker = engine();
-            worker.run(log.store(), input,CancellationToken::new()).await.unwrap();
-            worker.drain().await;
-            let listener = server.await.unwrap();
-            assert!(listener.accept().now_or_never().is_none());
-            let prefix = log.prefix(100,128*1024).await.unwrap();
-            assert_eq!(prefix.events.iter().filter(|event|matches!(event.event.fact,Fact::ModelRequested {..})).count(),if success {1} else {2});
-            assert_eq!(prefix.events.iter().filter(|event|matches!(event.event.fact,Fact::ModelCompleted {..})).count(),usize::from(!success),"a finishing tool must not fabricate model completion");
-            assert!(matches!(prefix.events.last().unwrap().event.fact,Fact::InvocationEnded {outcome:InvocationOutcome::Completed}));
-        }
-    }).await.expect("successful FinishTurn must stop retry; a failed finish must allow recovery");
+            listener
+        });
+        worker.run(log.store(), input,CancellationToken::new()).await.unwrap();
+        worker.drain().await;
+        let listener = server.await.unwrap();
+        assert!(listener.accept().now_or_never().is_none());
+        let prefix = log.prefix(100,128*1024).await.unwrap();
+        assert_eq!(prefix.events.iter().filter(|event|matches!(event.event.fact,Fact::ModelRequested {..})).count(),if success {1} else {2});
+        assert_eq!(prefix.events.iter().filter(|event|matches!(event.event.fact,Fact::ModelCompleted {..})).count(),usize::from(!success),"a finishing tool must not fabricate model completion");
+        assert!(matches!(prefix.events.last().unwrap().event.fact,Fact::InvocationEnded {outcome:InvocationOutcome::Completed}));
+    }).await.expect("original FinishTurn settlement and interrupted stream recovery must complete");
+    log.shutdown().await.unwrap();
 }

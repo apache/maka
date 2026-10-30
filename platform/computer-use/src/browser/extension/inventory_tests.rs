@@ -449,8 +449,8 @@ async fn created_ack_keeps_candidate_provenance_after_actual_call_context_gc() {
             vec![8123]
         );
         assert_eq!(ledger.tabs[&identity].extension_sequence, Some(sequence));
-        // Removing required provenance must fail closed, not reconstruct an
-        // acquisition from a receipt token, metadata, or a guessed current epoch.
+        // Logical metadata candidates survive without a physical acquisition;
+        // the retained insertion order does not mint an operation or epoch.
         ledger
             .tabs
             .get_mut(&identity)
@@ -460,11 +460,9 @@ async fn created_ack_keeps_candidate_provenance_after_actual_call_context_gc() {
             .unwrap()
             .creation_operation = None;
         assert!(ledger.acquisition(owner, &identity).is_none());
-        assert!(
-            ledger
-                .metadata_candidates(owner, &browser, &[])
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            ledger.metadata_candidates(owner, &browser, &[]).unwrap(),
+            vec![8123]
         );
         assert_eq!(ledger.tabs[&identity].extension_sequence, Some(sequence));
     }

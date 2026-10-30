@@ -305,30 +305,42 @@ async fn native_form_validates_original_fields_and_commits_before_resuming() {
     }).await.unwrap();
 }
 #[tokio::test]
-async fn native_form_decline_cancel_and_stop_settle_original_wait() {
+async fn native_form_decline_resumes_original_wait() {
+    form_closure("decline").await;
+}
+
+#[tokio::test]
+async fn native_form_cancel_resumes_original_wait() {
+    form_closure("cancel").await;
+}
+
+#[tokio::test]
+async fn native_form_stop_closes_original_wait() {
+    form_closure("stop").await;
+}
+
+async fn form_closure(action: &str) {
     tokio::time::timeout(Duration::from_secs(30), async {
-        for action in ["decline", "cancel", "stop"] {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let fixture = Fixture::with_services(&format!("http://{}/v1", listener.local_addr().unwrap()), None, None, Some(service_tools::Setup::forms())).await;
-            let session = fixture.create("Form closure").await;
-            let started = fixture.send(&session).await.unwrap();
-            let (mut socket, _) = listener.accept().await.unwrap(); request(&mut socket).await; form_response(&mut socket).await;
-            let record = pending(&fixture, &session).await;
-            if action == "stop" {
-                fixture.mutation(2,"stop",json!({"sessionId":session,"invocationId":started["invocationId"]}),Uuid::new_v4()).await.unwrap();
-            } else {
-                fixture.mutation(2,"respond",json!({"sessionId":session,"requestId":record.request_id,"answer":{"kind":"form","action":action}}),Uuid::new_v4()).await.unwrap();
-                let (mut next, _) = listener.accept().await.unwrap();
-                let resumed = request(&mut next).await;
-                let message = resumed["messages"].as_array().unwrap().iter().find(|m| m["role"] == "tool").unwrap();
-                assert_eq!(serde_json::from_str::<Value>(message["content"].as_str().unwrap()).unwrap(),json!({"kind":"answered","result":{"action":action}}));
-                response(&mut next).await;
-            }
-            fixture.drained().await;
-            let stored = fixture.session(&record.session_id).await.interaction(&record.request_id).await.unwrap().unwrap();
-            if action == "stop" { assert!(matches!(stored.outcome,Some(InteractionOutcome::Closure{..}))); }
-            assert!(fixture.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
-            fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = Fixture::with_services(&format!("http://{}/v1", listener.local_addr().unwrap()), None, None, Some(service_tools::Setup::forms())).await;
+        let session = fixture.create("Form closure").await;
+        let started = fixture.send(&session).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap(); request(&mut socket).await; form_response(&mut socket).await;
+        let record = pending(&fixture, &session).await;
+        if action == "stop" {
+            fixture.mutation(2,"stop",json!({"sessionId":session,"invocationId":started["invocationId"]}),Uuid::new_v4()).await.unwrap();
+        } else {
+            fixture.mutation(2,"respond",json!({"sessionId":session,"requestId":record.request_id,"answer":{"kind":"form","action":action}}),Uuid::new_v4()).await.unwrap();
+            let (mut next, _) = listener.accept().await.unwrap();
+            let resumed = request(&mut next).await;
+            let message = resumed["messages"].as_array().unwrap().iter().find(|m| m["role"] == "tool").unwrap();
+            assert_eq!(serde_json::from_str::<Value>(message["content"].as_str().unwrap()).unwrap(),json!({"kind":"answered","result":{"action":action}}));
+            response(&mut next).await;
         }
+        fixture.drained().await;
+        let stored = fixture.session(&record.session_id).await.interaction(&record.request_id).await.unwrap().unwrap();
+        if action == "stop" { assert!(matches!(stored.outcome,Some(InteractionOutcome::Closure{..}))); }
+        assert!(fixture.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
+        fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
 }

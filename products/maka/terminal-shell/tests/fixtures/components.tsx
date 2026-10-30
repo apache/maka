@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Each, mount, signal, Text, View, type JSX } from 'nsh';
+import { mount, signal, Text, View, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import { Composer } from '../../../../../plugins/agent/composer/ui/Composer';
 import type { ComposerSession } from '../../../../../packages/plugin-sdk/src/composer-view.js';
@@ -310,12 +310,17 @@ function Compaction() {
     <View style={{ flex: 1 }}>
       <Button
         accessibilityLabel="Wait for background compaction"
+        style={{ height: 32, flexShrink: 0 }}
         onPress={() => state.set('waiting')}
       >
-        Wait for background compaction
+        <Text>Wait for background compaction</Text>
       </Button>
-      <Button accessibilityLabel="Complete compaction" onPress={() => state.set('completed')}>
-        Complete compaction
+      <Button
+        accessibilityLabel="Complete compaction"
+        style={{ height: 32, flexShrink: 0 }}
+        onPress={() => state.set('completed')}
+      >
+        <Text>Complete compaction</Text>
       </Button>
       <Each of={state() === 'background' ? [] : [state()]} key={(value) => value}>
         {(value) =>

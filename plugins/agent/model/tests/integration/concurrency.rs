@@ -284,7 +284,11 @@ async fn native_output_backpressure_outlives_idle_timeout_without_losing_text() 
             assert!(paused);
             assert_eq!(text, unit.repeat(128));
             if silent_after_resume {
-                assert!(matches!(failure, Some(maka_model::ModelError::TimedOut)), "{failure:?}");
+                assert!(
+                    matches!(&failure, Some(maka_model::ModelError::Provider(failure))
+                        if failure.reason() == maka_model::ProviderFailureReason::TimedOut),
+                    "{failure:?}"
+                );
                 assert!(step.finish().is_err());
             } else {
                 assert!(failure.is_none(), "{failure:?}");
