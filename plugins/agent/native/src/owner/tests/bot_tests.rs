@@ -529,6 +529,11 @@ async fn only_the_bot_session_carries_bot_instructions() {
                 || text.contains("常駐 Bot")
         };
         assert!(instructed(&prompts[0]), "{}", prompts[0]);
+        assert!(
+            prompts[0].contains("cannot read or edit files")
+                && prompts[0].contains("workhub_tasks"),
+            "the Bot is told what it can and cannot do"
+        );
         assert!(!instructed(&prompts[1]), "{}", prompts[1]);
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
