@@ -17,95 +17,42 @@
  * under the License.
  */
 
+import { renderConversationMarkdown as renderConversationMarkdownCore } from '@maka/core/conversation-markdown';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { userFacingText } from '@maka/core/session';
-import { redactSecrets } from '@maka/ui';
 import { getShellRemainingCopy } from '../../../locales/shell-remaining-copy.js';
 
 /**
- * Serialize a conversation to a Markdown document suitable for pasting into
- * Notion / Obsidian / GitHub. One section per turn: `## 你` header for the
- * user message, optional `### 工具调用` block enumerating tool calls + their
- * intent, `## Maka` for the assistant answer.
- *
- * Per @kenji's PR86 review, deliberate exclusions:
- * - **thinking block** is never included — that's model working notes, not
- *   the answer. If we ever add an "include thinking" toggle, it must be a
- *   separate opt-in.
- * - **token_usage / permission_decision / tool_result** rows dropped —
- *   operational records, not narrative.
- * - **tool intents** run through `redactSecrets` defensively in case a
- *   model-authored intent happens to echo a path / token.
- * - **assistant text** runs through `redactSecrets` defensively — backend
- *   already redacts at write-time, but a fresh AI-SDK error path that
- *   somehow lands a raw token in `text` shouldn't survive into a clipboard
- *   export that the user is going to paste somewhere public.
- * - **user text** left untouched (the user typed it, they own it).
+ * Serialize the open conversation to a Markdown document suitable for pasting
+ * into Notion / Obsidian / GitHub. The rendering itself lives in core
+ * (`renderConversationMarkdown`) so the Desktop clipboard export and the CLI
+ * transcript export cannot drift apart again (#5958, #6036 review) — this
+ * adapter only carries the locale copy and the light clipboard shape: tool
+ * results and thinking stay out, matching the @kenji precedent, and the
+ * redactor is the same one the CLI export uses.
  */
-export function renderConversationMarkdown(sessionName: string, messages: readonly StoredMessage[], locale: UiLocale): string {
+export function renderConversationMarkdown(
+  sessionName: string,
+  messages: readonly StoredMessage[],
+  locale: UiLocale,
+): string {
   const copy = getShellRemainingCopy(locale).conversationExport;
-  const lines: string[] = [];
-  lines.push(`# ${sessionName}`);
-  lines.push('');
-  lines.push(`*${copy.exported(new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date()))}*`);
-  lines.push('');
-
-  // Group by turnId in encounter order so we preserve narrative flow.
-  const turnOrder: string[] = [];
-  const byTurn = new Map<string, StoredMessage[]>();
-  for (const m of messages) {
-    const tid = (m as { turnId?: string }).turnId ?? '__loose';
-    if (!byTurn.has(tid)) {
-      byTurn.set(tid, []);
-      turnOrder.push(tid);
-    }
-    byTurn.get(tid)!.push(m);
-  }
-
-  for (const tid of turnOrder) {
-    const turnMessages = byTurn.get(tid) ?? [];
-    const user = turnMessages.find((m) => m.type === 'user');
-    // A turn holds one assistant message per model step; join their text in step
-    // order so the export carries the whole answer, not just the first step.
-    const assistantText = turnMessages
-      .flatMap((m) => (m.type === 'assistant' && m.text.length > 0 ? [m.text] : []))
-      .join('\n\n');
-    const toolCalls = turnMessages.filter((m) => m.type === 'tool_call');
-
-    if (user && user.type === 'user') {
-      lines.push('---');
-      lines.push('');
-      lines.push(`## ${copy.you}`);
-      lines.push('');
-      // Prefer displayText when the model text is a composed envelope (skill
-      // invocation) so exports match what the user typed, not the injected body.
-      lines.push(userFacingText(user));
-      lines.push('');
-    }
-
-    if (toolCalls.length > 0) {
-      lines.push(`### ${copy.toolCalls}`);
-      lines.push('');
-      for (const call of toolCalls) {
-        const c = call as { toolName: string; intent?: string };
-        const intent = c.intent ? redactSecrets(c.intent) : undefined;
-        const intentSuffix = intent ? `${copy.intentSeparator}${intent}` : '';
-        lines.push(`- \`${c.toolName}\`${intentSuffix}`);
-      }
-      lines.push('');
-    }
-
-    if (assistantText.length > 0) {
-      lines.push('## Maka');
-      lines.push('');
-      // Defensive: backend redacts at write-time, but the export landing
-      // in the user's clipboard is a high-risk surface — paste destinations
-      // are external. Second-layer redaction is cheap insurance.
-      lines.push(redactSecrets(assistantText));
-      lines.push('');
-    }
-  }
-
-  return lines.join('\n').trim() + '\n';
+  return renderConversationMarkdownCore(sessionName, messages, {
+    copy: {
+      you: copy.you,
+      assistant: 'Maka',
+      toolCalls: copy.toolCalls,
+      thinking: 'Thinking',
+      intentSeparator: copy.intentSeparator,
+    },
+    includeToolResults: false,
+    // The clipboard export has always set its exported-at line in italics;
+    // keep that shape on the shared renderer (#6036 review).
+    exportedAtLine: (isoTimestamp) =>
+      `*${copy.exported(
+        new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(
+          new Date(isoTimestamp),
+        ),
+      )}*`,
+  });
 }

@@ -150,6 +150,13 @@ export interface OperationalStateDatabaseOptions {
    * it must never rewrite the schema underneath that owner.
    */
   schemaMigration?: 'migrate' | 'require_current';
+  /**
+   * `'read'` opens the database with SQLite's `query_only` enforced and skips
+   * the WAL/journal configuration, so a reader (an export, a diagnostic)
+   * cannot flip a writer's journal mode or write anything — not even
+   * incidentally (#6036 review).
+   */
+  access?: 'read' | 'write';
 }
 
 export class OperationalStateMigrationBlockedError extends Error {
@@ -191,16 +198,18 @@ export function acquireOperationalStateDatabase(
   options: OperationalStateDatabaseOptions = {},
 ): OperationalStateDatabaseLease {
   const databasePath = resolveOperationalStateDatabasePath(workspaceRoot);
-  let owner = owners.get(databasePath);
+  const cacheKey = `${databasePath}\u0000${options.access ?? 'write'}`;
+  let owner = owners.get(cacheKey);
   if (!owner) {
     owner = new OperationalStateDatabaseOwner(databasePath, options);
-    owners.set(databasePath, owner);
+    owners.set(cacheKey, owner);
   }
   return owner.acquire();
 }
 
 class OperationalStateDatabaseOwner {
   readonly database: DatabaseSync;
+  private readonly cacheKey: string;
   private references = 0;
   private closed = false;
   private transactionDepth = 0;
@@ -210,6 +219,7 @@ class OperationalStateDatabaseOwner {
     readonly databasePath: string,
     options: OperationalStateDatabaseOptions,
   ) {
+    this.cacheKey = `${databasePath}\u0000${options.access ?? 'write'}`;
     const databaseExisted = existsSync(databasePath);
     if (options.schemaMigration === 'require_current' && !databaseExisted) {
       throw new OperationalStateMigrationBlockedError(
@@ -223,6 +233,7 @@ class OperationalStateDatabaseOwner {
     this.database.function('usage_screen_lower', { deterministic: true }, (value) =>
       String(value ?? '').toLowerCase(),
     );
+    const access = options.access ?? 'write';
     try {
       configureSqliteRuntimeLockWait(this.database);
       this.database.exec('PRAGMA foreign_keys = ON');
@@ -234,7 +245,14 @@ class OperationalStateDatabaseOwner {
       } else {
         inspectAndMigrateOperationalState(this.database, options.now ?? Date.now);
       }
-      configureSqliteRuntimeDatabase(this.database);
+      if (access === 'read') {
+        // Enforce the read boundary on the connection itself: query_only
+        // rejects every write, and skipping configureSqliteRuntimeDatabase
+        // leaves the writer's journal mode untouched (#6036 review).
+        this.database.exec('PRAGMA query_only = ON');
+      } else {
+        configureSqliteRuntimeDatabase(this.database);
+      }
     } catch (error) {
       this.database.close();
       this.closed = true;
@@ -289,7 +307,7 @@ class OperationalStateDatabaseOwner {
     this.references -= 1;
     if (this.references !== 0) return;
     this.closed = true;
-    owners.delete(this.databasePath);
+    owners.delete(this.cacheKey);
     this.database.close();
   }
 
