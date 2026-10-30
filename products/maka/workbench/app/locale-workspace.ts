@@ -38,6 +38,8 @@ import {
 
 export const workspaceMessages = {
   'Pin conversation': ['Pin conversation', '置顶会话', '置頂對話'],
+  'Open to the side': ['Open to the side', '在右侧打开', '在右側開啟'],
+  'Close side pane': ['Close side pane', '关闭右侧对话', '關閉右側對話'],
   'Collapse {name}': ['Collapse {name}', '收起 {name}', '收合 {name}'],
   'Expand {name}': ['Expand {name}', '展开 {name}', '展開 {name}'],
   'Unpin conversation': ['Unpin conversation', '取消置顶', '取消置頂'],

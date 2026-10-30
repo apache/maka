@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { batch, cleanup, effect, signal, Text, View, type JSX } from 'nsh';
+import { batch, cleanup, effect, platform, signal, Text, View, type JSX } from 'nsh';
 import { host as nativeHost } from 'maka/host';
 import { Button } from 'nsh/base';
 import type { UiModule, UiRootProps } from '../../../../packages/plugin-sdk/src/workbench.js';
@@ -50,6 +50,7 @@ type Configuration = {
 };
 type SavedRoot = {
   sessionId: string | null;
+  sideSessionId?: string | null;
   sidebarExpanded: boolean;
   settings: { model?: ModelSelection } | null;
   panel: PanelRoute | null;
@@ -68,6 +69,9 @@ function App(
   const settingsOpened = signal(saved?.settings !== null && saved?.settings !== undefined);
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
   const session = signal<ConversationSessionHandle | null>(null);
+  // The desktop can show a second conversation beside the selected one.
+  const side = signal(platform.isTerminal ? null : (saved?.sideSessionId ?? null));
+  const sideSession = signal<ConversationSessionHandle | null>(null);
   const preview = signal<ConversationPreviewHandle | null>(null);
   const notice = signal<unknown | null>(null);
   let alive = true;
@@ -98,8 +102,27 @@ function App(
     if (panel) plugins.closePanel(panel.instance);
   });
   const previewShown = () => plugins.panel() !== null || (preview()?.shown() ?? false);
+  const openSide = async (id: string | null): Promise<boolean> => {
+    if (!alive || blocked()) return false;
+    const original = side();
+    const owner = sideSession();
+    try {
+      if (id !== original && owner && !(await owner.leave())) return false;
+      if (!alive || blocked() || side() !== original) return false;
+      batch(() => {
+        if (id === null) sideSession.set(null);
+        side.set(id);
+      });
+      return true;
+    } catch (reason) {
+      report(reason);
+      return false;
+    }
+  };
   const openSession = async (id: string | null): Promise<boolean> => {
     if (!alive || blocked()) return false;
+    // A conversation is open in one pane at a time; selecting the side one moves it here.
+    if (id !== null && id === side() && !(await openSide(null))) return false;
     const generation = ++navigationGeneration;
     const original = selected();
     const owner = session();
@@ -146,10 +169,36 @@ function App(
       settingsOpened.set(false);
       return true;
     },
+    ...(platform.isTerminal
+      ? {}
+      : {
+          openBeside(id: string) {
+            if (id !== selected()) void openSide(id);
+          },
+          besideSessionId: side,
+        }),
+  };
+  const sideShell: ConversationShell = {
+    sessionId: side,
+    visible: shell.visible,
+    blocked,
+    openSession: openSide,
+    openSettings: shell.openSettings,
+    // The main pane holds the browser; this one sits beside it.
+    sidebarShown: () => true,
+    sidebarDocked: () => true,
+    previewDocked: () => false,
+    showSidebar() {},
+    hideSidebar() {},
+    dismissRoute: shell.dismissRoute,
+    closePane() {
+      void openSide(null);
+    },
   };
   cleanup(
     props.saveWith(async () => ({
       sessionId: selected(),
+      sideSessionId: side(),
       sidebarExpanded: sidebarExpanded(),
       settings: settingsOpened() ? { model: settingsModel() } : null,
       panel: plugins.panelRoute(),
@@ -181,6 +230,15 @@ function App(
           if (panel) plugins.closePanel(panel.instance);
           else preview()?.close();
         }}
+        sideShown={() => side() !== null}
+        side={() =>
+          runtime.renderView(configuration.session, conversationSessionView, {
+            shell: sideShell,
+            attach(handle) {
+              if (sideSession() !== handle) sideSession.set(handle);
+            },
+          })
+        }
         navigation={() =>
           runtime.renderView(configuration.navigation, conversationNavigationView, { shell })
         }

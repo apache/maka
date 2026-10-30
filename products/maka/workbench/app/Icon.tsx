@@ -23,6 +23,7 @@ import { platform } from 'nsh';
 const glyphs = {
   back: '‹',
   sidebar: '◫',
+  split: '◫',
   sidebarCollapse: '◁',
   sidebarExpand: '▷',
   plus: '+',
@@ -114,6 +115,11 @@ export function Icon(props: { name: keyof typeof glyphs; color: string; size?: n
               cx.lineTo(11, 8);
               cx.lineTo(8.5, 10.5);
             }
+            break;
+          case 'split':
+            cx.roundRect(1.5, 1.5, 13, 13, 2);
+            cx.moveTo(8, 1.5);
+            cx.lineTo(8, 14.5);
             break;
           case 'plus':
             cx.moveTo(8, 3);

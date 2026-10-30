@@ -44,12 +44,20 @@ export function Workbench(props: {
   closePreview(): void;
   navigation(): JSX.Element;
   preview(docked: boolean): JSX.Element;
+  /** A second conversation beside the first, while one is open. */
+  sideShown?(): boolean;
+  side?(): JSX.Element;
   children: JSX.Element;
 }) {
   const preferredWidth = signal(32 * CELL);
   const preferredPreviewWidth = signal(48 * CELL);
   const preview = () => props.previewShown() && canDockPreview();
   const browser = () => props.expanded() && canDockBrowser(props.previewShown());
+  // The side pane stays mounted while it is open and shows where both
+  // conversations keep their minimum width.
+  const side = () =>
+    (props.sideShown?.() ?? false) &&
+    windowSize().width >= 2 * CENTER_MIN + (browser() ? BROWSER_MIN : 0);
   const previewDialog = signal(false);
   let wasDocked = canDockPreview();
   effect(() => {
@@ -82,6 +90,9 @@ export function Workbench(props: {
         </ResizablePanel>
         <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
           {props.children}
+        </ResizablePanel>
+        <ResizablePanel visible={side()} minSize={CENTER_MIN} style={{ minHeight: 0 }}>
+          <If when={props.sideShown?.()}>{props.side?.()}</If>
         </ResizablePanel>
         <ResizablePanel
           visible={preview()}

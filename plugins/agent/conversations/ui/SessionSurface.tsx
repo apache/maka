@@ -105,6 +105,7 @@ import { ComputerAppControls } from '../../../../products/maka/workbench/app/Com
 import type { ImagePreview } from '../../../../products/maka/workbench/app/ImageThumbnail';
 import {
   createBrowsing,
+  type Browsing,
   type BrowserWorkspace,
 } from '../../../../products/maka/workbench/app/browsing';
 import {
@@ -159,14 +160,20 @@ type PendingDraft = {
   target: { kind: 'creating'; operationId: string } | { kind: 'session'; sessionId: string } | null;
   revision: number;
 };
-export function createConversationUi(context: UiContext<UiHost, JSX.Element>, host: Host) {
+// A pane opened beside the main one shares its catalog read and leaves the
+// window title, notifications, menu and app-wide shortcuts to the main pane.
+export function createConversationUi(
+  context: UiContext<UiHost, JSX.Element>,
+  host: Host,
+  side?: { browsing: Browsing },
+) {
   const runtime = context.runtime;
   effect(() => currentLocale.set(context.locale()));
   const shell = signal<ConversationShell | null>(null);
   const bind = (next: ConversationShell) => {
     if (shell() !== next) shell.set(next);
   };
-  const browsing = createBrowsing(host);
+  const browsing = side?.browsing ?? createBrowsing(host);
   const foreground = createForeground();
   const selected = () => shell()?.sessionId() ?? null;
   const overlay = signal<Overlay | null>(null);
@@ -1140,26 +1147,38 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
         .invoke(command, { sessionId: selected(), argument: step > 0 ? '+1' : String(step) })
         .catch(report);
   };
-  keymap.bind('mod+p', () => invokeOwn('commands'), { when: 'always' });
-  keymap.bind('mod+o', () => invokeOwn('sessions'), { when: 'always' });
-  if (ownTitleBar) keymap.bind('mod+f', () => invokeOwn('find'), { when: 'always' });
-  keymap.bind('mod+g', () => invokeOwn('models'), { when: 'always' });
-  keymap.bind('mod+n', () => invokeOwn('new'), { when: 'always' });
-  keymap.bind('mod+l', () => invokeOwn('latest'), { when: 'always' });
-  if (ownTitleBar) {
-    keymap.bind('mod+shift+]', () => stepSession(1), { when: 'always' });
-    keymap.bind('mod+shift+[', () => stepSession(-1), { when: 'always' });
+  // A side pane binds its conversation's keys within itself, so they take
+  // over from the main pane's only while focus is there.
+  const unbindKeys: (() => void)[] = [];
+  cleanup(() => {
+    for (const unbind of unbindKeys.splice(0)) unbind();
+  });
+  const bindKeys = (within?: ViewRef) => {
+    const options = within ? { when: 'always' as const, within } : { when: 'always' as const };
+    unbindKeys.push(keymap.bind('mod+p', () => invokeOwn('commands'), options));
+    if (ownTitleBar) unbindKeys.push(keymap.bind('mod+f', () => invokeOwn('find'), options));
+    unbindKeys.push(keymap.bind('mod+g', () => invokeOwn('models'), options));
+    unbindKeys.push(keymap.bind('mod+l', () => invokeOwn('latest'), options));
+    unbindKeys.push(keymap.bind('alt+up', () => invokeOwn('history-focus'), options));
+    unbindKeys.push(keymap.bind('alt+down', () => invokeOwn('activity-focus'), options));
+    if (within) return;
+    unbindKeys.push(keymap.bind('mod+o', () => invokeOwn('sessions'), options));
+    unbindKeys.push(keymap.bind('mod+n', () => invokeOwn('new'), options));
+    if (ownTitleBar) {
+      unbindKeys.push(keymap.bind('mod+shift+]', () => stepSession(1), options));
+      unbindKeys.push(keymap.bind('mod+shift+[', () => stepSession(-1), options));
+    }
+  };
+  let sideKeys: ViewRef | undefined;
+  if (!side) {
+    bindKeys();
+    windowTitle(() => handle()?.title() ?? null);
+    watchNotifications({
+      sessions: browsing.sessions,
+      foreground,
+      open: (sessionId) => void selectBrowsed(sessionId, selected()),
+    });
   }
-  keymap.bind('alt+up', () => invokeOwn('history-focus'), { when: 'always' });
-  keymap.bind('alt+down', () => invokeOwn('activity-focus'), {
-    when: 'always',
-  });
-  windowTitle(() => handle()?.title() ?? null);
-  watchNotifications({
-    sessions: browsing.sessions,
-    foreground,
-    open: (sessionId) => void selectBrowsed(sessionId, selected()),
-  });
   const recoverControls = async () => {
     if (recovering()) return;
     recovering.set(true);
@@ -1285,24 +1304,26 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     expanded: sidebarShown(),
     hidden: overlay()?.kind === 'sessions' && !foreground,
     toggle: inputAction(toggleSidebar, { sessionId, expanded: sidebarShown() }),
+    close: shell()?.closePane,
   });
   // The bindings above take the same keys first; the menu shows and offers them.
-  applicationMenu({
-    newConversation: () => invokeOwn('new'),
-    chooseWorkspace: () => invokeOwn('workspace'),
-    sessions: () => invokeOwn('browse'),
-    search: () => invokeOwn('sessions'),
-    find: () => invokeOwn('find'),
-    commands: () => invokeOwn('commands'),
-    models: () => invokeOwn('models'),
-    latest: () => invokeOwn('latest'),
-    nextSession: () => stepSession(1),
-    previousSession: () => stepSession(-1),
-    settings: () => invokeOwn('settings'),
-    sidebarShown,
-    toggleSidebar: () => toggleSidebar({ sessionId: selected(), expanded: sidebarShown() }),
-    textSize: changeTextSize,
-  });
+  if (!side)
+    applicationMenu({
+      newConversation: () => invokeOwn('new'),
+      chooseWorkspace: () => invokeOwn('workspace'),
+      sessions: () => invokeOwn('browse'),
+      search: () => invokeOwn('sessions'),
+      find: () => invokeOwn('find'),
+      commands: () => invokeOwn('commands'),
+      models: () => invokeOwn('models'),
+      latest: () => invokeOwn('latest'),
+      nextSession: () => stepSession(1),
+      previousSession: () => stepSession(-1),
+      settings: () => invokeOwn('settings'),
+      sidebarShown,
+      toggleSidebar: () => toggleSidebar({ sessionId: selected(), expanded: sidebarShown() }),
+      textSize: changeTextSize,
+    });
   // The conversation below (1) or above (-1) the open one in the session browser.
   const stepSession = (step: 1 | -1) => {
     const current = overlay();
@@ -1357,6 +1378,9 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     newConversation: (sessionId) => invokeCommand({ id: 'new', sessionId }),
     settings: (sessionId) => invokeCommand({ id: 'settings', sessionId }),
     search: (sessionId) => invokeCommand({ id: 'sessions', sessionId }),
+    canOpenBeside: () => !!shell()?.openBeside,
+    beside: () => shell()?.besideSessionId?.() ?? null,
+    openBeside: (sessionId) => shell()?.openBeside?.(sessionId),
   };
   let wasDocked = shell()?.sidebarDocked();
   let previousWidth = windowSize().width;
@@ -1503,6 +1527,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   };
   return {
     sessionId: selected,
+    browsing,
     navigation(input: ConversationNavigationInput) {
       bind(input.shell);
       return <WorkspaceBrowser {...browserProps} />;
@@ -1535,6 +1560,11 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       return (
         <viewRuntimeContext.Provider value={runtime}>
           <View
+            ref={(node) => {
+              if (!side || sideKeys === node) return;
+              sideKeys = node;
+              bindKeys(node);
+            }}
             onFileDrop={(event) => {
               fileDragging.set(false);
               dropFiles?.(event);
@@ -1966,6 +1996,8 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     },
     enabled(id: string) {
       if (!shell() || reloading()) return false;
+      // A side pane holds one open conversation; navigation belongs to the main pane.
+      if (side && ['new', 'workspace', 'browse', 'sessions'].includes(id)) return false;
       if (id === 'files') return handle() !== null && workspace() !== null;
       if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
         return handle() !== null;
