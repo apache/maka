@@ -30,6 +30,12 @@ import type {
 } from '@maka/core/runtime-policy';
 import { CONNECTION_CATALOG_MAX_CONNECTIONS } from '@maka/core/runtime-policy';
 import { serializeOAuthSubscriptionTokens } from '@maka/runtime/subscription-credentials';
+import {
+  buildHistoryCompactCheckpoint,
+  canReplayHistoryCompactCheckpointForModel,
+  CODEX_COMPACTION_METADATA_MAX_AGE_MS,
+  freshCodexCompactionHash,
+} from '@maka/runtime/history-compact-checkpoint';
 import { type ConnectionEffectFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
 import { type ConnectionTestEffectOutcome } from '@maka/runtime/connection-effect-outcome';
 import {
@@ -1701,7 +1707,13 @@ test('OAuth connection effects resolve the canonical access token instead of sen
         throw new Error('not used');
       },
     );
-    assert.equal(target.connection.codexCompactionMetadataFetchedAt, fetched.modelsFetchedAt);
+    // The execution target stamps the moment it resolved the fetched catalog,
+    // so the compaction freshness gate tracks the catalog in use (#6402); the
+    // hash itself still comes from that catalog snapshot.
+    assert.ok(target.connection.codexCompactionMetadataFetchedAt !== undefined);
+    assert.ok(
+      target.connection.codexCompactionMetadataFetchedAt! >= (fetched.modelsFetchedAt as number),
+    );
     assert.equal(
       target.connection.models?.find((model) => model.id === 'gpt-5.6-terra')?.codexCompactionHash,
       '3000',
@@ -1717,6 +1729,106 @@ test('OAuth connection effects resolve the canonical access token instead of sen
     assertRedacted(tested, [accessToken, storedCredential]);
   });
 });
+
+test('codex execution targets authorize compaction hashes from the resolved catalog without a recent manual refresh (#6402)', async () => {
+  await withFixture(async ({ stores }) => {
+    const connection = await createConnection(
+      stores,
+      0,
+      connectionDraft('codex-freshness', 'openai-codex'),
+    );
+    const storedCredential = serializeOAuthSubscriptionTokens({
+      access_token: 'oauth-access-token-freshness',
+      refresh_token: 'oauth-refresh-token-freshness',
+      expires_at: Date.now() + 60 * 60_000,
+    });
+    const enrollment = await stores.operations.beginInteractiveOAuthLogin({
+      attemptId: 'connection-effect-freshness',
+      target: { kind: 'existing', connectionId: connection.connectionId },
+    });
+    assert.equal(enrollment.kind, 'ready');
+    if (enrollment.kind !== 'ready') throw new Error('OAuth enrollment did not start');
+    const credential = await stores.operations.completeInteractiveOAuthLogin(
+      enrollment.ticket,
+      storedCredential,
+    );
+    assert.equal(credential.kind, 'committed');
+    // Discovery ran long ago: the catalog snapshot with compaction hashes is
+    // in place, but its fetch timestamp sits far outside any freshness window —
+    // an ordinary session that never clicked refresh looks exactly like this.
+    const staleFetchedAt = Date.now() - 24 * 60 * 60_000;
+    const prepared = await stores.operations.beginModelFetch(connection.connectionId);
+    assert.equal(prepared.kind, 'ready');
+    if (prepared.kind !== 'ready') throw new Error('model fetch did not start');
+    const completed = await stores.operations.completeModelFetch(prepared.ticket, {
+      models: [
+        { id: 'gpt-5', codexCompactionHash: '3000' },
+        { id: 'gpt-5.6-terra', codexCompactionHash: '3000' },
+      ],
+      source: 'fetched',
+      fetchedAt: staleFetchedAt,
+    });
+    assert.equal(completed.kind, 'committed');
+
+    const target = await resolveExecutionTarget(
+      {
+        llmConnectionId: connection.connectionId,
+        llmConnectionSlug: connection.slug,
+        model: 'gpt-5',
+      },
+      stores,
+      new HostOAuthExecutionAuthority(stores),
+      () => {
+        throw new Error('not used');
+      },
+    );
+
+    // The freshness gate must answer for the catalog the backend actually
+    // resolved, not for the last time the user refreshed models (#6402).
+    assert.ok(target.connection.codexCompactionMetadataFetchedAt !== undefined);
+    assert.ok(
+      target.connection.codexCompactionMetadataFetchedAt! >=
+        staleFetchedAt + CODEX_COMPACTION_METADATA_MAX_AGE_MS,
+    );
+    assert.equal(freshCodexCompactionHash(target.connection, 'gpt-5.6-terra'), '3000');
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-6402',
+      coveredRuntimeEvents: [checkpointSourceEvent()],
+      providerState: {
+        kind: 'openai_codex_remote_v2',
+        connectionId: connection.connectionId,
+        modelId: 'gpt-5',
+        codexCompactionHash: '3000',
+        itemId: 'cmp_6402',
+        encryptedContent: 'encrypted-state',
+      },
+    });
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(
+        checkpoint,
+        target.connection,
+        connection.connectionId,
+        'gpt-5.6-terra',
+      ),
+      true,
+    );
+  });
+});
+
+function checkpointSourceEvent() {
+  return {
+    id: 'event-6402',
+    sessionId: 'session-6402',
+    runId: 'run-6402',
+    turnId: 'turn-6402',
+    invocationId: 'invocation-6402',
+    ts: 1_800_000_000_000,
+    partial: false,
+    role: 'user' as const,
+    author: 'user' as const,
+    content: { kind: 'text' as const, text: 'payload' },
+  };
+}
 
 test('connection test derives a persisted summary from one bounded projection', async () => {
   await withFixture(async ({ stores }) => {
