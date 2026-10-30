@@ -127,6 +127,37 @@ pub(super) fn failure(error: maka_provider_protocol::Error) -> ModelError {
     ModelError::Adapter(error.to_string())
 }
 
+#[derive(Clone)]
+enum BodyEncoding {
+    Chat(
+        chat::request::PromptOptions,
+        maka_agent_facts::language::Language,
+    ),
+    Anthropic(Arc<protocol_anthropic::prompt::streaming::Context>),
+}
+impl BodyEncoding {
+    fn body(
+        &self,
+        fields: super::http_header::Header,
+        prompt: crate::prompt::Prompt,
+    ) -> Result<http::RequestBody, ModelError> {
+        match self {
+            Self::Chat(options, language) => {
+                Ok(body::chat(fields, prompt, options.clone(), *language))
+            }
+            Self::Anthropic(metadata) => {
+                let wire = prompt
+                    .wire(crate::prompt::WireFormat::Anthropic)
+                    .ok_or_else(|| {
+                        ModelError::Adapter("reopened request lacks its Anthropic wire".into())
+                    })?
+                    .clone();
+                anthropic::body(fields, wire, metadata.clone())
+            }
+        }
+    }
+}
+
 async fn run(request: Request, context: &Context, shared: Arc<Shared>) -> Result<(), ModelError> {
     let mut response_body = None;
     let result = run_inner(request, context, shared, &mut response_body).await;
@@ -180,35 +211,88 @@ async fn run_inner(
     let mut events = events::Events::new(anthropic);
     events.evidence.quota_scope = quota_scope;
     let mut retried = remembered;
+    let encoding = if let Some((_, options, language)) = &chat {
+        BodyEncoding::Chat(options.clone(), *language)
+    } else {
+        BodyEncoding::Anthropic(
+            anthropic_source
+                .as_ref()
+                .expect("Anthropic encoding")
+                .1
+                .clone(),
+        )
+    };
     loop {
+        let upload = if let Some(source) = &context.source {
+            let (initial, cleanup) = if let Some((prompt, _, _)) = chat.take() {
+                (
+                    encoding.body(encoded_header.clone(), prompt)?,
+                    source.cleanup.clone(),
+                )
+            } else if let Some((wire, metadata)) = anthropic_source.take() {
+                (
+                    anthropic::body(encoded_header.clone(), wire, metadata)?,
+                    source.cleanup.clone(),
+                )
+            } else {
+                let materialized = source.frozen.open(context.cancellation.clone()).await?;
+                let body = encoding.body(encoded_header.clone(), materialized.prompt);
+                match body {
+                    Ok(body) => (body, materialized.cleanup),
+                    Err(error) => {
+                        materialized.cleanup.close().await.map_err(body_error)?;
+                        return Err(error);
+                    }
+                }
+            };
+            let fields = encoded_header.clone();
+            let frozen = source.frozen.clone();
+            let encoding = encoding.clone();
+            http::RequestBody::with_replay(initial.with_cleanup(cleanup), move |cancellation| {
+                let fields = fields.clone();
+                let frozen = frozen.clone();
+                let encoding = encoding.clone();
+                Box::pin(async move {
+                    let materialized = frozen.open(cancellation).await.map_err(upload_error)?;
+                    match encoding.body(fields, materialized.prompt) {
+                        Ok(body) => Ok(body.with_cleanup(materialized.cleanup)),
+                        Err(error) => {
+                            materialized.cleanup.close().await?;
+                            Err(upload_error(error))
+                        }
+                    }
+                })
+            })
+        } else if let Some((prompt, options, language)) = &chat {
+            let fields = encoded_header.clone();
+            let prompt = prompt.clone();
+            let options = options.clone();
+            let language = *language;
+            http::RequestBody::replayable(move || {
+                body::chat(fields.clone(), prompt.clone(), options.clone(), language)
+            })
+        } else {
+            let (wire, metadata) = anthropic_source.as_ref().expect("Anthropic encoding");
+            let fields = encoded_header.clone();
+            let wire = wire.clone();
+            let metadata = metadata.clone();
+            http::RequestBody::replayable(move || {
+                anthropic::body(fields.clone(), wire.clone(), metadata.clone()).unwrap_or_else(
+                    |error| {
+                        http::RequestBody::stream(futures_util::stream::once(async move {
+                            Err(upload_error(error))
+                        }))
+                    },
+                )
+            })
+        };
         let response = dispatch(
             context,
             http::Request {
                 method: http::Method::Post,
                 url: url.clone(),
                 headers: headers.clone(),
-                body: if let Some((source, options, language)) = &chat {
-                    let fields = encoded_header.clone();
-                    let source = source.clone();
-                    let options = options.clone();
-                    let language = *language;
-                    http::RequestBody::replayable(move || {
-                        body::chat(fields.clone(), source.clone(), options.clone(), language)
-                    })
-                } else {
-                    let (wire, context) = anthropic_source.as_ref().expect("Anthropic encoding");
-                    let fields = encoded_header.clone();
-                    let wire = wire.clone();
-                    let context = context.clone();
-                    http::RequestBody::replayable(move || {
-                        anthropic::body(fields.clone(), wire.clone(), context.clone())
-                            .unwrap_or_else(|error| {
-                                http::RequestBody::stream(futures_util::stream::once(async move {
-                                    Err(upload_error(error))
-                                }))
-                            })
-                    })
-                },
+                body: upload,
             },
         )
         .await
@@ -544,6 +628,7 @@ mod quota_scope_tests {
                 events: Arc::new(NoEvents),
                 cancellation: CancellationToken::new(),
                 idle_timeout: Duration::from_secs(10),
+                source: None,
             };
             let before = crate::ProviderFailure::now_unix_ms();
             let start = tokio::time::Instant::now();

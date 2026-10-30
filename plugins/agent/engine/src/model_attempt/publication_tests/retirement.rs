@@ -122,7 +122,7 @@ async fn item_acceptance_retires_before_pending_preparations() {
         .await
         .unwrap();
     let cancellation = CancellationToken::new();
-    let mut retry = Some(prompt);
+    let mut retry = Some(RetryPrompt::Materialized(Box::new(prompt)));
     let mut progressed = false;
     let (result, ()) = tokio::time::timeout(Duration::from_secs(30), async {
         tokio::join!(
@@ -154,7 +154,7 @@ async fn item_acceptance_retires_before_pending_preparations() {
 async fn unconfirmed_stream_cleanup_never_reports_model_completion() {
     let mut fixture = Fixture::new(Fault::None, false, true).await;
     let (prompt, arena, execution) = backed_prompt(&fixture).await;
-    let mut retry = Some(prompt);
+    let mut retry = Some(RetryPrompt::Materialized(Box::new(prompt)));
     let request = fixture
         .tools
         .capture(".", CancellationToken::new())

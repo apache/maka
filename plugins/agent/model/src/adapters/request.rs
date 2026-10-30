@@ -68,8 +68,10 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
                 "captured prompt is missing its prepared Anthropic wire projection".into(),
             ));
         };
-        let document_count = wire.source.document_count();
-        let documents = super::anthropic_documents::Documents::new(wire.source.clone())?;
+        let documents = super::anthropic_documents::Documents::new(wire.source.as_ref());
+        let document_count = documents
+            .as_ref()
+            .map_or(0, super::anthropic_documents::Documents::len);
         let metadata = super::anthropic::metadata(&wire).await?;
         let context = metadata.context.clone();
         let tools = request

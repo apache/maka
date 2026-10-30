@@ -79,6 +79,26 @@ impl From<AttemptOutput> for Outcome {
     }
 }
 
+pub(super) struct PromptSettings<'a> {
+    pub language: Language,
+    pub provider: &'a maka_model::ProviderConfig,
+    pub options: &'a serde_json::Value,
+    pub context_window: Option<u64>,
+}
+impl<'a> PromptSettings<'a> {
+    fn from_input<W>(input: &'a RunInput<W>) -> Self {
+        Self {
+            language: input.configuration.language,
+            provider: &input.provider,
+            options: &input.provider_options,
+            context_window: input
+                .context
+                .as_ref()
+                .and_then(|context| context.model_context_window),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // Keep the admitted history policy explicit at each model request.
 pub(super) async fn prompt<W>(
     inner: &RunContext,
@@ -91,14 +111,42 @@ pub(super) async fn prompt<W>(
     system: Option<Arc<String>>,
     purpose: ModelPurpose,
 ) -> Result<PreparedPrompt, RunError> {
-    let route = route_identity(input)?;
+    prompt_with_resources(
+        &inner.log,
+        inner.shared.preparation_resources.clone(),
+        &PromptSettings::from_input(input),
+        source,
+        cancellation,
+        continuation_base,
+        current,
+        prior_unknown,
+        system,
+        purpose,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)] // Keep the admitted history policy explicit at each model request.
+pub(super) async fn prompt_with_resources(
+    log: &Arc<maka_event_log::root_store::SessionStore>,
+    resources: maka_model::ModelPreparationResources,
+    settings: &PromptSettings<'_>,
+    source: &Arc<ContextView>,
+    cancellation: &CancellationToken,
+    continuation_base: Option<u64>,
+    current: &str,
+    prior_unknown: bool,
+    system: Option<Arc<String>>,
+    purpose: ModelPurpose,
+) -> Result<PreparedPrompt, RunError> {
+    let route = digest(settings.provider)?;
     let mut selection = source.selection.clone();
     selection.replay =
         continuation_base.map(|base| maka_event_log::context::semantic::SemanticReplay {
             base,
             current: current.to_owned(),
             route,
-            model: input.provider.model.clone(),
+            model: settings.provider.model.clone(),
         });
     selection.prior_unknown = prior_unknown;
     let overlay_bytes = PreparedPrompt::overlay_plan_bytes(
@@ -107,18 +155,18 @@ pub(super) async fn prompt<W>(
         purpose == ModelPurpose::Summary,
     );
     let body = history::prepare_view(
-        &inner.log,
+        log,
         selection,
-        input.configuration.language,
+        settings.language,
         true,
-        &input.provider.kind,
+        &settings.provider.kind,
         cancellation,
-        inner.shared.preparation_resources.clone(),
+        resources,
         overlay_bytes,
     )
     .await?;
     let mut prompt = PreparedPrompt::from_history(body);
-    let label = match input.configuration.language {
+    let label = match settings.language {
         Language::En => {
             "Historical checkpoint, not a new user request. Reconcile the following messages with this snapshot, then continue the remaining work:\n\n"
         }
@@ -144,7 +192,7 @@ pub(super) async fn prompt<W>(
             .map_err(crate::cleanup::preparation_failed)?;
         return Err(error);
     }
-    if let Err(error) = prompt.prepare_media(&input.provider, cancellation).await {
+    if let Err(error) = prompt.prepare_media(settings.provider, cancellation).await {
         prompt
             .close()
             .await
@@ -309,6 +357,11 @@ pub(super) async fn execute_frozen_main(
     .await
 }
 
+pub(super) enum RetryPrompt {
+    Materialized(Box<PreparedPrompt>),
+    Frozen(Arc<crate::frozen_request::FrozenReplay>),
+}
+
 async fn execute_retry_chain(
     inner: &Arc<RunContext>,
     input: &RunSettings,
@@ -327,21 +380,29 @@ async fn execute_retry_chain(
     } = main;
     let mut failures = consumption.as_ref().map_or(0, |retry| retry.plan.failures);
     let mut high_water = source.evidence.high_water;
-    let mut retry = Some(prompt);
+    let mut retry = Some(RetryPrompt::Materialized(Box::new(prompt)));
     let result = async {
         loop {
             // Preserve captured capabilities. Rebuild history only when a completed
             // item advanced canonical progress, never from a shortened WS request.
             let mut progressed = false;
             let mut confirmed_failure = None;
+            let prompt = match retry
+                .take()
+                .expect("unprogressed attempt retains its frozen input")
+            {
+                RetryPrompt::Materialized(prompt) => *prompt,
+                RetryPrompt::Frozen(frozen) => {
+                    let prompt = frozen.prepared(cancellation).await?;
+                    retry = Some(RetryPrompt::Frozen(frozen));
+                    prompt
+                }
+            };
             let result = execute_once(
                 inner,
                 input,
                 &source,
-                retry
-                    .as_ref()
-                    .expect("unprogressed attempt retains its prompt")
-                    .clone(),
+                prompt,
                 // Re-project this step's captured catalog only for the attempt.
                 // Keeping an owned schema vector here would retain a redundant
                 // copy for the entire response, including stalled streams.
@@ -434,7 +495,7 @@ async fn execute_retry_chain(
                 )
                 .await?;
                 drop(context);
-                retry = Some(prompt);
+                retry = Some(RetryPrompt::Materialized(Box::new(prompt)));
             }
             // execute_once has drained the worker and committed ModelInterrupted.
             // A local/storage error cannot reach this wait or authorize another send.
@@ -520,8 +581,8 @@ async fn wait_retry(delay: std::time::Duration) {
     }
 }
 
-async fn close_retry(retry: &mut Option<PreparedPrompt>) -> Result<(), RunError> {
-    if let Some(prompt) = retry.take() {
+async fn close_retry(retry: &mut Option<RetryPrompt>) -> Result<(), RunError> {
+    if let Some(RetryPrompt::Materialized(prompt)) = retry.take() {
         prompt
             .close()
             .await
@@ -540,7 +601,7 @@ pub(super) async fn execute_once(
     attempt: Attempt<'_>,
     cancellation: &CancellationToken,
     progressed: &mut bool,
-    retry: &mut Option<PreparedPrompt>,
+    retry: &mut Option<RetryPrompt>,
     confirmed_failure: &mut Option<String>,
     consumption: Option<maka_agent_facts::model_retry::ModelRetryConsumption>,
 ) -> Result<AttemptOutput, RunError> {
@@ -554,30 +615,49 @@ pub(super) async fn execute_once(
         Attempt::Summary { surface } => (ModelPurpose::Summary, None, surface, None),
     };
     if cancellation.is_cancelled() {
+        if purpose == ModelPurpose::Main {
+            prompt
+                .close()
+                .await
+                .map_err(crate::cleanup::preparation_failed)?;
+        }
         return Err(RunError::Cancelled);
     }
-    prepare_wire(
+    if let Err(error) = prepare_wire(
         input,
         &mut prompt,
         &definitions,
         surface.max_output_tokens,
         cancellation,
     )
-    .await?;
-    if purpose == ModelPurpose::Main && retry.is_some() {
-        *retry = Some(prompt.clone());
+    .await
+    {
+        if purpose == ModelPurpose::Main {
+            prompt
+                .close()
+                .await
+                .map_err(crate::cleanup::preparation_failed)?;
+        }
+        return Err(error);
     }
-    let prepared = prepare_request(
+    let cleanup = (purpose == ModelPurpose::Main).then(|| prompt.cleanup());
+    let prepared = match prepare_request(
         input,
         prompt,
         definitions,
         surface.max_output_tokens,
         purpose,
-    )?;
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            close_materialization(&cleanup).await?;
+            return Err(error);
+        }
+    };
     let binding = surface.adapter.clone();
     let item_acceptance = purpose == ModelPurpose::Main && binding.supports_item_acceptance();
     let step_id = Uuid::new_v4().to_string();
-    let sequence = {
+    let committed: Result<_, RunError> = async {
         let composition = surface.evidence();
         let event = maka_agent_facts::event::RuntimeEvent::new(
             input.invocation.clone(),
@@ -617,23 +697,63 @@ pub(super) async fn execute_once(
         } else {
             inner.log.clone().commit(write).await?
         };
-        surface.committed(event_id);
-        sequence
+        surface.committed(event_id.clone());
+        Ok((sequence, event_id))
+    }
+    .await;
+    let (sequence, event_id) = match committed {
+        Ok(committed) => committed,
+        Err(error) => {
+            drop(prepared.request);
+            close_materialization(&cleanup).await?;
+            return Err(error);
+        }
     };
-    let mut writer = AttemptWriter::new(
+    let model_source = if purpose == ModelPurpose::Main {
+        let frozen = Arc::new(crate::frozen_request::FrozenReplay::new(
+            inner,
+            input,
+            event_id,
+            binding.clone(),
+        ));
+        *retry = Some(RetryPrompt::Frozen(frozen.clone()));
+        Some(maka_agent_ports::model::RequestSource {
+            cleanup: cleanup
+                .as_ref()
+                .expect("Main owns its materialization")
+                .clone(),
+            frozen,
+        })
+    } else {
+        None
+    };
+    let mut writer = match AttemptWriter::new(
         AttemptBinding {
             invocation: input.invocation.clone(),
             step_id: step_id.clone(),
             purpose,
         },
         item_acceptance,
-    )?;
+    ) {
+        Ok(writer) => writer,
+        Err(error) => {
+            drop(prepared.request);
+            close_materialization(&cleanup).await?;
+            return Err(error.into());
+        }
+    };
     writer.fenced(sequence);
     let finalizer = inner.attempts.register(writer.snapshot(), item_acceptance);
     let result = match inner
         .shared
         .model
-        .stream_with_adapter(prepared.request, cancellation.clone(), lane, binding)
+        .stream_with_source(
+            prepared.request,
+            cancellation.clone(),
+            lane,
+            binding,
+            model_source,
+        )
         .await
     {
         Ok(stream) => {
@@ -653,6 +773,7 @@ pub(super) async fn execute_once(
             .await
         }
         Err(error) => {
+            close_materialization(&cleanup).await?;
             finish(
                 inner,
                 writer,
@@ -678,6 +799,18 @@ pub(super) async fn execute_once(
         inner.attempts.remove(&step_id);
     }
     result
+}
+
+async fn close_materialization(
+    cleanup: &Option<Arc<dyn maka_capabilities::http::UploadCleanup>>,
+) -> Result<(), RunError> {
+    if let Some(cleanup) = cleanup {
+        cleanup
+            .close()
+            .await
+            .map_err(|error| crate::cleanup::preparation_failed(std::io::Error::other(error)))?;
+    }
+    Ok(())
 }
 
 async fn commit_retry_request(
@@ -717,20 +850,37 @@ pub(super) async fn prepare_wire(
     max_output_tokens: Option<u64>,
     cancellation: &CancellationToken,
 ) -> Result<(), RunError> {
+    prepare_wire_with_settings(
+        &PromptSettings::from_input(input),
+        prompt,
+        definitions,
+        max_output_tokens,
+        cancellation,
+    )
+    .await
+}
+
+pub(super) async fn prepare_wire_with_settings(
+    settings: &PromptSettings<'_>,
+    prompt: &mut PreparedPrompt,
+    definitions: &[Arc<ToolDefinition>],
+    max_output_tokens: Option<u64>,
+    cancellation: &CancellationToken,
+) -> Result<(), RunError> {
     prompt
         .compile_wire(
-            input.configuration.language,
-            &input.provider,
-            &input.provider_options,
+            settings.language,
+            settings.provider,
+            settings.options,
             definitions,
             cancellation,
         )
         .await?;
     prompt
         .fit_image_request(
-            input.configuration.language,
-            &input.provider,
-            &input.provider_options,
+            settings.language,
+            settings.provider,
+            settings.options,
             definitions,
             max_output_tokens,
             cancellation,
@@ -757,8 +907,24 @@ pub(super) fn prepare_request<W>(
     max_output_tokens: Option<u64>,
     purpose: ModelPurpose,
 ) -> Result<PreparedRequest, RunError> {
+    prepare_request_with_settings(
+        &PromptSettings::from_input(input),
+        prompt,
+        definitions,
+        max_output_tokens,
+        purpose,
+    )
+}
+
+pub(super) fn prepare_request_with_settings(
+    settings: &PromptSettings<'_>,
+    prompt: PreparedPrompt,
+    definitions: Vec<Arc<ToolDefinition>>,
+    max_output_tokens: Option<u64>,
+    purpose: ModelPurpose,
+) -> Result<PreparedRequest, RunError> {
     let prompt = prompt.model();
-    let format = match input.provider.kind {
+    let format = match settings.provider.kind {
         maka_model::ProviderKind::OpenaiChatCompletions
         | maka_model::ProviderKind::OpenaiCompatible { .. } => {
             maka_model::prompt::WireFormat::ChatCompletions
@@ -780,7 +946,7 @@ pub(super) fn prepare_request<W>(
         .validate()
         .map_err(|error| RunError::Internal(error.into()))?;
     let max_output_tokens = Some(crate::context_input::output_limit(
-        input,
+        settings.context_window,
         context_breakdown.estimated_tokens(),
         maka_agent_facts::context::effective_output_limit(max_output_tokens),
         purpose,
@@ -800,26 +966,26 @@ pub(super) fn prepare_request<W>(
         #[serde(skip_serializing_if = "Option::is_none")]
         max_output_tokens: Option<u64>,
     }
-    let route_identity = route_identity(input)?;
+    let route_identity = digest(settings.provider)?;
     let input_digest = digest(&Evidence {
         projection: "maka.model-history.v1",
-        language: input.configuration.language,
+        language: settings.language,
         prompt_root: prompt.identity(),
         wire_codec: &wire.codec,
         wire_root: &wire.identity,
         route_identity: &route_identity,
         tools: &definitions,
-        provider_options: &input.provider_options,
+        provider_options: settings.options,
         max_output_tokens,
     })?;
     Ok(PreparedRequest {
         context_breakdown,
         request: ModelRequest {
-            language: input.configuration.language,
-            provider: input.provider.clone(),
+            language: settings.language,
+            provider: settings.provider.clone(),
             prompt,
             tools: definitions,
-            provider_options: input.provider_options.clone(),
+            provider_options: settings.options.clone(),
             max_output_tokens,
         },
         input_digest,
@@ -836,7 +1002,7 @@ async fn receive(
     tools: Option<maka_tools::StepTools<'_>>,
     progressed: &mut bool,
     cancellation: &CancellationToken,
-    retry: &mut Option<PreparedPrompt>,
+    retry: &mut Option<RetryPrompt>,
     completion_tools: Option<&maka_tools::RequestTools<'_>>,
 ) -> Result<AttemptOutput, RunError> {
     receive_with_confirmation(
@@ -863,7 +1029,7 @@ async fn receive_with_confirmation<F, Fut>(
     mut tools: Option<maka_tools::StepTools<'_>>,
     progressed: &mut bool,
     cancellation: &CancellationToken,
-    retry: &mut Option<PreparedPrompt>,
+    retry: &mut Option<RetryPrompt>,
     completion_tools: Option<&maka_tools::RequestTools<'_>>,
     confirm: F,
 ) -> Result<AttemptOutput, RunError>
@@ -1370,7 +1536,7 @@ async fn finish(
     result: Result<(), RunError>,
     cancellation: &CancellationToken,
     completion_tools: Option<&maka_tools::RequestTools<'_>>,
-    retry: &mut Option<PreparedPrompt>,
+    retry: &mut Option<RetryPrompt>,
 ) -> Result<AttemptOutput, RunError> {
     let item_acceptance = finalizer.item_acceptance;
     let result = result.and_then(|()| {

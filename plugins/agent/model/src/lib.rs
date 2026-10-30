@@ -387,10 +387,22 @@ impl ModelExecutor {
 
     pub async fn stream_with_adapter(
         &self,
+        request: ModelRequest,
+        cancellation: CancellationToken,
+        conversation: Option<Conversation>,
+        binding: maka_agent_ports::model::Binding,
+    ) -> Result<ModelStream, ModelError> {
+        self.stream_with_source(request, cancellation, conversation, binding, None)
+            .await
+    }
+
+    pub async fn stream_with_source(
+        &self,
         mut request: ModelRequest,
         cancellation: CancellationToken,
         conversation: Option<Conversation>,
         binding: maka_agent_ports::model::Binding,
+        source: Option<maka_agent_ports::model::RequestSource>,
     ) -> Result<ModelStream, ModelError> {
         for tool in &request.tools {
             if let Some(provider) = &tool.provider {
@@ -488,11 +500,12 @@ impl ModelExecutor {
                             cancellation: adapter_cancel.clone(),
                             idle_timeout,
                             transport: network,
+                            source: source.clone(),
                         },
                     )
                     .await
             };
-            tokio::pin!(operation);
+            let mut operation = Box::pin(operation);
             let operation_started = tokio::time::Instant::now();
             let mut cleanup = Ok(());
             let result = loop {
@@ -527,6 +540,24 @@ impl ModelExecutor {
                     cleanup = Err(StreamCleanupError);
                 }
                 break Err(cause);
+            };
+            drop(operation);
+            let result = if cleanup.is_ok()
+                && !result.as_ref().is_err_and(ModelError::cleanup_unconfirmed)
+            {
+                if let Some(source) = &source {
+                    match source.cleanup.close().await {
+                        Ok(()) => result,
+                        Err(error) => {
+                            tracing::error!(stage = "model_materialization_close", %error, "cleanup unconfirmed");
+                            Err(ModelError::CleanupUnconfirmed)
+                        }
+                    }
+                } else {
+                    result
+                }
+            } else {
+                result
             };
             if let Err(error) = result {
                 if error.cleanup_unconfirmed() {

@@ -33,6 +33,26 @@ impl Network {
         request: http::Request,
         cancellation: CancellationToken,
     ) -> Result<http::Response, Error> {
+        let cleanup = request.body.cleanup();
+        let result = self.request_http_inner(request, cancellation).await;
+        if result
+            .as_ref()
+            .is_err_and(|error| !error.cleanup_unconfirmed())
+            && let Some(cleanup) = cleanup
+        {
+            cleanup.close().await.map_err(|error| {
+                tracing::error!(stage = "model_upload_preflight_close", %error, "cleanup unconfirmed");
+                cleanup_unconfirmed()
+            })?;
+        }
+        result
+    }
+
+    async fn request_http_inner(
+        &self,
+        request: http::Request,
+        cancellation: CancellationToken,
+    ) -> Result<http::Response, Error> {
         let mut method = match request.method {
             http::Method::Get => Method::GET,
             http::Method::Head => Method::HEAD,
@@ -55,13 +75,7 @@ impl Network {
         let mut replay = body.as_ref().and_then(http::RequestBody::replay_source);
         let mut previous = 0;
         loop {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
             let input = body.take().expect("one source per redirect hop");
-            self.policy
-                .check_request_headers(&url, &headers, input.length() != Some(0), true)
-                .map_err(|_| Error::Adapter("model HTTP headers cannot be represented".into()))?;
             let (response, upload) = self
                 .send_http(method.clone(), &url, headers.clone(), input, &cancellation)
                 .await?;
@@ -111,7 +125,18 @@ impl Network {
                             body = Some(http::RequestBody::default());
                             replay = body.as_ref().and_then(http::RequestBody::replay_source);
                         } else {
-                            body = Some(replay.as_ref().expect("redirect replay source").open());
+                            body = Some(
+                                replay
+                                    .as_ref()
+                                    .expect("redirect replay source")
+                                    .open(cancellation.clone())
+                                    .await
+                                    .map_err(|error| match error {
+                                        http::Error::CleanupUnconfirmed => cleanup_unconfirmed(),
+                                        http::Error::Denied => Error::Cancelled,
+                                        other => Error::Adapter(other.to_string()),
+                                    })?,
+                            );
                         }
                         redirect_headers(&mut headers, &url, &next)?;
                         url = next;
@@ -148,6 +173,37 @@ impl Network {
         input: http::RequestBody,
         cancellation: &CancellationToken,
     ) -> Result<(reqwest::Response, UploadLease), Error> {
+        let cleanup = input.cleanup();
+        let result = self
+            .send_http_inner(method, url, headers, input, cancellation)
+            .await;
+        if result
+            .as_ref()
+            .is_err_and(|error| !error.cleanup_unconfirmed())
+            && let Some(cleanup) = cleanup
+        {
+            cleanup.close().await.map_err(|error| {
+                tracing::error!(stage = "model_upload_preflight_close", %error, "cleanup unconfirmed");
+                cleanup_unconfirmed()
+            })?;
+        }
+        result
+    }
+
+    async fn send_http_inner(
+        &self,
+        method: Method,
+        url: &Url,
+        headers: HeaderMap,
+        input: http::RequestBody,
+        cancellation: &CancellationToken,
+    ) -> Result<(reqwest::Response, UploadLease), Error> {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        self.policy
+            .check_request_headers(url, &headers, input.length() != Some(0), true)
+            .map_err(|_| Error::Adapter("model HTTP headers cannot be represented".into()))?;
         let connections = maka_network::ConnectionTasks::default();
         let client = self
             .tls
@@ -180,10 +236,36 @@ impl Network {
         if let Some(length) = length.filter(|length| *length > 0) {
             pending = pending.header(CONTENT_LENGTH, length);
         }
-        let response = tokio::select! {
-            biased;
-            _=cancellation.cancelled()=>Err(Error::Cancelled),
-            result=pending.send()=>result.map_err(failure),
+        let response = {
+            let sending = pending.send();
+            tokio::pin!(sending);
+            let mut receipt = upload.receipt.lock().await;
+            let close_source = receipt.needs_source_close();
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => Err(Error::Cancelled),
+                result = &mut sending => result.map_err(failure),
+                released = receipt.source_released(), if close_source => {
+                    match released {
+                        Ok(()) => {
+                            if let Err(error) = receipt.close_source().await {
+                                tracing::error!(stage = "model_upload_source_close", %error, "cleanup unconfirmed");
+                                Err(cleanup_unconfirmed())
+                            } else {
+                                tokio::select! {
+                            biased;
+                            _ = cancellation.cancelled() => Err(Error::Cancelled),
+                            result = &mut sending => result.map_err(failure),
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            tracing::error!(stage = "model_upload_source_close", %error, "cleanup unconfirmed");
+                            Err(cleanup_unconfirmed())
+                        }
+                    }
+                }
+            }
         };
         match response {
             Ok(response) => Ok((response, upload)),

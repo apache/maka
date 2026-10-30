@@ -348,6 +348,7 @@ async fn encode(
                             .map(|fragments| SourceItem {
                                 fragments: fragments.into(),
                                 metadata: None,
+                                citation: None,
                                 owned_bytes: 0,
                             })
                             .collect());
@@ -466,6 +467,7 @@ async fn encode(
         .map(|fragments| SourceItem {
             fragments: fragments.into(),
             metadata: None,
+            citation: None,
             owned_bytes: 0,
         })
         .collect())

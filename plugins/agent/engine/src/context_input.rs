@@ -339,21 +339,21 @@ fn excerpt(text: &str, bytes: usize, language: Language) -> String {
 
 /// The final request owns its output reserve, after all prompt/tool projections.
 /// This cap never changes the configured model limit or the persisted history.
-pub(super) fn output_limit<W>(
-    input: &RunInput<W>,
+pub(super) fn output_limit(
+    window: Option<u64>,
     estimated_input_tokens: u64,
     requested: u64,
     purpose: ModelPurpose,
 ) -> u64 {
     let minimum = match purpose {
         ModelPurpose::Main => 1,
-        ModelPurpose::Summary => summary_output_reserve(input),
+        ModelPurpose::Summary => window
+            .unwrap_or(200_000)
+            .saturating_mul(4)
+            .div_ceil(100)
+            .max(1),
     };
-    input
-        .context
-        .as_ref()
-        .and_then(|context| context.model_context_window)
-        .map_or(requested, |window| {
-            requested.min(window.saturating_sub(estimated_input_tokens).max(minimum))
-        })
+    window.map_or(requested, |window| {
+        requested.min(window.saturating_sub(estimated_input_tokens).max(minimum))
+    })
 }

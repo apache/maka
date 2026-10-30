@@ -86,7 +86,6 @@ async fn read_record(custody: &Arc<Custody>, offset: u64) -> Result<Record, Mode
 struct Tables {
     messages: u64,
     items: u64,
-    documents: u64,
     identities: u64,
 }
 struct OpenItem {
@@ -107,15 +106,13 @@ struct Builder {
     item_count: usize,
     message_count: usize,
     message_start: usize,
-    document_count: usize,
     identity_count: usize,
     expected_messages: usize,
     expected_items: usize,
-    expected_documents: usize,
     expected_identities: usize,
 }
 
-/// Constant resident header allowance; item, prefix, document and identity tables live on disk.
+/// Constant resident header allowance; item, prefix and identity tables live on disk.
 pub(super) fn resident_bytes() -> usize {
     std::mem::size_of::<Directory>()
         + std::mem::size_of::<Custody>()
@@ -129,12 +126,14 @@ pub(super) async fn build(
     plan: &WirePlan,
     logical: Arc<dyn MessageSource>,
     arena: CaptureArena,
-    lease: DirectoryLease,
+    mut lease: DirectoryLease,
     resources: ModelPreparationResources,
 ) -> Result<maka_model::FrozenWire, ModelError> {
-    if lease.capacity() < resident_bytes() {
+    let citation_bytes = plan.citation_allocation()?;
+    if lease.capacity() < resident_bytes() + citation_bytes {
         return Err(invalid("backed wire header exceeds its prepaid envelope"));
     }
+    let citation_lease = lease.split(citation_bytes).map_err(error)?;
     let custody = Arc::new(Custody {
         arena: arena.clone(),
         _lease: lease,
@@ -142,7 +141,6 @@ pub(super) async fn build(
     let append = arena.begin_append().await;
     let messages = plan.message_count();
     let items = plan.item_count();
-    let documents = plan.document_count();
     let identities = plan.source_identity_count();
     let table_custody = custody.clone();
     let tables = append
@@ -157,7 +155,6 @@ pub(super) async fn build(
             Ok(Tables {
                 messages: reserve(messages, RECORD_BYTES)?,
                 items: reserve(items, RECORD_BYTES)?,
-                documents: reserve(documents, 8)?,
                 identities: reserve(identities, 32)?,
             })
         })
@@ -175,18 +172,17 @@ pub(super) async fn build(
         item_count: 0,
         message_count: 0,
         message_start: 0,
-        document_count: 0,
         identity_count: 0,
         expected_messages: messages,
         expected_items: items,
-        expected_documents: documents,
         expected_identities: identities,
     };
-    let encoded = plan.encode_to(&mut builder, resources.clone()).await?;
+    let encoded = plan
+        .encode_to(&mut builder, resources.clone(), citation_lease)
+        .await?;
     if builder.item.is_some()
         || builder.item_count != items
         || builder.message_count != messages
-        || builder.document_count != documents
         || builder.identity_count != identities
     {
         return Err(invalid("backed wire shape differs from its counted plan"));
@@ -208,7 +204,7 @@ pub(super) async fn build(
             resources,
             messages,
             items,
-            documents,
+            citations: encoded.citations,
             initial_prefix: plan.initial_prefix(),
             identities,
         }))),
@@ -553,17 +549,6 @@ impl WireSink for Builder {
                     Some(wire::WireItemMetadata::Message(_)) => (1, chunk.message_index as u64),
                     Some(wire::WireItemMetadata::Anthropic(metadata)) => {
                         let offset = self.metadata(metadata, budget.clone()).await?;
-                        if metadata.document.is_some() {
-                            if self.document_count >= self.expected_documents {
-                                return Err(invalid("backed document count grew"));
-                            }
-                            self.put_u64(
-                                index(self.tables.documents, self.document_count, 8)?,
-                                self.item_count as u64,
-                            )
-                            .await?;
-                            self.document_count += 1;
-                        }
                         if let Some(source) = &metadata.source_id {
                             if self.identity_count >= self.expected_identities {
                                 return Err(invalid("backed source identity count grew"));
@@ -720,7 +705,7 @@ struct Directory {
     resources: ModelPreparationResources,
     messages: usize,
     items: usize,
-    documents: usize,
+    citations: Option<Arc<dyn wire::NativeCitationDocuments>>,
     initial_prefix: [u8; 32],
     identities: Arc<Identities>,
 }
@@ -983,35 +968,11 @@ impl SourceBudgetFactory for WorkFactory {
 
 struct SharedDirectory(Arc<Directory>);
 impl wire::WireSource for SharedDirectory {
+    fn citation_documents(&self) -> Option<Arc<dyn wire::NativeCitationDocuments>> {
+        self.0.citations.clone()
+    }
     fn source_identities(&self) -> Option<Arc<dyn wire::SourceIdentityLookup>> {
         Some(self.0.identities.clone())
-    }
-    fn document_count(&self) -> usize {
-        self.0.documents
-    }
-    fn document(
-        &self,
-        ordinal: usize,
-        _budget: Arc<dyn SourceBudget>,
-    ) -> wire::NextWireDocument<'_> {
-        Box::pin(async move {
-            if ordinal >= self.0.documents {
-                return Ok(None);
-            }
-            let item = self
-                .0
-                .read_u64(index(self.0.tables.documents, ordinal, 8)?)
-                .await?;
-            let item = self.0.item(item as usize).await?;
-            if item[3] != 2 {
-                return Err(invalid("document index lacks Anthropic metadata"));
-            }
-            let metadata = read_record(&self.0.custody, item[4]).await?;
-            if metadata[14] == 0 {
-                return Err(invalid("document index lacks its descriptor"));
-            }
-            Ok(Some(self.0.document(metadata[14] - 1).await?))
-        })
     }
     fn budget_factory(&self) -> Option<Arc<dyn SourceBudgetFactory>> {
         Some(Arc::new(WorkFactory(self.0.resources.clone())))
@@ -1369,6 +1330,9 @@ mod tests {
                 Message::User { content: vec![ContentPart::File {
                     data: FileData::Data("ZG9jdW1lbnQ=".into()), media_type: "text/plain".into(),
                     provider_options: Some(serde_json::json!({"anthropic":{"citations":{"enabled":true}}})),
+                }, ContentPart::File {
+                    data: FileData::Data("cGRm".into()), media_type: "application/pdf".into(),
+                    provider_options: Some(serde_json::json!({"anthropic":{"citations":{"enabled":true}}})),
                 }], provider_options: None },
                 Message::Assistant { content: vec![
                     AssistantPart::ToolCall { tool_call_id: "source".into(), tool_name: "code_execution".into(),
@@ -1383,19 +1347,18 @@ mod tests {
             let generous = resources(1024 * 1024);
             let plan = encoding.count_source(logical.clone(), generous.clone()).await.unwrap();
             let resident = encoding.prepare_source(logical.clone(), generous).await.unwrap();
-            let resources = resources(resident_bytes());
-            let active = resources.reserve_staging(0).await.unwrap().promote(resident_bytes()).await.unwrap();
-            let backed = build(&plan, logical, arena.clone(), active.directory(resident_bytes()).unwrap(), resources.clone()).await.unwrap();
-            assert_eq!(backed.source.document_count(), 1);
+            let bytes = resident_bytes() + plan.citation_allocation().unwrap();
+            let resources = resources(bytes);
+            let active = resources.reserve_staging(0).await.unwrap().promote(bytes).await.unwrap();
+            let backed = build(&plan, logical, arena.clone(), active.directory(bytes).unwrap(), resources.clone()).await.unwrap();
+            let backed_citations = backed.source.citation_documents().unwrap();
+            let resident_citations = resident.source.citation_documents().unwrap();
+            assert_eq!(backed_citations.len(), 2);
             let budget = resources.acquire_work().await.unwrap().budget();
-            let document = backed.source.document(0, budget.clone()).await.unwrap().unwrap();
-            assert_eq!(document.title.identity, <[u8;32]>::from(Sha256::digest(b"Untitled Document")));
-            assert_eq!(document.media_type.identity, <[u8;32]>::from(Sha256::digest(b"text/plain")));
-            assert!(backed.source.document(1, budget.clone()).await.unwrap().is_none());
             let identities = backed.source.source_identities().unwrap();
             assert!(identities.contains(Sha256::digest(b"source").into(), budget.clone()).await.unwrap());
             assert!(!identities.contains(Sha256::digest(b"absent").into(), budget.clone()).await.unwrap());
-            drop(identities); drop(document); drop(budget);
+            drop(identities); drop(budget);
             let mut actual = backed.source.open_metadata(0).unwrap();
             let mut expected = resident.source.open_metadata(0).unwrap();
             while let Some(item) = actual.next().await.unwrap() {
@@ -1411,6 +1374,11 @@ mod tests {
             assert!(expected.next().await.unwrap().is_none());
             drop(actual); drop(expected); drop(backed); drop(resident); drop(plan); drop(active);
             arena.close().await.unwrap(); drop(arena);
+            for citations in [backed_citations, resident_citations] {
+                assert_eq!(citations.document(0), Some(wire::NativeCitationDocument::Text));
+                assert_eq!(citations.document(1), Some(wire::NativeCitationDocument::Pdf));
+                assert_eq!(citations.document(2), None);
+            }
             execution.finish(); root.shutdown().await.unwrap();
         }).await.expect("indexed documents, source identities and typed metadata must make progress");
     }

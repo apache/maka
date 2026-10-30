@@ -93,6 +93,7 @@ fn context(wait_for_headers: bool) -> (Context, Arc<AtomicBool>) {
             events: Arc::new(NoEvents),
             cancellation: CancellationToken::new(),
             idle_timeout: Duration::from_secs(30),
+            source: None,
         },
         settled,
     )
@@ -158,4 +159,151 @@ async fn another_upload_cannot_keep_a_stalled_attempt_alive() {
     };
     let (result, ()) = tokio::join!(dispatch(&active, active_request), stalled_attempt);
     result.unwrap();
+}
+
+struct CountClose(Arc<std::sync::atomic::AtomicUsize>);
+impl http::UploadCleanup for CountClose {
+    fn close(&self) -> BoxFuture<'_, Result<(), http::Error>> {
+        Box::pin(async move {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+    }
+}
+struct ReopenOriginal {
+    opened: Arc<std::sync::atomic::AtomicUsize>,
+    closed: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl maka_agent_ports::model::FrozenPrompt for ReopenOriginal {
+    fn open(
+        &self,
+        cancellation: CancellationToken,
+    ) -> BoxFuture<'_, Result<maka_agent_ports::model::MaterializedPrompt, ModelError>> {
+        Box::pin(async move {
+            if cancellation.is_cancelled() {
+                return Err(ModelError::Cancelled);
+            }
+            self.opened.fetch_add(1, Ordering::SeqCst);
+            Ok(maka_agent_ports::model::MaterializedPrompt {
+                prompt: vec![crate::prompt::Message::user("original frozen input")].into(),
+                cleanup: Arc::new(CountClose(self.closed.clone())),
+            })
+        })
+    }
+}
+struct RejectBody(Mutex<Option<Vec<u8>>>);
+impl http::Body for RejectBody {
+    fn next(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, http::Error>> {
+        Box::pin(async move { Ok(self.0.lock().unwrap().take()) })
+    }
+    fn cancel(&self) {}
+    fn close(&self) -> BoxFuture<'_, Result<(), http::Error>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+struct UsageRejection(Arc<Mutex<Vec<serde_json::Value>>>);
+impl Transport for UsageRejection {
+    fn identity(&self) -> u64 {
+        7
+    }
+    fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, ModelError>> {
+        Box::pin(async { panic!("HTTP usage negotiation cannot open a socket") })
+    }
+    fn request(
+        &self,
+        request: http::Request,
+        cancellation: CancellationToken,
+    ) -> BoxFuture<'_, Result<http::Response, ModelError>> {
+        Box::pin(async move {
+            let (mut upload, mut receipt) = http::upload::track(request.body, cancellation);
+            let mut bytes = Vec::new();
+            while let Some(chunk) = upload.next().await {
+                bytes.extend_from_slice(&chunk.unwrap());
+            }
+            receipt.close_source().await.unwrap();
+            drop(upload);
+            receipt.finish().await.unwrap();
+            let count = {
+                let mut requests = self.0.lock().unwrap();
+                requests.push(serde_json::from_slice(&bytes).unwrap());
+                requests.len()
+            };
+            Ok(http::Response {
+                head: http::Head {
+                    status: 400,
+                    url: request.url,
+                    headers: vec![("content-type".into(), b"application/json".to_vec())],
+                },
+                body: Arc::new(RejectBody(Mutex::new(Some(if count == 1 {
+                    br#"{"error":{"message":"stream_options include_usage unsupported","type":"invalid_request_error"}}"#.to_vec()
+                } else {
+                    br#"{"error":{"message":"request rejected after usage negotiation","type":"invalid_request_error"}}"#.to_vec()
+                })))),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn usage_rejection_reopens_frozen_input_once_with_the_exact_header_variant() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let closed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let context = Context {
+        transport: Arc::new(UsageRejection(requests.clone())),
+        events: Arc::new(NoEvents),
+        cancellation: CancellationToken::new(),
+        idle_timeout: Duration::from_secs(30),
+        source: Some(maka_agent_ports::model::RequestSource {
+            cleanup: Arc::new(CountClose(closed.clone())),
+            frozen: Arc::new(ReopenOriginal {
+                opened: opened.clone(),
+                closed: closed.clone(),
+            }),
+        }),
+    };
+    let result = run(
+        Request {
+            language: Default::default(),
+            provider: maka_agent_ports::model::Provider {
+                kind: crate::ProviderKind::OpenaiCompatible {
+                    name: "fixture".into(),
+                },
+                model: "fixture".into(),
+                base_url: "https://fixture.test/v1".into(),
+                auth: maka_agent_ports::model::Credentials::ApiKey("fixture".into()),
+                headers: Default::default(),
+                body_overlay: None,
+            },
+            prompt: vec![crate::prompt::Message::user("original frozen input")].into(),
+            tools: Vec::new(),
+            provider_options: serde_json::Value::Null,
+            max_output_tokens: None,
+        },
+        &context,
+        Arc::new(Shared::default()),
+    )
+    .await;
+    assert!(
+        matches!(
+            &result,
+            Err(ModelError::Http { status: 400, message: Some(message) })
+                if message.as_str() == "request rejected after usage negotiation"
+        ),
+        "{result:?}"
+    );
+    assert_eq!(opened.load(Ordering::SeqCst), 1);
+    assert_eq!(closed.load(Ordering::SeqCst), 2);
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0]["messages"],
+        serde_json::json!([{"role":"user","content":"original frozen input"}])
+    );
+    let mut expected = requests[0].clone();
+    assert_eq!(
+        expected.as_object_mut().unwrap().remove("stream_options"),
+        Some(serde_json::json!({"include_usage": true}))
+    );
+    assert_eq!(requests[1], expected);
 }

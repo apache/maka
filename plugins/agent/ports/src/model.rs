@@ -99,12 +99,34 @@ pub trait Events: Send + Sync {
     /// Backpressure is observed before the next event is produced.
     fn emit(&self, event: Emission) -> BoxFuture<'_, Result<(), Error>>;
 }
+/// A fresh materialization of the already committed request input.
+pub struct MaterializedPrompt {
+    pub prompt: maka_agent_facts::model::prompt_source::Prompt,
+    pub cleanup: Arc<dyn http::UploadCleanup>,
+}
+
+/// Rebuilds only frozen request bytes using the original scoped authority.
+/// Implementations must not retain the preceding materialization.
+pub trait FrozenPrompt: Send + Sync {
+    fn open(
+        &self,
+        cancellation: CancellationToken,
+    ) -> BoxFuture<'_, Result<MaterializedPrompt, Error>>;
+}
+
+#[derive(Clone)]
+pub struct RequestSource {
+    pub cleanup: Arc<dyn http::UploadCleanup>,
+    pub frozen: Arc<dyn FrozenPrompt>,
+}
+
 #[derive(Clone)]
 pub struct Context {
     pub transport: Arc<dyn Transport>,
     pub events: Arc<dyn Events>,
     pub cancellation: CancellationToken,
     pub idle_timeout: Duration,
+    pub source: Option<RequestSource>,
 }
 /// Disposable per-conversation optimization state, never a history authority.
 pub trait Session: Send + Sync {

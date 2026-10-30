@@ -22,7 +22,7 @@
 use maka_agent_facts::model::prompt_source::source::{Allocate, ChargedBuffer, SourceBudget};
 use std::{
     io,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -321,6 +321,36 @@ impl DirectoryLease {
         })
     }
 
+    /// Transfer this allocation's actual charge out of the request envelope.
+    pub fn detach(
+        mut self,
+        resources: &ModelPreparationResources,
+    ) -> io::Result<DetachedDirectoryLease> {
+        let mut state = self
+            .account
+            .state
+            .lock()
+            .expect("preparation account poisoned");
+        if !Arc::ptr_eq(state.charge.semaphore(), &resources.resident) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "only active preparation allocations can detach",
+            ));
+        }
+        let charge = state
+            .charge
+            .split(self.capacity)
+            .expect("directory charge covers its allocation");
+        state.capacity -= self.capacity;
+        state.claimed -= self.capacity;
+        let capacity = std::mem::take(&mut self.capacity);
+        Ok(DetachedDirectoryLease {
+            charge: Some(charge),
+            account: Arc::downgrade(&self.account),
+            capacity,
+        })
+    }
+
     /// Recycle unused allocation locally; retain the request's global charge.
     pub fn shrink_to(&mut self, bytes: usize) {
         let unused = self
@@ -333,6 +363,42 @@ impl DirectoryLease {
             .expect("preparation account poisoned")
             .claimed -= unused;
         self.capacity = bytes;
+    }
+}
+
+/// An independently charged allocation that cannot retain the request's larger reservation.
+#[derive(Debug)]
+pub struct DetachedDirectoryLease {
+    charge: Option<OwnedSemaphorePermit>,
+    account: Weak<Account>,
+    capacity: usize,
+}
+impl DetachedDirectoryLease {
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
+impl Drop for DetachedDirectoryLease {
+    fn drop(&mut self) {
+        if let Some(account) = self.account.upgrade() {
+            let mut state = account.state.lock().expect("preparation account poisoned");
+            let charge = self
+                .charge
+                .as_ref()
+                .expect("detached directory owns its charge");
+            if !Arc::ptr_eq(charge.semaphore(), state.charge.semaphore())
+                || charge.semaphore().is_closed()
+            {
+                return;
+            }
+            state.charge.merge(
+                self.charge
+                    .take()
+                    .expect("detached directory owns its charge"),
+            );
+            state.capacity += self.capacity;
+        }
     }
 }
 
@@ -526,6 +592,74 @@ mod tests {
         drop(source);
         let second = pending.await.unwrap();
         assert_eq!(second.directory(32).unwrap().capacity(), 32);
+    }
+
+    #[tokio::test]
+    async fn detached_directory_retains_only_its_own_active_charge() {
+        let resources = resources();
+        let active = resources
+            .reserve_staging(0)
+            .await
+            .unwrap()
+            .promote(32)
+            .await
+            .unwrap();
+        let detached = active.directory(8).unwrap().detach(&resources).unwrap();
+        assert_eq!(detached.capacity(), 8);
+        assert_eq!(active.capacity(), 24);
+        drop(active);
+        let next = resources
+            .reserve_staging(0)
+            .await
+            .unwrap()
+            .promote(24)
+            .await
+            .unwrap();
+        drop(next);
+        let pending = resources.reserve_staging(0).await.unwrap().promote(32);
+        tokio::pin!(pending);
+        assert!(matches!(poll!(&mut pending), Poll::Pending));
+        drop(detached);
+        assert_eq!(pending.await.unwrap().capacity(), 32);
+        let staged = resources.reserve_staging(8).await.unwrap();
+        assert!(staged.directory(8).unwrap().detach(&resources).is_err());
+    }
+
+    #[tokio::test]
+    async fn replaced_detached_directories_restore_the_live_request_envelope() {
+        let resources = resources();
+        let active = resources
+            .reserve_staging(0)
+            .await
+            .unwrap()
+            .promote(32)
+            .await
+            .unwrap();
+        let retained = active.directory(24).unwrap();
+        for _ in 0..8 {
+            let directory = active.directory(8).unwrap().detach(&resources).unwrap();
+            assert_eq!(active.capacity(), 24);
+            drop(directory);
+            assert_eq!(active.capacity(), 32);
+        }
+        drop(retained);
+        assert_eq!(active.directory(32).unwrap().capacity(), 32);
+    }
+
+    #[tokio::test]
+    async fn detached_directory_does_not_refund_a_closed_resident_account() {
+        let resources = resources();
+        let active = resources
+            .reserve_staging(0)
+            .await
+            .unwrap()
+            .promote(32)
+            .await
+            .unwrap();
+        let directory = active.directory(8).unwrap().detach(&resources).unwrap();
+        resources.close();
+        drop(directory);
+        assert_eq!(active.capacity(), 24);
     }
 
     #[tokio::test]

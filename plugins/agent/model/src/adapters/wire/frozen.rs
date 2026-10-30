@@ -53,6 +53,54 @@ pub trait WireSink: Send {
 }
 pub struct EncodedWire {
     pub identity: String,
+    pub citations: Option<Arc<dyn wire::NativeCitationDocuments>>,
+}
+struct CitationDirectory {
+    documents: Vec<wire::NativeCitationDocument>,
+    _lease: maka_capabilities::model_preparation::DetachedDirectoryLease,
+}
+impl wire::NativeCitationDocuments for CitationDirectory {
+    fn len(&self) -> usize {
+        self.documents.len()
+    }
+    fn document(&self, index: usize) -> Option<wire::NativeCitationDocument> {
+        self.documents.get(index).copied()
+    }
+}
+fn citation_allocation(count: usize) -> Result<usize, ModelError> {
+    if count == 0 {
+        return Ok(0);
+    }
+    let mut bytes = array_bytes::<wire::NativeCitationDocument>(count)?;
+    add(
+        &mut bytes,
+        arc_bytes(
+            std::mem::size_of::<CitationDirectory>(),
+            std::mem::align_of::<CitationDirectory>(),
+        )?,
+    )?;
+    Ok(bytes)
+}
+
+fn finish_citations(
+    documents: Vec<wire::NativeCitationDocument>,
+    mut lease: DirectoryLease,
+    resources: &ModelPreparationResources,
+) -> Result<Option<Arc<dyn wire::NativeCitationDocuments>>, ModelError> {
+    if documents.is_empty() {
+        return Ok(None);
+    }
+    let bytes = citation_allocation(documents.capacity())?;
+    if bytes > lease.capacity() {
+        return Err(ModelError::Adapter(
+            "citation directory exceeds its prepaid envelope".into(),
+        ));
+    }
+    lease.shrink_to(bytes);
+    Ok(Some(Arc::new(CitationDirectory {
+        documents,
+        _lease: lease.detach(resources).map_err(error)?,
+    })))
 }
 
 pub struct FrozenWire {
@@ -67,7 +115,7 @@ struct Directory {
     entries: Vec<Entry>,
     starts: Vec<usize>,
     prefixes: Vec<[u8; 32]>,
-    documents: Vec<usize>,
+    citations: Option<Arc<dyn wire::NativeCitationDocuments>>,
     source_identities: Arc<Identities>,
     resources: ModelPreparationResources,
     _lease: DirectoryLease,
@@ -161,7 +209,7 @@ impl Counts {
         add(&mut bytes, array_bytes::<Entry>(self.items)?)?;
         add(&mut bytes, array_bytes::<usize>(slots)?)?;
         add(&mut bytes, array_bytes::<[u8; 32]>(slots)?)?;
-        add(&mut bytes, array_bytes::<usize>(self.documents)?)?;
+        add(&mut bytes, citation_allocation(self.documents)?)?;
         add(&mut bytes, identities_allocation(self.source_ids)?)?;
         add(
             &mut bytes,
@@ -182,7 +230,7 @@ impl Counts {
 }
 struct Builder {
     source_ids: Vec<[u8; 32]>,
-    documents: Vec<usize>,
+    documents: Vec<wire::NativeCitationDocument>,
     entries: Vec<Entry>,
     starts: Vec<usize>,
     prefixes: Vec<[u8; 32]>,
@@ -191,6 +239,7 @@ struct Builder {
     expected: Counts,
 }
 struct BackedBuilder<'a> {
+    documents: Vec<wire::NativeCitationDocument>,
     output: &'a mut dyn WireSink,
     hash: Sha256,
     counts: Counts,
@@ -237,6 +286,9 @@ impl Sink<'_> {
                 build.counts.item(&item)?;
                 check_count(&build.counts, &build.expected)?;
                 build.hash.update([1]);
+                if let Some(document) = item.citation {
+                    build.documents.push(document);
+                }
                 let metadata = item.metadata.clone();
                 let mut pump = ItemPump::new(item);
                 let mut pending = pump.read(budget.clone()).await?;
@@ -282,9 +334,8 @@ impl Sink<'_> {
                 {
                     build.source_ids.push(source_id.identity);
                 }
-                if matches!(&item.metadata,Some(wire::WireItemMetadata::Anthropic(metadata))if metadata.document.is_some())
-                {
-                    build.documents.push(build.entries.len());
+                if let Some(document) = item.citation {
+                    build.documents.push(document);
                 }
                 build.entries.push(Entry {
                     message_index,
@@ -407,6 +458,7 @@ async fn emit<'a>(
                         SourceItem {
                             fragments: Arc::from([]),
                             metadata: Some(wire::WireItemMetadata::Message(message_metadata)),
+                            citation: None,
                             owned_bytes: 0,
                         },
                         budget.clone(),
@@ -437,6 +489,7 @@ async fn emit<'a>(
                         SourceItem {
                             fragments: Arc::from([]),
                             metadata: Some(wire::WireItemMetadata::Message(message_metadata)),
+                            citation: None,
                             owned_bytes: 0,
                         },
                         budget.clone(),
@@ -476,6 +529,10 @@ impl WirePlan {
     pub fn document_count(&self) -> usize {
         self.counts.documents
     }
+    /// Independent response-time citation directory allocation.
+    pub fn citation_allocation(&self) -> Result<usize, ModelError> {
+        citation_allocation(self.counts.documents)
+    }
     pub fn source_identity_count(&self) -> usize {
         self.counts.source_ids
     }
@@ -486,12 +543,19 @@ impl WirePlan {
         &self,
         output: &mut dyn WireSink,
         resources: ModelPreparationResources,
+        citation_lease: DirectoryLease,
     ) -> Result<EncodedWire, ModelError> {
         let work = resources
             .acquire_work_with_extra(output.extra_work_bytes())
             .await
             .map_err(error)?;
+        if citation_lease.capacity() < self.citation_allocation()? {
+            return Err(ModelError::Adapter(
+                "citation directory exceeds its prepaid envelope".into(),
+            ));
+        }
         let sink = Sink::Backed(BackedBuilder {
+            documents: Vec::with_capacity(self.counts.documents),
             output,
             hash: initial_hash(&self.encoding),
             counts: Counts::default(),
@@ -508,11 +572,12 @@ impl WirePlan {
         else {
             unreachable!("backed encoding pass")
         };
-        if build.counts != self.counts {
+        if build.counts != self.counts || build.documents.len() != self.counts.documents {
             return Err(changed_plan());
         }
         Ok(EncodedWire {
             identity: hex_digest(build.hash.finalize().into()),
+            citations: finish_citations(build.documents, citation_lease, &resources)?,
         })
     }
     pub fn allocation(&self) -> usize {
@@ -583,6 +648,9 @@ pub(super) async fn build(
     let hash = initial_hash(&encoding);
     let mut prefixes = Vec::with_capacity(source.len() + 1);
     prefixes.push(hash.clone().finalize().into());
+    let citation_lease = lease
+        .split(citation_allocation(count.documents)?)
+        .map_err(error)?;
     let identity_lease = lease
         .split(identities_allocation(count.source_ids)?)
         .map_err(error)?;
@@ -607,7 +675,7 @@ pub(super) async fn build(
     else {
         unreachable!("build pass")
     };
-    if build.counts != count {
+    if build.counts != count || build.documents.len() != count.documents {
         return Err(ModelError::Adapter(
             "frozen wire plan changed between admission passes".into(),
         ));
@@ -625,7 +693,7 @@ pub(super) async fn build(
             entries: build.entries,
             starts: build.starts,
             prefixes: build.prefixes,
-            documents: build.documents,
+            citations: finish_citations(build.documents, citation_lease, &resources)?,
             source_identities,
             resources,
             _lease: lease,
@@ -817,26 +885,9 @@ impl wire::WireSource for SharedDirectory {
         Some(self.0.source_identities.clone())
     }
 
-    fn document_count(&self) -> usize {
-        self.0.documents.len()
+    fn citation_documents(&self) -> Option<Arc<dyn wire::NativeCitationDocuments>> {
+        self.0.citations.clone()
     }
-    fn document(&self, index: usize, _budget: Arc<dyn SourceBudget>) -> wire::NextWireDocument<'_> {
-        Box::pin(async move {
-            let Some(entry) = self
-                .0
-                .documents
-                .get(index)
-                .and_then(|entry| self.0.entries.get(*entry))
-            else {
-                return Ok(None);
-            };
-            match &entry.item.metadata {
-                Some(wire::WireItemMetadata::Anthropic(metadata)) => Ok(metadata.document.clone()),
-                _ => Err(ModelError::Adapter("invalid frozen document index".into())),
-            }
-        })
-    }
-
     fn budget_factory(
         &self,
     ) -> Option<Arc<dyn maka_agent_facts::model::prompt_source::source::SourceBudgetFactory>> {

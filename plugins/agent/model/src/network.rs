@@ -271,6 +271,12 @@ impl Drop for Body {
         self.cancelled.cancel();
     }
 }
+fn response_error(error: reqwest::Error) -> http::Error {
+    match failure(error) {
+        Error::Provider(_) => http::Error::Failed("model HTTP stream interrupted".into()),
+        _ => http::Error::Invalid("invalid model HTTP stream".into()),
+    }
+}
 impl http::Body for Body {
     fn next(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, http::Error>> {
         Box::pin(async move {
@@ -279,13 +285,25 @@ impl http::Body for Body {
                 self.upload.finish().await?;
                 return Ok(None);
             };
-            let result = tokio::select! {
-                biased;
-                _ = self.cancelled.cancelled() => Err(http::Error::Denied),
-                result = body.chunk() => result.map_err(|error| match failure(error) {
-                    Error::Provider(_) => http::Error::Failed("model HTTP stream interrupted".into()),
-                    _ => http::Error::Invalid("invalid model HTTP stream".into()),
-                }),
+            let result = {
+                let chunk = body.chunk();
+                tokio::pin!(chunk);
+                let mut receipt = self.upload.receipt.lock().await;
+                let close_source = receipt.needs_source_close();
+                tokio::select! {
+                    biased;
+                    _ = self.cancelled.cancelled() => Err(http::Error::Denied),
+                    result = &mut chunk => result.map_err(response_error),
+                    released = receipt.source_released(), if close_source => {
+                        released?;
+                        receipt.close_source().await?;
+                        tokio::select! {
+                            biased;
+                            _ = self.cancelled.cancelled() => Err(http::Error::Denied),
+                            result = &mut chunk => result.map_err(response_error),
+                        }
+                    }
+                }
             };
             match result {
                 Ok(Some(bytes)) => Ok(Some(bytes.to_vec())),

@@ -335,39 +335,39 @@ pub trait WireMetadataCursor: Send {
 }
 pub type AcquireWireBudget<'a> =
     Pin<Box<dyn Future<Output = std::io::Result<Arc<dyn source::SourceBudget>>> + Send + 'a>>;
-pub type NextWireDocument<'a> = Pin<
-    Box<
-        dyn Future<
-                Output = Result<
-                    Option<
-                        maka_provider_protocol::anthropic::prompt::prepared::DocumentMetadata<
-                            source::IdentifiedText,
-                        >,
-                    >,
-                    ModelError,
-                >,
-            > + Send
-            + 'a,
-    >,
->;
 pub type HasSource<'a> = Pin<Box<dyn Future<Output = Result<bool, ModelError>> + Send + 'a>>;
 pub trait SourceIdentityLookup: Send + Sync {
     fn contains(&self, identity: [u8; 32], budget: Arc<dyn source::SourceBudget>) -> HasSource<'_>;
 }
+/// Citation facts produced by the native Anthropic compiler without retaining source text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeCitationDocument {
+    Pdf,
+    Text,
+}
+impl NativeCitationDocument {
+    pub fn media_type(self) -> &'static str {
+        match self {
+            Self::Pdf => "application/pdf",
+            Self::Text => "text/plain",
+        }
+    }
+}
+/// Independent, indexed citation facts; implementations must not retain a materialized source.
+pub trait NativeCitationDocuments: Send + Sync {
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    fn document(&self, index: usize) -> Option<NativeCitationDocument>;
+}
 pub trait WireSource: Send + Sync {
-    fn source_identities(&self) -> Option<Arc<dyn SourceIdentityLookup>> {
+    fn citation_documents(&self) -> Option<Arc<dyn NativeCitationDocuments>> {
         None
     }
 
-    fn document_count(&self) -> usize {
-        0
-    }
-    fn document(
-        &self,
-        _index: usize,
-        _budget: Arc<dyn source::SourceBudget>,
-    ) -> NextWireDocument<'_> {
-        Box::pin(async { Ok(None) })
+    fn source_identities(&self) -> Option<Arc<dyn SourceIdentityLookup>> {
+        None
     }
 
     /// Detached resources for response-time work, without retaining this directory.

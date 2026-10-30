@@ -147,6 +147,10 @@ impl PreparedPrompt {
         self.arena = Some(arena);
         self
     }
+    pub fn cleanup(&self) -> Arc<dyn maka_capabilities::http::UploadCleanup> {
+        Arc::new(MaterializationCleanup(self.arena.clone()))
+    }
+
     pub async fn close(&self) -> std::io::Result<()> {
         if let Some(arena) = &self.arena {
             arena.close().await?;
@@ -646,6 +650,24 @@ impl PromptCursor for Cursor {
                 .map(OwnedOverlay::owned_message);
             self.offset += usize::from(message.is_some());
             Ok(message)
+        })
+    }
+}
+
+struct MaterializationCleanup(Option<crate::history::capture_arena::CaptureArena>);
+impl maka_capabilities::http::UploadCleanup for MaterializationCleanup {
+    fn close(
+        &self,
+    ) -> futures_util::future::BoxFuture<'_, Result<(), maka_capabilities::http::Error>> {
+        Box::pin(async move {
+            if let Some(arena) = &self.0 {
+                arena.close().await.map_err(|error| {
+                    maka_capabilities::http::Error::Failed(format!(
+                        "materialization close failed: {error}"
+                    ))
+                })?;
+            }
+            Ok(())
         })
     }
 }

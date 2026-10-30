@@ -49,6 +49,7 @@ fn item(fragments: Vec<F>) -> SourceItem {
     SourceItem {
         fragments: fragments.into(),
         metadata: None,
+        citation: None,
         owned_bytes: 0,
     }
 }

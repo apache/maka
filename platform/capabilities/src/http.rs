@@ -27,6 +27,7 @@ pub use bytes::Bytes;
 use futures_util::{Stream, StreamExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -47,28 +48,57 @@ pub struct RequestBody {
     stream: BoxStream<'static, Result<Bytes, Error>>,
     length: Option<u64>,
     replay: Option<ReplaySource>,
+    cleanup: Option<Arc<dyn UploadCleanup>>,
+}
+
+/// Explicit close responsibility for a materialized upload source. The transport
+/// invokes it only after its producer and retained byte slices have drained.
+pub trait UploadCleanup: Send + Sync {
+    fn close(&self) -> BoxFuture<'_, Result<(), Error>>;
 }
 /// Reopens the same immutable source without retaining an encoded body buffer.
 #[derive(Clone)]
-pub struct ReplaySource(Arc<dyn Fn() -> RequestBody + Send + Sync>);
+pub struct ReplaySource(
+    Arc<dyn Fn(CancellationToken) -> BoxFuture<'static, Result<RequestBody, Error>> + Send + Sync>,
+);
 impl ReplaySource {
-    pub fn open(&self) -> RequestBody {
-        let mut body = (self.0)();
+    pub async fn open(&self, cancellation: CancellationToken) -> Result<RequestBody, Error> {
+        let mut body = (self.0)(cancellation).await?;
         body.replay = Some(self.clone());
-        body
+        Ok(body)
     }
 }
 impl RequestBody {
     pub fn replayable(factory: impl Fn() -> RequestBody + Send + Sync + 'static) -> Self {
-        ReplaySource(Arc::new(factory)).open()
+        let initial = factory();
+        Self::with_replay(initial, move |_| {
+            let body = factory();
+            Box::pin(async move { Ok(body) })
+        })
+    }
+
+    /// Consume the initial source once. Only an actual replay invokes `reopen`;
+    /// its captured state must be independent of the initial materialization.
+    pub fn with_replay(
+        mut initial: Self,
+        reopen: impl Fn(CancellationToken) -> BoxFuture<'static, Result<RequestBody, Error>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        initial.replay = Some(ReplaySource(Arc::new(reopen)));
+        initial
+    }
+    pub fn with_cleanup(mut self, cleanup: Arc<dyn UploadCleanup>) -> Self {
+        self.cleanup = Some(cleanup);
+        self
+    }
+    pub fn cleanup(&self) -> Option<Arc<dyn UploadCleanup>> {
+        self.cleanup.clone()
     }
     pub fn replay_source(&self) -> Option<ReplaySource> {
         self.replay.clone()
     }
-    pub fn replay(&self) -> Option<Self> {
-        self.replay.as_ref().map(ReplaySource::open)
-    }
-
     /// Observe each pulled chunk without reopening the current stream or changing
     /// its declared length. Replayed streams retain the same observer.
     pub fn inspect(
@@ -79,9 +109,12 @@ impl RequestBody {
         Self {
             stream: self.stream.inspect(inspect).boxed(),
             length: self.length,
+            cleanup: self.cleanup,
             replay: self.replay.map(|replay| {
-                ReplaySource(Arc::new(move || {
-                    replay.open().inspect(replay_inspect.clone())
+                ReplaySource(Arc::new(move |cancellation| {
+                    let replay = replay.clone();
+                    let inspect = replay_inspect.clone();
+                    Box::pin(async move { Ok(replay.open(cancellation).await?.inspect(inspect)) })
                 }))
             }),
         }
@@ -92,6 +125,7 @@ impl RequestBody {
             stream: stream.boxed(),
             length: None,
             replay: None,
+            cleanup: None,
         }
     }
     /// Declare an exact length without reading the source. The caller guarantees
@@ -105,6 +139,7 @@ impl RequestBody {
             stream: stream.boxed(),
             length: Some(length),
             replay: None,
+            cleanup: None,
         }
     }
     pub fn length(&self) -> Option<u64> {

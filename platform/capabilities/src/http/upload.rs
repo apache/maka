@@ -41,9 +41,43 @@ struct Progress {
 pub struct Receipt {
     progress: Arc<Mutex<Progress>>,
     dropped: watch::Receiver<bool>,
+    source: watch::Receiver<bool>,
+    cleanup: Option<Arc<dyn super::UploadCleanup>>,
     chunks: watch::Receiver<usize>,
 }
 impl Receipt {
+    pub fn needs_source_close(&self) -> bool {
+        self.cleanup.is_some()
+    }
+
+    /// Wait for the producer and all transport-retained chunks without closing
+    /// the response connection. The HTTP wrapper may remain alive after EOF.
+    pub async fn source_released(&mut self) -> Result<(), Error> {
+        self.source
+            .wait_for(|released| *released)
+            .await
+            .map_err(|_| Error::CleanupUnconfirmed)?;
+        self.chunks
+            .wait_for(|count| *count == 0)
+            .await
+            .map_err(|_| Error::CleanupUnconfirmed)?;
+        Ok(())
+    }
+
+    /// Close materialization after a positive physical release receipt. Once
+    /// started, callers must await this operation before settling its custody.
+    pub async fn close_source(&mut self) -> Result<(), Error> {
+        self.source_released().await?;
+        if let Some(cleanup) = &self.cleanup {
+            cleanup.close().await.map_err(|error| {
+                tracing::error!(stage = "upload_materialization_close", %error, "cleanup unconfirmed");
+                Error::CleanupUnconfirmed
+            })?;
+            self.cleanup = None;
+        }
+        Ok(())
+    }
+
     /// Confirm source custody was released before settling the resource ticket.
     pub async fn finish(&mut self) -> Result<serde_json::Value, Error> {
         let cleanup_started = tokio::time::Instant::now();
@@ -92,6 +126,7 @@ impl Receipt {
             );
             return Err(Error::CleanupUnconfirmed);
         }
+        self.close_source().await?;
         let progress = self.progress.lock().unwrap();
         // These are bytes handed to the HTTP transport, not a claim that the
         // remote endpoint committed them (especially on cancellation).
@@ -119,6 +154,19 @@ impl Drop for InFlight {
         self.chunks.send_modify(|count| *count -= 1);
     }
 }
+struct Source {
+    stream: BoxStream<'static, Result<Bytes, Error>>,
+    pending: Bytes,
+    released: watch::Sender<bool>,
+}
+impl Drop for Source {
+    fn drop(&mut self) {
+        self.stream = futures_util::stream::empty().boxed();
+        self.pending = Bytes::new();
+        self.released.send_replace(true);
+    }
+}
+
 pub struct Upload {
     stream: BoxStream<'static, Result<Bytes, Error>>,
     dropped: watch::Sender<bool>,
@@ -126,7 +174,11 @@ pub struct Upload {
 impl Stream for Upload {
     type Item = Result<Bytes, Error>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.stream.as_mut().poll_next(cx)
+        let next = self.stream.as_mut().poll_next(cx);
+        if matches!(next, Poll::Ready(None) | Poll::Ready(Some(Err(_)))) {
+            self.stream = futures_util::stream::empty().boxed();
+        }
+        next
     }
 }
 impl Drop for Upload {
@@ -136,24 +188,35 @@ impl Drop for Upload {
         self.dropped.send_replace(true);
     }
 }
-pub fn track(input: RequestBody, stop: CancellationToken) -> (Upload, Receipt) {
+pub fn track(mut input: RequestBody, stop: CancellationToken) -> (Upload, Receipt) {
     let length = input.length();
+    let cleanup = input.cleanup.take();
     let progress = Arc::new(Mutex::new(Progress::default()));
     let audit = progress.clone();
     let (dropped, finished) = watch::channel(false);
     let (chunks, drained) = watch::channel(0_usize);
-    let stream = futures_util::stream::try_unfold(
-        (input.into_stream(), Bytes::new(), 0_u64),
-        move |(mut source, mut pending, mut count)| {
+    let (source_released, source_receipt) = watch::channel(false);
+    let source = Source {
+        stream: input.into_stream(),
+        pending: Bytes::new(),
+        released: source_released,
+    };
+    let stream =
+        futures_util::stream::try_unfold((Some(source), 0_u64), move |(mut source, mut count)| {
             let stop = stop.clone();
             let audit = audit.clone();
             let chunks = chunks.clone();
             async move {
-                while pending.is_empty() {
+                if source.is_none() {
+                    return Ok(None);
+                }
+                let producer = source.as_mut().expect("active source");
+                let mut exhausted = false;
+                while producer.pending.is_empty() {
                     let next = tokio::select! {
                         biased;
                         _ = stop.cancelled() => return Err(Error::Denied),
-                        next = source.next() => next,
+                        next = producer.stream.next() => next,
                     };
                     match next {
                         Some(Ok(bytes)) => {
@@ -165,7 +228,7 @@ pub fn track(input: RequestBody, stop: CancellationToken) -> (Upload, Receipt) {
                                     "HTTP body exceeds declared length".into(),
                                 ));
                             }
-                            pending = bytes;
+                            producer.pending = bytes;
                         }
                         Some(Err(error)) => return Err(error),
                         None => {
@@ -185,12 +248,12 @@ pub fn track(input: RequestBody, stop: CancellationToken) -> (Upload, Receipt) {
                 // HTTP may stop polling at Content-Length. Verify EOF before
                 // yielding the final frame so a lying declaration cannot hide
                 // a trailing source chunk or bypass source error reporting.
-                if length == Some(count) && pending.len() <= CHUNK_BYTES {
+                if length == Some(count) && producer.pending.len() <= CHUNK_BYTES {
                     loop {
                         let next = tokio::select! {
                             biased;
                             _ = stop.cancelled() => return Err(Error::Denied),
-                            next = source.next() => next,
+                            next = producer.stream.next() => next,
                         };
                         match next {
                             Some(Ok(bytes)) if bytes.is_empty() => continue,
@@ -202,24 +265,30 @@ pub fn track(input: RequestBody, stop: CancellationToken) -> (Upload, Receipt) {
                             Some(Err(error)) => return Err(error),
                             None => {
                                 audit.lock().unwrap().complete = true;
-                                source = futures_util::stream::empty().boxed();
+                                exhausted = true;
                                 break;
                             }
                         }
                     }
                 }
-                let bytes = pending.split_to(pending.len().min(CHUNK_BYTES));
+                let bytes = producer
+                    .pending
+                    .split_to(producer.pending.len().min(CHUNK_BYTES));
                 {
                     let mut progress = audit.lock().unwrap();
                     progress.bytes += bytes.len() as u64;
                     progress.digest.update(&bytes);
                 }
                 chunks.send_modify(|count| *count += 1);
+                // Publish source release only after the final held chunk is
+                // counted; receipt observers must never see a false zero gap.
+                if exhausted {
+                    source = None;
+                }
                 let bytes = Bytes::from_owner(InFlight { bytes, chunks });
-                Ok(Some((bytes, (source, pending, count))))
+                Ok(Some((bytes, (source, count))))
             }
-        },
-    );
+        });
     (
         Upload {
             stream: stream.boxed(),
@@ -228,6 +297,8 @@ pub fn track(input: RequestBody, stop: CancellationToken) -> (Upload, Receipt) {
         Receipt {
             progress,
             dropped: finished,
+            source: source_receipt,
+            cleanup,
             chunks: drained,
         },
     )

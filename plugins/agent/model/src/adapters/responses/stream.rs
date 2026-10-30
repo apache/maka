@@ -150,6 +150,7 @@ async fn run(
         cancellation,
         idle_timeout,
         transport: network,
+        source,
     } = context;
     let quota_scope = QuotaScope::endpoint(&request.provider.base_url);
     let plaintext = match request.provider.kind {
@@ -189,6 +190,12 @@ async fn run(
         })? {
             Some(full) => body = full,
             None => {
+                if let Some(source) = &source {
+                    source.cleanup.close().await.map_err(|error| {
+                        tracing::error!(stage = "responses_websocket_source_close", %error, "cleanup unconfirmed");
+                        ModelError::CleanupUnconfirmed
+                    })?;
+                }
                 while let Some(frame) = wait(idle_timeout, &decoder, &cancellation, exchange.next())
                     .await?
                     .map_err(|error| match error {
@@ -214,7 +221,7 @@ async fn run(
             method: http::Method::Post,
             url: url.to_string(),
             headers: headers.into_iter().collect(),
-            body: body.http(),
+            body: body.http(source),
         },
         &cancellation,
         idle_timeout,
@@ -569,7 +576,13 @@ mod upload_settlement_tests {
                     self.owner.upgrade().is_some(),
                     "upload must retain its source owner"
                 );
-                let replay = input.body.replay().expect("Responses upload is replayable");
+                let replay = input
+                    .body
+                    .replay_source()
+                    .expect("Responses upload is replayable")
+                    .open(CancellationToken::new())
+                    .await
+                    .unwrap();
                 let mut original = input.body.into_stream();
                 let mut bytes = Vec::new();
                 while let Some(chunk) = original.next().await {
@@ -665,6 +678,7 @@ mod upload_settlement_tests {
                     events: Arc::new(Sink),
                     cancellation: cancellation.clone(),
                     idle_timeout: Duration::from_secs(10),
+                    source: None,
                     transport: network,
                 },
                 None,

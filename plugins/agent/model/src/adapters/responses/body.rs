@@ -261,8 +261,31 @@ impl RequestBody {
             }
         })
     }
-    pub fn http(self) -> http::RequestBody {
-        http::RequestBody::replayable(move || http::RequestBody::stream(self.clone().chunks()))
+    pub fn http(self, source: Option<maka_agent_ports::model::RequestSource>) -> http::RequestBody {
+        let Some(source) = source else {
+            return http::RequestBody::replayable(move || {
+                http::RequestBody::stream(self.clone().chunks())
+            });
+        };
+        let properties = self.properties.clone();
+        let config = self.config.clone();
+        let skip = self.skip;
+        let initial = http::RequestBody::stream(self.chunks()).with_cleanup(source.cleanup);
+        http::RequestBody::with_replay(initial, move |cancellation| {
+            let properties = properties.clone();
+            let config = config.clone();
+            let frozen = source.frozen.clone();
+            Box::pin(async move {
+                let materialized = frozen.open(cancellation).await.map_err(source_error)?;
+                let body = Self {
+                    properties,
+                    prompt: materialized.prompt,
+                    skip,
+                    config,
+                };
+                Ok(http::RequestBody::stream(body.chunks()).with_cleanup(materialized.cleanup))
+            })
+        })
     }
     pub fn websocket(mut self) -> maka_agent_ports::model::TextStream {
         let properties = self.properties.as_object_mut().unwrap();

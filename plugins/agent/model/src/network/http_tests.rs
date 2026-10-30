@@ -229,3 +229,91 @@ async fn cross_origin_redirect_is_returned_without_forwarding_credentials() {
             .is_err()
     );
 }
+
+struct PayloadOwner {
+    bytes: Vec<u8>,
+    dropped: Arc<AtomicUsize>,
+}
+impl AsRef<[u8]> for PayloadOwner {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+impl Drop for PayloadOwner {
+    fn drop(&mut self) {
+        self.dropped.fetch_add(1, Ordering::SeqCst);
+    }
+}
+struct SourceCleanup {
+    dropped: Arc<AtomicUsize>,
+    closed: Arc<tokio::sync::Semaphore>,
+}
+impl http::UploadCleanup for SourceCleanup {
+    fn close(&self) -> BoxFuture<'_, Result<(), http::Error>> {
+        Box::pin(async move {
+            assert_eq!(self.dropped.load(Ordering::SeqCst), 1);
+            self.closed.add_permits(1);
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn held_response_headers_release_upload_source_without_closing_connection() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/held", listener.local_addr().unwrap());
+    let (read, received) = tokio::sync::oneshot::channel();
+    let (release, headers) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let headers_read = head(&mut socket).await;
+        assert_eq!(payload(&mut socket, &headers_read).await, 128 * 1024);
+        read.send(()).unwrap();
+        headers.await.unwrap();
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .unwrap();
+    });
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let closed = Arc::new(tokio::sync::Semaphore::new(0));
+    let bytes = http::Bytes::from_owner(PayloadOwner {
+        bytes: vec![7; 128 * 1024],
+        dropped: dropped.clone(),
+    });
+    let input = http::RequestBody::with_length(
+        futures_util::stream::once(async move { Ok(bytes) }),
+        128 * 1024,
+    )
+    .with_cleanup(Arc::new(SourceCleanup {
+        dropped,
+        closed: closed.clone(),
+    }));
+    let network = network();
+    let pending = network.request(
+        http::Request {
+            url,
+            method: http::Method::Post,
+            headers: Vec::new(),
+            body: input,
+        },
+        CancellationToken::new(),
+    );
+    tokio::pin!(pending);
+    tokio::select! {
+        read = received => read.unwrap(),
+        response = &mut pending => panic!("response arrived before headers release: {}", response.is_ok()),
+    }
+    tokio::select! {
+        permit = closed.acquire() => permit.unwrap().forget(),
+        response = &mut pending => panic!("source close interrupted live connection: {}", response.is_ok()),
+    }
+    assert!(futures_util::poll!(pending.as_mut()).is_pending());
+    release.send(()).unwrap();
+    let response = pending.await.unwrap();
+    assert_eq!(response.head.status, 200);
+    assert_eq!(response.body.next().await.unwrap(), Some(b"ok".to_vec()));
+    assert_eq!(response.body.next().await.unwrap(), None);
+    response.body.close().await.unwrap();
+    server.await.unwrap();
+}

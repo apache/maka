@@ -212,6 +212,7 @@ mod tests {
                     events: Arc::new(NoEvents),
                     cancellation: CancellationToken::new(),
                     idle_timeout: Duration::from_secs(60),
+                    source: None,
                 },
             )
             .await;

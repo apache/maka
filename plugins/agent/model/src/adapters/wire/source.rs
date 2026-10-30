@@ -70,6 +70,7 @@ impl SourceFragment {
 pub(in crate::adapters) struct SourceItem {
     pub fragments: std::sync::Arc<[SourceFragment]>,
     pub metadata: Option<maka_agent_facts::model::prompt_source::WireItemMetadata>,
+    pub citation: Option<maka_agent_facts::model::prompt_source::NativeCitationDocument>,
     /// New codec adapter backing, recorded at creation before replay clones.
     pub owned_bytes: usize,
 }

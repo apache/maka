@@ -294,6 +294,8 @@ async fn released_request_rehydration(with_image: bool) {
         )
         .await
         .unwrap();
+    let replay = FrozenReplay::new(&inner, &input, original.clone(), surface.adapter.clone());
+    let output_limit = surface.max_output_tokens;
     drop(prepared.request);
     drop(original_tools);
     drop(surface);
@@ -331,6 +333,25 @@ async fn released_request_rehydration(with_image: bool) {
         sources: vec![],
     });
     fresh.provider_options = json!({"temperature": 0.75});
+    let replayed = replay.prepared(&cancellation).await.unwrap();
+    let replayed_request = model_attempt::prepare_request(
+        &input,
+        replayed.clone(),
+        vec![],
+        output_limit,
+        ModelPurpose::Main,
+    )
+    .unwrap();
+    assert_eq!(replayed_request.input_digest, expected);
+    drop(replayed_request);
+    replayed.close().await.unwrap();
+    drop(replayed);
+    let stopped = CancellationToken::new();
+    stopped.cancel();
+    assert!(matches!(
+        replay.prepared(&stopped).await,
+        Err(RunError::Cancelled)
+    ));
     let rebuilt = rehydrate_frozen_request(&inner, &original, &fresh, &tools, &cancellation)
         .await
         .unwrap();

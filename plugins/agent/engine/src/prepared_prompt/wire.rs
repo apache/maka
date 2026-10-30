@@ -92,6 +92,12 @@ pub(super) async fn compile(
         .is_none_or(|peak| peak > capacity);
     let wire_bytes = if use_backing {
         backed::resident_bytes()
+            .checked_add(plan.citation_allocation()?)
+            .ok_or_else(|| {
+                RunError::Preparation(std::io::Error::other(
+                    "citation directory allocation overflow",
+                ))
+            })?
     } else {
         plan.allocation()
     };

@@ -807,6 +807,7 @@ struct Plan {
     source_id: Option<IdentifiedText>,
     mcp_id: Option<IdentifiedText>,
     document: Option<DocumentMetadata<IdentifiedText>>,
+    citation: Option<maka_agent_facts::model::prompt_source::NativeCitationDocument>,
     features: Vec<String>,
     warnings: Vec<String>,
     text_at: Option<usize>,
@@ -829,6 +830,7 @@ impl Plan {
             source_id: None,
             mcp_id: None,
             document: None,
+            citation: None,
             features: Vec::new(),
             warnings: Vec::new(),
             text_at: None,
@@ -933,6 +935,7 @@ impl Plan {
         Ok(SourceItem {
             fragments: self.fragments.into(),
             metadata: Some(WireItemMetadata::Anthropic(Arc::new(metadata))),
+            citation: self.citation,
             owned_bytes: self.owned_bytes,
         })
     }
@@ -1126,6 +1129,11 @@ impl Compiler {
             if citations == Some(true) {
                 plan.field("citations", vec![literal(b"{\"enabled\":true}")]);
                 if inspection != MediaInspection::Allocation && (declared_pdf || plain) {
+                    plan.citation = Some(if plain {
+                        maka_agent_facts::model::prompt_source::NativeCitationDocument::Text
+                    } else {
+                        maka_agent_facts::model::prompt_source::NativeCitationDocument::Pdf
+                    });
                     plan.document = Some(DocumentMetadata {
                         title: identify(static_text("Untitled Document"), budget.clone()).await?,
                         filename: None,

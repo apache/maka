@@ -747,6 +747,7 @@ pub(super) async fn fit_request(
             max_output_tokens,
         };
         let bytes = request.encoded_request_sizes().await?.largest();
+        drop(request);
         if bytes <= limit {
             return Ok(());
         }
