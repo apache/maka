@@ -69,7 +69,15 @@ type Result =
   | { kind: 'title'; session: AgentSession }
   | { kind: 'passage'; passage: AgentRecallPassage };
 type Row =
-  | { id: string; kind: 'result'; request: number; index: number; result: Result }
+  | {
+      id: string;
+      kind: 'result';
+      request: number;
+      index: number;
+      result: Result;
+      /** Found within one conversation, so its title and folder go unsaid. */
+      within: boolean;
+    }
   | { id: string; kind: 'gap'; reason: string };
 type Selection = { request: number; index: number };
 const SEARCH_PAUSE_MS = 250;
@@ -163,6 +171,7 @@ export function RecallSearch(props: {
           request: current.request.id,
           index,
           result,
+          within: current.request.sessionId !== null,
         }),
       ),
       ...current.page.gaps.map(
@@ -510,7 +519,7 @@ export function RecallSearch(props: {
                     disabled={opening() || state().kind !== 'ready'}
                     selected={index() === row.index}
                     style={{
-                      height: result.kind === 'title' ? 72 : 128,
+                      height: result.kind === 'title' || row.within ? 72 : 128,
                       minWidth: 0,
                       flexDirection: 'column',
                       alignItems: 'stretch',
@@ -525,39 +534,41 @@ export function RecallSearch(props: {
                     hoverStyle={controlHoverStyle()}
                     focusStyle={controlFocusStyle()}
                   >
-                    <View
-                      style={[
-                        { flexDirection: 'row', gap: 8, alignItems: 'center' },
-                        { pointerEvents: 'none' },
-                      ]}
-                    >
-                      <Text
+                    <If when={!row.within}>
+                      <View
                         style={[
-                          {
-                            ...bodyTextStyle,
-                            flex: 1,
-                            color: C.text,
-                            fontWeight: '500',
-                          },
-                          { numberOfLines: 1, textOverflow: 'ellipsis' },
+                          { flexDirection: 'row', gap: 8, alignItems: 'center' },
+                          { pointerEvents: 'none' },
                         ]}
                       >
-                        {title()}
-                      </Text>
-                      <If when={session.archived}>
-                        <Text style={{ ...captionTextStyle, color: C.muted }}>
-                          {tr('Archived')}
+                        <Text
+                          style={[
+                            {
+                              ...bodyTextStyle,
+                              flex: 1,
+                              color: C.text,
+                              fontWeight: '500',
+                            },
+                            { numberOfLines: 1, textOverflow: 'ellipsis' },
+                          ]}
+                        >
+                          {title()}
                         </Text>
-                      </If>
-                    </View>
-                    <Text
-                      style={[
-                        { ...captionTextStyle, color: C.muted },
-                        { pointerEvents: 'none', numberOfLines: 1, textOverflow: 'ellipsis' },
-                      ]}
-                    >
-                      {session.workspace.path}
-                    </Text>
+                        <If when={session.archived}>
+                          <Text style={{ ...captionTextStyle, color: C.muted }}>
+                            {tr('Archived')}
+                          </Text>
+                        </If>
+                      </View>
+                      <Text
+                        style={[
+                          { ...captionTextStyle, color: C.muted },
+                          { pointerEvents: 'none', numberOfLines: 1, textOverflow: 'ellipsis' },
+                        ]}
+                      >
+                        {session.workspace.path}
+                      </Text>
+                    </If>
                     <If when={result.kind === 'passage'}>
                       <Text
                         style={[
