@@ -434,38 +434,43 @@ pub(super) async fn execute_once(
         purpose,
     )?;
     let binding = surface.adapter.clone();
-    let composition = surface.evidence.clone();
     let item_acceptance = purpose == ModelPurpose::Main && binding.supports_item_acceptance();
     let step_id = Uuid::new_v4().to_string();
-    let event = maka_agent_facts::event::RuntimeEvent::new(
-        input.invocation.clone(),
-        Fact::ModelRequested {
-            item_acceptance,
-            effective_source_digest: Some(source.effective_digest.clone()),
-            purpose,
-            context: input.context.clone(),
-            context_breakdown: Some(prepared.context_breakdown),
-            step_id: step_id.clone(),
-            model_id: input.provider.model.clone(),
-            source_scope: source.evidence.scope.clone(),
-            source_high_water: source.evidence.high_water,
-            source_digest: source.evidence.digest.clone(),
-            input_digest: prepared.input_digest,
-            route_identity: prepared.route_identity,
-            checkpoint_event_id: source.checkpoint.clone(),
-        },
-    );
-    let mut write =
-        maka_agent_facts::event::EventWrite::plain(event)?.with_composition(composition)?;
-    if let Some(pricing) = &inner.shared.pricing {
-        write = write.with_quote(
-            pricing
-                .quote(&input.provider_id, &input.provider.model)
-                .await?,
-        )?;
-    }
-    use maka_agent_facts::event::EventSink;
-    let sequence = inner.log.clone().commit(write).await?;
+    let sequence = {
+        let composition = surface.evidence();
+        let event = maka_agent_facts::event::RuntimeEvent::new(
+            input.invocation.clone(),
+            Fact::ModelRequested {
+                item_acceptance,
+                effective_source_digest: Some(source.effective_digest.clone()),
+                purpose,
+                context: input.context.clone(),
+                context_breakdown: Some(prepared.context_breakdown),
+                step_id: step_id.clone(),
+                model_id: input.provider.model.clone(),
+                source_scope: source.evidence.scope.clone(),
+                source_high_water: source.evidence.high_water,
+                source_digest: source.evidence.digest.clone(),
+                input_digest: prepared.input_digest,
+                route_identity: prepared.route_identity,
+                checkpoint_event_id: source.checkpoint.clone(),
+            },
+        );
+        let event_id = event.id.clone();
+        let mut write =
+            maka_agent_facts::event::EventWrite::plain(event)?.with_composition(composition)?;
+        if let Some(pricing) = &inner.shared.pricing {
+            write = write.with_quote(
+                pricing
+                    .quote(&input.provider_id, &input.provider.model)
+                    .await?,
+            )?;
+        }
+        use maka_agent_facts::event::EventSink;
+        let sequence = inner.log.clone().commit(write).await?;
+        surface.committed(event_id);
+        sequence
+    };
     let mut writer = AttemptWriter::new(
         AttemptBinding {
             invocation: input.invocation.clone(),
