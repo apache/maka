@@ -56,7 +56,6 @@ struct Owner {
     client: Client,
     runtime: Handle,
     tasks: StdMutex<Option<TaskTracker>>,
-    budget: maka_ui_support::budget::NativeBudget,
     plugins: plugins::Packages,
     reload: crate::reload::UiReload,
 }
@@ -139,7 +138,6 @@ impl Bindings {
                 client,
                 runtime,
                 tasks: StdMutex::new(Some(TaskTracker::new())),
-                budget: Default::default(),
                 plugins: Default::default(),
                 reload: Default::default(),
             }),

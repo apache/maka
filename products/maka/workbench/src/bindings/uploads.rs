@@ -22,10 +22,7 @@
 use super::{EDITOR, Scope, ScopedHost, execute};
 use maka_app_client::Client;
 use maka_capabilities::call::ReadResource;
-use maka_ui_support::{
-    budget::Kind,
-    file::{FileSnapshot, read_selected},
-};
+use maka_ui_support::file::{FileSnapshot, read_selected};
 use nsh_base::{Button, ButtonEvent, ButtonProps, input};
 use nsh_core::prelude::*;
 use nsh_core::{
@@ -371,16 +368,11 @@ async fn intake(
     clipboard_id: Uuid,
 ) -> Result<(), String> {
     let client = scope.client.local(&scope.owner).await?;
-    let budget = scope.owner.budget.clone();
-    let _job = budget
-        .reserve(Kind::Job, 1)
-        .map_err(|error| error.to_string())?;
     let selected = match selection {
         Selection::Files(files) => crate::clipboard::Selection::Files(files),
         Selection::Clipboard => {
-            let budget = budget.clone();
             tokio::task::spawn_blocking(move || -> Result<crate::clipboard::Selection, String> {
-                match crate::clipboard::read(&budget)? {
+                match crate::clipboard::read()? {
                     crate::clipboard::Selection::Text(text) => Ok(
                         match nsh_core::platform::clipboard::files_from_text(&text) {
                             Some(files) => crate::clipboard::Selection::Files(files),
@@ -419,14 +411,13 @@ async fn upload_files(scope: Arc<Scope>, client: Client, files: Vec<String>, upd
         let id = Uuid::new_v4();
         let name = display_name(&selected);
         updates.emit(status(id, "reading", &name, None));
-        let budget = scope.owner.budget.clone();
         let captured = tokio::task::spawn_blocking(move || {
             let paths = crate::attachment_paths::resolve(&[selected])?;
             let path = paths
                 .into_iter()
                 .next()
                 .ok_or("Selected file is unavailable")?;
-            read_selected(&path, &budget).map_err(|error| error.to_string())
+            read_selected(&path).map_err(|error| error.to_string())
         })
         .await
         .map_err(|_| "Selected file worker failed".to_owned())

@@ -1,6 +1,6 @@
 {
   "inputs": {
-    "Cargo.lock": "dc7c7aad8117412d1d5ed6068e0254f6fd0a081895df4a3a5a4b2a300f0e4270",
+    "Cargo.lock": "d77c6e4cc7ec86a0a8e59f3aacea88efb51beb2cc1c4c962c4fecb85dbc8eefa",
     "Cargo.toml": "9c58d4f2ef93b548e6c02de8950270a9da42bcfea000ab262a78985e75e672e7",
     "package-lock.json": "863e20d94f46507befd14d7abe94982bb110dff3efaa13b9d1c3b60333f8d64a",
     "package.json": "a513ba49c73a1cd6d8060d9a4f2edb47f5286469553cf3b3f4959b9ceb64fa58",
@@ -33,7 +33,7 @@
     "platform/sandbox/Cargo.toml": "88b09f8e599763f2a09f2ffa18d4203e616c25bbaf92e284ddde7f4e355f68f3",
     "platform/session-state/Cargo.toml": "e52e0ba68e65647802cec258516447df23b9f25fbae4230dd7a5d24e9d0739e5",
     "platform/transport/Cargo.toml": "e732525530752fa6521f0b84405e67db1e462372d6cdf8c63e6e706e363d906b",
-    "platform/ui-support/Cargo.toml": "693a943190e5f5e62333fafecac861102878deac196034ad86f3cd7ab1e70f0b",
+    "platform/ui-support/Cargo.toml": "727314ec2bc0897a76dcfcf644263e6d77fdeaa8766c0f1476dc2b17763a0f44",
     "plugins/agent/acp-executor/engine/Cargo.toml": "31bc941c7877c836a426e14a980a8e633f35c01f42c64e0fe92b942c10fa25fd",
     "plugins/agent/acp-executor/engine/tests/support/tui-auth.mjs": "b66436ace65b5874b6cd3ab66ece94984552c4a0772a0ae2d9b05db6b9f47d0f",
     "plugins/agent/acp-executor/native/Cargo.toml": "069e5db4798166d921dc48424101f9460516c8683f0356272e2398b847b460b4",

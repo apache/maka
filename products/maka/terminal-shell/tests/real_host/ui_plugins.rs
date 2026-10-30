@@ -595,7 +595,7 @@ async fn reload_ui(
 async fn standalone_composer_replacement_preserves_the_original_draft_upload_and_send() {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use maka_app_client::{DraftAttachment, DraftEdit};
-    use maka_ui_support::{budget::NativeBudget, file::read_selected};
+    use maka_ui_support::file::read_selected;
 
     tokio::time::timeout(Duration::from_secs(90), async {
         let (manifest, module) = tokio::task::spawn_blocking(|| {
@@ -630,7 +630,7 @@ async fn standalone_composer_replacement_preserves_the_original_draft_upload_and
         std::fs::write(&path, &bytes).unwrap();
         let upload = client.upload_attachment(
             Uuid::new_v4(), &fixture.session, EDITOR,
-            read_selected(&path, &NativeBudget::default()).unwrap(),
+            read_selected(&path).unwrap(),
         ).await.unwrap();
         upload.prepare().await.unwrap();
         upload.confirm().await.unwrap();
