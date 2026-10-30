@@ -17,9 +17,9 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 |---|---:|
 | windows-backend-gap | 27 |
 | portable-candidate | 60 |
-| platform-contract | 49 |
+| platform-contract | 50 |
 
-Total Windows-excluded declarations: **136**
+Total Windows-excluded declarations: **137**
 
 ## Inventory
 
@@ -155,6 +155,7 @@ Total Windows-excluded declarations: **136**
 | platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unreadable ancestor Git repository fails closed until permissions return | `process.platform === 'win32' ? 'POSIX permissions are required for an unreadable HEAD fixture' : false` |
 | portable-candidate | `packages/storage/src/__tests__/workspace-identity.test.ts` a dangling .git symlink in the workspace itself blocks marker publication | `process.platform === 'win32' ? 'Windows symlink creation requires elevated privileges or Developer Mode' : false` |
 | platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32' ? 'POSIX permissions are required to create a read-only workspace fixture' : false` |
+| platform-contract | `scripts/macos-executable-uuid.test.mjs` rewrites the UUID of Electron's own executable | `process.platform !== 'darwin' && 'Electron ships a Mach-O executable only on macOS'` |
 | platform-contract | `scripts/macos-update-archive.test.mjs` the macOS update ZIP keeps bundle symlinks and modification times | `process.platform !== 'darwin' && 'the macOS update ZIP is built on macOS'` |
 | portable-candidate | `scripts/qualify-released-cli-state-root.test.mjs` starts the liveness window after a delayed Runtime Host Ready | `process.platform === 'win32'` |
 | portable-candidate | `scripts/qualify-released-cli-state-root.test.mjs` starts the liveness window after the real Runtime Host is ready | `process.platform === 'win32'` |
