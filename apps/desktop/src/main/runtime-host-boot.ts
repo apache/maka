@@ -1766,6 +1766,10 @@ function registerHostClientIpc(
           error instanceof Error ? error.message : String(error),
         )}`,
       ),
+    onBlocked: (reason) =>
+      console.warn(
+        `[bots:proxy] proxy_credential_missing: ${reason}; bot traffic is blocked until it is configured`,
+      ),
   });
   void clientNetworkProxy.refresh();
   const runtimeHostSettings = createRuntimeHostSettingsModule({

@@ -38,17 +38,20 @@ function harness(
   profileKind: "local" | "environment" | "remote",
   resolve: () => Promise<NetworkProxyResolveResult>,
 ) {
-  const applied: (ProxySettings | null)[] = [];
+  const applied: (ProxySettings | null | { blocked: string })[] = [];
   const errors: unknown[] = [];
+  const blockedReports: string[] = [];
   const scheduled: { run: () => void; delayMs: number }[] = [];
   const applier = createClientNetworkProxyApplier({
     profileKind,
     resolve,
     apply: (proxy) => applied.push(proxy),
+    block: (reason) => applied.push({ blocked: reason }),
     onError: (error) => errors.push(error),
+    onBlocked: (reason) => blockedReports.push(reason),
     schedule: (run, delayMs) => scheduled.push({ run, delayMs }),
   });
-  return { applier, applied, errors, scheduled };
+  return { applier, applied, errors, blockedReports, scheduled };
 }
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -66,12 +69,34 @@ describe("createClientNetworkProxyApplier", () => {
     assert.deepStrictEqual(applied, [null]);
   });
 
-  test("applies direct when the proxy credential is missing", async () => {
-    const { applier, applied } = harness("local", async () => ({
+  test("blocks instead of going direct when the proxy credential is missing", async () => {
+    const { applier, applied, blockedReports } = harness("local", async () => ({
       kind: "credential_not_configured",
     }));
     await applier.refresh();
-    assert.deepStrictEqual(applied, [null]);
+    // The policy still asks for an authenticated proxy, so a direct request
+    // would route bot traffic past it.
+    assert.strictEqual(applied.length, 1);
+    assert.ok(applied[0] !== null && "blocked" in applied[0]);
+    assert.strictEqual(blockedReports.length, 1);
+  });
+
+  test("reports a persisting missing credential once and unblocks when it is configured", async () => {
+    let resolved: NetworkProxyResolveResult = { kind: "credential_not_configured" };
+    const { applier, applied, blockedReports } = harness("local", async () => resolved);
+    await applier.refresh();
+    await applier.refresh();
+    assert.strictEqual(blockedReports.length, 1);
+
+    resolved = RESOLVED;
+    await applier.refresh();
+    assert.deepStrictEqual(applied.at(-1), RESOLVED.proxy);
+
+    resolved = { kind: "credential_not_configured" };
+    await applier.refresh();
+    // A credential removed while authentication stays enabled blocks again.
+    assert.ok(applied.at(-1) !== null && "blocked" in (applied.at(-1) as object));
+    assert.strictEqual(blockedReports.length, 2);
   });
 
   test("never adopts a non-local Host's proxy policy", async () => {

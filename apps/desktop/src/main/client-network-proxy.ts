@@ -31,7 +31,10 @@
 import type { ProxySettings } from "@maka/core/settings/network-settings";
 import type { RuntimeHostProfileKind } from "@maka/runtime-host/profile-kind";
 import type { NetworkProxyResolveResult } from "@maka/runtime-host/protocol";
-import { setActiveProxy } from "@maka/runtime/network/active-proxy-state";
+import {
+  blockActiveProxy,
+  setActiveProxy,
+} from "@maka/runtime/network/active-proxy-state";
 
 /**
  * The first resolution runs while the Host connection is still settling, so a
@@ -44,11 +47,18 @@ import { setActiveProxy } from "@maka/runtime/network/active-proxy-state";
  */
 const RETRY_DELAYS_MS = [1_000, 5_000, 15_000, 60_000] as const;
 
+const CREDENTIAL_NOT_CONFIGURED =
+  "the network proxy requires authentication but no proxy credential is configured";
+
 export interface ClientNetworkProxyDeps {
   readonly profileKind: RuntimeHostProfileKind;
   readonly resolve: () => Promise<NetworkProxyResolveResult>;
   readonly apply?: (proxy: ProxySettings | null) => void;
+  /** Refuses Client-owned outbound requests until the next `apply`. */
+  readonly block?: (reason: string) => void;
   readonly onError?: (error: unknown) => void;
+  /** Called once each time outbound traffic becomes blocked. */
+  readonly onBlocked?: (reason: string) => void;
   readonly schedule?: (run: () => void, delayMs: number) => void;
 }
 
@@ -61,6 +71,7 @@ export function createClientNetworkProxyApplier(
   deps: ClientNetworkProxyDeps,
 ): ClientNetworkProxyApplier {
   const apply = deps.apply ?? setActiveProxy;
+  const block = deps.block ?? blockActiveProxy;
   const schedule =
     deps.schedule ??
     ((run, delayMs) => {
@@ -68,6 +79,7 @@ export function createClientNetworkProxyApplier(
     });
   let lane: Promise<void> = Promise.resolve();
   let lastReportedError: string | undefined;
+  let blocked = false;
   let attempt = 0;
   // One retry in flight at a time: an explicit refresh that also fails must not
   // fan out into a second ladder.
@@ -78,6 +90,7 @@ export function createClientNetworkProxyApplier(
     // bridges dial out from this one, so its proxy policy does not apply and
     // guessing would be worse than staying direct.
     if (deps.profileKind !== "local") {
+      blocked = false;
       apply(null);
       return;
     }
@@ -106,7 +119,19 @@ export function createClientNetworkProxyApplier(
     }
     lastReportedError = undefined;
     attempt = 0;
-    apply(resolved.kind === "ready" ? (resolved.proxy ?? null) : null);
+    if (resolved.kind === "credential_not_configured") {
+      // The policy still asks for an authenticated proxy. Going direct would
+      // route bot traffic past it, so fail closed until the credential is
+      // configured; saving it triggers the next refresh.
+      block(CREDENTIAL_NOT_CONFIGURED);
+      if (!blocked) {
+        blocked = true;
+        deps.onBlocked?.(CREDENTIAL_NOT_CONFIGURED);
+      }
+      return;
+    }
+    blocked = false;
+    apply(resolved.proxy ?? null);
   };
 
   const enqueue = (): Promise<void> => {
