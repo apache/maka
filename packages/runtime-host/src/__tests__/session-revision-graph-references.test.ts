@@ -469,6 +469,16 @@ test('Agent Graph revision references outlive the Artifacts they name', async ()
   assert.equal(reclaimed.ok, true);
 });
 
+test('Agent Graph revision references fail closed when Artifact reads fail', async () => {
+  // The admission check only lets a reference through when its target is
+  // genuinely gone. A failed Artifact read is unknown, not absence: it hides
+  // whether the reference crosses its child and lineage, so it must fail
+  // closed the same way Run lineage reads do.
+  const outcome = await prepare({ artifactTurnId: 'other-turn', artifactReadFailure: true });
+  assert.equal(outcome.ok, false);
+  if (!outcome.ok) assert.equal(outcome.code, 'operation_unavailable');
+});
+
 test('Agent Graph revision references reject invalid ownership boundaries', async () => {
   const otherParent = childHeader({ parentSessionId: 'other-root' });
   const crossFamily = await prepare({
@@ -564,6 +574,7 @@ interface PrepareOverrides {
   readonly artifactTurnId?: string;
   readonly artifactTurns?: ReadonlyMap<string, string>;
   readonly artifactMissing?: boolean;
+  readonly artifactReadFailure?: boolean;
   readonly childActive?: boolean;
 }
 
@@ -597,25 +608,30 @@ async function prepare(overrides: PrepareOverrides = {}) {
         listSessionInvocations: async () => overrides.runs ?? [agentRun()],
       },
       artifacts: {
-        getInSession: async (sessionId, artifactId) => ({
-          revision: `sha256:${'3'.repeat(64)}`,
-          record: overrides.artifactMissing
-            ? null
-            : {
-                id: artifactId,
-                sessionId,
-                turnId:
-                  overrides.artifactTurns?.get(artifactId) ??
-                  overrides.artifactTurnId ??
-                  CHILD_TURN_ID,
-                createdAt: 1,
-                name: 'result.txt',
-                kind: 'file',
-                relativePath: 'result.txt',
-                sizeBytes: 1,
-                source: 'tool_result',
-              },
-        }),
+        getInSession: async (sessionId, artifactId) => {
+          if (overrides.artifactReadFailure) {
+            throw new Error('simulated artifact store read failure');
+          }
+          return {
+            revision: `sha256:${'3'.repeat(64)}`,
+            record: overrides.artifactMissing
+              ? null
+              : {
+                  id: artifactId,
+                  sessionId,
+                  turnId:
+                    overrides.artifactTurns?.get(artifactId) ??
+                    overrides.artifactTurnId ??
+                    CHILD_TURN_ID,
+                  createdAt: 1,
+                  name: 'result.txt',
+                  kind: 'file',
+                  relativePath: 'result.txt',
+                  sizeBytes: 1,
+                  source: 'tool_result',
+                },
+          };
+        },
       },
       graph: {
         readSessionState: async () =>
