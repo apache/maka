@@ -202,6 +202,32 @@ describe('WechatBridge', () => {
     assert.equal(event?.receivedAt, 1_700_000_002_000);
   });
 
+  test('maps id-less iLink retransmissions onto one stable sourceMessageId (issue #6325)', () => {
+    // iLink getupdates can hand back the same frame again (cursor not
+    // advanced, process restart). The dedupe contract (botSourceEventKey)
+    // requires the retransmission to map onto the same sourceMessageId;
+    // a randomUUID fallback handed every redelivery a fresh key and
+    // produced duplicate turns.
+    const frame = {
+      from_user_id: 'wxid_friend',
+      create_time_ms: 1_700_000_002_500,
+      item_list: [{ type: 1, text_item: { text: 'hello' } }],
+    };
+    const first = mapWechatIlinkMessage(frame);
+    const retransmitted = mapWechatIlinkMessage({ ...frame });
+    assert.ok(first && retransmitted);
+    assert.equal(first.sourceMessageId, retransmitted.sourceMessageId);
+
+    // A different message from the same user must not collapse onto the key.
+    const other = mapWechatIlinkMessage({
+      ...frame,
+      create_time_ms: 1_700_000_003_000,
+      item_list: [{ type: 1, text_item: { text: 'different' } }],
+    });
+    assert.ok(other);
+    assert.notEqual(other.sourceMessageId, first.sourceMessageId);
+  });
+
   test('maps bridge media kinds and rejects empty non-media messages', () => {
     assert.equal(
       mapWechatBridgeMessage({
