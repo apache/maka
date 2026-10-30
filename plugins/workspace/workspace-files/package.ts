@@ -63,6 +63,13 @@ export default {
             fallback: 'Changes',
             translations: { 'zh-CN': '更改', 'zh-TW': '變更' },
           },
+          description: {
+            fallback: 'Show the files changed in this workspace',
+            translations: {
+              'zh-CN': '查看此工作区中更改的文件',
+              'zh-TW': '查看此工作區中變更的檔案',
+            },
+          },
         },
         glob: { kind: 'tool_renderer', presentation: 'maka.workspace.Files@1/glob' },
         grep: { kind: 'tool_renderer', presentation: 'maka.workspace.Files@1/grep' },
