@@ -177,10 +177,10 @@ pub struct BindingRequest {
     pub invocation: maka_agent_facts::event::Invocation,
     pub execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
     pub cwd: String,
-    /// Effective catalog, already restricted by the Host's tool ceiling.
+    /// This binding group's names, restricted by the Host's tool ceiling.
     pub tools: BTreeSet<String>,
     /// Complete frozen tool ceiling before individual binding groups project it.
-    pub available_tools: BTreeSet<String>,
+    pub available_tools: Arc<[String]>,
     pub cancellation: tokio_util::sync::CancellationToken,
 }
 
@@ -250,7 +250,7 @@ mod tests {
             },
             cwd: cwd.into(),
             tools: BTreeSet::new(),
-            available_tools: BTreeSet::new(),
+            available_tools: Arc::default(),
             cancellation: tokio_util::sync::CancellationToken::new(),
         };
         // This fixture's binder has no external asynchronous work.

@@ -150,7 +150,7 @@ pub(crate) fn catalog(
     let mut shell_bindings = Vec::new();
     let mut skill_bindings = Vec::new();
     let skill_contract = maka_skills_api::contract();
-    let tool_names: Arc<Vec<(String, Option<EditingTools>)>> = Arc::new(
+    let tool_names = ToolNames::Configured(
         selected
             .iter()
             .map(|tool| tool.name.clone())
@@ -162,7 +162,8 @@ pub(crate) fn catalog(
                     .map(|(_, style)| *style);
                 (name, style)
             })
-            .collect(),
+            .collect::<Vec<_>>()
+            .into(),
     );
     let mut native_services = Vec::new();
     let registrations = selected
@@ -453,7 +454,7 @@ impl maka_agent_engine::NativeApprovalExecutor for ApprovalExecutor {
             match data.capture {
                 NativeApprovalCapture::Web { basis } => service.web_basis = Some(basis),
                 NativeApprovalCapture::Skill { tool_names } => {
-                    service.tool_names = Arc::new(tool_names)
+                    service.tool_names = ToolNames::Configured(tool_names.into())
                 }
                 NativeApprovalCapture::Ordinary {} => {}
             }
@@ -548,9 +549,33 @@ impl maka_agent_engine::NativeApprovalExecutor for ApprovalExecutor {
 }
 
 #[derive(Clone)]
+enum ToolNames {
+    Configured(Arc<[(String, Option<EditingTools>)]>),
+    Ceiling(Arc<[String]>),
+}
+impl ToolNames {
+    fn iter(&self) -> impl Iterator<Item = (&str, Option<EditingTools>)> {
+        let (configured, ceiling): (&[(String, Option<EditingTools>)], &[String]) = match self {
+            Self::Configured(names) => (names, &[]),
+            Self::Ceiling(names) => (&[], names),
+        };
+        configured
+            .iter()
+            .map(|(name, style)| (name.as_str(), *style))
+            .chain(ceiling.iter().map(|name| (name.as_str(), None)))
+    }
+
+    fn capture(&self) -> Vec<(String, Option<EditingTools>)> {
+        self.iter()
+            .map(|(name, style)| (name.to_owned(), style))
+            .collect()
+    }
+}
+
+#[derive(Clone)]
 struct Service {
     web_basis: Option<maka_web_api::contract::Basis>,
-    tool_names: Arc<Vec<(String, Option<EditingTools>)>>,
+    tool_names: ToolNames,
     services: NativeServices,
     store: Arc<RootStore>,
     binding: String,
@@ -573,7 +598,7 @@ impl ToolPreparer for Service {
     ) -> PreparationFuture {
         let self_store = self.store.clone();
         let service_capture = self.web_basis.clone();
-        let captured_names = self.tool_names.as_ref().clone();
+        let captured_names = self.tool_names.clone();
         let tool_names = self.tool_names.clone();
         let web_basis = self.web_basis.clone();
         let services = self.services.clone();
@@ -662,7 +687,7 @@ impl ToolPreparer for Service {
                             })?,
                         },
                         ToolInput::Skill => NativeApprovalCapture::Skill {
-                            tool_names: captured_names,
+                            tool_names: captured_names.capture(),
                         },
                         ToolInput::Json | ToolInput::Shell => NativeApprovalCapture::Ordinary {},
                     },
@@ -761,10 +786,9 @@ impl Service {
                         .iter()
                         .filter(|(name, style)| {
                             (editing.is_none() || style.is_none() || editing == *style)
-                                && configuration
-                                    .tools
-                                    .as_ref()
-                                    .is_none_or(|allowed| allowed.contains(name))
+                                && configuration.tools.as_ref().is_none_or(|allowed| {
+                                    allowed.iter().any(|allowed| allowed.as_str() == *name)
+                                })
                         })
                         .map(|(name, _)| name)
                         .collect();
@@ -959,13 +983,7 @@ impl maka_tools::request::RequestBinding for SkillBinding {
         request: maka_tools::request::BindingRequest,
     ) -> maka_tools::request::BindingFuture {
         let mut service = self.0.clone();
-        service.tool_names = Arc::new(
-            request
-                .available_tools
-                .into_iter()
-                .map(|name| (name, None))
-                .collect(),
-        );
+        service.tool_names = ToolNames::Ceiling(request.available_tools);
         let name = service.selection.name.clone();
         Box::pin(async move {
             Ok(std::collections::BTreeMap::from([(
@@ -1006,6 +1024,45 @@ mod tests {
         let mut unapproved = descriptor;
         unapproved["selected"]["selection"]["confirmation"] = "preapproved".into();
         assert!(NativeApprovalData::decode(unapproved).is_err());
+    }
+
+    #[test]
+    fn skill_approval_names_keep_the_original_order_styles_and_json_shape() {
+        let configured = ToolNames::Configured(
+            vec![
+                ("Write".into(), Some(EditingTools::Structured)),
+                ("Patch".into(), Some(EditingTools::ApplyPatch)),
+                ("Skill".into(), None),
+            ]
+            .into(),
+        );
+        let configured = NativeApprovalCapture::Skill {
+            tool_names: configured.capture(),
+        };
+        assert_eq!(
+            serde_json::to_value(configured).unwrap(),
+            serde_json::json!({
+                "kind":"skill", "tool_names":[["Write","structured"],["Patch","apply_patch"],["Skill",null]]
+            })
+        );
+        let ceiling = ToolNames::Ceiling(vec!["Patch".into(), "Skill".into()].into());
+        let capture = NativeApprovalCapture::Skill {
+            tool_names: ceiling.capture(),
+        };
+        let encoded = serde_json::to_value(capture).unwrap();
+        assert_eq!(
+            encoded,
+            serde_json::json!({"kind":"skill","tool_names":[["Patch",null],["Skill",null]]})
+        );
+        let NativeApprovalCapture::Skill { tool_names } = serde_json::from_value(encoded).unwrap()
+        else {
+            panic!("Skill approval capture must preserve its historical names");
+        };
+        let restored = ToolNames::Configured(tool_names.into());
+        assert_eq!(
+            restored.capture(),
+            vec![("Patch".into(), None), ("Skill".into(), None)]
+        );
     }
 
     #[test]
