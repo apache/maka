@@ -68,6 +68,10 @@ pub(super) fn opening() -> Fact {
 }
 pub(super) fn request(session: &str) -> Fact {
     Fact::ModelRequested {
+        source_capture: maka_agent_facts::event::SourceCapture {
+            publication_watermark: 0,
+            prior_unknown: false,
+        },
         context_breakdown: None,
         item_acceptance: false,
         purpose: maka_agent_facts::context::ModelPurpose::Main,
@@ -105,12 +109,6 @@ pub(super) fn completion_parts(step: String, parts: Vec<ModelPart>) -> Vec<Compl
         .enumerate()
         .map(|(ordinal, part)| CompletionPart::Own(record(&step, ordinal as u64, part)))
         .collect()
-}
-pub(super) fn tool_observation(
-    step: &str,
-    call: maka_agent_facts::model::ModelToolCall,
-) -> ModelObservation {
-    ModelObservation::Part(record(step, 0, ModelPart::ToolCall { call }))
 }
 pub(super) async fn partial(log: &EventLog, session: &str, text: &str) -> (ModelPartRecord, u64) {
     log.append(&event(session, opening())).await.unwrap();

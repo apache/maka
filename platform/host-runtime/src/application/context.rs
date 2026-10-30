@@ -20,8 +20,8 @@
 use super::*;
 
 /// Actual request capabilities shared by native and JavaScript services.
-/// Imports are captured from the consumer activation, never resolved by a
-/// guest-supplied global name. Calls preserve the original private Scope evidence.
+/// Imports and own exports are captured from the consumer activation, never
+/// resolved by a guest-supplied global name. Calls preserve the original private Scope evidence.
 pub struct Context {
     pub(super) stream: Option<subscriptions::Emitter>,
     pub(super) caller: Option<Caller>,
@@ -33,6 +33,7 @@ pub struct Context {
         Option<maka_event_log::applications::operations::OperationDispatchScope>,
     pub(super) attachments: Attachments,
     pub(super) imports: Arc<BTreeMap<String, Vec<Binding>>>,
+    pub(super) exports: Arc<BTreeMap<String, Binding>>,
     pub(super) dispatch: Weak<Dispatch>,
 }
 impl Context {
@@ -83,10 +84,38 @@ impl Context {
         input: Value,
         attachments: Attachments,
     ) -> Result<BoxFuture<'static, Result<Value>>> {
+        self.call_binding(
+            self.import_binding(import, provider)?,
+            method,
+            input,
+            attachments,
+        )
+    }
+    /// Invoke a captured imported service or this owner's export.
+    pub fn call_target(
+        &self,
+        target: &ServiceTarget,
+        method: String,
+        input: Value,
+        attachments: Attachments,
+    ) -> Result<BoxFuture<'static, Result<Value>>> {
+        self.call_binding(
+            select_service(&self.imports, &self.exports, target)?.clone(),
+            method,
+            input,
+            attachments,
+        )
+    }
+    fn call_binding(
+        &self,
+        binding: Binding,
+        method: String,
+        input: Value,
+        attachments: Attachments,
+    ) -> Result<BoxFuture<'static, Result<Value>>> {
         let (reply, result) = oneshot::channel();
-        self.enqueue(
-            import,
-            provider,
+        self.enqueue_binding(
+            binding,
             method,
             input,
             attachments.into(),
@@ -112,12 +141,40 @@ impl Context {
         input: Value,
         attachments: Attachments,
     ) -> Result<BoxFuture<'static, Result<Subscription>>> {
+        self.subscribe_binding(
+            self.import_binding(import, provider)?,
+            method,
+            input,
+            attachments,
+        )
+    }
+    /// Subscribe to a captured imported service or this owner's export.
+    pub fn subscribe_target(
+        &self,
+        target: &ServiceTarget,
+        method: String,
+        input: Value,
+        attachments: Attachments,
+    ) -> Result<BoxFuture<'static, Result<Subscription>>> {
+        self.subscribe_binding(
+            select_service(&self.imports, &self.exports, target)?.clone(),
+            method,
+            input,
+            attachments,
+        )
+    }
+    fn subscribe_binding(
+        &self,
+        binding: Binding,
+        method: String,
+        input: Value,
+        attachments: Attachments,
+    ) -> Result<BoxFuture<'static, Result<Subscription>>> {
         let scope = self.scope.child().map_err(|error| error.to_string())?;
         let guard = scope.cancellation.clone().drop_guard();
         let (reply, result) = oneshot::channel();
-        self.enqueue(
-            import,
-            provider,
+        self.enqueue_binding(
+            binding,
             method,
             input,
             attachments.into(),
@@ -161,13 +218,57 @@ impl Context {
         operation: Uuid,
         attachments: impl Into<CallResources>,
     ) -> Result<BoxFuture<'static, Result<Mutation>>> {
-        let (reply, result) = oneshot::channel();
-        self.enqueue(
-            import,
-            provider,
+        self.begin_mutation_binding(
+            self.import_binding(import, provider)?,
             method,
             input,
+            operation,
             attachments.into(),
+        )
+    }
+    /// Mutate an imported service or own export with the original operation receipt.
+    pub fn mutate_target(
+        &self,
+        target: &ServiceTarget,
+        method: String,
+        input: Value,
+        operation: Uuid,
+        attachments: impl Into<CallResources>,
+    ) -> Result<BoxFuture<'static, Result<OperationReply>>> {
+        let result = self.begin_mutation_target(target, method, input, operation, attachments)?;
+        Ok(Box::pin(async move { Ok(result.await?.result().await) }))
+    }
+    /// Observe progress and settlement of a selected service mutation.
+    pub fn begin_mutation_target(
+        &self,
+        target: &ServiceTarget,
+        method: String,
+        input: Value,
+        operation: Uuid,
+        attachments: impl Into<CallResources>,
+    ) -> Result<BoxFuture<'static, Result<Mutation>>> {
+        self.begin_mutation_binding(
+            select_service(&self.imports, &self.exports, target)?.clone(),
+            method,
+            input,
+            operation,
+            attachments.into(),
+        )
+    }
+    fn begin_mutation_binding(
+        &self,
+        binding: Binding,
+        method: String,
+        input: Value,
+        operation: Uuid,
+        attachments: CallResources,
+    ) -> Result<BoxFuture<'static, Result<Mutation>>> {
+        let (reply, result) = oneshot::channel();
+        self.enqueue_binding(
+            binding,
+            method,
+            input,
+            attachments,
             self.scope.clone(),
             CallKind::Mutation {
                 operation,
@@ -203,11 +304,16 @@ impl Context {
                 .map_err(|_| "Host deployment is closed".to_string())?
         }))
     }
-    #[allow(clippy::too_many_arguments)]
-    fn enqueue(
+    fn import_binding(&self, import: &str, provider: usize) -> Result<Binding> {
+        self.imports
+            .get(import)
+            .and_then(|providers| providers.get(provider))
+            .cloned()
+            .ok_or_else(|| "unknown request import provider".into())
+    }
+    fn enqueue_binding(
         &self,
-        import: &str,
-        provider: usize,
+        binding: Binding,
         method: String,
         input: Value,
         attachments: CallResources,
@@ -217,12 +323,6 @@ impl Context {
         if self.scope.cancellation.is_cancelled() {
             return Err("Host request was revoked".into());
         }
-        let binding = self
-            .imports
-            .get(import)
-            .and_then(|providers| providers.get(provider))
-            .ok_or("unknown request import provider")?
-            .clone();
         let dispatch = self.dispatch.upgrade().ok_or("Host deployment is closed")?;
         attachments.check_scope(&scope)?;
         // A captured input already owns its original Ticket and reservations.
@@ -234,5 +334,22 @@ impl Context {
         };
         dispatch.enqueue(binding, method, input, scope, attachments, ticket, kind)?;
         Ok(())
+    }
+}
+
+pub(super) fn select_service<'a>(
+    imports: &'a BTreeMap<String, Vec<Binding>>,
+    exports: &'a BTreeMap<String, Binding>,
+    target: &ServiceTarget,
+) -> Result<&'a Binding> {
+    match target {
+        ServiceTarget::Import { name } => match imports.get(name).map(Vec::as_slice) {
+            Some([binding]) => Ok(binding),
+            Some(_) => Err(format!("service import must select one provider: {name}")),
+            None => Err(format!("unknown service import: {name}")),
+        },
+        ServiceTarget::Export { name } => exports
+            .get(name)
+            .ok_or_else(|| format!("unknown own service export: {name}")),
     }
 }

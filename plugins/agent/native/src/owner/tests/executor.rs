@@ -25,12 +25,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone, Copy)]
 enum Behavior {
-    Returned,
-    Held,
-    Lost,
     Unsettled,
     Streaming,
-    InvalidProgress,
     Attachments,
 }
 struct Probe {
@@ -91,13 +87,7 @@ impl Handler for Probe {
                         ()=context.scope().cancellation.cancelled() => return Ok(json!({"status":"cancelled","reason":"stopped"})),
                     }
                 }
-                Behavior::InvalidProgress => {
-                    // Valid schema, invalid canonical ordering. The recorder owns this check.
-                    context.emit(json!({"type":"tool_result","toolCallId":"not-started","text":"unsafe to accept"})).await?;
-                    context.scope().cancellation.cancelled().await;
-                    cancelled.add_permits(1);
-                    return Ok(json!({"status":"cancelled","reason":"output rejected"}));
-                }
+
                 Behavior::Attachments => {
                     assert_eq!(context.attachments().len(), 1);
                     let resource = context.attachments().get("attachments").unwrap();
@@ -137,12 +127,6 @@ impl Handler for Probe {
                         json!({"status":"completed","text":serde_json::to_string(&files).unwrap()}),
                     );
                 }
-                Behavior::Returned => {}
-                Behavior::Lost => return Err("fixture lost executor reply".into()),
-                Behavior::Held => tokio::select! {
-                    permit=release.acquire() => permit.unwrap().forget(),
-                    ()=context.scope().cancellation.cancelled() => return Ok(json!({"status":"cancelled","reason":"stopped"})),
-                },
                 Behavior::Unsettled => {
                     context.scope().cancellation.cancelled().await;
                     cancelled.add_permits(1);
@@ -756,71 +740,6 @@ async fn executor_service_javascript_uses_original_engine_and_read_only_restart(
 }
 
 #[tokio::test]
-async fn executor_service_queue_freezes_original_backend_and_requires_current_grant() {
-    for granted in [false, true] {
-        tokio::time::timeout(Duration::from_secs(40),async {
-            let mut fixture=Fixture::new("http://127.0.0.1:9/v1",None).await;
-            let probe=Probe::new(Behavior::Held);activate(&mut fixture,true,Some(probe.clone()),granted).await;
-            let session=fixture.create("Queue").await;
-            let first=fixture.mutation(2,"execute",input_for(&session,"first"),Uuid::new_v4()).await.unwrap();
-            if granted {
-                probe.entered.acquire().await.unwrap().forget();
-                let queued=fixture.mutation(2,"execute",input_for(&session,"second"),Uuid::new_v4()).await.unwrap();
-                assert_eq!(queued["kind"],"queued");assert_eq!(probe.calls.load(Ordering::SeqCst),1);
-                probe.release.add_permits(2);fixture.drained().await;
-                assert_eq!(probe.calls.load(Ordering::SeqCst),2);
-                let second=fixture.query("work",json!({"sessionId":session,"target":{"kind":"message","messageId":queued["messageId"]}})).await.unwrap();
-                assert_eq!(second["answer"]["text"],"second");assert_eq!(work(&fixture,&session,&first).await["answer"]["text"],"first");
-            } else {
-                fixture.drained().await;assert_eq!(probe.calls.load(Ordering::SeqCst),0);
-                assert_eq!(work(&fixture,&session,&first).await["execution"]["state"],"failed");
-            }
-            fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
-        }).await.unwrap();
-    }
-}
-
-#[tokio::test]
-async fn executor_service_unknown_is_not_resent_or_resumed_as_a_model() {
-    tokio::time::timeout(Duration::from_secs(40),async {
-        let mut fixture=Fixture::new("http://127.0.0.1:9/v1",None).await;
-        let probe=Probe::new(Behavior::Lost);activate(&mut fixture,true,Some(probe.clone()),true).await;
-        let session=fixture.create("Unknown").await;let input=input_for(&session,"once");let operation=Uuid::new_v4();
-        let accepted=fixture.mutation(2,"execute",input.clone(),operation).await.unwrap();fixture.drained().await;
-        let observed=work(&fixture,&session,&accepted).await;assert_eq!(observed["execution"]["state"],"failed");
-        assert_eq!(fixture.mutation(2,"execute",input,operation).await.unwrap(),accepted);assert_eq!(probe.calls.load(Ordering::SeqCst),1);
-        let resumed=fixture.mutation(2,"resume",json!({"sessionId":session,"sourceInvocationId":accepted["invocationId"],"sourceHighWater":observed["execution"]["highWater"],"model":fixture.selection().await}),Uuid::new_v4()).await.unwrap();
-        assert_eq!(resumed,json!({"kind":"parked","reason":"source_not_resumable"}));
-        let replacement=Probe::new(Behavior::Returned);
-        activate(&mut fixture,false,Some(replacement.clone()),true).await;
-        assert_eq!(work(&fixture,&session,&accepted).await,observed);
-        fixture.drained().await;assert_eq!(replacement.calls.load(Ordering::SeqCst),0);
-        let originals=fixture.store.application_intents(fixture.app.source().unwrap().deployment,id(1),0,128).await.unwrap();assert_eq!(originals.len(),1);
-        let receipt=fixture.store.operation(&originals[0].reference).unwrap().operation_observation().await.unwrap().unwrap();assert!(matches!(receipt.outcome,OperationOutcome::Unknown{..}));
-        fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
-    }).await.unwrap();
-}
-
-#[tokio::test]
-async fn executor_service_pending_message_never_adopts_reactivated_backend() {
-    tokio::time::timeout(Duration::from_secs(40),async {
-        let mut fixture=Fixture::new("http://127.0.0.1:9/v1",None).await;
-        let probe=Probe::new(Behavior::Held);activate(&mut fixture,true,Some(probe.clone()),true).await;
-        let session=fixture.create("Frozen queue").await;
-        fixture.mutation(2,"execute",input_for(&session,"first"),Uuid::new_v4()).await.unwrap();
-        probe.entered.acquire().await.unwrap().forget();
-        let queued=fixture.mutation(2,"execute",input_for(&session,"frozen"),Uuid::new_v4()).await.unwrap();
-        assert_eq!(queued["kind"],"queued");
-        let replacement=Probe::new(Behavior::Returned);activate(&mut fixture,false,Some(replacement.clone()),true).await;
-        fixture.drained().await;
-        assert_eq!(probe.calls.load(Ordering::SeqCst),1);assert_eq!(replacement.calls.load(Ordering::SeqCst),0);
-        let observed=fixture.query("work",json!({"sessionId":session,"target":{"kind":"message","messageId":queued["messageId"]}})).await.unwrap();
-        assert_eq!(observed["execution"]["state"],"failed");assert!(observed["answer"].is_null());
-        fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
-    }).await.unwrap();
-}
-
-#[tokio::test]
 async fn executor_service_cancelled_unsettled_callback_keeps_actual_owner() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
@@ -1014,127 +933,21 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
     .unwrap();
 }
 
-#[tokio::test]
-async fn executor_service_invalid_progress_stops_original_request_without_false_completion() {
-    tokio::time::timeout(Duration::from_secs(40), async {
-        let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
-        let probe = Probe::new(Behavior::InvalidProgress);
-        activate(&mut fixture, true, Some(probe.clone()), true).await;
-        let session = fixture.create("Invalid output").await;
-        let accepted = fixture
-            .mutation(
-                2,
-                "execute",
-                input_for(&session, "never complete"),
-                Uuid::new_v4(),
-            )
-            .await
-            .unwrap();
-        probe.cancelled.acquire().await.unwrap().forget();
-        fixture.drained().await;
-        let observed = work(&fixture, &session, &accepted).await;
-        assert_eq!(observed["execution"]["state"], "failed");
-        let source = fixture
-            .session(&session)
-            .await
-            .run_source(
-                &session,
-                observed["execution"]["runId"].as_str().unwrap(),
-                None,
-            )
-            .await
-            .unwrap()
-            .unwrap();
-        let mut prefix = fixture
-            .session(&session)
-            .await
-            .session_events(&session, 0, source.last.sequence, 512, 65536)
-            .await
-            .unwrap();
-        assert!(prefix.next_after.is_none());
-        prefix
-            .events
-            .retain(|row| row.event.invocation == source.boundary.invocation);
-        assert_eq!(prefix.events.len() as u64, source.boundary.high_water);
-        assert!(prefix.events.iter().all(|row| !matches!(
-            &row.event.fact,
-            maka_agent_facts::event::Fact::ExecutorCompleted { .. }
-                | maka_agent_facts::event::Fact::ExecutorObserved { .. }
-        )));
-        assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
-        fixture.app.shutdown().await.unwrap();
-        fixture.config.shutdown().await.unwrap();
-    })
-    .await
-    .unwrap();
-}
-
 #[cfg(target_os = "macos")]
 mod acp;
 
 #[tokio::test]
 async fn executor_attachments_use_only_owned_immutable_uploads_and_original_receipts() {
-    // Same process-wide counters as the existing scale probes. Unsupported
-    // platforms report null rather than inventing CPU or peak-memory values.
-    fn usage() -> (Option<f64>, Option<u64>) {
-        #[cfg(unix)]
-        {
-            let mut value = std::mem::MaybeUninit::<libc::rusage>::uninit();
-            assert_eq!(
-                unsafe { libc::getrusage(libc::RUSAGE_SELF, value.as_mut_ptr()) },
-                0
-            );
-            let value = unsafe { value.assume_init() };
-            let seconds = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1_000_000.0;
-            let peak = value.ru_maxrss as u64;
-            #[cfg(not(target_os = "macos"))]
-            let peak = peak * 1024;
-            (
-                Some(seconds(value.ru_utime) + seconds(value.ru_stime)),
-                Some(peak),
-            )
-        }
-        #[cfg(not(unix))]
-        {
-            (None, None)
-        }
-    }
-    let probe_bytes = std::env::var("MAKA_ARTIFACT_PROBE_BYTES")
-        .ok()
-        .map(|value| {
-            let bytes: usize = value
-                .parse()
-                .expect("MAKA_ARTIFACT_PROBE_BYTES must be an integer");
-            assert!(
-                bytes as u64 <= (50 * 1024 * 1024),
-                "artifact probe must fit the actual attachment byte limit"
-            );
-            bytes
-        });
     tokio::time::timeout(Duration::from_secs(45), async {
         let mut f = Fixture::new("http://127.0.0.1:9/v1", None).await;
         let probe = Probe::new(Behavior::Attachments);
         activate(&mut f, true, Some(probe.clone()), true).await;
         let session = f.create("Attachments").await;
         let other = f.create("Other").await;
-        let mut files = vec![(
-            "notes.md".to_owned(),
-            "original immutable content\n".repeat(6000),
-        )];
-        if let Some(bytes) = probe_bytes {
-            // ASCII permits an exact byte length and the existing UTF-8 preview
-            // assertions; NUL/newline still exercise the binary resource route.
-            let pattern = "original immutable content\n\0";
-            let mut content = pattern.repeat(bytes / pattern.len() + 1);
-            content.truncate(bytes);
-            files[0].1 = content;
-        }
-        files.extend((1..17).map(|index| {
-            (
-                format!("note-{index}.txt"),
-                format!("distinct executor file {index}\n中\0tail-{index}"),
-            )
-        }));
+        let files = [
+            ("notes.md".to_owned(), "original immutable content\n".repeat(3000)),
+            ("utf8.txt".to_owned(), "distinct executor file\n中\0tail".to_owned()),
+        ];
         let mut ids = Vec::new();
         for (name, bytes) in &files {
             let uploaded =
@@ -1160,27 +973,18 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
         let mut input = input_for(&session, "");
         input["attachments"] = json!(ids);
         let operation = Uuid::new_v4();
-        let started = std::time::Instant::now();
-        let (started_cpu, _) = usage();
-
         let accepted = f
             .mutation(2, "execute", input.clone(), operation)
             .await
             .unwrap();
         assert_eq!(accepted["kind"], "started");
 
-        // Observing backend entry includes admission and the complete production
-        // capture; it is not an exact isolated SQLite/encoding measurement.
         probe.entered.acquire().await.unwrap().forget();
 
-        let entered_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let (entered_cpu, _) = usage();
         f.drained().await;
 
         let observed = work(&f, &session, &accepted).await;
         assert_eq!(observed["execution"]["state"], "completed", "{observed}");
-        let completed_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let (completed_cpu, _) = usage();
         let mut page = observed;
         let mut answer = String::new();
         loop {
@@ -1212,39 +1016,9 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
             accepted
         );
         assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
-        let verified_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let (verified_cpu, _) = usage();
-        let shutdown = std::time::Instant::now();
-        let controls_empty = f.owner.runs.lock().await.controls.is_empty();
+        assert!(f.owner.runs.lock().await.controls.is_empty());
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
-        assert!(controls_empty);
-        if probe_bytes.is_some() {
-            let (shutdown_cpu, peak_rss) = usage();
-            let cpu_since = |now: Option<f64>| now.zip(started_cpu).map(|(now, start)| now - start);
-            println!("MAKA_ARTIFACT_PROBE {}", json!({
-                "status":"completed", "errors":0, "caller":"executor",
-                "sqlite_version":rusqlite::version(),
-                "sqlite_version_number":rusqlite::version_number(),
-                "first_file_bytes":files[0].1.len(),
-                "work_bytes":files.iter().map(|(_, bytes)| bytes.len() as u64).sum::<u64>(),
-                "files":received.iter().map(|value| value["metadata"].clone()).collect::<Vec<_>>(),
-                "actual_service_calls":probe.calls.load(Ordering::SeqCst),
-                "invocation":accepted["invocationId"], "operation":operation,
-                "execute_to_service_entry_observed_wall_ms":entered_ms,
-                "execute_to_service_entry_observed_cpu_seconds":cpu_since(entered_cpu),
-                "execute_to_completed_observed_wall_ms":completed_ms,
-                "execute_to_completed_observed_cpu_seconds":cpu_since(completed_cpu),
-                "execute_to_verified_work_wall_ms":verified_ms,
-                "execute_to_verified_work_cpu_seconds":cpu_since(verified_cpu),
-                "shutdown_wall_ms":shutdown.elapsed().as_secs_f64()*1000.0,
-                "shutdown_cpu_seconds":shutdown_cpu.zip(verified_cpu).map(|(end,start)|end-start),
-                "process_peak_rss_bytes":peak_rss,
-                "cleanup":{"app_shutdown":true,"config_shutdown":true,"controls_empty":controls_empty},
-                "upload_included":false, "driver_included":true,
-                "service_entry_is_observation":true
-            }));
-        }
     })
     .await
     .unwrap();

@@ -44,6 +44,7 @@ maka-agent-api.workspace = true
 maka-interactions-api.workspace = true
 base64 = "0.23.1"
 cap-std.workspace = true
+cap-fs-ext.workspace = true
 maka-agent-engine.workspace = true
 maka-assistant.workspace = true
 maka-config.workspace = true
@@ -77,6 +78,7 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 uuid.workspace = true
 
 [dev-dependencies]
+maka-agent-engine = { workspace = true, features = ["test-support"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
 maka-external-agent.workspace = true

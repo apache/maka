@@ -68,6 +68,7 @@ pub(super) struct MainResponse {
 pub(super) enum Outcome {
     Response(MainResponse),
     FinishedByTool,
+    ParkRetry(maka_agent_facts::model_retry::RetryPlan),
 }
 impl From<AttemptOutput> for Outcome {
     fn from(output: AttemptOutput) -> Self {
@@ -199,15 +200,21 @@ pub(super) fn prior_unknown_notice(source: &ContextView, language: Language) -> 
     notice
 }
 
+#[derive(Clone)]
 pub(super) struct RequestSource {
     pub evidence: maka_event_log::context::SourceEvidence,
     pub effective_digest: String,
     pub checkpoint: Option<String>,
+    pub capture: maka_agent_facts::event::SourceCapture,
 }
 
 impl From<&ContextView> for RequestSource {
     fn from(source: &ContextView) -> Self {
         Self {
+            capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: source.selection.captured_through,
+                prior_unknown: source.selection.prior_unknown,
+            },
             evidence: source.source_evidence.clone(),
             effective_digest: source.effective_source_digest.clone(),
             checkpoint: source
@@ -261,15 +268,72 @@ pub(super) async fn execute_main(
         prior_unknown,
     } = main;
     let mut source = RequestSource::from(context.as_ref());
-    let mut high_water = source.evidence.high_water;
+    source.capture.prior_unknown = prior_unknown;
     drop(context);
+    execute_retry_chain(
+        inner,
+        input,
+        source,
+        prompt,
+        Main {
+            lane,
+            continuation_base,
+            surface,
+            tools,
+            prior_unknown,
+        },
+        None,
+        cancellation,
+    )
+    .await
+}
+
+pub(super) async fn execute_frozen_main(
+    inner: &Arc<RunContext>,
+    input: &RunSettings,
+    source: RequestSource,
+    prompt: PreparedPrompt,
+    main: Main<'_>,
+    consumption: maka_agent_facts::model_retry::ModelRetryConsumption,
+    cancellation: &CancellationToken,
+) -> (u64, Result<Outcome, RunError>) {
+    execute_retry_chain(
+        inner,
+        input,
+        source,
+        prompt,
+        main,
+        Some(consumption),
+        cancellation,
+    )
+    .await
+}
+
+async fn execute_retry_chain(
+    inner: &Arc<RunContext>,
+    input: &RunSettings,
+    mut source: RequestSource,
+    prompt: PreparedPrompt,
+    main: Main<'_>,
+    mut consumption: Option<maka_agent_facts::model_retry::ModelRetryConsumption>,
+    cancellation: &CancellationToken,
+) -> (u64, Result<Outcome, RunError>) {
+    let Main {
+        lane,
+        continuation_base,
+        surface,
+        tools,
+        prior_unknown,
+    } = main;
+    let mut failures = consumption.as_ref().map_or(0, |retry| retry.plan.failures);
+    let mut high_water = source.evidence.high_water;
     let mut retry = Some(prompt);
     let result = async {
-        let mut failures = 0;
         loop {
             // Preserve captured capabilities. Rebuild history only when a completed
             // item advanced canonical progress, never from a shortened WS request.
             let mut progressed = false;
+            let mut confirmed_failure = None;
             let result = execute_once(
                 inner,
                 input,
@@ -292,42 +356,63 @@ pub(super) async fn execute_main(
                 cancellation,
                 &mut progressed,
                 &mut retry,
+                &mut confirmed_failure,
+                consumption.take(),
             )
             .await;
-            let delay = match &result {
+            let (plan, durable) = match &result {
                 Err(RunError::Model(maka_model::ModelError::Provider(failure)))
                     if failure.replay_safe() || (progressed && failure.retained_output_safe()) =>
                 {
                     if cancellation.is_cancelled() {
                         return Err(RunError::Cancelled);
                     }
-                    // A successful finishing effect is already authoritative. Safe
-                    // stream recovery must not reopen this turn for another model.
                     if tools.finished() {
                         return Ok(Outcome::FinishedByTool);
                     }
                     if !failure.retryable() {
                         return result.map(Outcome::from);
                     }
-                    if failures >= 9 {
+                    let backoff = if failures >= ORDINARY_RETRIES {
                         if !lane.try_switch_fallback_transport() {
                             return result.map(Outcome::from);
                         }
                         failures = 0;
-                        failure.retry_after().unwrap_or_default()
+                        std::time::Duration::ZERO
                     } else {
-                        // Codex's ordinary stream recovery starts at 200 ms with
-                        // +/-10% jitter. The bounded attempt count caps this delay.
-                        let base_ms = 200u64 << failures;
+                        let base_ms = RETRY_BASE_MS << failures;
                         failures += 1;
-                        let backoff = std::time::Duration::from_millis(fastrand::u64(
-                            base_ms * 9 / 10..=base_ms * 11 / 10,
+                        std::time::Duration::from_millis(fastrand::u64(
+                            base_ms * 9 / 10..=jitter_upper(base_ms),
+                        ))
+                    };
+                    let Some(failure_event_id) = confirmed_failure else {
+                        return Err(RunError::ReconciliationRequired(
+                            "retry failure has no confirmed terminal receipt".into(),
                         ));
-                        retry_delay(failure, backoff, maka_model::ProviderFailure::now_unix_ms())
-                    }
+                    };
+                    let now = retry_now()?;
+                    let plan = retry_plan(
+                        failure_event_id,
+                        failure,
+                        backoff,
+                        now,
+                        failures,
+                        lane.retry_transport_phase(),
+                    )?;
+                    let durable = !progressed
+                        && failure.replay_safe()
+                        && input.native_activation_basis.is_some()
+                        && failure.retry_at_unix_ms().is_some()
+                        && plan.not_before_unix_ms.saturating_sub(now)
+                            > ordinary_retry_horizon_ms();
+                    (plan, durable)
                 }
                 _ => return result.map(Outcome::from),
             };
+            if durable {
+                return Ok(Outcome::ParkRetry(plan));
+            }
             if progressed {
                 // Accepted progress replaces the frozen retry prompt. Release it
                 // before materializing the next canonical source.
@@ -335,6 +420,7 @@ pub(super) async fn execute_main(
                 let context = read_source(inner, input, prior_unknown, cancellation).await?;
                 high_water = context.source_evidence.high_water;
                 source = RequestSource::from(context.as_ref());
+                source.capture.prior_unknown = prior_unknown;
                 let prompt = self::prompt(
                     inner,
                     input,
@@ -355,7 +441,7 @@ pub(super) async fn execute_main(
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(RunError::Cancelled),
-                _ = wait_retry(delay) => {}
+                waited = wait_retry_plan(&plan) => { waited?; }
             }
         }
     }
@@ -371,20 +457,67 @@ pub(super) async fn execute_main(
     (high_water, result)
 }
 
+const RETRY_BASE_MS: u64 = 200;
+const ORDINARY_RETRIES: u32 = 9;
+
+const fn jitter_upper(base_ms: u64) -> u64 {
+    base_ms * 11 / 10
+}
+const fn ordinary_retry_horizon_ms() -> u64 {
+    jitter_upper(RETRY_BASE_MS << (ORDINARY_RETRIES - 1))
+}
+
+fn retry_now() -> Result<u64, RunError> {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| RunError::InvalidInput(format!("invalid retry clock: {error}")))?;
+    u64::try_from(elapsed.as_millis())
+        .map_err(|error| RunError::InvalidInput(format!("retry clock overflow: {error}")))
+}
+
+fn retry_plan(
+    failure_event_id: String,
+    failure: &maka_model::ProviderFailure,
+    backoff: std::time::Duration,
+    now: u64,
+    failures: u32,
+    transport_phase: maka_agent_facts::model::retry_transport::RetryTransportPhase,
+) -> Result<maka_agent_facts::model_retry::RetryPlan, RunError> {
+    let backoff = u64::try_from(backoff.as_millis())
+        .map_err(|error| RunError::InvalidInput(format!("retry backoff overflow: {error}")))?;
+    let local = now
+        .checked_add(backoff)
+        .ok_or_else(|| RunError::InvalidInput("retry deadline overflow".into()))?;
+    let not_before_unix_ms = local.max(failure.retry_at_unix_ms().unwrap_or(now));
+    if not_before_unix_ms > i64::MAX as u64 {
+        return Err(RunError::InvalidInput(
+            "retry deadline exceeds storage range".into(),
+        ));
+    }
+    Ok(maka_agent_facts::model_retry::RetryPlan {
+        failure_event_id,
+        not_before_unix_ms,
+        failures,
+        transport_phase,
+    })
+}
+
+async fn wait_retry_plan(plan: &maka_agent_facts::model_retry::RetryPlan) -> Result<(), RunError> {
+    loop {
+        let now = retry_now()?;
+        let Some(remaining) = plan.not_before_unix_ms.checked_sub(now).filter(|n| *n > 0) else {
+            return Ok(());
+        };
+        wait_retry(std::time::Duration::from_millis(remaining)).await;
+    }
+}
+
 async fn wait_retry(delay: std::time::Duration) {
     match tokio::time::Instant::now().checked_add(delay) {
         Some(at) => tokio::time::sleep_until(at).await,
         // An unrepresentable deadline cannot authorize an earlier replay.
         None => std::future::pending::<()>().await,
     }
-}
-
-fn retry_delay(
-    failure: &maka_model::ProviderFailure,
-    backoff: std::time::Duration,
-    now_unix_ms: u64,
-) -> std::time::Duration {
-    backoff.max(failure.retry_delay_at(now_unix_ms).unwrap_or_default())
 }
 
 async fn close_retry(retry: &mut Option<PreparedPrompt>) -> Result<(), RunError> {
@@ -403,11 +536,13 @@ pub(super) async fn execute_once(
     input: &RunSettings,
     source: &RequestSource,
     mut prompt: PreparedPrompt,
-    definitions: Vec<ToolDefinition>,
+    definitions: Vec<Arc<ToolDefinition>>,
     attempt: Attempt<'_>,
     cancellation: &CancellationToken,
     progressed: &mut bool,
     retry: &mut Option<PreparedPrompt>,
+    confirmed_failure: &mut Option<String>,
+    consumption: Option<maka_agent_facts::model_retry::ModelRetryConsumption>,
 ) -> Result<AttemptOutput, RunError> {
     let (purpose, lane, surface, tools) = match attempt {
         Attempt::Main(Main {
@@ -421,25 +556,14 @@ pub(super) async fn execute_once(
     if cancellation.is_cancelled() {
         return Err(RunError::Cancelled);
     }
-    prompt
-        .compile_wire(
-            input.configuration.language,
-            &input.provider,
-            &input.provider_options,
-            &definitions,
-            cancellation,
-        )
-        .await?;
-    prompt
-        .fit_image_request(
-            input.configuration.language,
-            &input.provider,
-            &input.provider_options,
-            &definitions,
-            surface.max_output_tokens,
-            cancellation,
-        )
-        .await?;
+    prepare_wire(
+        input,
+        &mut prompt,
+        &definitions,
+        surface.max_output_tokens,
+        cancellation,
+    )
+    .await?;
     if purpose == ModelPurpose::Main && retry.is_some() {
         *retry = Some(prompt.clone());
     }
@@ -458,6 +582,7 @@ pub(super) async fn execute_once(
         let event = maka_agent_facts::event::RuntimeEvent::new(
             input.invocation.clone(),
             Fact::ModelRequested {
+                source_capture: source.capture,
                 item_acceptance,
                 effective_source_digest: Some(source.effective_digest.clone()),
                 purpose,
@@ -476,6 +601,9 @@ pub(super) async fn execute_once(
         let event_id = event.id.clone();
         let mut write =
             maka_agent_facts::event::EventWrite::plain(event)?.with_composition(composition)?;
+        if let Some(consumption) = consumption {
+            write = write.with_model_retry_consumption(consumption)?;
+        }
         if let Some(pricing) = &inner.shared.pricing {
             write = write.with_quote(
                 pricing
@@ -484,7 +612,11 @@ pub(super) async fn execute_once(
             )?;
         }
         use maka_agent_facts::event::EventSink;
-        let sequence = inner.log.clone().commit(write).await?;
+        let sequence = if write.model_retry_consumption().is_some() {
+            commit_retry_request(inner, &write).await?
+        } else {
+            inner.log.clone().commit(write).await?
+        };
         surface.committed(event_id);
         sequence
     };
@@ -540,9 +672,71 @@ pub(super) async fn execute_once(
         other => other,
     };
     if finalizer.terminal_confirmed() {
+        if result.is_err() {
+            *confirmed_failure = finalizer.confirmed_event_id();
+        }
         inner.attempts.remove(&step_id);
     }
     result
+}
+
+async fn commit_retry_request(
+    inner: &RunContext,
+    write: &maka_agent_facts::event::EventWrite,
+) -> Result<u64, RunError> {
+    use maka_agent_facts::event::CommitError;
+    let mut changes = inner
+        .log
+        .subscribe_session_commits(&write.event().invocation.session_id)?;
+    let mut uncertain = false;
+    loop {
+        if uncertain {
+            match inner.log.confirm_model_retry_request(write).await {
+                Ok(Some(sequence)) => return Ok(sequence),
+                Ok(None) => {}
+                Err(_) => {
+                    if changes.changed().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                    continue;
+                }
+            }
+        }
+        match inner.log.append(write).await {
+            Ok(sequence) => return Ok(sequence),
+            Err(CommitError::OutcomeUnknown(_)) => uncertain = true,
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+pub(super) async fn prepare_wire(
+    input: &RunSettings,
+    prompt: &mut PreparedPrompt,
+    definitions: &[Arc<ToolDefinition>],
+    max_output_tokens: Option<u64>,
+    cancellation: &CancellationToken,
+) -> Result<(), RunError> {
+    prompt
+        .compile_wire(
+            input.configuration.language,
+            &input.provider,
+            &input.provider_options,
+            definitions,
+            cancellation,
+        )
+        .await?;
+    prompt
+        .fit_image_request(
+            input.configuration.language,
+            &input.provider,
+            &input.provider_options,
+            definitions,
+            max_output_tokens,
+            cancellation,
+        )
+        .await?;
+    Ok(())
 }
 
 pub(super) struct PreparedRequest {
@@ -559,7 +753,7 @@ pub(super) fn route_identity<W>(input: &RunInput<W>) -> Result<String, RunError>
 pub(super) fn prepare_request<W>(
     input: &RunInput<W>,
     prompt: PreparedPrompt,
-    definitions: Vec<ToolDefinition>,
+    definitions: Vec<Arc<ToolDefinition>>,
     max_output_tokens: Option<u64>,
     purpose: ModelPurpose,
 ) -> Result<PreparedRequest, RunError> {
@@ -601,7 +795,7 @@ pub(super) fn prepare_request<W>(
         wire_codec: &'a str,
         wire_root: &'a str,
         route_identity: &'a str,
-        tools: &'a [ToolDefinition],
+        tools: &'a [Arc<ToolDefinition>],
         provider_options: &'a serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         max_output_tokens: Option<u64>,
@@ -1772,6 +1966,42 @@ mod retry_timing_tests {
     use super::*;
     use std::time::Duration;
 
+    #[test]
+    fn retry_decision_preserves_budget_phase_and_rejects_overflow() {
+        use maka_agent_facts::model::retry_transport::RetryTransportPhase;
+        let failure = maka_model::ProviderFailure::new(
+            maka_model::ProviderFailureReason::RateLimit,
+            "wait",
+            true,
+            Some(18_001_000),
+        );
+        let plan = retry_plan(
+            "terminal".into(),
+            &failure,
+            Duration::from_millis(200),
+            1000,
+            7,
+            RetryTransportPhase::Fallback,
+        )
+        .unwrap();
+        assert_eq!(plan.failure_event_id, "terminal");
+        assert_eq!(plan.not_before_unix_ms, 18_001_000);
+        assert_eq!(plan.failures, 7);
+        assert_eq!(plan.transport_phase, RetryTransportPhase::Fallback);
+        assert!(plan.not_before_unix_ms - 1000 > ordinary_retry_horizon_ms());
+        assert!(
+            retry_plan(
+                "terminal".into(),
+                &failure,
+                Duration::from_millis(200),
+                u64::MAX - 1,
+                7,
+                RetryTransportPhase::Fallback
+            )
+            .is_err()
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn provider_deadline_is_a_lower_bound_and_never_reduces_backoff() {
         let failure = maka_model::ProviderFailure::new(
@@ -1780,7 +2010,17 @@ mod retry_timing_tests {
             true,
             Some(18_001_000),
         );
-        let delay = retry_delay(&failure, Duration::from_millis(200), 1000);
+        let phase = maka_agent_facts::model::retry_transport::RetryTransportPhase::Primary;
+        let plan = retry_plan(
+            "failure".into(),
+            &failure,
+            Duration::from_millis(200),
+            1000,
+            1,
+            phase,
+        )
+        .unwrap();
+        let delay = Duration::from_millis(plan.not_before_unix_ms - 1000);
         assert_eq!(delay, Duration::from_secs(18_000));
         let sleep = wait_retry(delay);
         tokio::pin!(sleep);
@@ -1790,12 +2030,30 @@ mod retry_timing_tests {
         tokio::time::advance(Duration::from_secs(1)).await;
         sleep.await;
         assert_eq!(
-            retry_delay(&failure, Duration::from_millis(200), 18_000_999),
-            Duration::from_millis(200)
+            retry_plan(
+                "failure".into(),
+                &failure,
+                Duration::from_millis(200),
+                18_000_999,
+                1,
+                phase
+            )
+            .unwrap()
+            .not_before_unix_ms,
+            18_001_199
         );
         assert_eq!(
-            retry_delay(&failure, Duration::from_millis(200), 18_001_001),
-            Duration::from_millis(200)
+            retry_plan(
+                "failure".into(),
+                &failure,
+                Duration::from_millis(200),
+                18_001_001,
+                1,
+                phase
+            )
+            .unwrap()
+            .not_before_unix_ms,
+            18_001_201
         );
     }
 }

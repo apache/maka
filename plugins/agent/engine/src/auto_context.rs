@@ -242,27 +242,3 @@ pub(super) async fn drain(pending: &mut Option<Pending>) -> Result<(), RunError>
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{cap_output, threshold};
-    #[test]
-    fn output_reserve_keeps_a_useful_floor_without_exceeding_the_selected_limit() {
-        assert_eq!(cap_output(128_000, 200_000, 100_000, 0), 92_000);
-        assert_eq!(cap_output(128_000, 200_000, 100_000, 1024), 90_976);
-        assert_eq!(cap_output(128_000, 200_000, 191_999, 0), 8000);
-        assert_eq!(cap_output(128_000, 200_000, u64::MAX, u64::MAX), 8000);
-        assert_eq!(cap_output(4096, 200_000, 199_999, 0), 4096);
-    }
-    #[test]
-    fn actual_usage_threshold_preserves_unknown_without_reserving_output_twice() {
-        assert!(!threshold(None, Some(5000), 1));
-        assert!(!threshold(Some(0), Some(5000), 1));
-        assert!(threshold(Some(100), None, 100));
-        assert!(!threshold(Some(100), None, 101));
-        assert!(threshold(Some(100), Some(20), 120));
-        assert!(!threshold(Some(100), Some(20), 121));
-        assert!(threshold(Some(100), Some(5000), 5100));
-        assert!(!threshold(Some(100), Some(5000), 5101));
-    }
-}

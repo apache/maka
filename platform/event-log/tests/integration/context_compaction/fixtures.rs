@@ -106,6 +106,10 @@ pub(super) fn request(id: &str, source: &ModelContextSource) -> EventWrite {
     event(
         id,
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             effective_source_digest: Some(source.effective_source_digest.clone()),
@@ -144,6 +148,10 @@ pub(super) async fn closed(
     log.append(&event(
         id,
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             effective_source_digest: None,
@@ -200,10 +208,6 @@ pub(super) async fn closed(
     first
 }
 pub(super) async fn prepared(log: &EventLog, id: &str) -> Vec<EventWrite> {
-    prepare_trace(log, id, false).await
-}
-
-pub(super) async fn prepare_trace(log: &EventLog, id: &str, fail: bool) -> Vec<EventWrite> {
     log.append(&event(
         id,
         Fact::InvocationOpened {
@@ -228,33 +232,6 @@ pub(super) async fn prepare_trace(log: &EventLog, id: &str, fail: bool) -> Vec<E
     let output = step(id, &format!("{id}-summary"), SUMMARY);
     let summary = output_summary(&output);
     log.append(&request(id, &source)).await.unwrap();
-    if fail {
-        log.append_batch(&[
-            event(
-                id,
-                Fact::ModelInterrupted {
-                    partial: None,
-                    model_failure: None,
-                    diagnostic: None,
-                    step_id: format!("{id}-summary"),
-                    status: maka_agent_facts::event::ModelInterruption::Failed,
-                },
-            ),
-            event(
-                id,
-                Fact::InvocationEnded {
-                    outcome: InvocationOutcome::Failed {
-                        model_failure: None,
-                        class: "summary_failed".into(),
-                        message: None,
-                    },
-                },
-            ),
-        ])
-        .await
-        .unwrap();
-        return Vec::new();
-    }
     log.append_batch(&[event(
         id,
         Fact::ModelCompleted {

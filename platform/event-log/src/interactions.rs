@@ -217,7 +217,7 @@ impl EventLog {
                     crate::sessions::advance_revision(&mut tx, &record.session_id).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     commits.metadata();
-                    if approval_ready { commits.native_approvals(); }
+                    if approval_ready { commits.activations(); }
                     Ok(InteractionCommit {
                         matches: true,
                         record,

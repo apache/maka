@@ -177,10 +177,10 @@ pub struct BindingRequest {
     pub invocation: maka_agent_facts::event::Invocation,
     pub execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
     pub cwd: String,
-    /// Effective catalog, already restricted by the Host's tool ceiling.
+    /// This binding group's names, restricted by the Host's tool ceiling.
     pub tools: BTreeSet<String>,
     /// Complete frozen tool ceiling before individual binding groups project it.
-    pub available_tools: BTreeSet<String>,
+    pub available_tools: Arc<[String]>,
     pub cancellation: tokio_util::sync::CancellationToken,
 }
 
@@ -220,6 +220,16 @@ mod tests {
                         handler,
                         schema: json!({"type":"integer"}),
                     }
+                } else if request.cwd == "boolean" {
+                    BoundTool::Input {
+                        handler,
+                        schema: json!({"type":"boolean"}),
+                    }
+                } else if request.cwd.starts_with("description-") {
+                    BoundTool::Described {
+                        handler,
+                        description: request.cwd,
+                    }
                 } else {
                     BoundTool::Prepared(handler)
                 };
@@ -240,7 +250,7 @@ mod tests {
             },
             cwd: cwd.into(),
             tools: BTreeSet::new(),
-            available_tools: BTreeSet::new(),
+            available_tools: Arc::default(),
             cancellation: tokio_util::sync::CancellationToken::new(),
         };
         // This fixture's binder has no external asynchronous work.
@@ -272,23 +282,56 @@ mod tests {
         .unwrap()
         .with_request_binding(BTreeSet::from(["fixture".into()]), Arc::new(Binding))
         .unwrap();
-        let mut first = base.clone();
-        let mut second = base.clone();
+        let mut first = base.excluding(&[]).with_discovery();
+        let mut second = first.nested();
+        let base = base.with_discovery();
+        let mut excluded = base.excluding(&["fixture"]);
+        capture(&mut excluded, "changed");
+        assert!(excluded.names().is_empty());
         capture(&mut first, "unchanged");
         capture(&mut second, "unchanged");
-        let original = base.definitions().next().unwrap();
-        assert!(std::ptr::eq(original, first.definitions().next().unwrap()));
-        assert!(std::ptr::eq(original, second.definitions().next().unwrap()));
+        let original_owner = base.shared_definitions().next().unwrap();
+        assert!(Arc::ptr_eq(
+            &original_owner,
+            &first.shared_definitions().next().unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &original_owner,
+            &second.shared_definitions().next().unwrap()
+        ));
+        let original = original_owner.as_ref();
         assert_eq!(base.digest(), first.digest());
         capture(&mut second, "changed");
-        assert!(!std::ptr::eq(
-            original,
-            second.definitions().next().unwrap()
+        assert!(!Arc::ptr_eq(
+            &original_owner,
+            &second.shared_definitions().next().unwrap()
         ));
         assert!(base.validate("fixture", &json!("original")).is_ok());
         assert!(first.validate("fixture", &json!("original")).is_ok());
         assert!(second.validate("fixture", &json!(42)).is_ok());
         assert!(second.validate("fixture", &json!("original")).is_err());
         assert_ne!(base.digest(), second.digest());
+        let integer_snapshot = second.shared_definitions().next().unwrap();
+        capture(&mut second, "boolean");
+        let boolean_snapshot = second.shared_definitions().next().unwrap();
+        assert!(!Arc::ptr_eq(&integer_snapshot, &boolean_snapshot));
+        assert_eq!(integer_snapshot.input_schema, json!({"type":"integer"}));
+        assert_eq!(boolean_snapshot.input_schema, json!({"type":"boolean"}));
+        assert!(second.validate("fixture", &json!(true)).is_ok());
+        assert!(second.validate("fixture", &json!(42)).is_err());
+
+        capture(&mut first, "description-first");
+        let first_snapshot = first.shared_definitions().next().unwrap();
+        capture(&mut first, "description-second");
+        let second_snapshot = first.shared_definitions().next().unwrap();
+        assert!(!Arc::ptr_eq(&first_snapshot, &second_snapshot));
+        assert_eq!(first_snapshot.description, "description-first");
+        assert_eq!(second_snapshot.description, "description-second");
+        capture(&mut first, "description-second");
+        assert!(Arc::ptr_eq(
+            &second_snapshot,
+            &first.shared_definitions().next().unwrap()
+        ));
+        assert_eq!(original.input_schema, json!({"type":"string"}));
     }
 }

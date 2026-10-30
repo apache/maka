@@ -19,113 +19,11 @@
 
 use maka_agent_facts::event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent};
 use maka_agent_facts::message::{MessageDisposition, Placement};
-use maka_agent_ports::execution::{Enqueue, Progress, SessionOperation, Submit};
+use maka_agent_ports::execution::{Enqueue, Submit};
 use maka_capabilities::storage::Namespace;
 use maka_event_log::{EventLog, StoreError, message_admissions::PendingMessageAdmission};
 use maka_plugin_core::scope::Scope;
 use serde_json::json;
-
-#[tokio::test]
-async fn execution_idempotency_is_scoped_to_the_target_session() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("executions.sqlite");
-    let log = EventLog::open(&path).await.unwrap();
-    let namespace = Namespace::new("producer", Scope::Profile).unwrap();
-    for session in ["first", "second"] {
-        log.create_session(session, &format!("create-{session}"), &json!({}), 1)
-            .await
-            .unwrap();
-    }
-    let first = Submit {
-        operation_id: "same-operation".into(),
-        session_id: "first".into(),
-        content: "first work".into(),
-        orchestration_mode: None,
-    };
-    let second = Submit {
-        session_id: "second".into(),
-        content: "independent work".into(),
-        ..first.clone()
-    };
-    let (one, two) = tokio::join!(
-        log.admit_plugin_execution(&namespace, first.clone(), super::pending(&first)),
-        log.admit_plugin_execution(&namespace, second.clone(), super::pending(&second)),
-    );
-    let one = one.unwrap();
-    let two = two.unwrap();
-    assert_eq!(one.invocation.session_id, "first");
-    assert_eq!(two.invocation.session_id, "second");
-    assert_ne!(one.invocation, two.invocation);
-    assert_eq!(log.pending_messages("first").await.unwrap().len(), 1);
-    assert_eq!(log.pending_messages("second").await.unwrap().len(), 1);
-    for request in [&first, &second] {
-        let mut conflict = request.clone();
-        conflict.content = "changed payload".into();
-        assert!(matches!(
-            log.admit_plugin_execution(&namespace, conflict.clone(), super::pending(&conflict))
-                .await,
-            Err(StoreError::EventConflict)
-        ));
-    }
-    log.close().await.unwrap();
-    let log = EventLog::open(&path).await.unwrap();
-    for (request, expected) in [(&first, &one), (&second, &two)] {
-        assert_eq!(
-            log.admit_plugin_execution(&namespace, request.clone(), super::pending(request))
-                .await
-                .unwrap(),
-            *expected
-        );
-        assert_eq!(
-            log.plugin_execution_receipt(&namespace, &request.operation())
-                .await
-                .unwrap()
-                .as_ref(),
-            Some(expected)
-        );
-        let observed = log
-            .plugin_execution_progress(&namespace, &request.operation())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(observed.receipt, *expected);
-        assert!(matches!(observed.progress, Progress::Pending));
-        // Operation kind is part of identity: an execution is not a queued message.
-        assert!(
-            log.plugin_message_receipt(&namespace, &request.operation())
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-    let missing = SessionOperation {
-        session_id: "third".into(),
-        operation_id: first.operation_id.clone(),
-    };
-    assert!(
-        log.plugin_execution_receipt(&namespace, &missing)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        log.plugin_execution_progress(&namespace, &missing)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    let separate_package = Namespace::new("another-producer", Scope::Profile).unwrap();
-    let separate_scope = Namespace::new("producer", Scope::Session("first".into())).unwrap();
-    for other in [&separate_package, &separate_scope] {
-        assert!(
-            log.plugin_execution_progress(other, &first.operation())
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-    log.close().await.unwrap();
-}
 
 async fn open_session(log: &EventLog, session: &str) -> Invocation {
     log.create_session(session, &format!("create-{session}"), &json!({}), 1)

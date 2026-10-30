@@ -18,7 +18,7 @@
  */
 
 use crate::SkillFailureReason;
-use crate::{DiscoveredSkill, DiscoverySnapshot, Issue, IssueCode, Severity, fields};
+use crate::{DiscoveredSkill, DiscoverySnapshot, fields};
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -139,15 +139,15 @@ impl Catalog<'_> {
                 .iter()
                 .filter(|skill| skill.shadowed_by.is_none())
         };
-        // Resolve identity before eligibility: an unavailable exact id cannot be
-        // replaced by another skill whose display name happens to match it.
+        // Resolve the physical reference or effective name before eligibility;
+        // disabling an override does not silently enable its shadowed version.
         let skill = self
             .discovery
             .inventory
             .iter()
             .find(|skill| skill.location.reference.to_lowercase() == key)
-            .or_else(|| visible().find(|skill| skill.location.id.to_lowercase() == key))
             .or_else(|| visible().find(|skill| skill.document.manifest.name.to_lowercase() == key))
+            .or_else(|| visible().find(|skill| skill.location.id.to_lowercase() == key))
             .ok_or(SkillFailureReason::NotFound)?;
         if skill.shadowed_by.is_some() {
             return Err(SkillFailureReason::NotFound);
@@ -199,42 +199,13 @@ impl Catalog<'_> {
 
 impl DiscoverySnapshot {
     pub(crate) fn resolve_precedence(&mut self) {
-        let mut ids = HashMap::<String, usize>::new();
-        let mut names = HashMap::<String, usize>::new();
-        for index in 0..self.inventory.len() {
-            let skill = &self.inventory[index];
-            let id = skill.location.id.to_lowercase();
-            if let Some(&higher) = ids.get(&id) {
-                let reference = self.inventory[higher].location.reference.clone();
-                let skill = &mut self.inventory[index];
-                skill.shadowed_by = Some(reference);
-                skill.document.issues.push(Issue::new(
-                    IssueCode::DuplicateId,
-                    Severity::Warning,
-                    "id",
-                    format!(
-                        "Skill id \"{}\" is shadowed by a higher-precedence discovered skill.",
-                        skill.location.id
-                    ),
-                ));
-                continue;
-            }
-            ids.insert(id, index);
+        let mut names = HashMap::<String, String>::new();
+        for skill in &mut self.inventory {
             let name = skill.document.manifest.name.to_lowercase();
-            if let Some(&other) = names.get(&name) {
-                let issue = Issue::new(
-                    IssueCode::DuplicateName,
-                    Severity::Warning,
-                    "name",
-                    format!(
-                        "Skill display name \"{}\" is also used by another discovered skill. Load by id to avoid ambiguity.",
-                        skill.document.manifest.name
-                    ),
-                );
-                self.inventory[other].document.issues.push(issue.clone());
-                self.inventory[index].document.issues.push(issue);
+            if let Some(reference) = names.get(&name) {
+                skill.shadowed_by = Some(reference.clone());
             } else {
-                names.insert(name, index);
+                names.insert(name, skill.location.reference.clone());
             }
         }
     }

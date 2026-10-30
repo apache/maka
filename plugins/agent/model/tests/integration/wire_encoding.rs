@@ -84,8 +84,8 @@ async fn captured_wire_encoding_replays_after_request_inputs_and_partial_cursor_
 async fn captured_anthropic_wire_encoding_keeps_hosted_tool_alias_after_catalog_changes() {
     use maka_agent_facts::tools::ProviderTool;
     let mut input = request(ProviderKind::Anthropic, "http://localhost/v1".into());
-    input.tools[0].name = "Research".into();
-    input.tools[0].provider = Some(ProviderTool {
+    Arc::make_mut(&mut input.tools[0]).name = "Research".into();
+    Arc::make_mut(&mut input.tools[0]).provider = Some(ProviderTool {
         id: "anthropic.web_search_20250305".into(),
         args: json!({"maxUses":8}),
     });
@@ -96,8 +96,8 @@ async fn captured_anthropic_wire_encoding_keeps_hosted_tool_alias_after_catalog_
         &input.tools,
     )
     .unwrap();
-    input.tools[0].name = "Changed".into();
-    input.tools[0].provider = None;
+    Arc::make_mut(&mut input.tools[0]).name = "Changed".into();
+    Arc::make_mut(&mut input.tools[0]).provider = None;
     drop(input);
     let messages = vec![Message::Assistant {
         content: vec![AssistantPart::ToolCall {

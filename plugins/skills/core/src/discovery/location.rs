@@ -18,10 +18,12 @@
  */
 
 use crate::{SkillScope, SkillSource};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Standard discovery locations in precedence order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Standard user/project configuration locations, ordered from highest precedence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "ConfigurationLocation")]
 pub enum LocationId {
     #[serde(rename = "project:maka")]
     ProjectMaka,
@@ -33,6 +35,19 @@ pub enum LocationId {
     UserAgents,
 }
 impl LocationId {
+    pub const ALL: [Self; 4] = [
+        Self::ProjectMaka,
+        Self::ProjectAgents,
+        Self::UserMaka,
+        Self::UserAgents,
+    ];
+    pub fn configuration_directory(self) -> &'static str {
+        match self {
+            Self::ProjectMaka | Self::UserMaka => ".maka",
+            Self::ProjectAgents | Self::UserAgents => ".agents",
+        }
+    }
+
     pub fn reference(self) -> &'static str {
         match self {
             Self::ProjectMaka => "project:maka",

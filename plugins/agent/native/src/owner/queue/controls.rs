@@ -213,6 +213,7 @@ impl Owner {
                             vec![]
                         } else {
                             self.selected_tools(
+                                &input.session_id,
                                 &basis,
                                 false,
                                 basis.model.as_ref().and_then(|model| model.editing_tools),

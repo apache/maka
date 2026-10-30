@@ -33,6 +33,8 @@ pub(super) struct CapturedSource {
     pub root: ReadRoot,
     pub directory: PathBuf,
     pub prefix: String,
+    pub location: Option<LocationId>,
+    pub handle: Option<Arc<cap_std::fs::Dir>>,
     scope: SkillScope,
     source: SkillSource,
 }
@@ -43,6 +45,8 @@ impl CapturedSource {
             metadata,
             root,
             directory: PathBuf::new(),
+            location: None,
+            handle: None,
             scope: SkillScope::Custom,
             source: SkillSource::Custom,
         }
@@ -65,7 +69,12 @@ impl CapturedSource {
         }
     }
 }
-fn standard(root: ReadRoot, path: &Path, project: Option<&str>) -> Vec<CapturedSource> {
+fn standard(
+    root: ReadRoot,
+    handle: Arc<cap_std::fs::Dir>,
+    path: &Path,
+    project: Option<&str>,
+) -> Vec<CapturedSource> {
     let ids = if project.is_some() {
         [LocationId::ProjectMaka, LocationId::ProjectAgents]
     } else {
@@ -95,6 +104,8 @@ fn standard(root: ReadRoot, path: &Path, project: Option<&str>) -> Vec<CapturedS
                 root: root.clone(),
                 directory: id.directory().into(),
                 prefix,
+                location: Some(id),
+                handle: Some(handle.clone()),
                 scope: id.scope(),
                 source: id.source(),
             }
@@ -108,11 +119,16 @@ pub(super) fn home(
     if !Path::new(path).is_absolute() {
         return Err("skills_configuration_invalid".into());
     }
-    let root = ReadRoot::capture(path)
-        .map_err(|_| "skills_source_unavailable")?
-        .restrict(policy)
-        .map_err(|_| "skills_source_unavailable")?;
-    Ok(standard(root, Path::new(path), None))
+    let (path, identity) =
+        directory::capture(Path::new(path)).map_err(|error| error.to_string())?;
+    let handle = Arc::new(directory::open(&path, &identity).map_err(|error| error.to_string())?);
+    let root = ReadRoot::from_handle(
+        handle.try_clone().map_err(|error| error.to_string())?,
+        path.clone(),
+    )
+    .restrict(policy)
+    .map_err(|_| "skills_source_unavailable")?;
+    Ok(standard(root, handle, &path, None))
 }
 pub(super) fn projects(
     specs: Vec<maka_host_runtime::DirectoryRootSpec>,
@@ -186,13 +202,17 @@ impl Library {
                 published
                     .validate(&path)
                     .map_err(|_| "skills_workspace_unavailable")?;
-                let root = ReadRoot::from_handle(handle, path.clone())
-                    .restrict(library.policy.clone())
-                    .map_err(|_| "skills_workspace_unavailable")?;
+                let handle = Arc::new(handle);
+                let root = ReadRoot::from_handle(
+                    handle.try_clone().map_err(|error| error.to_string())?,
+                    path.clone(),
+                )
+                .restrict(library.policy.clone())
+                .map_err(|_| "skills_workspace_unavailable")?;
                 let identity = maka_agent_facts::artifact::content_digest(
                     &serde_json::to_vec(&workspace).map_err(|_| "skills_workspace_unavailable")?,
                 );
-                let mut sources = standard(root, &path, Some(&identity[7..]));
+                let mut sources = standard(root, handle, &path, Some(&identity[7..]));
                 sources.append(&mut library.sources);
                 library.sources = sources;
                 if cancellation.is_cancelled() {
@@ -209,7 +229,7 @@ impl Library {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::tests::{preferences, scope, write};
     use serde_json::json;

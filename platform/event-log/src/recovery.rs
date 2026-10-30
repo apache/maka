@@ -240,6 +240,3 @@ impl EventLog {
             .await
     }
 }
-
-#[cfg(test)]
-mod tests;

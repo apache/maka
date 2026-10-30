@@ -194,10 +194,11 @@ async fn midturn_compaction_keeps_image_references_without_replaying_messages() 
     let path = directory.path().join("events.sqlite");
     let log = Arc::new(SessionFixture::open(&path).await.unwrap());
 
-    image_projection::artifact(&log, "anchor-image", 8, true).await;
+    let original_image = image_projection::png(8, 8).await;
+    image_projection::artifact(&log, "anchor-image", original_image.clone()).await;
     let mut image: maka_agent_facts::attachment::AttachmentRef =
         serde_json::from_value(image_projection::attachment("anchor-image")).unwrap();
-    image.bytes = 8;
+    image.bytes = original_image.len() as u64;
     let image_reference = image.storage_ref.resource_ref().unwrap();
     let summary_text = format!("{}\nRequired image: {image_reference}", fixture::SUMMARY);
     let retained_summary = summary_text.clone();
@@ -340,11 +341,12 @@ async fn midturn_compaction_keeps_image_references_without_replaying_messages() 
         Some(address)
     );
     let image = log
-        .read_artifact_chunk("session", "anchor-image", 0, 8)
+        .read_artifact_chunk("session", "anchor-image", 0, original_image.len())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(image.bytes, b"\x89PNG\r\n\x1a\n");
+    assert_eq!(image.bytes, original_image);
+    assert_eq!(image.total_bytes, image.bytes.len() as u64);
     let source = log
         .get_session::<serde_json::Value>("session")
         .await
@@ -391,15 +393,13 @@ async fn midturn_compaction_keeps_image_references_without_replaying_messages() 
         .unwrap()
         .unwrap();
     assert_ne!(copied.id(), "anchor-image");
-    assert_eq!(
-        branch
-            .read_artifact_chunk("branch", copied.id(), 0, 8)
-            .await
-            .unwrap()
-            .unwrap()
-            .bytes,
-        image.bytes
-    );
+    let copied_image = branch
+        .read_artifact_chunk("branch", copied.id(), 0, original_image.len())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(copied_image.total_bytes, image.total_bytes);
+    assert_eq!(copied_image.bytes, image.bytes);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {

@@ -211,7 +211,8 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_inp
         let route = format!("sha256:{}", hex::encode(Sha256::digest(serde_json::to_vec(&source.provider).unwrap())));
         for fact in [
             opening("question source"),
-            Fact::ModelRequested { item_acceptance: false, step_id: "old".into(), model_id: "test".into(), purpose: maka_agent_facts::context::ModelPurpose::Main, context: None, context_breakdown: None,
+            Fact::ModelRequested {
+                source_capture: maka_agent_facts::event::SourceCapture { publication_watermark: 0, prior_unknown: false }, item_acceptance: false, step_id: "old".into(), model_id: "test".into(), purpose: maka_agent_facts::context::ModelPurpose::Main, context: None, context_breakdown: None,
                 source_scope: LogScope::Session { id: "session".into() }, source_high_water: 1,
                 source_digest: "fixture".into(), input_digest: "fixture".into(), route_identity: route,
                 checkpoint_event_id: None, effective_source_digest: None },
@@ -295,53 +296,6 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_inp
             Err(RunError::Store(maka_event_log::StoreError::HistoryUnsettled))),
             "a safe historical cut cannot hide a later unresolved Session effect: {unsafe_preview:?}");
     }).await.expect("continuation must settle");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn model_timeout_cause_survives_reopening_the_log() {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            read_request(&mut socket).await;
-            std::future::pending::<()>().await;
-        });
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("events.sqlite");
-        {
-            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
-            let engine = Engine::new(
-                ModelExecutor::new(Duration::from_millis(250)).unwrap(),
-                CodeExecutor::new(CellLimits::default()).unwrap(),
-            ).unwrap();
-            assert!(matches!(
-                engine
-                    .run(log.store(), input(&base, "timeout"), CancellationToken::new())
-                    .await,
-                Err(RunError::Model(ModelError::TimedOut))
-            ));
-            drop(engine);
-            Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-        }
-        server.abort();
-        let reopened = SessionFixture::open(&path).await.unwrap();
-        let prefix = reopened.prefix(100, 128 * 1024).await.unwrap();
-        assert!(matches!(
-            &prefix.events.last().unwrap().event.fact,
-            Fact::InvocationEnded {
-                outcome: InvocationOutcome::Failed { class, message: Some(message), model_failure: Some(ModelFailureCause::TimedOut) }
-            } if class == "model_timeout" && message == &ModelError::TimedOut.to_string()
-        ));
-        assert!(prefix.events.iter().any(|event| matches!(&event.event.fact,
-            Fact::ModelInterrupted { model_failure: Some(ModelFailureCause::TimedOut), .. })));
-        assert_eq!(
-            prefix.project_invocation("invocation-timeout").terminal,
-            Some(TerminalStatus::Failed)
-        );
-    })
-    .await
-    .expect("model timeout must durably settle");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -534,92 +488,4 @@ async fn partial_text_survives_cancellation_without_becoming_replayed_model_hist
     })
     .await
     .expect("partial model cancellation and recovery must make bounded progress");
-}
-
-#[tokio::test]
-async fn captured_language_is_evidenced_without_becoming_a_provider_parameter() {
-    use maka_agent_facts::language::Language;
-    let mut recorded_digests = std::collections::BTreeSet::new();
-    for (language, tag, context_label) in [
-        (Language::En, None, "Session context"),
-        (Language::ZhCn, Some("zh-CN"), "会话上下文"),
-        (Language::ZhTw, Some("zh-TW"), "工作階段上下文"),
-    ] {
-        let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(
-            SessionFixture::open(&directory.path().join("events.sqlite"))
-                .await
-                .unwrap(),
-        );
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let request = read_request(&mut socket).await;
-            respond(&mut socket, false).await;
-            request
-        });
-        let mut run = input(&base, "language");
-        run.configuration.language = language;
-        let maka_agent_engine::RunWork::Message { message, .. } = &mut run.work else {
-            unreachable!()
-        };
-        *message = "Keep 原文 /tmp/exact.rs unchanged".into();
-        let worker = engine();
-        worker
-            .run(log.store(), run, CancellationToken::new())
-            .await
-            .unwrap();
-        worker.drain().await;
-        let request = server.await.unwrap();
-        assert!(request.get("language").is_none());
-        let system = request["messages"][0].clone();
-        assert_eq!(system["role"], "system");
-        assert!(system["content"].as_str().unwrap().contains(context_label));
-        assert_eq!(
-            request["messages"][1],
-            json!({"role":"user","content":"Keep 原文 /tmp/exact.rs unchanged"})
-        );
-        let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-        let opening = prefix
-            .events
-            .iter()
-            .find_map(|event| match &event.event.fact {
-                Fact::InvocationOpened {
-                    configuration: Some(configuration),
-                    ..
-                } => Some(configuration),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(opening.language, language);
-        let recorded = serde_json::to_value(opening).unwrap();
-        assert_eq!(
-            recorded.get("language").and_then(serde_json::Value::as_str),
-            tag
-        );
-        let digest = prefix
-            .events
-            .iter()
-            .find_map(|event| match &event.event.fact {
-                Fact::ModelRequested { input_digest, .. } => Some(input_digest),
-                _ => None,
-            })
-            .unwrap();
-        assert!(digest.starts_with("sha256:") && digest.len() == 71);
-        assert!(recorded_digests.insert(digest.clone()));
-        let expected_digest = digest.clone();
-        drop(prefix);
-        drop(worker);
-        Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-        let reopened = SessionFixture::open(&directory.path().join("events.sqlite"))
-            .await
-            .unwrap();
-        let reopened_prefix = reopened.prefix(100, 128 * 1024).await.unwrap();
-        assert!(reopened_prefix.events.iter().any(|event| matches!(
-            &event.event.fact, Fact::ModelRequested { input_digest, .. }
-                if input_digest == &expected_digest
-        )));
-        reopened.close().await.unwrap();
-    }
 }

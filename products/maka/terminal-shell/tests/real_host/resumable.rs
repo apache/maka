@@ -18,10 +18,11 @@
  */
 
 use super::*;
+use maka_plugin_core::operation::{OperationOutcome, Receipt};
 
 async fn replace_input(view: &mut AppView, label: &str, text: &str) {
     wait_enabled_node(view, label).await;
-    support::click_label(view, label);
+    tab_to_label(view, label).await;
     wait_focused_input(view, label).await;
     shortcut(view, 'a');
     if text.is_empty() {
@@ -109,7 +110,7 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
         support::wait_enabled_button(&mut view, "Continue response").await;
         fixture.idle(&client, &fixture.session).await;
         drop(continuation);
-        support::click_label(&mut view, "Message composer");
+        tab_to_label(&mut view, "Message composer").await;
         wait_focused_input(&mut view, "Message composer").await;
         view.handle_event(Event::Key(KeyEvent::new(
             KeyCode::Enter,
@@ -134,7 +135,7 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
                     .any(|node| node.label == "Send message" && node.state.disabled)
         })
         .await;
-        evidence("composer-resumed-answer", &view.snapshot());
+        support::evidence("composer-resumed-answer", &view.snapshot());
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 3);
         drop(view);
         bindings.close().await.unwrap();
@@ -187,7 +188,9 @@ async fn lost_continuation_receipt_blocks_a_new_send_and_recovers_the_original_t
         replace_input(&mut view, "Message composer", "LATER_DRAFT_SURVIVES_CONTINUATION_RECOVERY").await;
         wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Send message" && node.state.disabled)).await;
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        support::click_text(&mut view, "Recover original actions (1)");
+        let recover = view.accessibility_snapshot().into_iter()
+            .find(|node| node.label == "Recover original actions (1)").unwrap();
+        support::click_node(&mut view, recover);
         support::wait_enabled_button(&mut view, "Send message").await;
         let settled = restarted.operation(id).await.unwrap();
         assert_eq!(settled.reference, original.reference);
@@ -195,7 +198,7 @@ async fn lost_continuation_receipt_blocks_a_new_send_and_recovers_the_original_t
         support::wait_draft(&restarted, &fixture.session, "LATER_DRAFT_SURVIVES_CONTINUATION_RECOVERY").await;
         assert!(restarted.pending_controls().await.unwrap().is_empty());
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
-        evidence("composer-recovered-continuation", &view.snapshot());
+        support::evidence("composer-recovered-continuation", &view.snapshot());
         drop(view);
         bindings.close().await.unwrap();
         drop(gate);

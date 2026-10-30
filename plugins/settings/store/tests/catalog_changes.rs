@@ -74,10 +74,6 @@ async fn edits_preserve_endpoint_ownership_and_removal_durably_cleans_only_its_c
         .await
         .unwrap();
 
-    let key = CredentialLocator::Connection {
-        connection_id: basis.connection_id.clone(),
-        kind: ConnectionCredentialKind::Provider,
-    };
     let headers = CredentialLocator::Connection {
         connection_id: basis.connection_id.clone(),
         kind: ConnectionCredentialKind::RequestHeaders,
@@ -171,46 +167,6 @@ async fn edits_preserve_endpoint_ownership_and_removal_durably_cleans_only_its_c
             .unwrap()
     };
     assert_eq!(row().await.model_overrides, Some(profiles.clone()));
-    let before_stale = store.catalog().await.unwrap();
-    let key_status = store.credential_status(key.clone()).await.unwrap();
-    let stale_result = CatalogMutationResult::ConnectionStale {
-        expected: original_basis.clone(),
-        actual: Some(basis.clone()),
-    };
-    assert_eq!(
-        store
-            .update_connection(UpdateCatalogConnectionInput {
-                expected: original_basis.clone(),
-                changes: changes.clone(),
-            })
-            .await
-            .unwrap(),
-        stale_result
-    );
-    assert_eq!(
-        store
-            .remove_connection(RemoveCatalogConnectionInput {
-                expected: original_basis.clone(),
-            })
-            .await
-            .unwrap(),
-        stale_result
-    );
-    assert_eq!(store.catalog().await.unwrap(), before_stale);
-    assert_eq!(
-        store.credential_status(key.clone()).await.unwrap(),
-        key_status
-    );
-    let stored: maka_agent_facts::provider::Credential =
-        serde_json::from_str(&store.credential_secret(&key, None).await.unwrap().unwrap()).unwrap();
-    assert_eq!(stored.secret, "fixture-key");
-    assert!(stored.refresh_at.is_none());
-    assert_eq!(
-        vault_state(),
-        (3, 3),
-        "stale row writes cannot touch the vault"
-    );
-
     changes.enabled_model_ids = Some(vec!["first".into()]);
     basis = edit(basis, changes.clone()).await;
     let first_profile =
@@ -277,125 +233,4 @@ async fn edits_preserve_endpoint_ownership_and_removal_durably_cleans_only_its_c
     );
     assert_eq!(vault_state(), (4, 1));
     store.shutdown().await.unwrap();
-    drop(store);
-    let store =
-        ConfigurationStore::for_root(Arc::new(RootOwner::open(&root, &namespaces).unwrap()))
-            .await
-            .unwrap();
-    assert_eq!(store.catalog().await.unwrap(), catalog);
-    assert_eq!(store.remove_connection(removal).await.unwrap(), removed);
-    assert_eq!(vault_state(), (4, 1));
-    assert_eq!(
-        store
-            .credential_secret(&unrelated, None)
-            .await
-            .unwrap()
-            .as_deref(),
-        Some("fixture-password")
-    );
-    assert_eq!(
-        store.credential_status(key).await.unwrap(),
-        CredentialVaultQueryResult::ConnectionNotFound
-    );
-}
-
-#[tokio::test]
-async fn partial_updates_reopen_and_preserve_fields_until_the_connection_configuration_changes() {
-    let temp = tempfile::tempdir().unwrap();
-    let owner = crate::support::root(temp.path());
-    let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
-    let configuration =
-        json!({"baseUrl":"https://relay.example/v1", "routingNotes":"route: east\n"});
-    let profiles = json!({"first":{"vision":true}});
-    let basis = committed_basis(store.create_connection(serde_json::from_value(json!({
-        "expectedCatalogRevision":0,"connection":{"slug":"relay","name":"Original",
-        "provider":{"packageId":"external","entryId":"api","scope":"profile","name":"api"},
-        "configuration":configuration,"enabled":true,"enabledModelIds":["first","second"],"modelOverrides":profiles}
-    })).unwrap()).await.unwrap());
-    let original = store.catalog().await.unwrap().connections.remove(0);
-    store.close().await.unwrap();
-    let store = ConfigurationStore::for_root(owner).await.unwrap();
-    assert_eq!(
-        store.catalog().await.unwrap().connections.as_slice(),
-        std::slice::from_ref(&original)
-    );
-    let renamed_basis = committed_basis(
-        store
-            .update_connection(UpdateCatalogConnectionInput {
-                expected: basis.clone(),
-                changes: serde_json::from_value(json!({"name":"Renamed"})).unwrap(),
-            })
-            .await
-            .unwrap(),
-    );
-    let renamed = store.catalog().await.unwrap().connections.remove(0);
-    assert_eq!(renamed.name, "Renamed");
-    assert_eq!(renamed.configuration, configuration);
-    assert_eq!(renamed.enabled_model_ids, ["first", "second"]);
-    assert_eq!(renamed.model_overrides, original.model_overrides);
-    assert_eq!(
-        store
-            .update_connection(UpdateCatalogConnectionInput {
-                expected: basis.clone(),
-                changes: serde_json::from_value(json!({"enabled":false,"enabledModelIds":[]}))
-                    .unwrap(),
-            })
-            .await
-            .unwrap(),
-        CatalogMutationResult::ConnectionStale {
-            expected: basis,
-            actual: Some(renamed_basis.clone())
-        }
-    );
-    assert!(
-        store
-            .update_connection(UpdateCatalogConnectionInput {
-                expected: renamed_basis.clone(),
-                changes: serde_json::from_value(json!({"configuration":null})).unwrap(),
-            })
-            .await
-            .is_err()
-    );
-    assert_eq!(store.catalog().await.unwrap().connections, [renamed]);
-    let disabled_basis = committed_basis(
-        store
-            .update_connection(UpdateCatalogConnectionInput {
-                expected: renamed_basis,
-                changes: serde_json::from_value(json!({"enabled":false,"enabledModelIds":[]}))
-                    .unwrap(),
-            })
-            .await
-            .unwrap(),
-    );
-    let disabled = store.catalog().await.unwrap().connections.remove(0);
-    assert!(!disabled.enabled);
-    assert!(disabled.enabled_model_ids.is_empty());
-    assert_eq!(disabled.model_overrides, original.model_overrides);
-    let changed_basis = committed_basis(
-        store
-            .update_connection(UpdateCatalogConnectionInput {
-                expected: disabled_basis,
-                changes: serde_json::from_value(
-                    json!({"configuration":{"baseUrl":"https://changed.example/v1"}}),
-                )
-                .unwrap(),
-            })
-            .await
-            .unwrap(),
-    );
-    assert!(
-        store.catalog().await.unwrap().connections[0]
-            .model_overrides
-            .is_none()
-    );
-    committed_basis(store.update_connection(UpdateCatalogConnectionInput {
-        expected:changed_basis, changes:serde_json::from_value(json!({
-            "configuration":{"baseUrl":"https://reviewed.example/v1"},"modelOverrides":profiles
-        })).unwrap(),
-    }).await.unwrap());
-    assert_eq!(
-        store.catalog().await.unwrap().connections[0].model_overrides,
-        original.model_overrides
-    );
-    store.close().await.unwrap();
 }

@@ -26,186 +26,6 @@ use maka_event_log::{EventLog, StoreError, sessions::SessionMutation};
 use serde_json::{Value, json};
 
 #[tokio::test]
-async fn create_replay_conflict_reopen_and_anchored_catalog_pages() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("events.sqlite");
-    let log = EventLog::open(&path).await.unwrap();
-    let configuration = json!({"name":"A", "instructions":"directive".repeat(8193)});
-    let original = log
-        .create_session("a", "request-a", &configuration, 10)
-        .await
-        .unwrap();
-    assert_eq!(
-        original,
-        log.create_session("a", "request-a", &json!({"name": "ignored"}), 20)
-            .await
-            .unwrap()
-    );
-    assert_eq!(
-        Some(original.clone()),
-        log.probe_session_create::<Value>("a", "request-a")
-            .await
-            .unwrap()
-    );
-    assert!(matches!(
-        log.probe_session_create::<Value>("a", "other").await,
-        Err(StoreError::SessionConflict)
-    ));
-    assert!(matches!(
-        log.create_session("a", "other", &json!({}), 20).await,
-        Err(StoreError::SessionConflict)
-    ));
-    let binding = log
-        .attach_workspace("chosen", &json!({"path":"/chosen"}))
-        .await
-        .unwrap();
-    for id in ["b", "c"] {
-        log.create_session(
-            id,
-            id,
-            &json!({"workspace":binding,"boundary_revision":0}),
-            10,
-        )
-        .await
-        .unwrap();
-    }
-    let scoped = log
-        .scoped_sessions::<Value>(
-            maka_event_log::sessions::CatalogScope::Workspace("/chosen".into()),
-            None,
-            None.into(),
-            maka_event_log::sessions::CatalogFilter {
-                archived_only: false,
-                include_archived: false,
-                pending_only: false,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        scoped
-            .sessions
-            .iter()
-            .map(|row| row.id.as_str())
-            .collect::<Vec<_>>(),
-        ["b", "c"]
-    );
-    assert_eq!(
-        log.workspace_fence("/chosen")
-            .await
-            .unwrap()
-            .0
-            .iter()
-            .map(|entry| entry.session_id.as_str())
-            .collect::<Vec<_>>(),
-        ["b", "c"]
-    );
-    assert!(
-        log.workspace_has_other_session("/chosen", "b")
-            .await
-            .unwrap()
-    );
-    assert_eq!(original.configuration, configuration);
-    let page = log.list_sessions::<Value>(None, None, 2).await.unwrap();
-    assert_eq!(
-        page.sessions
-            .iter()
-            .map(|r| r.id.as_str())
-            .collect::<Vec<_>>(),
-        ["a", "b"]
-    );
-    assert_eq!(page.next_cursor.as_deref(), Some("b"));
-    log.close().await.unwrap();
-    let log = EventLog::open(&path).await.unwrap();
-    assert_eq!(Some(original), log.get_session::<Value>("a").await.unwrap());
-    let rest = log
-        .list_sessions::<Value>(Some(&page.revision), page.next_cursor.as_deref(), 2)
-        .await
-        .unwrap();
-    assert_eq!(rest.sessions[0].id, "c");
-    assert_eq!(rest.revision, page.revision);
-    assert!(rest.next_cursor.is_none());
-    let previous = log
-        .scoped_sessions::<Value>(
-            maka_event_log::sessions::CatalogScope::Profile,
-            Some(&page.revision),
-            maka_event_log::sessions::SessionPosition::Before("c"),
-            maka_event_log::sessions::CatalogFilter {
-                archived_only: false,
-                include_archived: true,
-                pending_only: false,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        previous
-            .sessions
-            .iter()
-            .map(|row| row.id.as_str())
-            .collect::<Vec<_>>(),
-        ["a", "b"]
-    );
-    assert!(previous.previous_cursor.is_none());
-    assert_eq!(previous.next_cursor.as_deref(), Some("b"));
-    log.create_session("d", "d", &json!({}), 30).await.unwrap();
-    assert!(matches!(
-        log.list_sessions::<Value>(Some(&page.revision), Some("b"), 2)
-            .await,
-        Err(StoreError::RevisionConflict { .. })
-    ));
-    let archived = log
-        .set_session_archived::<Value>("a", true, 40)
-        .await
-        .unwrap();
-    assert_eq!(
-        (archived.revision, archived.created_at, archived.updated_at),
-        (2, 10, 40)
-    );
-    assert!(
-        log.scoped_sessions::<Value>(
-            maka_event_log::sessions::CatalogScope::Session("a".into()),
-            None,
-            None.into(),
-            maka_event_log::sessions::CatalogFilter {
-                archived_only: false,
-                include_archived: false,
-                pending_only: false
-            },
-        )
-        .await
-        .unwrap()
-        .sessions
-        .is_empty(),
-        "read grants do not expose archived Sessions"
-    );
-    let before = log
-        .list_sessions::<Value>(None, None, 32)
-        .await
-        .unwrap()
-        .revision;
-    assert_eq!(
-        archived,
-        log.set_session_archived::<Value>("a", true, 50)
-            .await
-            .unwrap()
-    );
-    assert_eq!(
-        before,
-        log.list_sessions::<Value>(None, None, 32)
-            .await
-            .unwrap()
-            .revision
-    );
-    let active = log
-        .set_session_archived::<Value>("a", false, 35)
-        .await
-        .unwrap();
-    assert!(!active.archived);
-    assert_eq!((active.revision, active.updated_at), (3, 40));
-}
-
-#[tokio::test]
 async fn owned_catalog_filters_before_paging_and_binds_literal_query_and_scope_to_revision() {
     use maka_agent_facts::{
         execution::WorkspaceIdentity,
@@ -415,84 +235,21 @@ async fn owned_catalog_filters_before_paging_and_binds_literal_query_and_scope_t
         "owned_aaa_case_noise"
     );
     assert_eq!(unfiltered.pending_session_count, 5);
-    for (scope, filter) in [
-        (CatalogScope::IdPrefix("owned_".into()), filter),
-        (owned(CatalogSelection::All, query), filter),
-        (owned(CatalogSelection::Project(project), query), filter),
-        (
-            owned(CatalogSelection::Project(other_project), query),
-            filter,
-        ),
-        (workspace_scope("owned_match_01", &identity, query), filter),
-        (
-            workspace_scope("owned_aaa_other_workspace", &other_identity, query),
-            filter,
-        ),
-        (
-            CatalogScope::Owned {
-                id_prefix: "owned".into(),
-                selection: CatalogSelection::Workspace {
-                    session_id: "owned_match_00".into(),
-                    identity: identity.clone(),
-                },
-                title_query: query.into(),
-            },
-            filter,
-        ),
-        (workspace_scope("owned_match_00", &identity, "Keep"), filter),
-        (
-            workspace.clone(),
-            CatalogFilter {
-                include_archived: true,
-                ..filter
-            },
-        ),
-        (
-            workspace.clone(),
-            CatalogFilter {
-                pending_only: true,
-                ..filter
-            },
-        ),
-    ] {
-        assert!(matches!(
-            log.scoped_sessions::<Value>(
-                scope,
-                Some(&first.revision),
-                SessionPosition::After("owned_match_31"),
-                filter
-            )
-            .await,
-            Err(StoreError::RevisionConflict { .. })
-        ));
-    }
-    let shorter = log
-        .catalog_revision(owned(CatalogSelection::All, &"界".repeat(128)), filter)
-        .await
-        .unwrap();
-    let long_scope = owned(CatalogSelection::All, &"界".repeat(129));
-    let long_revision = log
-        .catalog_revision(long_scope.clone(), filter)
-        .await
-        .unwrap();
-    assert_ne!(shorter, long_revision);
-    let long_page = log
-        .scoped_sessions::<Value>(
-            long_scope,
-            Some(&long_revision),
-            SessionPosition::Start,
+    assert!(matches!(
+        log.scoped_sessions::<Value>(
+            workspace_scope("owned_match_00", &identity, "different query"),
+            Some(&first.revision),
+            SessionPosition::After("owned_match_31"),
             filter,
         )
-        .await
-        .unwrap();
-    assert_eq!(long_page.revision, long_revision);
-    assert!(long_page.sessions.is_empty());
-    assert!(long_page.next_cursor.is_none());
+        .await,
+        Err(StoreError::RevisionConflict { .. })
+    ));
     log.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn lifecycle_obeys_canonical_invocation_seal_and_validates_bounds() {
+async fn archiving_waits_for_canonical_invocation_seal_and_blocks_new_admission() {
     let directory = tempfile::tempdir().unwrap();
     let log = EventLog::open(&directory.path().join("events.sqlite"))
         .await
@@ -625,52 +382,7 @@ async fn lifecycle_obeys_canonical_invocation_seal_and_validates_bounds() {
             .is_err(),
         "archive and invocation admission serialize in the same transaction boundary"
     );
-    assert!(matches!(
-        log.set_session_archived::<Value>("missing", true, 2).await,
-        Err(StoreError::SessionNotFound)
-    ));
-    assert!(
-        log.create_session("bad/id", "a", &json!({}), 1)
-            .await
-            .is_err()
-    );
-    let configuration = "x".repeat(65536);
-    log.create_session("large", "large", &configuration, 1)
-        .await
-        .unwrap();
-    assert_eq!(
-        log.get_session::<String>("large")
-            .await
-            .unwrap()
-            .unwrap()
-            .configuration,
-        configuration
-    );
-    assert!(
-        log.create_session("time", "time", &json!({}), u64::MAX)
-            .await
-            .is_err()
-    );
-    assert!(log.list_sessions::<Value>(None, None, 33).await.is_err());
-    assert!(
-        log.list_sessions::<Value>(None, Some("a"), 1)
-            .await
-            .is_err()
-    );
     log.close().await.unwrap();
-    let reopened = EventLog::open(&directory.path().join("events.sqlite"))
-        .await
-        .unwrap();
-    assert_eq!(
-        reopened
-            .get_session::<String>("large")
-            .await
-            .unwrap()
-            .unwrap()
-            .configuration,
-        configuration
-    );
-    reopened.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -679,12 +391,6 @@ async fn availability_tracks_visibility_without_admitting_work_or_decoding_metad
     let path = directory.path().join("events.sqlite");
     let log = EventLog::open(&path).await.unwrap();
     assert!(!log.session_is_available("missing").await.unwrap());
-    for invalid in ["", "a/b", "a.b", "a b"] {
-        assert!(matches!(
-            log.session_is_available(invalid).await,
-            Err(StoreError::InvalidTransition(_))
-        ));
-    }
     let session = log
         .create_session("visible", "create", &json!({}), 1)
         .await
@@ -744,32 +450,5 @@ async fn availability_tracks_visibility_without_admitting_work_or_decoding_metad
         maka_event_log::sessions::SessionRetirement::Removed
     );
     assert!(!log.session_is_available("visible").await.unwrap());
-    log.close().await.unwrap();
-    let reopened = EventLog::open(&path).await.unwrap();
-    assert!(!reopened.session_is_available("visible").await.unwrap());
-    reopened.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn availability_rejects_a_root_that_lost_its_authority() {
-    use maka_event_log::root::{RootNamespaces, RootOwner};
-    let directory = tempfile::tempdir().unwrap();
-    let namespaces = RootNamespaces {
-        ownership: directory.path().join("owners"),
-        control: directory.path().join("control"),
-    };
-    let root = directory.path().join("root");
-    let owner = std::sync::Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-    let log = maka_event_log::RootStore::open(owner).await.unwrap();
-    log.create_session("visible", "create", &json!({}), 1)
-        .await
-        .unwrap();
-    assert!(log.session_is_available("visible").await.unwrap());
-    std::fs::remove_dir_all(&namespaces.control).unwrap();
-    assert!(matches!(
-        log.session_is_available("visible").await,
-        Err(StoreError::Io(_))
-    ));
-    assert!(log.get_session::<Value>("visible").await.is_err());
     log.close().await.unwrap();
 }

@@ -30,6 +30,11 @@ import { ConnectionSettings } from '../../../products/maka/workbench/app/Connect
 import { GeneralSettings } from '../../../products/maka/workbench/app/GeneralSettings';
 import { NetworkSettings } from '../../../products/maka/workbench/app/NetworkSettings';
 import { PluginSettings } from '../../../products/maka/workbench/app/PluginSettings';
+import { SkillSettings } from '../../../products/maka/workbench/app/SkillSettings';
+import { McpSettings } from '../../../products/maka/workbench/app/McpSettings';
+import { createSkillSettings } from '../../../products/maka/workbench/app/skillSettingsState';
+import { createMcpSettings } from '../../../products/maka/workbench/app/mcpSettingsState';
+import { createConfigurationWorkspace } from '../../../products/maka/workbench/app/ConfigurationScope';
 import {
   createModelSettings,
   type ModelSettingsSnapshot,
@@ -109,6 +114,9 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     context,
     restored?.plugins,
   );
+  const configurationWorkspace = createConfigurationWorkspace(operations);
+  const skills = createSkillSettings(host, operations, configurationWorkspace);
+  const mcp = createMcpSettings(host, operations, configurationWorkspace);
   initializeAppearance();
   initializeUiScale(restored?.scale);
   void general.initializeLanguage().catch(operations.report);
@@ -138,6 +146,11 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     operations.recover(async (original, value) => {
       if (original.endpoint === 'agent' && original.method === 'updateGlobalInstructions')
         await general.recovered(value);
+      else if (original.endpoint === 'skills') skills.recovered();
+      else if (original.endpoint === 'agent' && original.method === 'manageMcpServer')
+        mcp.recovered();
+      else if (original.endpoint === 'agent' && original.method === 'selectWorkspace')
+        configurationWorkspace.recovered(value);
       else if (original.endpoint === 'management') plugins.reset();
       else if (original.method === 'updateAssistantPreferences') general.reset();
       else if (original.method === 'updateNetwork') network.reset();
@@ -255,6 +268,50 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               busy: operations.busy,
             },
             () => <ConnectionSettings owner={connections} />,
+          ),
+      },
+      skills: {
+        kind: 'settings',
+        render: (props) =>
+          mountPage(
+            'skills',
+            skills,
+            props,
+            {
+              title: () =>
+                skills.screen() === 'add'
+                  ? tr('Add skills')
+                  : skills.screen() === 'detail'
+                    ? tr('Skill details')
+                    : tr('Skills'),
+              nested: () => skills.screen() !== 'library' || !!skills.deleting(),
+              navigation: skills.navigation,
+              back: skills.back,
+              busy: operations.busy,
+            },
+            () => <SkillSettings owner={skills} />,
+          ),
+      },
+      mcp: {
+        kind: 'settings',
+        render: (props) =>
+          mountPage(
+            'mcp',
+            mcp,
+            props,
+            {
+              title: () =>
+                mcp.editor()
+                  ? mcp.editor()!.original
+                    ? tr('Edit MCP server')
+                    : tr('Add MCP server')
+                  : tr('MCP servers'),
+              nested: () => !!mcp.editor() || !!mcp.deleting(),
+              navigation: mcp.navigation,
+              back: mcp.back,
+              busy: operations.busy,
+            },
+            () => <McpSettings owner={mcp} />,
           ),
       },
       network: {

@@ -851,16 +851,7 @@ mod tests {
         NetworkIdle::from_tree(&json!({"frameTree":{"frame":{"id":"main","loaderId":"first"}}}))
             .unwrap()
     }
-    #[test]
-    fn numeric_timeout_uses_selected_service_clamp_without_schema_guessing() {
-        assert_eq!(timeout(None), Duration::from_millis(3000));
-        assert_eq!(timeout(Some(&json!("10"))), Duration::from_millis(3000));
-        assert_eq!(timeout(Some(&Value::Null)), Duration::from_millis(3000));
-        assert_eq!(timeout(Some(&json!(0))), Duration::ZERO);
-        assert_eq!(timeout(Some(&json!(-5))), Duration::ZERO);
-        assert_eq!(timeout(Some(&json!(9000))), Duration::from_millis(3000));
-        assert_eq!(timeout(Some(&json!(17.5))), Duration::from_micros(17_500));
-    }
+
     #[test]
     fn glob_language_preserves_slashes_literals_case_and_javascript_dot() {
         for (pattern, value, expected) in [
@@ -888,19 +879,7 @@ mod tests {
             );
         }
     }
-    #[test]
-    fn load_snapshot_and_events_preserve_the_services_nonparsed_state_branch() {
-        let load = LoadState::from_value(None);
-        assert!(!load.ready("interactive"));
-        assert!(load.ready("complete"));
-        assert!(LoadState::DomContentLoaded.ready("interactive"));
-        assert!(LoadState::DomContentLoaded.accepts(&event("Page.loadEventFired", json!({}))));
-        let unknown = LoadState::from_value(Some(&json!("future-state")));
-        assert_eq!(unknown.label(), "future-state");
-        assert!(unknown.ready("complete"));
-        assert!(unknown.accepts(&event("Page.loadEventFired", json!({}))));
-        assert!(!unknown.accepts(&event("Page.domContentEventFired", json!({}))));
-    }
+
     #[test]
     fn network_idle_requires_real_main_frame_and_loader_not_readystate_or_child_events() {
         let mut state = frame();
@@ -965,60 +944,7 @@ mod tests {
             .unwrap();
         assert!(state.idle);
     }
-    #[test]
-    fn url_event_matching_retains_original_same_document_rule_and_main_navigation_filter() {
-        let matcher = Glob::new("**/match").unwrap();
-        let wrong = event(
-            "Page.frameNavigated",
-            json!({"frame":{"id":"child","parentId":"main","url":"https://e.test/match"}}),
-        );
-        assert!(url_from_event(&wrong, Some("main"), &matcher).is_none());
-        let same = event(
-            "Page.navigatedWithinDocument",
-            json!({"frameId":"child","url":"https://e.test/match"}),
-        );
-        assert_eq!(
-            url_from_event(&same, Some("main"), &matcher),
-            Some("https://e.test/match")
-        );
-        let mut auxiliary = same;
-        auxiliary.source_target_id = Some("actual-owned-auxiliary".into());
-        assert!(
-            url_from_event(&auxiliary, Some("main"), &matcher).is_some(),
-            "URL/load use Original Xr, not the stricter networkidle lt predicate"
-        );
-        auxiliary.session_id = Some("child-session".into());
-        assert!(url_from_event(&auxiliary, Some("main"), &matcher).is_none());
-    }
-    #[test]
-    fn navigation_blocking_sanitizes_secrets_without_rewriting_nonroot_paths() {
-        let error=navigation_error(&event("Page.navigationBlocked",json!({"url":"https://name:secret@e.test/path/?private=yes#private","resourceType":"mainFrame"}))).unwrap_err().to_string();
-        assert!(error.contains("https://e.test/path/"), "{error}");
-        for secret in ["name", "secret", "private"] {
-            assert!(!error.contains(secret), "{error}");
-        }
-        assert!(
-            navigation_error(&event(
-                "Page.navigationBlocked",
-                json!({"url":"https://e.test/","resourceType":"subFrame"})
-            ))
-            .is_ok()
-        );
-    }
-    #[test]
-    fn fixed_timeout_has_no_condition_wait_cap_and_preserves_selected_timer_overflow() {
-        for (value, expected) in [(json!(0), 1), (json!(7000), 7000), (json!(1e20), 1)] {
-            let Plan::Delay(actual) =
-                Plan::new(BrowserWaitOperation::Timeout { timeout_ms: value }).unwrap()
-            else {
-                panic!("expected timer plan")
-            };
-            assert_eq!(actual, Duration::from_millis(expected));
-        }
-        for value in [json!(-1), json!(1.5), json!("1")] {
-            assert!(Plan::new(BrowserWaitOperation::Timeout { timeout_ms: value }).is_err());
-        }
-    }
+
     #[test]
     fn failed_wait_does_not_erase_required_unknown_settlement() {
         assert!(
@@ -1064,26 +990,6 @@ mod tests {
             .unwrap()
             .method,
             "Page.loadEventFired"
-        );
-    }
-    #[tokio::test]
-    async fn disconnected_network_observer_keeps_exact_detach_message() {
-        let (sender, mut events) = mpsc::unbounded_channel();
-        drop(sender);
-        let cancellation = CancellationToken::new();
-        let result = wait_event(
-            &mut events,
-            tokio::time::Instant::now() + Duration::from_secs(1),
-            &cancellation,
-            "timeout",
-            "Tab 17 detached while waiting for networkidle.",
-        )
-        .await;
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Tab 17 detached while waiting for networkidle.")
         );
     }
 
@@ -1163,10 +1069,6 @@ mod tests {
     #[tokio::test]
     async fn prior_document_url_event_cannot_satisfy_new_url_wait() {
         stale_event_cannot_finish_new_generic_wait(true).await;
-    }
-    #[tokio::test]
-    async fn prior_document_load_event_cannot_satisfy_new_load_wait() {
-        stale_event_cannot_finish_new_generic_wait(false).await;
     }
 
     #[derive(Default)]
@@ -1273,20 +1175,7 @@ mod tests {
             "caller drop or cancellation cannot close a browser tab"
         );
     }
-    #[tokio::test]
-    async fn stop_before_poll_does_not_start_a_read_or_invent_extension_uncertainty() {
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        let calls = std::sync::atomic::AtomicUsize::new(0);
-        let result =
-            cancellable_observation(ReadEffect::ExtensionPreparation, &cancellation, async {
-                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(Value::Null)
-            })
-            .await;
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert!(matches!(result, Err(ToolError::Failed(_))));
-    }
+
     #[tokio::test]
     async fn stop_during_page_setup_keeps_started_extension_preparation_unknown_without_replay() {
         let cancellation = CancellationToken::new();

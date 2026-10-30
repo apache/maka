@@ -18,11 +18,9 @@
  */
 
 import { cleanup, signal } from 'nsh';
-import type { Host } from './host';
+import type { Host, Method, Input, Output } from './host';
 import { createText, errorText, message, UiError } from './text';
 import type {
-  AgentGlobalInstructionsUpdate,
-  AgentGlobalInstructionsUpdated,
   ClientOperation,
   CredentialStatus,
   CredentialVersionBasis,
@@ -97,11 +95,11 @@ export function createSettingsOperations(host: Host) {
       throw reason;
     }
   };
-  function mutate(
-    endpoint: 'agent',
-    method: 'updateGlobalInstructions',
-    input: AgentGlobalInstructionsUpdate,
-  ): Promise<AgentGlobalInstructionsUpdated>;
+  function mutate<E extends 'agent' | 'skills', M extends Method<E, 'mutation'>>(
+    endpoint: E,
+    method: M,
+    input: Input<E, M>,
+  ): Promise<Output<E, M>>;
   function mutate(
     endpoint: 'settings' | 'setup' | 'authentication' | 'management',
     method: string,
@@ -109,7 +107,7 @@ export function createSettingsOperations(host: Host) {
     secret?: string | null,
   ): Promise<any>;
   async function mutate(
-    endpoint: 'settings' | 'setup' | 'authentication' | 'management' | 'agent',
+    endpoint: 'settings' | 'setup' | 'authentication' | 'management' | 'agent' | 'skills',
     method: string,
     input: unknown,
     secret: string | null = null,
@@ -142,6 +140,23 @@ export function createSettingsOperations(host: Host) {
           if (!original.reference) continue;
           const value = settingsValue(await host.recoverSetting(original.id));
           if (!alive) return;
+          if (
+            original.endpoint === 'skills' ||
+            (original.endpoint === 'agent' &&
+              ['selectWorkspace', 'manageMcpServer'].includes(original.method))
+          ) {
+            await afterKnown(original, value);
+            if (record(value) && (value.kind === 'rejected' || value.kind === 'changed'))
+              throw settingsRejection(value);
+            if (record(value) && Array.isArray(value.results)) {
+              const rejected = value.results.filter(
+                (result) => record(result) && result.kind === 'rejected',
+              );
+              if (rejected.length)
+                throw new Error(rejected.map((result) => result.reason).join('\n'));
+            }
+            continue;
+          }
           if (original.endpoint === 'agent' && original.method === 'updateGlobalInstructions') {
             // File CAS outcomes belong to the instruction editor, which preserves
             // an unsaved draft when the original receipt reports a conflict.

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { JSX } from 'nsh';
+import { cleanup, signal, type JSX } from 'nsh';
 import type {
   UiCommandContext,
   UiExports,
@@ -38,9 +38,21 @@ import { createHost, HostProvider } from '../../../../products/maka/workbench/ap
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const host = createHost(context.application);
   const views = createConversationUi(context, host);
+  type Views = typeof views;
+  // A pane the shell opens beside the main one gets its own conversation UI
+  // for as long as the pane is mounted.
+  const sides = signal<Views[]>([]);
+  const owner = (sessionId: string | null) =>
+    [views, ...sides()].find((pane) => pane.sessionId() === sessionId);
   const Navigation = (props: { input: ConversationNavigationInput }) =>
     views.navigation(props.input);
-  const Session = (props: { input: ConversationSessionInput }) => views.session(props.input);
+  const Session = (props: { input: ConversationSessionInput }) => {
+    if (!props.input.shell.closePane) return views.session(props.input);
+    const side = createConversationUi(context, host, { browsing: views.browsing });
+    sides.set([...sides(), side]);
+    cleanup(() => sides.set(sides().filter((pane) => pane !== side)));
+    return side.session(props.input);
+  };
   const Preview = (props: { input: ConversationPreviewInput }) => views.preview(props.input);
   const commands: UiExports<JSX.Element> = Object.fromEntries(
     [
@@ -49,6 +61,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       'sessions',
       'find',
       'new',
+      'bot',
       'workspace',
       'models',
       'settings',
@@ -62,9 +75,8 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       id,
       {
         kind: 'command' as const,
-        enabled: (input: UiCommandContext) =>
-          input.sessionId === views.sessionId() && views.enabled(id),
-        run: (input: UiCommandContext) => views.run(id, input.argument),
+        enabled: (input: UiCommandContext) => owner(input.sessionId)?.enabled(id) ?? false,
+        run: (input: UiCommandContext) => owner(input.sessionId)?.run(id, input.argument),
       },
     ]),
   );
@@ -105,6 +117,9 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         },
       },
     },
-    prepareReload: views.prepareReload,
+    prepareReload: async () => {
+      await Promise.all(sides().map((pane) => pane.prepareReload()));
+      return views.prepareReload();
+    },
   };
 };

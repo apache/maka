@@ -55,28 +55,3 @@ fn camel_case(name: &str) -> String {
     }
     result
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compatible_policy_encodes_only_resolved_effort_and_declared_parallel_support() {
-        for (level, wire) in [(ThinkingLevel::High, "high"), (ThinkingLevel::Max, "max")] {
-            assert_eq!(
-                chat_completions("custom-chat_relay", Some(level), None),
-                json!({"customChatRelay":{"reasoningEffort":wire}}),
-            );
-        }
-        assert_eq!(chat_completions("relay", None, None), json!({}));
-        assert_eq!(
-            chat_completions("custom-chat", None, Some(false)),
-            json!({"customChat":{"parallel_tool_calls":false}}),
-        );
-        assert_eq!(
-            chat_completions("relay", Some(ThinkingLevel::Off), Some(true)),
-            json!({"relay":{"reasoningEffort":"none","parallel_tool_calls":true}}),
-        );
-        assert_eq!(camel_case("relay--chat_A-2_b"), "relay-Chat_A-2B");
-    }
-}

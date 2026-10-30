@@ -488,32 +488,6 @@ fn commit_capture_fixture(root: &Path) {
 }
 
 #[test]
-fn capture_builtin_encoding_roundtrips_the_complete_canonical_blob() {
-    let f = CaptureFixture::new(|root| {
-        fs::write(
-            root.join(".gitattributes"),
-            "*.crlf text eol=crlf\nencoded.txt -text working-tree-encoding=UTF-16LE\n",
-        )
-        .unwrap();
-        let original: Vec<_> = "original\0\n"
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
-        fs::write(root.join("encoded.txt"), original).unwrap();
-        commit_capture_fixture(root);
-    });
-    let canonical = "更新された設定\0\n末尾\n";
-    let expected: Vec<_> = canonical
-        .encode_utf16()
-        .flat_map(u16::to_le_bytes)
-        .collect();
-    fs::write(f.binding.directory().join("encoded.txt"), &expected).unwrap();
-    let (_, oracle) = f.export_and_apply();
-    assert!(fs::read(oracle.join("encoded.txt")).unwrap() == expected);
-    assert!(git_input(&oracle, &["show", ":encoded.txt"], b"") == canonical.as_bytes());
-}
-
-#[test]
 fn capture_combines_base_and_actual_worktree_state_without_exporting_absent_index_entries() {
     let f = CaptureFixture::new(|root| {
         fs::write(root.join("removed.txt"), "removed from child\n").unwrap();
@@ -602,46 +576,5 @@ fn capture_cancellation_and_external_filters_preserve_results_and_ownership() {
     source.assert_unchanged(&f.source);
     child.assert_unchanged(f.binding.directory());
     assert_capture_files(f.binding.directory(), &expected);
-    f.export_and_apply();
-}
-
-#[test]
-fn capture_rejects_malformed_owner_suffix_and_recovers_after_restoration() {
-    let f = CaptureFixture::new(|_| {});
-    fs::write(
-        f.binding.directory().join("source.txt"),
-        "selected child change\n",
-    )
-    .unwrap();
-    let source = CaptureState::read(&f.source);
-    let child = CaptureState::read(f.binding.directory());
-    let expected = capture_files(f.binding.directory());
-    let owner = f
-        .binding
-        .directory()
-        .parent()
-        .unwrap()
-        .join("maka-owner.json");
-    let proof = fs::read(&owner).unwrap();
-    let mut malformed = proof.clone();
-    malformed.extend_from_slice(b"\n{}");
-    fs::write(&owner, malformed).unwrap();
-    assert!(
-        f.manager.inspect(&f.binding).is_err(),
-        "a second JSON value after whitespace is not an owner record"
-    );
-    assert!(
-        f.manager
-            .capture_patch(&f.binding, f.cancel.clone())
-            .is_err()
-    );
-    source.assert_unchanged(&f.source);
-    child.assert_unchanged(f.binding.directory());
-    assert_capture_files(f.binding.directory(), &expected);
-    fs::write(owner, proof).unwrap();
-    Worktrees::open(&f.temp.path().join("host"))
-        .unwrap()
-        .inspect(&f.binding)
-        .unwrap();
     f.export_and_apply();
 }

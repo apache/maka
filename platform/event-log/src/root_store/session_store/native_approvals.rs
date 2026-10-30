@@ -130,3 +130,63 @@ impl SessionStore {
             .await
     }
 }
+
+impl SessionStore {
+    pub async fn activation_checkpoint(
+        &self,
+        session: &str,
+    ) -> Result<Option<crate::native_approvals::ActivationCheckpointRecord>, StoreError> {
+        self.check_session(session)?;
+        self.scoped().await?.activation_checkpoint(session).await
+    }
+    pub async fn model_retry_checkpoint(
+        &self,
+        session: &str,
+    ) -> Result<Option<crate::native_approvals::ModelRetryCheckpoint>, StoreError> {
+        self.check_session(session)?;
+        self.scoped().await?.model_retry_checkpoint(session).await
+    }
+    pub async fn park_model_retry(
+        &self,
+        checkpoint: ActivationCheckpoint,
+    ) -> Result<ParkResult, StoreError> {
+        self.check_session(&checkpoint.invocation.session_id)?;
+        self.scoped().await?.park_model_retry(checkpoint).await
+    }
+    pub async fn confirm_model_retry_park(
+        &self,
+        checkpoint: &ActivationCheckpoint,
+    ) -> Result<Option<ParkedActivationReceipt>, StoreError> {
+        self.check_session(&checkpoint.invocation.session_id)?;
+        self.scoped()
+            .await?
+            .confirm_model_retry_park(checkpoint)
+            .await
+    }
+}
+
+impl SessionStore {
+    pub async fn settle_controlled_model_retry(
+        &self,
+        receipt: &ParkedActivationReceipt,
+    ) -> Result<bool, StoreError> {
+        self.check_session(&receipt.invocation().session_id)?;
+        self.scoped()
+            .await?
+            .settle_controlled_model_retry(receipt)
+            .await
+    }
+}
+
+impl SessionStore {
+    pub async fn confirm_model_retry_request(
+        &self,
+        write: &maka_agent_facts::event::EventWrite,
+    ) -> Result<Option<u64>, StoreError> {
+        self.check_session(&write.event().invocation.session_id)?;
+        self.scoped()
+            .await?
+            .confirm_model_retry_request(write)
+            .await
+    }
+}

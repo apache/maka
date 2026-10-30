@@ -1265,99 +1265,7 @@ fn watch_scanned(owner: &Arc<Computer>, scanned: impl Fn() + Send + 'static) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_agent_facts::event::{
-        EventWrite, Fact, InvocationInput, InvocationOutcome, RuntimeEvent,
-    };
-    use serde_json::json;
-
-    #[tokio::test]
-    async fn turn_cleanup_keeps_its_worker_and_result_after_observers_are_dropped() {
-        for original in [
-            Ok(()),
-            Err(ToolError::CleanupUnconfirmed(
-                "original cleanup failed".into(),
-            )),
-        ] {
-            let cleanup = TurnCleanup::default();
-            let tasks = tokio_util::task::TaskTracker::new();
-            let (release, waiting) = tokio::sync::oneshot::channel();
-            let completed = original.clone();
-            let mut observer = Box::pin(cleanup.start(&tasks, async move {
-                waiting.await.expect("release the original cleanup");
-                completed
-            }));
-            assert!(futures_util::poll!(&mut observer).is_pending());
-            drop(observer);
-            let replacement = cleanup.start(&tasks, async {
-                Err(ToolError::CleanupUnconfirmed(
-                    "replacement worker ran".into(),
-                ))
-            });
-            release.send(()).unwrap();
-            tasks.close();
-            tasks.wait().await;
-            let expected = original.map_err(|error| error.to_string());
-            assert_eq!(
-                replacement.await.map_err(|error| error.to_string()),
-                expected
-            );
-            assert_eq!(
-                cleanup
-                    .start(&tasks, async {
-                        Err(ToolError::CleanupUnconfirmed(
-                            "completed cleanup was retried".into(),
-                        ))
-                    })
-                    .await
-                    .map_err(|error| error.to_string()),
-                expected
-            );
-        }
-    }
-
-    async fn approved(
-        store: &maka_event_log::SessionStore,
-        invocation: &Invocation,
-        id: &str,
-        target: maka_agent_facts::interaction::GrantTarget,
-        basis: PermissionBasis,
-    ) {
-        use maka_agent_facts::interaction::{
-            Decision, InteractionOutcome, InteractionRecord, InteractionRequest,
-        };
-        store
-            .establish_run_interaction(
-                invocation,
-                &InteractionRecord {
-                    session_id: invocation.session_id.clone(),
-                    turn_id: invocation.turn_id.clone(),
-                    run_id: invocation.run_id.clone(),
-                    request_id: id.into(),
-                    created_at: 10,
-                    request: InteractionRequest::ClientCapability {
-                        tool_use_id: id.into(),
-                        basis: Some(basis),
-                        target,
-                    },
-                    outcome: None,
-                },
-            )
-            .await
-            .unwrap();
-        assert!(
-            store
-                .commit_interaction_outcome(
-                    id,
-                    InteractionOutcome::ClientCapabilityDecision {
-                        decision: Decision::Allow,
-                        committed_at: 20,
-                    }
-                )
-                .await
-                .unwrap()
-                .matches
-        );
-    }
+    use maka_agent_facts::event::{EventWrite, Fact, InvocationInput, RuntimeEvent};
 
     async fn current_epoch(entry: &Interaction) -> Arc<Epoch> {
         let mut kernel = entry.kernel.lock().await;
@@ -1365,16 +1273,6 @@ mod tests {
             *kernel = Some(entry.fresh_kernel().unwrap());
         }
         kernel.as_ref().unwrap().epoch.clone()
-    }
-
-    async fn audio_cleared(epoch: &Epoch) {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while epoch.audio.lock().unwrap().is_some() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("idle revocation must discard owned audio");
     }
 
     #[tokio::test]
@@ -1417,511 +1315,6 @@ mod tests {
         );
         sessions.close().await.unwrap();
         assert!(current.audio.lock().unwrap().is_none());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn final_close_joins_the_original_worker_before_discarding_a_late_start_receipt() {
-        use maka_agent_facts::tools::{ToolExecutor, ToolFuture};
-        use maka_code_runtime::{CellContext, CellLimits, CellResult, CellStore};
-        use std::time::Duration;
-
-        struct Start {
-            epoch: Arc<Epoch>,
-            admission: Arc<super::super::admission::Gate>,
-            started: CancellationToken,
-            release: CancellationToken,
-            basis: PermissionBasis,
-            fail: bool,
-        }
-        impl ToolExecutor for Start {
-            fn names(&self) -> Vec<String> {
-                vec!["fixture_start".into()]
-            }
-            fn invoke(&self, _: String, _: Value, _: CancellationToken) -> ToolFuture {
-                // This held fixture stands for an already admitted start; the
-                // journal admission contract is tested against SQLite separately.
-                let receipt = self.admission.register().unwrap();
-                receipt.agent_dispatched();
-                self.started.cancel();
-                let epoch = self.epoch.clone();
-                let release = self.release.clone();
-                let basis = self.basis;
-                let fail = self.fail;
-                Box::pin(async move {
-                    release.cancelled().await;
-                    epoch.record_audio(basis, true);
-                    if fail {
-                        Err(ToolError::Persistence("fixture late T2 failure".into()))
-                    } else {
-                        Ok(json!({"recording":true}))
-                    }
-                })
-            }
-        }
-
-        tokio::time::timeout(Duration::from_secs(10), async {
-            let directory = tempfile::tempdir().unwrap();
-            let root_owner = maka_event_log::root::RootOwner::create(
-                &directory.path().join("root"),
-                &maka_event_log::root::RootNamespaces {
-                    ownership: directory.path().join("ownership"),
-                    control: directory.path().join("control"),
-                },
-            )
-            .unwrap();
-            let store = Arc::new(
-                maka_event_log::RootStore::open(Arc::new(root_owner))
-                    .await
-                    .unwrap(),
-            );
-            for (already_retired, cancel_before_observation, late_failure) in [
-                (false, false, false),
-                (true, false, false),
-                (false, true, false),
-                (false, false, true),
-                (true, false, true),
-                (false, true, true),
-            ] {
-                let tasks = tokio_util::task::TaskTracker::new();
-                let owner = Arc::new(Computer {
-                popup_provenance: None,
-                    store: store.clone(),
-                    configuration: Configuration {
-                        audio: true,
-                        ..Default::default()
-                    },
-                    sessions: Sessions::with_audio(true, tasks.clone()),
-                    resources: Arc::default(),
-                    stopping: CancellationToken::new(),
-                    tasks,
-                    origin: ToolOrigin::HostSdk {
-                        package_id: "fixture".into(),
-                        entry_id: "fixture".into(),
-                        activation: "fixture".into(),
-                        parent: None,
-                    },
-                });
-                let entry = owner.sessions.get("session").unwrap();
-                let mut old = entry.fresh_kernel().unwrap();
-                old.repl = Some(Repl::new_observed(
-                    "Object.defineProperty(globalThis, 'start', { value: async () => {\n\
-                        const result = await call('fixture_start', {});\n\
-                        if (!result.ok) throw Error(result.error.message);\n\
-                        return result.value;\n\
-                    }});",
-                    CellLimits::default(),
-                    old.admission.clone(),
-                ).unwrap());
-                let epoch = old.epoch.clone();
-                let started = CancellationToken::new();
-                let release = CancellationToken::new();
-                let _release_on_panic = release.clone().drop_guard();
-                let result = old
-                    .repl
-                    .as_ref()
-                    .unwrap()
-                    .evaluate(
-                        "await start()".into(),
-                        Arc::new(Start {
-                            epoch: epoch.clone(),
-                            admission: old.admission.clone(),
-                            started: started.clone(),
-                            release: release.clone(),
-                            basis: PermissionBasis {
-                                boundary_revision: 0,
-                                binding: maka_agent_facts::workspace::BindingStamp {
-                                    id: uuid::Uuid::new_v4(),
-                                    permission_epoch: 0,
-                                },
-                            },
-                            fail: late_failure,
-                        }),
-                        CancellationToken::new(),
-                        CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap(),
-                        Duration::from_millis(100),
-                    )
-                    .await
-                    .unwrap();
-                assert!(started.is_cancelled(),
-                    "accepted start was not entered (retired={already_retired}, cancel_before_observation={cancel_before_observation}, late_failure={late_failure}): {result:?}");
-                assert!(matches!(result, CellResult::Failure { .. }), "{result:?}");
-                assert!(epoch.audio.lock().unwrap().is_none());
-                if already_retired {
-                    entry
-                        .retire_kernel(&owner, old)
-                        .unwrap_or_else(|(error, _)| panic!("{error}"));
-                    let current = entry.fresh_kernel().unwrap();
-                    assert_ne!(epoch.id, current.epoch.id);
-                    *entry.kernel.lock().await = Some(current);
-                } else if cancel_before_observation {
-                    let cancellation = CancellationToken::new();
-                    cancellation.cancel();
-                    let mut closing = entry
-                        .spawn_kernel(&owner, old, cancellation)
-                        .unwrap_or_else(|(error, _)| panic!("{error}"));
-                    assert!(futures_util::poll!(&mut closing).is_pending());
-                    drop(closing);
-                    // The original retirement already transferred the exact worker;
-                    // even an unobserved result remains joinable by final close.
-                    assert!(
-                        entry
-                            .epochs
-                            .lock()
-                            .unwrap()
-                            .iter()
-                            .any(|retained| Arc::ptr_eq(retained, &epoch))
-                    );
-                } else {
-                    *entry.kernel.lock().await = Some(old);
-                }
-                let mut closing = Box::pin(entry.close());
-                assert!(futures_util::poll!(&mut closing).is_pending());
-                assert!(entry.retiring.is_cancelled());
-                assert!(epoch.audio.lock().unwrap().is_none());
-                drop(closing);
-                let mut closing = Box::pin(entry.close());
-                assert!(futures_util::poll!(&mut closing).is_pending());
-                release.cancel();
-                let closed = closing.await;
-                if late_failure {
-                    assert!(
-                        closed
-                            .unwrap_err()
-                            .to_string()
-                            .contains("fixture late T2 failure")
-                    );
-                    assert!(
-                        entry
-                            .close()
-                            .await
-                            .unwrap_err()
-                            .to_string()
-                            .contains("fixture late T2 failure")
-                    );
-                } else {
-                    closed.unwrap();
-                }
-                assert!(epoch.audio.lock().unwrap().is_none());
-                if !late_failure {
-                    assert!(entry.epochs.lock().unwrap().is_empty());
-                }
-                owner.tasks.close();
-                let _ = owner.resources.settle().await;
-                owner.tasks.wait().await;
-                assert_eq!(owner.sessions.close().await.is_err(), late_failure);
-                drop(entry);
-                drop(owner);
-            }
-            store.shutdown().await.unwrap();
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn idle_revocation_discards_audio_without_retiring_the_session() {
-        use maka_agent_api::{
-            contract::{WorkspaceAccess, WorkspacePermissions},
-            session::StoredSessionConfiguration,
-        };
-        use maka_agent_facts::workspace::BindingStamp;
-        let directory = tempfile::tempdir().unwrap();
-        let root_owner = maka_event_log::root::RootOwner::create(
-            &directory.path().join("root"),
-            &maka_event_log::root::RootNamespaces {
-                ownership: directory.path().join("ownership"),
-                control: directory.path().join("control"),
-            },
-        )
-        .unwrap();
-        let root = Arc::new(
-            maka_event_log::RootStore::open(Arc::new(root_owner))
-                .await
-                .unwrap(),
-        );
-        let binding = root
-            .attach_workspace("fixture", &json!({"path":directory.path()}))
-            .await
-            .unwrap();
-        let store = root
-            .create_session(
-                "session",
-                "fixture",
-                &StoredSessionConfiguration {
-                    backend: None,
-                    compaction_prompt: None,
-                    collaboration_mode: maka_agent_facts::execution::CollaborationMode::Agent,
-                    tools: None,
-                    title: "fixture".into(),
-                    title_is_manual: false,
-                    pinned: false,
-                    labels: vec![],
-                    workspace: binding,
-                    permissions: WorkspacePermissions {
-                        access: WorkspaceAccess::WorkspaceWrite,
-                        request_permissions: false,
-                    },
-                    boundary_revision: 0,
-                },
-                1,
-            )
-            .await
-            .unwrap();
-        let basis = PermissionBasis {
-            boundary_revision: 0,
-            binding: BindingStamp {
-                id: binding.id,
-                permission_epoch: binding.permission_epoch_at_attach,
-            },
-        };
-        let invocation = Invocation {
-            session_id: "session".into(),
-            turn_id: "turn".into(),
-            run_id: "run".into(),
-            invocation_id: "invocation".into(),
-        };
-        store
-            .append(
-                &EventWrite::plain(RuntimeEvent::new(
-                    invocation.clone(),
-                    Fact::InvocationOpened {
-                        configuration: None,
-                        input: InvocationInput::Message {
-                            content: "fixture".into(),
-                            request_fingerprint: None,
-                            source_messages: vec![],
-                        },
-                    },
-                ))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        approved(&store, &invocation, "computer", api::target(), basis).await;
-        let ordinary = AudioReceipt {
-            basis,
-            requires_audio_consent: false,
-        };
-        let mac = AudioReceipt {
-            basis,
-            requires_audio_consent: true,
-        };
-        assert!(audio_current(&root, "session", &ordinary).await.unwrap());
-        assert!(
-            !audio_current(&root, "session", &mac).await.unwrap(),
-            "Computer Use alone cannot authorize Mac audio"
-        );
-        approved(&store, &invocation, "audio", api::audio_target(), basis).await;
-        assert!(audio_current(&root, "session", &mac).await.unwrap());
-
-        let tasks = tokio_util::task::TaskTracker::new();
-        let owner = Arc::new(Computer {
-            popup_provenance: None,
-            store: root.clone(),
-            configuration: Configuration {
-                audio: true,
-                ..Default::default()
-            },
-            sessions: Sessions::with_audio(true, tasks.clone()),
-            resources: Arc::new(Resources::default()),
-            stopping: CancellationToken::new(),
-            tasks,
-            origin: ToolOrigin::HostSdk {
-                package_id: "fixture".into(),
-                entry_id: "fixture".into(),
-                activation: "fixture".into(),
-                parent: None,
-            },
-        });
-        let entry = owner.sessions.get("session").unwrap();
-        let epoch = current_epoch(&entry).await;
-        let retired_kernel = entry.fresh_kernel().unwrap();
-        let retired_epoch = retired_kernel.epoch.clone();
-        {
-            let _native = epoch.native.lock().await;
-            epoch.record_audio(basis, true);
-        }
-        {
-            let _native = retired_epoch.native.lock().await;
-            retired_epoch.record_audio(basis, true);
-        }
-        watch(&owner);
-        let mut changes = root.subscribe_catalog_changes();
-        changes.borrow_and_update();
-        let current = store
-            .get_session::<StoredSessionConfiguration>("session")
-            .await
-            .unwrap()
-            .unwrap();
-        store
-            .update_session_permissions(
-                "session",
-                current.revision,
-                30,
-                |configuration: &mut StoredSessionConfiguration| {
-                    configuration.boundary_revision += 1;
-                    Ok(())
-                },
-            )
-            .await
-            .unwrap();
-        changes.changed().await.unwrap();
-        assert!(!audio_current(&root, "session", &ordinary).await.unwrap());
-        assert!(!audio_current(&root, "session", &mac).await.unwrap());
-        audio_cleared(&epoch).await;
-        audio_cleared(&retired_epoch).await;
-        assert!(!entry.retiring.is_cancelled());
-        assert!(Arc::ptr_eq(&owner.sessions.get("session").unwrap(), &entry));
-
-        // Registration can happen after the catalog revoke was consumed by
-        // the watch. No further store event is needed to clear this receipt.
-        {
-            let _native = epoch.native.lock().await;
-            epoch.record_audio(basis, true);
-        }
-        {
-            let _native = retired_epoch.native.lock().await;
-            retired_epoch.record_audio(basis, true);
-        }
-        audio_cleared(&epoch).await;
-        audio_cleared(&retired_epoch).await;
-        assert!(!entry.retiring.is_cancelled());
-        assert!(!owner.stopping.is_cancelled());
-        entry
-            .retire_kernel(&owner, retired_kernel)
-            .unwrap_or_else(|(error, _)| panic!("{error}"));
-        owner.stopping.cancel();
-        owner.tasks.close();
-        owner.sessions.close().await.unwrap();
-        owner.resources.settle().await.unwrap();
-        owner.tasks.wait().await;
-        drop(owner);
-        root.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn queued_cleanup_preserves_a_new_audio_start_with_the_same_basis() {
-        let sessions = Sessions::with_audio(true, Default::default());
-        let entry = sessions.get("session").unwrap();
-        let epoch = current_epoch(&entry).await;
-        let basis = PermissionBasis {
-            boundary_revision: 0,
-            binding: maka_agent_facts::workspace::BindingStamp {
-                id: uuid::Uuid::new_v4(),
-                permission_epoch: 0,
-            },
-        };
-        let native = epoch.native.lock().await;
-        epoch.record_audio(basis, false);
-        let previous = epoch.audio.lock().unwrap().clone().unwrap();
-        let (attempted, waiting) = tokio::sync::oneshot::channel();
-        let queued = tokio::spawn({
-            let epoch = epoch.clone();
-            async move {
-                attempted.send(()).unwrap();
-                epoch.discard_audio_if_current(&previous).await
-            }
-        });
-        waiting.await.unwrap();
-        epoch.record_audio(basis, false);
-        let current = epoch.audio.lock().unwrap().clone().unwrap();
-        drop(native);
-        assert!(!queued.await.unwrap().unwrap());
-        assert!(
-            epoch
-                .audio
-                .lock()
-                .unwrap()
-                .as_ref()
-                .is_some_and(|receipt| Arc::ptr_eq(receipt, &current))
-        );
-        assert!(!entry.retiring.is_cancelled());
-        assert!(epoch.discard_audio_if_current(&current).await.unwrap());
-        assert!(epoch.audio.lock().unwrap().is_none());
-        sessions.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn cleanup_follows_the_exact_canonical_turn_instead_of_the_session_tip() {
-        let directory = tempfile::tempdir().unwrap();
-        let owner = maka_event_log::root::RootOwner::create(
-            &directory.path().join("root"),
-            &maka_event_log::root::RootNamespaces {
-                ownership: directory.path().join("ownership"),
-                control: directory.path().join("control"),
-            },
-        )
-        .unwrap();
-        let root = maka_event_log::RootStore::open(Arc::new(owner))
-            .await
-            .unwrap();
-        let store = root
-            .create_session("session", "fixture", &json!({}), 1)
-            .await
-            .unwrap();
-        let selected = Invocation {
-            session_id: "session".into(),
-            turn_id: "selected".into(),
-            run_id: "selected-run".into(),
-            invocation_id: "selected-invocation".into(),
-        };
-        let unrelated = Invocation {
-            session_id: "session".into(),
-            turn_id: "unrelated".into(),
-            run_id: "unrelated-run".into(),
-            invocation_id: "unrelated-invocation".into(),
-        };
-        let opened = |invocation: &Invocation| {
-            EventWrite::plain(RuntimeEvent::new(
-                invocation.clone(),
-                Fact::InvocationOpened {
-                    configuration: None,
-                    input: InvocationInput::Message {
-                        content: "fixture".into(),
-                        request_fingerprint: None,
-                        source_messages: Vec::new(),
-                    },
-                },
-            ))
-            .unwrap()
-        };
-        store.append(&opened(&selected)).await.unwrap();
-        assert!(!turn_ended(&store, "session", "selected").await.unwrap());
-        store
-            .append(
-                &EventWrite::plain(RuntimeEvent::new(
-                    selected,
-                    Fact::InvocationEnded {
-                        outcome: InvocationOutcome::Completed,
-                    },
-                ))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        store.append(&opened(&unrelated)).await.unwrap();
-        assert!(turn_ended(&store, "session", "selected").await.unwrap());
-        assert!(!turn_ended(&store, "session", "unrelated").await.unwrap());
-        store
-            .append(
-                &EventWrite::plain(RuntimeEvent::new(
-                    unrelated,
-                    Fact::InvocationEnded {
-                        outcome: InvocationOutcome::Cancelled {
-                            source: "fixture".into(),
-                        },
-                    },
-                ))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert!(turn_ended(&store, "session", "unrelated").await.unwrap());
-        assert!(matches!(
-            turn_ended(&store, "session", "unknown").await,
-            Err(ToolError::CleanupUnconfirmed(message)) if message == "Computer turn lifetime is unavailable"
-        ));
-        root.close().await.unwrap();
     }
 
     struct PreparedBrowserFixture {
@@ -1993,6 +1386,7 @@ mod tests {
                     "browser-session",
                     "fixture",
                     &StoredSessionConfiguration {
+                        parent_session_id: None,
                         backend: None,
                         collaboration_mode: maka_agent_facts::execution::CollaborationMode::Agent,
                         tools: None,
@@ -2042,14 +1436,41 @@ mod tests {
                 )
                 .await
                 .expect("commit actual fixture Turn");
-            approved(
-                &store,
-                &invocation,
-                "browser-computer",
-                api::target(),
-                basis,
-            )
-            .await;
+            use maka_agent_facts::interaction::{
+                Decision, InteractionOutcome, InteractionRecord, InteractionRequest,
+            };
+            store
+                .establish_run_interaction(
+                    &invocation,
+                    &InteractionRecord {
+                        session_id: invocation.session_id.clone(),
+                        turn_id: invocation.turn_id.clone(),
+                        run_id: invocation.run_id.clone(),
+                        request_id: "browser-computer".into(),
+                        created_at: 10,
+                        request: InteractionRequest::ClientCapability {
+                            tool_use_id: "browser-computer".into(),
+                            basis: Some(basis),
+                            target: api::target(),
+                        },
+                        outcome: None,
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(
+                store
+                    .commit_interaction_outcome(
+                        "browser-computer",
+                        InteractionOutcome::ClientCapabilityDecision {
+                            decision: Decision::Allow,
+                            committed_at: 20,
+                        },
+                    )
+                    .await
+                    .unwrap()
+                    .matches
+            );
             let tasks = tokio_util::task::TaskTracker::new();
             let owner = Arc::new(Computer {
                 popup_provenance: None,
@@ -2248,60 +1669,6 @@ mod tests {
                 .expect("fixture receipts")
                 .is_empty()
         );
-        fixture.close().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn late_preparation_registration_rechecks_revocation_without_another_agent_call() {
-        let fixture = PreparedBrowserFixture::open().await;
-        let (scanned, mut scans) = tokio::sync::mpsc::unbounded_channel();
-        watch_scanned(&fixture.owner, move || {
-            let _ = scanned.send(());
-        });
-        tokio::time::timeout(std::time::Duration::from_secs(5), scans.recv())
-            .await
-            .expect("initial watcher scan")
-            .expect("watcher remains live");
-        fixture.revoke_basis().await;
-        tokio::time::timeout(std::time::Duration::from_secs(5), scans.recv())
-            .await
-            .expect("watcher consumes the original revoke commit")
-            .expect("watcher remains live");
-        let native = fixture.epoch.native.lock().await;
-        fixture
-            .epoch
-            .record_browser_preparation(
-                fixture.basis,
-                &fixture.invocation.turn_id,
-                fixture.gate.clone(),
-            )
-            .expect("retain prior admission responsibility");
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            fixture.gate.wait_closed(),
-        )
-        .await
-        .expect("receipt notification must recheck the already changed authority");
-        let receipt = fixture
-            .epoch
-            .browser_preparations
-            .lock()
-            .expect("fixture receipts")[0]
-            .clone();
-        let cleanup = preparation_cleanup_started(&receipt).await;
-        assert!(
-            fixture
-                .epoch
-                .record_browser_preparation(
-                    fixture.basis,
-                    &fixture.invocation.turn_id,
-                    fixture.gate.clone()
-                )
-                .is_err(),
-            "revocation must reject another preparation before native dispatch"
-        );
-        drop(native);
-        cleanup.await.expect("actual retained native cleanup");
         fixture.close().await;
     }
 

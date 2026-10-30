@@ -130,6 +130,24 @@ impl Surface {
         })
     }
 
+    pub(super) fn rehydrate(
+        adapter: maka_agent_ports::model::Binding,
+        composition: &RequestComposition,
+        event_id: String,
+        digest: String,
+    ) -> Self {
+        Self {
+            adapter,
+            max_output_tokens: composition.max_output_tokens,
+            system: render_system(
+                composition.system_prompt.as_deref(),
+                &composition.dynamic_context,
+            )
+            .map(Arc::new),
+            evidence: Mutex::new(CompositionEvidence::Committed { event_id, digest }),
+        }
+    }
+
     pub fn summary(
         adapter: maka_agent_ports::model::Binding,
         mut composition: RequestComposition,
@@ -336,6 +354,7 @@ mod tests {
         drop(context);
         let mut progressed = false;
         let mut retry = None;
+        let mut confirmed_failure = None;
         let attempt = crate::model_attempt::execute_once(
             &inner,
             &input,
@@ -348,6 +367,8 @@ mod tests {
             &cancellation,
             &mut progressed,
             &mut retry,
+            &mut confirmed_failure,
+            None,
         );
         tokio::pin!(attempt);
         tokio::time::timeout(std::time::Duration::from_secs(30), async {

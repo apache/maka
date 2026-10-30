@@ -17,23 +17,9 @@
  * under the License.
  */
 
-mod files;
+pub(crate) mod files;
 mod projects;
 pub(crate) use projects::{Catalog, Prepared, Projects};
-
-pub(crate) fn global(
-    configurations: &[ServerConfiguration],
-    home: Option<(&cap_std::fs::Dir, &std::path::Path)>,
-) -> Result<Vec<ServerConfiguration>, String> {
-    let mut names = BTreeSet::new();
-    for config in configurations {
-        maka_mcp::validate(config)?;
-        if !names.insert(&config.name) {
-            return Err("MCP server names must be unique".into());
-        }
-    }
-    Ok(files::merge(configurations, &[&files::global(home)?]))
-}
 
 use maka_agent_api::{contract::WorkspaceAccess, session::ResolvedConfiguration};
 use maka_agent_facts::{

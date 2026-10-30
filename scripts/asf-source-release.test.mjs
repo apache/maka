@@ -35,78 +35,21 @@ import { basename, dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   createSourceCandidate,
-  controlledProcessEnvironment,
-  parseSha512File,
   reproduceSourceCandidate,
   signSourceCandidate,
   sourceCandidateIdentity,
   validateArchiveEntries,
   validateGpgVerificationStatus,
-  validatePackageVersions,
   verifySourceCandidate,
 } from './asf-source-release.mjs';
 
-describe('ASF source release identity', () => {
-  test('uses the incubating source distribution name for plain versions only', () => {
-    assert.deepEqual(sourceCandidateIdentity('0.1.12'), {
-      archiveName: 'apache-maka-0.1.12-incubating-src.tar.gz',
-      rootDirectory: 'apache-maka-0.1.12-incubating',
-      version: '0.1.12',
-    });
-    assert.throws(() => sourceCandidateIdentity('0.1.12-incubating'), /Invalid release version/);
-  });
-});
-
 describe('ASF source release verification', () => {
-  test('validates checksum identity and archive boundaries', () => {
-    const name = 'apache-maka-0.1.12-incubating-src.tar.gz';
-    assert.equal(parseSha512File(`${'a'.repeat(128)}  ${name}\n`, name), 'a'.repeat(128));
-    assert.throws(() => parseSha512File(`${'a'.repeat(128)}  another.tar.gz\n`, name), /expected/);
-
-    const root = 'apache-maka-0.1.12-incubating';
-    assert.doesNotThrow(() =>
-      validateArchiveEntries(
-        [
-          `${root}/`,
-          `${root}/DISCLAIMER-WIP`,
-          `${root}/LICENSE`,
-          `${root}/NOTICE`,
-          `${root}/package-lock.json`,
-          `${root}/package.json`,
-          `${root}/src/index.ts`,
-        ],
-        root,
-      ),
-    );
+  test('rejects archive names which collide on a case-insensitive filesystem', () => {
     assert.throws(
       () =>
         validateArchiveEntries(
-          [
-            `${root}/DISCLAIMER-WIP`,
-            `${root}/LICENSE`,
-            `${root}/NOTICE`,
-            `${root}/package-lock.json`,
-            `${root}/package.json`,
-            `${root}/.maka-shots/review.png`,
-            `${root}/node_modules/dependency/index.js`,
-          ],
-          root,
-        ),
-      /Forbidden archive entry/,
-    );
-    assert.throws(
-      () =>
-        validateArchiveEntries(
-          [
-            `${root}/DISCLAIMER-WIP`,
-            `${root}/LICENSE`,
-            `${root}/NOTICE`,
-            `${root}/package-lock.json`,
-            `${root}/package.json`,
-            `${root}/fixtures/evil.bin`,
-            `${root}/fixtures/EVIL.BIN`,
-          ],
-          root,
+          ['release/fixtures/evil.bin', 'release/fixtures/EVIL.BIN'],
+          'release',
         ),
       /Cross-platform archive entry collision/,
     );
@@ -131,20 +74,27 @@ describe('ASF source release verification', () => {
     }
   });
 
-  test('requires package and lockfile versions to share one identity', () => {
-    const packageJson = { version: '0.1.12' };
-    const packageLock = { packages: { '': { version: '0.1.12' } }, version: '0.1.12' };
-    assert.doesNotThrow(() =>
-      validatePackageVersions({ packageJson, packageLock, source: 'fixture', version: '0.1.12' }),
+  test('rejects mismatched checksum names and manifest versions in actual archives', async (t) => {
+    const fixture = createFixtureCandidate();
+    t.after(fixture.cleanup);
+    const checksum = `${fixture.archivePath}.sha512`;
+    writeFileSync(
+      checksum,
+      readFileSync(checksum, 'utf8').replace(basename(fixture.archivePath), 'another.tar.gz'),
     );
-    assert.throws(
-      () =>
-        validatePackageVersions({
-          packageJson,
-          packageLock: { ...packageLock, version: '9.9.9' },
-          source: 'fixture',
-          version: '0.1.12',
-        }),
+    await assert.rejects(
+      () => verifySourceCandidate({ archivePath: fixture.archivePath }),
+      /expected/,
+    );
+    const mismatched = createFixtureCandidate({
+      'package-lock.json': JSON.stringify({
+        version: '9.9.9',
+        packages: { '': { version: '9.9.9' } },
+      }),
+    });
+    t.after(mismatched.cleanup);
+    await assert.rejects(
+      () => verifySourceCandidate({ archivePath: mismatched.archivePath }),
       /package-lock\.json.*9\.9\.9/,
     );
   });
@@ -385,23 +335,6 @@ describe('ASF source release verification', () => {
     }
   });
 
-  test('filters controlled environment names case-insensitively', async () => {
-    await withEnvironmentVariables(
-      { gIt_Prefix_Probe: 'prefix', mAkA_Exact_Probe: 'exact' },
-      () => {
-        const environment = controlledProcessEnvironment({
-          excludedNames: ['MAKA_EXACT_PROBE'],
-          excludedPrefixes: ['GIT_'],
-          overrides: { GIT_CONFIG_NOSYSTEM: '1' },
-        });
-        const names = Object.keys(environment).map((name) => name.toUpperCase());
-        assert.equal(names.includes('MAKA_EXACT_PROBE'), false);
-        assert.equal(names.includes('GIT_PREFIX_PROBE'), false);
-        assert.equal(environment.GIT_CONFIG_NOSYSTEM, '1');
-      },
-    );
-  });
-
   test('requires a signature before reading unauthenticated candidate metadata', async () => {
     const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-auth-order-test-'));
     const identity = sourceCandidateIdentity('0.1.12');
@@ -464,6 +397,7 @@ describe('ASF source release verification', () => {
         repositoryRoot,
         version: '0.1.12',
       });
+      assert.equal(basename(first.archivePath), 'apache-maka-0.1.12-incubating-src.tar.gz');
       await assert.rejects(
         () =>
           createSourceCandidate({

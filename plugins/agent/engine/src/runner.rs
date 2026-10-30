@@ -110,9 +110,15 @@ pub async fn run(
             None,
             RunWork::Continuation { source, tools, .. } | RunWork::Handoff { source, tools, .. },
         ) => Some(
-            crate::continuation::prepare(&inner, &input, source, tools, &cancellation)
-                .await?
-                .claim,
+            Box::pin(crate::continuation::prepare(
+                &inner,
+                &input,
+                source,
+                tools,
+                &cancellation,
+            ))
+            .await?
+            .claim,
         ),
         _ => None,
     };
@@ -194,7 +200,8 @@ pub async fn run(
             prune::run(&inner, &input, &cancellation, &mut inspected_through).await?;
         }
         if let Some(work) = model_work {
-            steps::run(
+            // Model steps include frozen retry preparation; keep that frame out of the runner.
+            Box::pin(steps::run(
                 &inner,
                 &mut input,
                 work,
@@ -205,7 +212,7 @@ pub async fn run(
                 prior_unknown,
                 inspected_through,
                 &effects,
-            )
+            ))
             .await
             .map(|exit| (exit, None))
         } else {

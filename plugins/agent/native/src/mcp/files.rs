@@ -27,7 +27,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const FILENAMES: [&str; 2] = ["mcp.json", ".mcp.json"];
+const FILENAME: &str = "mcp.json";
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub(super) struct FileConfiguration {
@@ -38,15 +38,7 @@ pub(super) struct FileConfiguration {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Document {
-    #[serde(default)]
-    mcp_servers: BTreeMap<String, Entry>,
-    #[serde(rename = "$schema")]
-    _schema: Option<String>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct Entry {
     #[serde(rename = "type")]
     transport: Option<String>,
@@ -74,82 +66,120 @@ struct Entry {
     call_timeout_ms: Option<u64>,
 }
 
-pub(super) fn global(home: Option<(&Dir, &Path)>) -> Result<FileConfiguration, String> {
-    let Some((home, path)) = home else {
-        return Ok(FileConfiguration::default());
-    };
-    for directory in [".maka", ".agents"] {
-        let dir = match home.open_dir(directory) {
-            Ok(dir) => dir,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                if home.symlink_metadata(directory).is_ok() {
-                    return Err(format!(
-                        "MCP configuration directory {directory} is unavailable"
-                    ));
-                }
-                continue;
-            }
-            Err(_) => {
-                return Err(format!(
-                    "MCP configuration directory {directory} is unavailable"
-                ));
-            }
-        };
-        let found = read(&dir, &path.join(directory))?;
-        if found.path.is_some() {
-            return Ok(found);
-        }
-    }
-    Ok(FileConfiguration::default())
+pub(crate) struct DocumentFile {
+    pub value: serde_json::Value,
+    pub revision: String,
 }
-
-pub(super) fn read(dir: &Dir, directory: &Path) -> Result<FileConfiguration, String> {
-    for name in FILENAMES {
-        match dir.symlink_metadata(name) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(_) => return Err(format!("MCP configuration {name} is unavailable")),
-            Ok(_) => {}
-        }
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use cap_std::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NONBLOCK);
-        }
-        let mut file = dir
-            .open_with(name, &options)
-            .map_err(|_| format!("MCP configuration {name} is unavailable"))?;
-        if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
-            return Err(format!("MCP configuration {name} must be a regular file"));
-        }
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|_| format!("MCP configuration {name} is unavailable"))?;
-        // Never include serde's input-dependent error text: it may contain secrets.
-        let document: Document = serde_json::from_slice(&bytes).map_err(|error| {
-            format!(
-                "Invalid MCP configuration {name} at line {}, column {}",
-                error.line(),
-                error.column()
-            )
-        })?;
-        let mut servers = BTreeMap::new();
-        for (server, entry) in document.mcp_servers {
-            let config = if entry.disabled {
-                None
-            } else {
-                Some(entry.normalize(server.clone(), directory)?)
-            };
-            servers.insert(server, config);
-        }
-        return Ok(FileConfiguration {
-            path: Some(directory.join(name)),
-            content_digest: Some(maka_agent_facts::artifact::content_digest(&bytes)),
-            servers,
-        });
+pub(crate) fn document(dir: &Dir) -> Result<DocumentFile, String> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
     }
-    Ok(FileConfiguration::default())
+    let file = match dir.open_with(FILENAME, &options) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if dir.symlink_metadata(FILENAME).is_ok() {
+                return Err("MCP configuration is unavailable".into());
+            }
+            return Ok(DocumentFile {
+                value: serde_json::json!({"mcpServers":{}}),
+                revision: maka_agent_facts::artifact::content_digest(b""),
+            });
+        }
+        Err(_) => return Err("MCP configuration is unavailable".into()),
+    };
+    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+        return Err("MCP configuration must be a regular file".into());
+    }
+    let mut bytes = Vec::new();
+    (&file)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "MCP configuration is unavailable")?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "Invalid MCP configuration at line {}, column {}",
+            error.line(),
+            error.column()
+        )
+    })?;
+    if !value.is_object()
+        || value
+            .get("mcpServers")
+            .is_some_and(|servers| !servers.is_object())
+    {
+        return Err("MCP configuration must contain an object of mcpServers".into());
+    }
+    Ok(DocumentFile {
+        value,
+        revision: maka_agent_facts::artifact::content_digest(&bytes),
+    })
+}
+pub(crate) fn validate_server(
+    name: &str,
+    value: serde_json::Value,
+    directory: &Path,
+) -> Result<(), String> {
+    let entry: Entry =
+        serde_json::from_value(value).map_err(|_| "Invalid MCP server configuration")?;
+    if entry.disabled {
+        return Ok(());
+    }
+    entry.normalize(name.into(), directory).map(|_| ())
+}
+fn configuration(documents: Vec<(PathBuf, DocumentFile)>) -> Result<FileConfiguration, String> {
+    let mut result = FileConfiguration::default();
+    let mut raw = BTreeMap::new();
+    let mut revisions = Vec::new();
+    for (directory, file) in documents {
+        if file.revision == maka_agent_facts::artifact::content_digest(b"") {
+            continue;
+        }
+        result.path = Some(directory.join(FILENAME));
+        revisions.push((directory.clone(), file.revision));
+        if let Some(servers) = file.value["mcpServers"].as_object() {
+            for (name, value) in servers {
+                raw.insert(name.clone(), (directory.clone(), value.clone()));
+            }
+        }
+    }
+    for (name, (directory, value)) in raw {
+        let entry: Entry =
+            serde_json::from_value(value).map_err(|_| "Invalid MCP server configuration")?;
+        let server = if entry.disabled {
+            None
+        } else {
+            Some(entry.normalize(name.clone(), &directory)?)
+        };
+        result.servers.insert(name, server);
+    }
+    result.content_digest = result.path.as_ref().map(|_| {
+        maka_agent_facts::artifact::content_digest(
+            &serde_json::to_vec(&revisions).expect("MCP file revisions"),
+        )
+    });
+    Ok(result)
+}
+pub(super) fn global(home: Option<(&Dir, &Path)>) -> Result<FileConfiguration, String> {
+    match home {
+        Some((home, path)) => layered(home, path),
+        None => Ok(FileConfiguration::default()),
+    }
+}
+pub(super) fn layered(root: &Dir, path: &Path) -> Result<FileConfiguration, String> {
+    use cap_fs_ext::DirExt;
+    let mut documents = Vec::new();
+    for name in [".agents", ".maka"] {
+        let directory = match root.open_dir_nofollow(name) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(_) => return Err("MCP configuration directory is unavailable".into()),
+        };
+        documents.push((path.join(name), document(&directory)?));
+    }
+    configuration(documents)
 }
 impl Entry {
     fn normalize(self, name: String, directory: &Path) -> Result<ServerConfiguration, String> {
@@ -249,98 +279,73 @@ mod tests {
         Dir::open_ambient_dir(path, cap_std::ambient_authority()).unwrap()
     }
     fn document(path: &Path, value: serde_json::Value) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
     }
     #[test]
-    fn reads_complete_large_configuration_with_many_servers() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = dir(temp.path());
-        let entries = (0..65)
-            .map(|index| {
-                (
-                    format!("server-{index}"),
-                    json!({"command":"node","args":["x".repeat(17 * 1024)]}),
-                )
-            })
-            .collect::<serde_json::Map<_, _>>();
-        document(&temp.path().join("mcp.json"), json!({"mcpServers":entries}));
-        let file = read(&root, temp.path()).unwrap();
-        assert_eq!(file.servers.len(), 65);
-        let Transport::Stdio { args, .. } = &file.servers["server-64"].as_ref().unwrap().transport
-        else {
-            panic!("stdio server")
-        };
-        assert_eq!(args.as_slice(), &["x".repeat(17 * 1024)]);
-    }
-
-    #[test]
-    fn global_directory_and_filename_precedence_only_falls_back_when_absent() {
-        let temp = tempfile::tempdir().unwrap();
-        let home = dir(temp.path());
-        home.create_dir_all(".agents").unwrap();
-        home.create_dir_all(".maka").unwrap();
+    fn four_locations_override_whole_servers_and_fall_back_after_removal() {
+        let temporary = tempfile::tempdir().unwrap();
+        let home_path = temporary.path().join("home");
+        let project_path = temporary.path().join("project");
+        std::fs::create_dir(&home_path).unwrap();
+        std::fs::create_dir(&project_path).unwrap();
+        let home = dir(&home_path);
+        let project = dir(&project_path);
+        let files = [
+            project_path.join(".maka/mcp.json"),
+            project_path.join(".agents/mcp.json"),
+            home_path.join(".maka/mcp.json"),
+            home_path.join(".agents/mcp.json"),
+        ];
+        for (index, file) in files.iter().enumerate() {
+            document(
+                file,
+                json!({"customRoot":{"keep":true},"mcpServers":{
+                    "same":{"url":format!("https://example.com/{index}"),"headers":{"x-layer":index.to_string()},"customServer":"keep"}
+                }}),
+            );
+        }
+        for (index, file) in files.iter().enumerate() {
+            let user = global(Some((&home, &home_path))).unwrap();
+            let selected = layered(&project, &project_path).unwrap();
+            let servers = merge(&[], &[&user, &selected]);
+            assert_eq!(servers.len(), 1);
+            assert!(
+                matches!(&servers[0].transport, Transport::StreamableHttp { url, headers, .. } if url == &format!("https://example.com/{index}") && headers["x-layer"] == index.to_string())
+            );
+            std::fs::remove_file(file).unwrap();
+        }
         document(
-            &temp.path().join(".agents/.mcp.json"),
-            json!({"mcpServers":{"fallback":{"command":"node"}}}),
+            &files[3],
+            json!({"mcpServers":{"same":{"command":"node","env":{"ONLY_LOW":"value"}},"other":{"url":"https://example.com/other"}}}),
         );
-        let read_global = || global(Some((&home, temp.path())));
-        assert!(read_global().unwrap().servers.contains_key("fallback"));
-        document(
-            &temp.path().join(".maka/.mcp.json"),
-            json!({"mcpServers":{"preferred":{"url":"http://localhost/mcp"}}}),
+        document(&files[0], json!({"mcpServers":{"same":{"disabled":true}}}));
+        let servers = merge(
+            &[],
+            &[
+                &global(Some((&home, &home_path))).unwrap(),
+                &layered(&project, &project_path).unwrap(),
+            ],
         );
-        assert!(read_global().unwrap().servers.contains_key("preferred"));
-        document(
-            &temp.path().join(".maka/mcp.json"),
-            json!({"mcpServers":{}}),
+        assert_eq!(
+            servers
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>(),
+            ["other"]
         );
-        assert!(read_global().unwrap().servers.is_empty());
-        document(
-            &temp.path().join(".maka/mcp.json"),
-            json!({"$schema":"https://example.invalid/mcp.schema.json"}),
+        document(&files[0], json!({"mcpServers":{}}));
+        let servers = merge(
+            &[],
+            &[
+                &global(Some((&home, &home_path))).unwrap(),
+                &layered(&project, &project_path).unwrap(),
+            ],
         );
-        assert!(read_global().unwrap().servers.is_empty());
-        std::fs::write(temp.path().join(".maka/mcp.json"), "bad").unwrap();
-        assert!(read_global().is_err());
-        home.remove_file(".maka/mcp.json").unwrap();
-        home.create_dir(".maka/mcp.json").unwrap();
-        assert!(read_global().is_err());
-    }
-    #[test]
-    fn project_is_exact_root_and_replaces_whole_server_or_disables_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let home = dir(temp.path());
-        home.create_dir("child").unwrap();
-        document(
-            &temp.path().join("mcp.json"),
-            json!({"mcpServers":{
-                "same":{"command":"node","cwd":"servers","env":{"TOKEN":"SECRET"}},
-                "removed":{"url":"https://example.com/mcp"}
-            }}),
-        );
-        let base = read(&home, temp.path()).unwrap();
-        let child = dir(&temp.path().join("child"));
-        assert!(
-            read(&child, &temp.path().join("child"))
-                .unwrap()
-                .path
-                .is_none()
-        );
-        document(
-            &temp.path().join("child/.mcp.json"),
-            json!({"mcpServers":{
-                "same":{"url":"http://localhost/mcp","type":"http"},"removed":{"disabled":true}
-            }}),
-        );
-        let project = read(&child, &temp.path().join("child")).unwrap();
-        let merged = merge(&[], &[&base, &project]);
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].name, "same");
-        assert!(
-            matches!(&merged[0].transport, Transport::StreamableHttp{url,headers,..} if url == "http://localhost/mcp" && headers.is_empty())
-        );
-        assert!(
-            matches!(&base.servers["same"].as_ref().unwrap().transport, Transport::Stdio{cwd,..} if Path::new(cwd) == temp.path().join("servers"))
+        assert_eq!(
+            servers.len(),
+            2,
+            "an empty higher file does not mask unrelated lower entries"
         );
     }
     #[test]
@@ -352,8 +357,8 @@ mod tests {
             json!({"mcpServers":{"test":{"command":"node","url":"https://example.com"}}}),
             json!({"mcpServers":{"test":{"command":"node","env":{"TOKEN":42},"SECRET":"SECRET"}}}),
         ] {
-            document(&temp.path().join("mcp.json"), value);
-            let error = read(&root, temp.path()).unwrap_err();
+            document(&temp.path().join(".maka/mcp.json"), value);
+            let error = layered(&root, temp.path()).unwrap_err();
             assert!(!error.contains("SECRET"));
         }
     }
@@ -363,18 +368,26 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let root = dir(temp.path());
+        std::fs::create_dir(temp.path().join(".maka")).unwrap();
         document(&outside.path().join("private"), json!({"mcpServers":{}}));
-        document(&temp.path().join(".mcp.json"), json!({"mcpServers":{}}));
+        document(
+            &temp.path().join(".agents/mcp.json"),
+            json!({"mcpServers":{}}),
+        );
         for target in [outside.path().join("private"), temp.path().join("missing")] {
-            std::os::unix::fs::symlink(target, temp.path().join("mcp.json")).unwrap();
-            assert!(read(&root, temp.path()).is_err());
-            root.remove_file("mcp.json").unwrap();
+            std::os::unix::fs::symlink(target, temp.path().join(".maka/mcp.json")).unwrap();
+            assert!(layered(&root, temp.path()).is_err());
+            root.remove_file(".maka/mcp.json").unwrap();
         }
-        let path =
-            std::ffi::CString::new(temp.path().join("mcp.json").as_os_str().as_encoded_bytes())
-                .unwrap();
+        let path = std::ffi::CString::new(
+            temp.path()
+                .join(".maka/mcp.json")
+                .as_os_str()
+                .as_encoded_bytes(),
+        )
+        .unwrap();
         assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
-        assert!(read(&root, temp.path()).is_err());
+        assert!(layered(&root, temp.path()).is_err());
     }
 }
 
@@ -385,21 +398,22 @@ mod relative_command_tests {
     fn command_with_a_relative_path_is_resolved_from_effective_cwd() {
         let temp = tempfile::tempdir().unwrap();
         let directory = Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
+        std::fs::create_dir(temp.path().join(".maka")).unwrap();
         std::fs::write(
-            temp.path().join("mcp.json"),
+            temp.path().join(".maka/mcp.json"),
             r#"{"mcpServers":{"my-server":{"command":"./.venv/bin/mcp","cwd":"server"}}}"#,
         )
         .unwrap();
-        let config = read(&directory, temp.path()).unwrap();
+        let config = layered(&directory, temp.path()).unwrap();
         let Transport::Stdio { command, cwd, .. } =
             &config.servers["my-server"].as_ref().unwrap().transport
         else {
             panic!()
         };
-        assert_eq!(Path::new(cwd), temp.path().join("server"));
+        assert_eq!(Path::new(cwd), temp.path().join(".maka/server"));
         assert_eq!(
             Path::new(command),
-            temp.path().join("server/./.venv/bin/mcp")
+            temp.path().join(".maka/server/./.venv/bin/mcp")
         );
     }
 }

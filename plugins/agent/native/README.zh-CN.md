@@ -27,6 +27,10 @@
 
 服务管理自己的激活，并委托 `maka-agent-engine` 执行运行。会话历史、控制和工具调用使用获准作用域与原始操作回执。文件、进程、技能等服务都是通过组合显式选择的依赖。
 
+会话摘要和目录项通过 `parentSessionId` 返回创建来源：发起创建的 Agent 会话，或定时任务新建执行会话的来源会话。客户端直接创建时没有父会话。Host 从调用上下文记录这一不可变来源，与 fork 的 `branch` 血缘、任务归属和权限分开；向已有会话派活不会修改它。
+
+服务工具通过 `target: { kind: "import", name: "files" }` 选择导入服务，通过 `target: { kind: "export", name: "agent" }` 选择当前 Agent 自身的 API。自身 export 不增加导入或启动依赖，发布成功后才可调用。两种目标共用 Host 准入、操作回执和可选的 `confirmation` 审批。Maka 通过这条路径开放 Session 浏览、历史、创建、分叉、元数据、归档／删除、消息、队列和执行控制；schema 直接来自已有的 [Agent 契约](../api/src/contract.rs)。
+
 启用工作区指令时，选中的全局 `AGENTS.md` 正文紧接内置身份介绍，仅用 `<global_instruction>` 和 `</global_instruction>` 包裹。优先使用 `~/.maka/AGENTS.md`，只有它不存在时才使用 `~/.agents/AGENTS.md`。其他全局和项目指令文件放在后面。指令在受理时捕获，恢复运行时保留原内容。Native 全局指令 API 读取和保存选中的完整 UTF-8 文件，提示词捕获不设独立的文件大小门槛。保存会检查选中的来源与内容 revision，再原子替换文件；助手编辑器使用共享的完整文本编辑与捕获路径。
 
 新指令按业务 Root 保存的语言偏好、组合配置语言、原生环境的顺序选择英文、简体中文或繁体中文；显式「自动」使用原生环境。一次策略快照同时决定内置指令、技能包装、默认摘要及运行指引的语言。工具 schema 保持英文，用户、自定义及外部内容保留原文。
@@ -45,7 +49,7 @@ Agent 接收消息时保存模型的 Code Mode 默认值或显式 `codeMode` 覆
 
 模型设置通过 `codeModeLanguage: "javascript" | "python"` 独立选择语言，`codeMode` 控制是否启用，默认语言仍为 JavaScript。Python 使用随包提供的 Monty 解释器，支持顶层 await、`asyncio.gather`、JSON 工具参数和相同的输出/存储辅助函数。消息接收时固定语言，排队和恢复运行沿用原选择；修改只影响新提交的消息。该设置不改变 `maka code`、插件 JavaScript 或 Computer Use REPL。
 
-可通过用户级/项目级 `mcp.json`、`.mcp.json` 或安装配置 `mcpServers` 接入 MCP；项目文件启动前须经用户确认信任。支持 stdio 与 Streamable HTTP，并复用直接调用和 Code Mode 的权限、审批与日志路径。详见 [MCP 配置与信任边界](../mcp/README.zh-CN.md)。
+可通过全局/项目级 `.maka/mcp.json`、`.agents/mcp.json` 或安装配置 `mcpServers` 接入 MCP；项目文件启动前须经用户确认信任。支持 stdio 与 Streamable HTTP，并复用直接调用和 Code Mode 的权限、审批与日志路径。详见 [MCP 配置与信任边界](../mcp/README.zh-CN.md)。
 
 Maka 默认组合启用 `toolDiscovery`：可选工具通过 `tool_search` 加载说明，并在同一 Host 会话内跨轮保留。Code Mode 在说明尚未加载时仍可调用已授权的嵌套工具。消息接收时保存发现策略，恢复运行时沿用原策略。已加载工具说明和 Code Mode 的 `store`/`load` 值按会话隔离、保存在内存中，Host 重启后清空；上下文压缩成功提交后重置已加载的工具说明。
 
@@ -54,6 +58,8 @@ Maka 默认组合启用 `toolDiscovery`：可选工具通过 `tool_search` 加�
 Shell 工具默认接受模型生成的可选 `title`。助手偏好可关闭后续模型请求中的标题参数；已有调用的完整参数仍保留在模型历史中。标题用于历史展示，仅在转发给进程服务时移除；未提供标题时显示命令。
 
 Maka 默认组合启用 `todo`：`todo_read` 和 `todo_write` 维护当前会话的持久清单，也可用于 Code Mode 和只读工作区。写入会校验版本并替换整个列表。UI 显示已报告的进度和只读「清单」面板，以有界分页浏览最多 200 项。清单完成状态是模型报告的进度，不代表操作已成功的执行证据。
+
+Maka 默认组合启用 `bot`，即 Bot 模式。`openBot` 返回本安装唯一的 Bot 会话：首次使用或上一个已归档时，在指定工作区中创建。创建会话之前先认领登记记录，所以并发和重试的打开请求都会收敛到同一个会话。这条登记记录是判断 Bot 身份的唯一依据：工具授予、恢复和 `SendUser` 都以它为准，因此 fork 出来的会话和从 Bot 派生的会话都是普通会话。Bot 会话创建时只带 Agent 自带的协调类工具（定时任务、目标、历史检索、清单、WorkHub 委派和技能），`SendUser` 由身份授予，不依赖这份工具列表；普通创建不能申请它。每次调用都把消息写入由 Host 持有、与 Run 状态分开的存储，每次调用、每条消息各一条记录：同一 `messageId` 且内容相同视为重复，不会再次记录；同一 id 但内容不同会被拒绝；什么都不发也是合法结果。调用记录不会被淘汰，所以复用的 id 总能被识别。`botOutbox` 按序号游标从旧到新分页读取消息，`watchBotOutbox` 在消息头变化时发出通知。Bot 会话排队的唤醒，包括定时和 WorkHub 来源的消息，在工具结果未知后仍会继续：告知模型，而不是重放工具；普通会话保持更严格的规则。
 
 Maka 默认组合启用 `automaticTitles`。通过 `automaticTitle: true` 创建的会话在首条消息获准后，使用该消息选定的模型发起一次有界、独立计费的标题请求。显式命名、手动改名（包括保留原占位名称）、归档及托管会话保留原名称。重试和 Host 重启不会重复已接收的标题尝试；Host 关闭会等待请求实际清理完成。
 

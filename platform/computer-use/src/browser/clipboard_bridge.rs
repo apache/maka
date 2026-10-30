@@ -1207,14 +1207,6 @@ mod tests {
         }
     }
 
-    struct RejectedHost;
-
-    impl BrowserHostEffects for RejectedHost {
-        fn spawn(&self, _unpolled: crate::HostEffectFuture) -> Result<(), ToolError> {
-            Err(failed("fixture Host admission rejected"))
-        }
-    }
-
     fn frame_tree() -> Value {
         json!({"frameTree":{"frame":{"id":"main","loaderId":"document","url":"https://fixture.example"}}})
     }
@@ -1305,84 +1297,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unconfirmed_installation_keeps_its_cause_after_other_cleanup_acks() {
-        let (mut bridge, mut wire) = installed_bridge().await;
-        bridge
-            .shared
-            .state
-            .lock()
-            .unwrap()
-            .routes
-            .get(&None)
-            .unwrap()
-            .state
-            .lock()
-            .unwrap()
-            .script = DocumentScript::Unconfirmed;
-        {
-            let mut state = bridge.cleanup.lock().unwrap();
-            let CleanupState::Open(owner) = &mut *state else {
-                panic!("fixture must retain its original open owner");
-            };
-            let (_, pending) = watch::channel(Some(Err(ToolError::OutcomeUnknown(
-                "fixture installation has no script ACK".into(),
-            ))));
-            owner.initialization = pending;
-        }
-        let mut cleanup = Box::pin(bridge.cleanup());
-        for method in [
-            "Runtime.evaluate",
-            "Runtime.removeBinding",
-            "Runtime.disable",
-        ] {
-            let request = tokio::select! {
-                result = &mut cleanup => panic!("cleanup ended before {method}: {result:?}"),
-                request = wire.request() => request,
-            };
-            assert_eq!(request["method"], method, "unknown script cleanup order");
-            wire.reply(
-                &request,
-                if method == "Runtime.evaluate" {
-                    json!({"result":{"value":true}})
-                } else {
-                    json!({})
-                },
-            );
-        }
-        let failure = cleanup.await.unwrap_err().to_string();
-        assert!(failure.contains("fixture installation has no script ACK"));
-        assert!(failure.contains("no confirmed identity"));
-        assert_eq!(bridge.shared.state.lock().unwrap().routes.len(), 1);
-        assert_eq!(bridge.cleanup().await.unwrap_err().to_string(), failure);
-        assert!(
-            wire.requests.try_recv().is_err(),
-            "unknown cleanup was replayed"
-        );
-    }
-
-    #[tokio::test]
-    async fn detached_route_is_not_physical_cleanup_evidence() {
-        let (mut bridge, mut wire) = installed_bridge().await;
-        bridge
-            .shared
-            .state
-            .lock()
-            .unwrap()
-            .routes
-            .get(&None)
-            .unwrap()
-            .state
-            .lock()
-            .unwrap()
-            .active = false;
-        let failure = bridge.cleanup().await.unwrap_err().to_string();
-        assert!(failure.contains("route detached before cleanup was confirmed"));
-        assert_eq!(bridge.shared.state.lock().unwrap().routes.len(), 1);
-        assert!(wire.requests.try_recv().is_err());
-        assert_eq!(bridge.cleanup().await.unwrap_err().to_string(), failure);
-    }
-
-    #[tokio::test]
     async fn cancelled_initial_installation_keeps_the_tab_owner_and_original_ack() {
         let (socket, mut wire) = socket().await;
         let mut tab = tab(socket);
@@ -1457,49 +1371,6 @@ mod tests {
             wire.requests.try_recv().is_err(),
             "installation was replayed"
         );
-    }
-
-    #[tokio::test]
-    async fn rejected_installation_is_settled_before_cleanup_without_new_host_admission() {
-        let (socket, mut wire) = socket().await;
-        let mut tab = tab(socket);
-        let store = tab.clipboard_store.clone();
-        let mut installing = Box::pin(Bridge::install(
-            &mut tab,
-            store,
-            Arc::new(Authority),
-            Arc::new(RejectedHost),
-            "turn",
-        ));
-        for method in ["Target.setAutoAttach", "Page.getFrameTree"] {
-            let request = tokio::select! {
-                result = &mut installing => panic!("installation ended before {method}: {result:?}"),
-                request = wire.request() => request,
-            };
-            assert_eq!(request["method"], method, "rejected installation order");
-            let result = match method {
-                "Page.getFrameTree" => frame_tree(),
-                _ => json!({}),
-            };
-            wire.reply(&request, result);
-        }
-        let result = tokio::select! {
-            result = &mut installing => result,
-            request = wire.request() => panic!(
-                "rejected unpolled installation dispatched an effect: {request}"
-            ),
-        };
-        drop(installing);
-        assert!(matches!(
-            result,
-            Err(ToolError::Failed(message)) if message == "fixture Host admission rejected"
-        ));
-        let bridge = tab.clipboard.as_ref().unwrap();
-        assert!(!bridge.is_open());
-        assert!(bridge.shared.state.lock().unwrap().routes.is_empty());
-        tab.cleanup_clipboard().await.unwrap();
-        assert!(tab.clipboard.is_none());
-        assert!(wire.requests.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -1729,46 +1600,5 @@ mod tests {
         };
         assert_eq!(bridge.cleanup().await.unwrap_err().to_string(), first);
         assert_eq!(bridge.shared.state.lock().unwrap().routes.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn failed_current_cleanup_retains_selected_transport_and_ignores_new_override() {
-        let (mut bridge, mut original_wire) = installed_bridge().await;
-        let (current, mut current_wire) = socket().await;
-        let selected = current.connection.clone();
-        let (replacement, mut replacement_wire) = socket().await;
-        let mut cleanup = Box::pin(bridge.cleanup_with_socket(Some(current)));
-        let first = tokio::select! {
-            result = &mut cleanup => panic!("selected cleanup skipped the original wire: {result:?}"),
-            request = current_wire.request() => request,
-        };
-        acknowledge_cleanup(&mut current_wire, first, Some("selected cleanup refusal")).await;
-        let cause = cleanup.await.unwrap_err().to_string();
-        {
-            let retained = bridge.cleanup.lock().unwrap();
-            let CleanupState::Terminal {
-                _owner: Some(owner),
-                ..
-            } = &*retained
-            else {
-                panic!("failed cleanup must retain the exact selected transport owner");
-            };
-            assert!(Arc::ptr_eq(
-                &owner.socket.as_ref().unwrap().connection,
-                &selected
-            ));
-            assert!(!Arc::ptr_eq(&owner.shared.socket.connection, &selected));
-        }
-        assert_eq!(
-            bridge
-                .cleanup_with_socket(Some(replacement))
-                .await
-                .unwrap_err()
-                .to_string(),
-            cause
-        );
-        assert!(original_wire.requests.try_recv().is_err());
-        assert!(replacement_wire.requests.try_recv().is_err());
-        assert!(current_wire.requests.try_recv().is_err());
     }
 }

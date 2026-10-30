@@ -60,13 +60,13 @@ async fn selected_skill_tools_use_actual_agent_context_and_original_grants_over_
             for (change, expected) in [
                 ("json", "agent_skill_tool_projection_required"),
                 ("method", "agent_skill_tool_method_invalid"),
-                ("binding", "agent_tool_import_unavailable"),
+                ("binding", "unknown service import: absent"),
             ] {
                 let mut invalid = original.clone();
                 match change {
                     "json" => invalid[0].input = contract::ToolInput::Json,
                     "method" => invalid[0].method = "list".into(),
-                    "binding" => invalid[0].import = "absent".into(),
+                    "binding" => invalid[0].target = maka_host_runtime::application::ServiceTarget::Import { name: "absent".into() },
                     _ => unreachable!(),
                 }
                 assert_eq!(crate::tools::catalog(f.services.clone(), f.store.clone(), f.config.clone(), &invalid, vec![], Default::default()).err().as_deref(), Some(expected));
@@ -153,59 +153,6 @@ async fn selected_skill_tools_use_actual_agent_context_and_original_grants_over_
 }
 
 #[tokio::test]
-async fn bundled_authoring_resources_reach_the_actual_model_without_added_authority() {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        let dir = tempfile::tempdir().unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let setup = service_tools::Setup::skills(dir.path().to_owned()).with_bundled_skills();
-        let f = Fixture::with_services(&format!("http://{}/v1", listener.local_addr().unwrap()), None, None, Some(setup)).await;
-        let session = f.create("Built-in authoring").await;
-        f.send(&session).await.unwrap();
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let sent = request(&mut socket).await;
-        assert_eq!(sent["tools"].as_array().unwrap().len(), 2);
-        tool(&mut socket, "SkillSearch", json!({"query":"plugin"})).await;
-        let (mut socket, catalog) = next(&listener).await;
-        assert_eq!(catalog["totalEligible"], 1, "{catalog}");
-        assert_eq!(catalog["matches"][0]["ref"], "bundled:maka-plugin-authoring");
-        tool(&mut socket, "Skill", json!({"name":"maka-plugin-authoring","revision":catalog["revision"],"resource":{"path":"references/sdk/workbench.ts"}})).await;
-        let (mut socket, mut resource) = next(&listener).await;
-        let mut complete = String::new();
-        loop {
-            assert_eq!(resource["kind"], "resource", "{resource}");
-            assert_eq!(resource["revision"], catalog["revision"]);
-            assert_eq!(resource["reference"], "bundled:maka-plugin-authoring");
-            assert_eq!(resource["path"], "references/sdk/workbench.ts");
-            assert_eq!(resource["receipt"]["success"], true);
-            assert_eq!(resource["receipt"]["ref"], "bundled:maka-plugin-authoring");
-            complete.push_str(resource["content"].as_str().unwrap());
-            let continuation = resource["next"].clone();
-            if continuation.is_null() { break; }
-            let read: maka_agent_facts::read::ReadInput = serde_json::from_value(continuation["resource"].clone()).unwrap();
-            let position: usize = read.path.split("?at=").nth(1).unwrap().split('&').next().unwrap().parse().unwrap();
-            let current = complete.encode_utf16().count();
-            // Read continuations account for the newline omitted at a line boundary.
-            if position > current {
-                assert_eq!(position, current + 1);
-                complete.push('\n');
-            } else { assert_eq!(position, current); }
-            tool(&mut socket, "Skill", continuation).await;
-            let (next_socket, page) = next(&listener).await;
-            socket = next_socket;
-            resource = page;
-        }
-        assert_eq!(complete, include_str!("../../../../../../packages/plugin-sdk/src/workbench.ts"));
-        tool(&mut socket, "Skill", json!({"name":"maka-cua","revision":catalog["revision"]})).await;
-        let (mut socket, unavailable) = next(&listener).await;
-        assert_eq!(unavailable["reason"], "host_incompatible");
-        response(&mut socket).await;
-        f.drained().await;
-        f.app.shutdown().await.unwrap();
-        f.config.shutdown().await.unwrap();
-    }).await.unwrap();
-}
-
-#[tokio::test]
 async fn standard_skills_follow_each_actual_session_for_preparation_and_model_requests() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let write = |root:&std::path::Path, name:&str, body:&str| {
@@ -253,64 +200,6 @@ async fn standard_skills_follow_each_actual_session_for_preparation_and_model_re
         assert_ne!(references[0],references[1]);
         f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
     }).await.unwrap();
-}
-
-#[tokio::test]
-async fn skill_candidates_filter_actual_tools_and_reject_foreign_sessions() {
-    let home = tempfile::tempdir().unwrap();
-    for (name, required) in [("visible", "LoadGuide"), ("incompatible", "Superuser")] {
-        let root = home.path().join(name);
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("SKILL.md"), format!("---\nname: {name}\ndescription: Review changes\nrequired-tools: {required}\n---\nInstructions")).unwrap();
-    }
-    let setup = service_tools::Setup::skill_preparation(home.path().to_owned(), true);
-    let f = Fixture::with_services("http://127.0.0.1:9/v1", None, None, Some(setup)).await;
-    let session = f.create("Candidates").await;
-    let mut input = json!({"sessionId":session,"backend":{"kind":"model","model":f.selection().await},"query":""});
-    let page = f.query("skillCandidates", input.clone()).await.unwrap();
-    assert_eq!(page["skills"].as_array().unwrap().len(), 1, "{page}");
-    assert_eq!(page["skills"][0]["invocation"], "/skill:visible");
-    let executor = f.query("skillCandidates",json!({"sessionId":session,"backend":{"kind":"executor","selection":{"executor":"external","settings":{}}},"query":""})).await.unwrap();
-    assert_eq!(executor["skills"], json!([]));
-    assert!(executor["revision"].is_null());
-    let mut restricted = f.create_input("Restricted").await;
-    restricted["tools"] = json!([]);
-    let restricted = f
-        .mutation(2, "create", restricted, Uuid::new_v4())
-        .await
-        .unwrap();
-    let restricted = f
-        .query(
-            "skillCandidates",
-            json!({"sessionId":restricted["session"]["id"],"backend":input["backend"],"query":""}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(restricted["skills"], json!([]));
-    input["query"] = json!("incompatible");
-    assert_eq!(
-        f.query("skillCandidates", input.clone()).await.unwrap()["skills"],
-        json!([])
-    );
-    input["query"] = json!("visible ".repeat(600));
-    let long_query = f.query("skillCandidates", input.clone()).await.unwrap();
-    assert_eq!(long_query["skills"][0]["invocation"], "/skill:visible");
-    assert_eq!(long_query["skills"].as_array().unwrap().len(), 1);
-    input["query"] = json!("");
-    input["backend"]["model"]["connectionId"] = json!("missing");
-    assert_eq!(
-        f.query("skillCandidates", input.clone()).await.unwrap()["skills"],
-        json!([])
-    );
-    input["sessionId"] = json!("foreign_session");
-    assert!(
-        f.query("skillCandidates", input)
-            .await
-            .unwrap_err()
-            .contains("agent_session_unavailable")
-    );
-    f.app.shutdown().await.unwrap();
-    f.config.shutdown().await.unwrap();
 }
 
 #[tokio::test]

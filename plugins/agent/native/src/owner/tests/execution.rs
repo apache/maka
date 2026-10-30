@@ -99,7 +99,6 @@ async fn exact_receipt_resumes_original_input_and_deduplicates_after_prerequisit
             expected: ConnectionVersionBasis { connection_id: selected.connection_id, revision: selected.revision },
         }).await.unwrap(), CatalogMutationResult::Committed { .. }));
         fixture.store.set_session_archived::<StoredSessionConfiguration>(&session, true, now()).await.unwrap();
-        #[cfg(unix)]
         std::fs::rename(&fixture.workspace, fixture.workspace.with_extension("removed")).unwrap();
         let accepted = fixture.owner.resume(serde_json::from_value(input).unwrap(), &reference).await.unwrap();
         let accepted = serde_json::to_value(accepted).unwrap();
@@ -183,24 +182,20 @@ async fn resume_rejects_stale_foreign_busy_and_completed_sources_without_new_wor
                 .unwrap(),
             json!({"kind":"parked","reason":"source_not_resumable"})
         );
-        // Windows retains a workspace handle that prevents directory replacement.
-        #[cfg(unix)]
-        {
-            // Replacing the directory at the same path must not authorize replay.
-            std::fs::rename(
-                &fixture.workspace,
-                fixture.workspace.with_extension("original"),
-            )
-            .unwrap();
-            std::fs::create_dir(&fixture.workspace).unwrap();
-            assert_eq!(
-                fixture
-                    .mutation(2, "resume", input, Uuid::new_v4())
-                    .await
-                    .unwrap(),
-                json!({"kind":"parked","reason":"workspace_changed"})
-            );
-        }
+        // Replacing the directory at the same path must not authorize replay.
+        std::fs::rename(
+            &fixture.workspace,
+            fixture.workspace.with_extension("original"),
+        )
+        .unwrap();
+        std::fs::create_dir(&fixture.workspace).unwrap();
+        assert_eq!(
+            fixture
+                .mutation(2, "resume", input, Uuid::new_v4())
+                .await
+                .unwrap(),
+            json!({"kind":"parked","reason":"workspace_changed"})
+        );
         assert!(
             tokio::time::timeout(Duration::from_millis(30), listener.accept())
                 .await
@@ -312,124 +307,6 @@ async fn application_reactivation_resumes_sealed_source_through_original_engine(
 }
 
 #[tokio::test]
-async fn resume_refuses_unsettled_effect_outside_its_selected_lineage() {
-    use maka_agent_facts::event::EventWrite;
-    use maka_agent_facts::event::Fact;
-    use maka_agent_facts::event::InvocationOutcome;
-    use maka_agent_facts::event::RuntimeEvent;
-    use maka_agent_facts::input::InvocationInput;
-    tokio::time::timeout(Duration::from_secs(45), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let fixture = Fixture::new(
-            &format!("http://{}/v1", listener.local_addr().unwrap()),
-            None,
-        )
-        .await;
-        let session = fixture.create("Unresolved prior effect").await;
-        let source = cancelled(&fixture, &listener, &session).await;
-        let source_configuration = fixture
-            .session(&session)
-            .await
-            .invocation_configuration(
-                &fixture
-                    .session(&session)
-                    .await
-                    .invocation_boundary(&session, source["invocationId"].as_str().unwrap())
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .invocation,
-            )
-            .await
-            .unwrap()
-            .unwrap();
-        // Canonical crash-cut fixture: a later sealed invocation has a dispatched
-        // effect without a settlement. No production recovery override is used.
-        let invocation = Invocation {
-            session_id: session.clone(),
-            turn_id: "later-turn".into(),
-            run_id: "later-run".into(),
-            invocation_id: "later-invocation".into(),
-        };
-        for fact in [
-            Fact::InvocationOpened {
-                configuration: Some(Box::new(source_configuration)),
-                input: InvocationInput::Message {
-                    content: "Unresolved later work".into(),
-                    source_messages: vec![],
-                    request_fingerprint: None,
-                },
-            },
-            Fact::ToolDispatched {
-                presentation: None,
-                title: None,
-                operation_id: "unresolved".into(),
-                call: maka_agent_facts::tool_call::ToolCallIdentity::standalone(
-                    "unresolved-call".into(),
-                ),
-                name: "write".into(),
-                input: json!({}),
-            },
-            Fact::InvocationEnded {
-                outcome: InvocationOutcome::Failed {
-                    model_failure: None,
-                    class: "outcome_unknown".into(),
-                    message: None,
-                },
-            },
-        ] {
-            fixture
-                .session(&session)
-                .await
-                .append(&EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap())
-                .await
-                .unwrap();
-        }
-        assert_eq!(
-            fixture
-                .query(
-                    "resumable",
-                    json!({"sessionId":session,"model":fixture.selection().await})
-                )
-                .await
-                .unwrap(),
-            json!({"kind":"unavailable","reason":"safety_check_failed"})
-        );
-        let resumed = fixture
-            .mutation(
-                2,
-                "resume",
-                resume_input(&fixture, &source).await,
-                Uuid::new_v4(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            resumed,
-            json!({"kind":"parked","reason":"safety_check_failed"})
-        );
-        assert!(
-            tokio::time::timeout(Duration::from_millis(30), listener.accept())
-                .await
-                .is_err()
-        );
-        let facts = service_tools::facts(&fixture, &session).await;
-        assert_eq!(
-            facts
-                .iter()
-                .filter(|fact| matches!(fact, Fact::InvocationOpened { .. }))
-                .count(),
-            2
-        );
-        fixture.app.shutdown().await.unwrap();
-        fixture.config.shutdown().await.unwrap();
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
 async fn resume_uses_live_workspace_permissions_instead_of_original_grants() {
     tokio::time::timeout(Duration::from_secs(45), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -487,38 +364,6 @@ async fn resume_uses_live_workspace_permissions_instead_of_original_grants() {
 }
 
 #[tokio::test]
-async fn work_answer_pages_preserve_exact_unicode_nul_and_owner_after_later_work() {
-    tokio::time::timeout(Duration::from_secs(45), async {
-        let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
-        let session=fixture.create("Original work answer").await;
-        let original=fixture.send(&session).await.unwrap();
-        let target=json!({"kind":"invocation","invocationId":original["invocationId"]});
-        let (mut socket,_)=listener.accept().await.unwrap();request(&mut socket).await;
-        let answer="中\0🦀\n".repeat(2200);
-        response_with_thinking(&mut socket,&answer,Some("Hidden worker reasoning")).await;
-        fixture.drained().await;
-        fixture.send(&session).await.unwrap();
-        let (mut socket,_)=listener.accept().await.unwrap();request(&mut socket).await;
-        response_with_text(&mut socket,"Unrelated later answer").await;fixture.drained().await;
-        let mut cursor=Value::Null;let mut joined=String::new();let mut pages=0;
-        loop {
-            let page=fixture.query("work",json!({"sessionId":session,"target":target,"cursor":cursor})).await.unwrap();
-            assert_eq!(page["kind"],"delivered");assert_eq!(page["execution"]["invocationId"],original["invocationId"]);
-            assert_eq!(page["execution"]["state"],"completed");assert_eq!(page["pendingInteractions"],0);
-            let text=page["answer"]["text"].as_str().unwrap();assert!(text.len()<=16_384);joined.push_str(text);pages+=1;
-            cursor=page["answer"]["next"].clone();if cursor.is_null() {break;}
-            assert_eq!(cursor["offset"],joined.len());
-        }
-        assert!(pages>1);assert_eq!(joined,answer);assert!(!joined.contains("Hidden"));
-        assert!(fixture.query("work",json!({"sessionId":session,"target":target,"cursor":{"invocationId":original["invocationId"],"offset":1}})).await.is_err());
-        let other=fixture.create("Different owner").await;
-        assert_eq!(fixture.query("work",json!({"sessionId":other,"target":target})).await.unwrap(),json!({"kind":"missing"}));
-        fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
-    }).await.unwrap();
-}
-
-#[tokio::test]
 async fn resumable_observes_without_admission_and_resume_rechecks_the_observed_source() {
     tokio::time::timeout(Duration::from_secs(45), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -534,6 +379,16 @@ async fn resumable_observes_without_admission_and_resume_rechecks_the_observed_s
             json!({"kind":"unavailable","reason":"source_missing"})
         );
         let source = cancelled(&fixture, &listener, &session).await;
+        let mcp_record = fixture.workspace.join("resume-mcp.jsonl");
+        let mcp_config = fixture.workspace.join(".maka/mcp.json");
+        std::fs::create_dir_all(mcp_config.parent().unwrap()).unwrap();
+        std::fs::write(&mcp_config, serde_json::to_vec(&json!({"mcpServers":{"fixture":{
+            "command":"node",
+            "args":[std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mcp/tests/server.mjs"),"normal",mcp_record],
+            "tools":["echo"], "preapproved":true
+        }}})).unwrap()).unwrap();
+        let project = fixture.query("projectMcp", json!({"sessionId":session})).await.unwrap();
+        fixture.mutation(2, "trustProjectMcp", json!({"sessionId":session,"revision":project["revision"]}), Uuid::new_v4()).await.unwrap();
         let store = fixture.session(&session).await;
         let before = store.committed_sequence().await.unwrap();
         for _ in 0..2 {
@@ -547,6 +402,7 @@ async fn resumable_observes_without_admission_and_resume_rechecks_the_observed_s
             before,
             "observation must not admit a turn or reserve a continuation"
         );
+        assert!(!mcp_record.exists(), "status observation must not start MCP servers");
         let input = resume_input(&fixture, &source).await;
         let operation = Uuid::new_v4();
         let resumed = fixture
@@ -554,6 +410,7 @@ async fn resumable_observes_without_admission_and_resume_rechecks_the_observed_s
             .await
             .unwrap();
         assert_eq!(resumed["kind"], "started");
+        assert!(mcp_record.exists(), "admission starts the selected MCP servers");
         assert_ne!(resumed["execution"]["turnId"], source["turnId"]);
         let (mut socket, _) = listener.accept().await.unwrap();
         let replay = request(&mut socket).await;

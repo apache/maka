@@ -207,7 +207,7 @@ async fn responses_http_preserves_reasoning_and_raw_tool_identity_across_steps()
                 language: maka_agent_facts::language::Language::En,
                 provider: ProviderConfig { image_input: None, adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenaiResponses, model: "gpt-5".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()), headers: BTreeMap::from([("x-test-provider".into(), "responses".into())]), body_overlay: Some(serde_json::Map::from_iter([("fixture_context".into(), json!({"route":"responses"}))])) },
                 prompt: serde_json::from_value::<Vec<maka_model::prompt::Message>>(json!(prompt)).unwrap().into(),
-                tools: vec![maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Echo text".into(), input_schema: schema.clone() }],
+                tools: vec![Arc::new(maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Echo text".into(), input_schema: schema.clone() })],
                 provider_options: json!({"openai":{"store":false,"reasoningEffort":"low","reasoningSummary":"auto"}}),
                 max_output_tokens: Some(128),
             };
@@ -349,11 +349,11 @@ async fn responses_http_streams_custom_input_before_its_complete_freeform_call()
         let mut request = super::provider_stream::request(ProviderKind::OpenaiResponses, base_url);
         request.provider.auth = maka_model::ProviderAuth::ApiKey("local-test-key".into());
         request.provider.headers.insert("x-test-provider".into(), "responses".into());
-        request.tools = vec![maka_model::ToolDefinition {
+        request.tools = vec![Arc::new(maka_model::ToolDefinition {
             name: "exec".into(), description: "JavaScript".into(), provider: None,
             input_schema: json!({"type":"object"}), output_schema: None,
             freeform: Some(FreeformGrammar::Lark { definition: "start: /[\\s\\S]+/".into() }),
-        }];
+        })];
         let mut stream = executor.stream(request, CancellationToken::new()).await.unwrap();
         let mut builder = StepBuilder::for_step("custom-step").unwrap();
         let mut input_events = Vec::new();
@@ -462,7 +462,7 @@ async fn plaintext_responses_replays_only_its_declared_carrier_after_a_tool_step
                     provider: ProviderConfig { image_input: None, adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenResponses(contract),
                         model: "plain".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()),
                         headers: BTreeMap::from([("x-test-provider".into(),"responses".into())]), body_overlay: None },
-                    prompt: prompt.clone().into(), tools: vec![maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Search tools".into(), input_schema: json!({"type":"object"}) }],
+                    prompt: prompt.clone().into(), tools: vec![Arc::new(maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Search tools".into(), input_schema: json!({"type":"object"}) })],
                     provider_options: json!({"openResponses":{"reasoningEffort":"high","reasoningSummary":"auto"}}),
                     max_output_tokens: Some(256),
                 };

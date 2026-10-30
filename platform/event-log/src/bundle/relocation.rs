@@ -83,7 +83,6 @@ impl Positions {
     pub async fn json(
         &self,
         db: &mut SqliteConnection,
-        sequence: u64,
         json: String,
     ) -> Result<String, StoreError> {
         let mut event: RuntimeEvent = serde_json::from_str(&json)?;
@@ -104,17 +103,26 @@ impl Positions {
             Fact::ModelRequested {
                 source_scope,
                 source_high_water,
+                source_capture,
                 source_digest,
                 effective_source_digest,
                 ..
             } => {
                 *source_high_water = self.event_or_zero(*source_high_water)?;
+                source_capture.publication_watermark =
+                    self.fence(source_capture.publication_watermark);
                 let selection = Selection::resolve(db, source_scope).await?;
                 let evidence =
                     context::evidence::selected(db, &selection, *source_high_water).await?;
                 *source_digest = evidence.digest.clone();
                 *effective_source_digest = Some(
-                    crate::archive::digest_selected(db, &selection, &evidence, sequence).await?,
+                    crate::archive::digest_selected(
+                        db,
+                        &selection,
+                        &evidence,
+                        source_capture.publication_watermark + 1,
+                    )
+                    .await?,
                 );
             }
             Fact::ContextCheckpointRecorded { checkpoint } => {

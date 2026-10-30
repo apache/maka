@@ -23,8 +23,6 @@ mod catalog_projection;
 #[path = "connection_test/main.rs"]
 mod connection_test;
 mod credentials;
-mod migrations;
-mod model_catalog;
 mod model_fetch;
 #[path = "oauth/main.rs"]
 mod oauth;

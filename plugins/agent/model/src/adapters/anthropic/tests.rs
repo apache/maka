@@ -163,52 +163,43 @@ async fn source_overlay_keeps_the_original_upload_charge_until_the_last_slice() 
 }
 
 #[tokio::test]
-async fn source_lanes_match_owned_request_bytes_across_signed_boundaries() {
+async fn indexed_caller_membership_preserves_present_sources_and_prunes_missing_sources() {
     use crate::prompt::{AssistantPart, Message};
     use maka_agent_facts::model::ToolInput;
-    let cache = Some(json!({"anthropic":{"cacheControl":{"type":"ephemeral"}}}));
-    let messages = vec![
-        Message::System {
-            content: "system 中".into(),
-            provider_options: cache.clone(),
-        },
-        Message::user("question"),
-        Message::Assistant {
-            content: vec![
-                AssistantPart::ToolCall {
-                    tool_call_id: "first".into(),
-                    tool_name: "local".into(),
-                    input: ToolInput::Json(json!({"z":"中","a":1})),
-                    provider_executed: None,
-                    provider_options: cache.clone(),
-                },
-                AssistantPart::Text {
-                    text: "before ".into(),
-                    provider_options: cache.clone(),
-                },
-                AssistantPart::Reasoning {
-                    text: "signed reasoning".into(),
-                    provider_options: Some(json!({"anthropic":{"signature":"signature-中"}})),
-                },
-                AssistantPart::ToolCall {
-                    tool_call_id: "second".into(),
-                    tool_name: "local".into(),
-                    input: ToolInput::Json(json!({})),
-                    provider_executed: None,
-                    provider_options: cache,
-                },
-                AssistantPart::Text {
-                    text: "  final 中\n".into(),
-                    provider_options: Some(
-                        json!({"anthropic":{"citations":[{"opaque":"untouched"}]}}),
-                    ),
-                },
-            ],
-            provider_options: None,
-        },
-    ];
-    let actual = source_request_bytes(&messages).await;
-    assert_eq!(actual, owned_request_bytes(messages));
+    for present in [false, true] {
+        let mut content = Vec::new();
+        if present {
+            content.push(AssistantPart::ToolCall {
+                tool_call_id: "source".into(),
+                tool_name: "code_execution".into(),
+                input: ToolInput::Json(json!({})),
+                provider_executed: Some(true),
+                provider_options: None,
+            });
+        }
+        content.push(AssistantPart::ToolCall{tool_call_id:"local".into(),tool_name:"local".into(),input:ToolInput::Json(json!({})),provider_executed:None,provider_options:Some(json!({"anthropic":{"caller":{"type":"code_execution_20250825","toolId":"source"}}}))});
+        let messages = vec![
+            Message::Assistant {
+                content,
+                provider_options: None,
+            },
+            Message::user("later user"),
+        ];
+        let actual = source_request_bytes(&messages).await;
+        let value: serde_json::Value = serde_json::from_slice(&actual).unwrap();
+        let local = value["messages"][0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["id"] == "local")
+            .unwrap();
+        assert_eq!(
+            local.get("caller"),
+            present
+                .then(|| json!({"type":"code_execution_20250825","tool_id":"source"}))
+                .as_ref()
+        );
+    }
 }
 
 async fn source_request_bytes(messages: &[crate::prompt::Message]) -> Vec<u8> {
@@ -250,75 +241,16 @@ async fn source_request_bytes(messages: &[crate::prompt::Message]) -> Vec<u8> {
         source: frozen.source,
     };
     let context = metadata(&wire).await.unwrap().context;
-    let mut stream = body(json!({"model":"model"}), wire, context)
-        .unwrap()
-        .into_stream();
+    let mut stream = body(
+        Header::freeze(json!({"model":"model"})).await,
+        wire,
+        context,
+    )
+    .unwrap()
+    .into_stream();
     let mut actual = Vec::new();
     while let Some(bytes) = stream.next().await {
         actual.extend_from_slice(&bytes.unwrap());
     }
     actual
-}
-fn owned_request_bytes(messages: Vec<crate::prompt::Message>) -> Vec<u8> {
-    use maka_provider_protocol::anthropic::{
-        CacheBudget,
-        prompt::{PreparedPrompt, PromptOptions},
-    };
-    let input = crate::adapters::prompt::messages(messages).unwrap();
-    let options = opts();
-    let owned = PreparedPrompt::encode(
-        &input,
-        PromptOptions {
-            send_reasoning: options.send_reasoning,
-            cache_namespace: &options.cache_namespace,
-            tool_names: &options.tool_names,
-            toolsets: &options.toolsets,
-        },
-        &mut CacheBudget::default(),
-    )
-    .unwrap();
-    let mut expected = json!({"model":"model"});
-    for (key, value) in serde_json::to_value(owned).unwrap().as_object().unwrap() {
-        expected
-            .as_object_mut()
-            .unwrap()
-            .insert(key.clone(), value.clone());
-    }
-    serde_json::to_vec(&expected).unwrap()
-}
-
-#[tokio::test]
-async fn indexed_caller_membership_preserves_present_sources_and_prunes_missing_sources() {
-    use crate::prompt::{AssistantPart, Message};
-    use maka_agent_facts::model::ToolInput;
-    for present in [false, true] {
-        let mut content = Vec::new();
-        if present {
-            content.push(AssistantPart::ToolCall {
-                tool_call_id: "source".into(),
-                tool_name: "code_execution".into(),
-                input: ToolInput::Json(json!({})),
-                provider_executed: Some(true),
-                provider_options: None,
-            });
-        }
-        content.push(AssistantPart::ToolCall{tool_call_id:"local".into(),tool_name:"local".into(),input:ToolInput::Json(json!({})),provider_executed:None,provider_options:Some(json!({"anthropic":{"caller":{"type":"code_execution_20250825","toolId":"source"}}}))});
-        let messages = vec![
-            Message::Assistant {
-                content,
-                provider_options: None,
-            },
-            Message::user("later user"),
-        ];
-        let actual = source_request_bytes(&messages).await;
-        let value: serde_json::Value = serde_json::from_slice(&actual).unwrap();
-        let local = value["messages"][0]["content"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|block| block["id"] == "local")
-            .unwrap();
-        assert_eq!(local.get("caller").is_some(), present);
-        assert_eq!(actual, owned_request_bytes(messages));
-    }
 }

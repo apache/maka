@@ -33,10 +33,6 @@ pub struct RootFixture {
     directory: PathBuf,
 }
 impl RootFixture {
-    pub fn store(&self) -> Arc<RootStore> {
-        self.root.clone()
-    }
-
     pub async fn open(path: &Path) -> Result<Self, StoreError> {
         let directory = path.with_extension("root");
         let namespaces = RootNamespaces {
@@ -123,26 +119,6 @@ impl SessionFixture {
         file.write_all(&bytes)?;
         file.sync_all()?;
         Ok(())
-    }
-    /// Inject a real SQLite terminal-write failure without closing Root authority
-    /// while an executor still owns physical work.
-    pub fn reject_terminal_writes(&self) {
-        for entry in std::fs::read_dir(self.directory.join("runtime-partitions")).unwrap() {
-            let path = entry.unwrap().path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "sqlite")
-            {
-                rusqlite::Connection::open(path)
-                    .unwrap()
-                    .execute_batch(
-                        "CREATE TRIGGER fixture_reject_terminal BEFORE INSERT ON event_log
-                     WHEN NEW.kind = 'invocation_ended'
-                     BEGIN SELECT RAISE(ABORT, 'fixture terminal SQL failure'); END;",
-                    )
-                    .unwrap();
-            }
-        }
     }
     pub fn storage_bytes(&self) -> (u64, u64) {
         let mut sizes = (0, 0);

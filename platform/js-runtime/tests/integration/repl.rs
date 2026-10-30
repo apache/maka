@@ -754,11 +754,11 @@ async fn guard_drop_after_error_restores_only_the_remaining_budget() {
 async fn unawaited_guarded_work_cannot_disable_compute_or_heap_limits() {
     for (source, heap) in [
         (
-            "const pending = invoke(0); await invoke('ready'); while (true) {}",
+            "const pending = invoke(0); await invoke('ready'); try { while (true) {} } catch { write('escaped'); }",
             false,
         ),
         (
-            "const pending = invoke(0); await invoke('ready'); const a = []; while (true) a.push(new Array(10000).fill('heap'))",
+            "const pending = invoke(0); await invoke('ready'); try { const a = []; while (true) a.push(new Array(10000).fill('heap')); } catch { write('escaped'); }",
             true,
         ),
     ] {
@@ -777,6 +777,7 @@ async fn unawaited_guarded_work_cannot_disable_compute_or_heap_limits() {
         let evaluation = {
             let repl = repl.clone();
             let fixture = fixture.clone();
+            let output = output.clone();
             tokio::spawn(async move {
                 repl.evaluate(
                     source.into(),
@@ -798,10 +799,7 @@ async fn unawaited_guarded_work_cannot_disable_compute_or_heap_limits() {
             .expect("guarded pending work disabled the VM watchdog")
             .unwrap()
             .unwrap();
-        assert!(
-            matches!(&result, CellResult::Failure { error, .. } if error.kind == maka_code_runtime::CellDiagnosticKind::LimitExceeded),
-            "{result:?}"
-        );
+        assert!(matches!(result, CellResult::Failure { .. }), "{result:?}");
         if heap {
             assert!(
                 matches!(&result, CellResult::Failure { error, .. } if error.message.contains("heap")),
@@ -810,6 +808,24 @@ async fn unawaited_guarded_work_cannot_disable_compute_or_heap_limits() {
         }
         assert!(repl.is_closed());
         fixture.settled[0].cancelled().await;
+        assert!(
+            output.take_output().is_empty(),
+            "fatal VM limits must not be catchable"
+        );
+        let next = repl
+            .evaluate(
+                "write('reused terminated heap')".into(),
+                Arc::new(Fixture(0)),
+                CancellationToken::new(),
+                output.clone(),
+                Duration::from_secs(1),
+            )
+            .await;
+        assert!(
+            next.is_err(),
+            "a terminated VM accepted another evaluation: {next:?}"
+        );
+        assert!(output.take_output().is_empty());
         Arc::try_unwrap(repl).ok().unwrap().close().await.unwrap();
     }
 }

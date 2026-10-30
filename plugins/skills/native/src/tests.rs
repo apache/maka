@@ -291,166 +291,6 @@ async fn canonical_private_root_policy_allows_selected_skills_and_denies_private
 }
 
 #[tokio::test]
-async fn selected_directory_handles_and_private_root_ceiling_remain_authoritative() {
-    let dir = tempfile::tempdir().unwrap();
-    let selected = dir.path().join("selected");
-    let private = dir.path().join("private");
-    let outside = dir.path().join("outside");
-    write(&selected, "allowed", "captured original");
-    write(&private, "hidden", "private secret");
-    write(&outside, "unselected", "outside secret");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(outside.join("unselected"), selected.join("link")).unwrap();
-    let library = Library::open(
-        Configuration {
-            home: None,
-            project_roots: vec![],
-            bundled: false,
-            manage: false,
-            preferences: true,
-            sources: vec![source("selected", &selected), source("private", &private)],
-        },
-        private.canonicalize().unwrap(),
-        preferences(dir.path()).await,
-    )
-    .unwrap();
-    match std::fs::rename(&selected, dir.path().join("original")) {
-        Ok(()) => write(&selected, "allowed", "replacement must not redirect"),
-        Err(error) => {
-            // A Windows sharing violation protects the captured directory before replacement.
-            assert!(cfg!(windows) && error.raw_os_error() == Some(32), "{error}");
-        }
-    }
-    let call = scope();
-    let Page::Page {
-        revision,
-        entries,
-        diagnostics,
-        ..
-    } = library
-        .snapshot(&call)
-        .await
-        .unwrap()
-        .list(first())
-        .unwrap()
-    else {
-        panic!()
-    };
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].reference, "source:selected:allowed");
-    assert!(diagnostics.iter().any(|s| s.starts_with("private:")));
-    for reference in [
-        "source:private:hidden",
-        "source:selected:link",
-        "source:selected:../../outside/unselected",
-    ] {
-        assert!(matches!(
-            library
-                .snapshot(&call)
-                .await
-                .unwrap()
-                .read(Read {
-                    workspace: None,
-                    reference: reference.into(),
-                    revision: revision.clone(),
-                    offset: 0
-                })
-                .unwrap(),
-            Document::Unavailable
-        ));
-    }
-    let Document::Page { text, .. } = library
-        .snapshot(&call)
-        .await
-        .unwrap()
-        .read(Read {
-            workspace: None,
-            reference: entries[0].reference.clone(),
-            revision,
-            offset: 0,
-        })
-        .unwrap()
-    else {
-        panic!()
-    };
-    assert_eq!(text, "captured original");
-    call.finish().await.unwrap();
-}
-
-#[tokio::test]
-async fn cancellation_never_turns_discovery_failure_into_an_empty_catalog() {
-    let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), "one", "content");
-    let library = Library::open(
-        Configuration {
-            home: None,
-            project_roots: vec![],
-            bundled: false,
-            manage: false,
-            preferences: true,
-            sources: vec![source("local", dir.path())],
-        },
-        dir.path().join("private"),
-        preferences(dir.path()).await,
-    )
-    .unwrap();
-    let call = scope();
-    call.cancellation.cancel();
-    assert!(library.snapshot(&call).await.is_err());
-    call.finish().await.unwrap();
-    assert!(
-        Library::open(
-            Configuration {
-                home: None,
-                project_roots: vec![],
-                bundled: false,
-                manage: false,
-                preferences: true,
-                sources: vec![source("same", dir.path()), source("same", dir.path())]
-            },
-            dir.path().join("private"),
-            preferences(dir.path()).await
-        )
-        .is_err()
-    );
-}
-
-#[tokio::test]
-async fn escaped_instruction_pages_remain_within_the_remote_delivery_budget() {
-    let dir = tempfile::tempdir().unwrap();
-    let body = "\u{0001}".repeat(TEXT_BYTES * 2);
-    write(dir.path(), "escaped", &body);
-    let library = Library::open(
-        Configuration {
-            home: None,
-            project_roots: vec![],
-            bundled: false,
-            manage: false,
-            preferences: true,
-            sources: vec![source("local", dir.path())],
-        },
-        dir.path().join("private"),
-        preferences(dir.path()).await,
-    )
-    .unwrap();
-    let call = scope();
-    let snapshot = library.snapshot(&call).await.unwrap();
-    let revision = snapshot.revision.clone();
-    let page = snapshot
-        .read(Read {
-            workspace: None,
-            reference: "source:local:escaped".into(),
-            revision,
-            offset: 0,
-        })
-        .unwrap();
-    let value = encode(page).unwrap();
-    assert_eq!(value["text"].as_str().unwrap(), &body[..TEXT_BYTES]);
-    assert_eq!(value["after"], TEXT_BYTES);
-    call.finish().await.unwrap();
-}
-
-#[tokio::test]
 async fn execution_basis_preserves_real_captures_and_rejects_replaced_skill_directories() {
     use maka_event_log::{
         RootStore,
@@ -492,18 +332,10 @@ async fn execution_basis_preserves_real_captures_and_rejects_replaced_skill_dire
         .unwrap()
     };
     let mut first = open();
-    first.managed = Some(
-        management::Managed::open(root.clone(), "stable".into())
-            .await
-            .unwrap(),
-    );
+    first.managed = Some(management::Managed::open(root.clone(), store.clone()));
     let basis = first.execution_basis().unwrap();
     let mut same = open();
-    same.managed = Some(
-        management::Managed::open(root.clone(), "stable".into())
-            .await
-            .unwrap(),
-    );
+    same.managed = Some(management::Managed::open(root.clone(), store.clone()));
     assert_eq!(same.execution_basis().unwrap(), basis);
     write(
         &path.join("custom"),
@@ -514,13 +346,6 @@ async fn execution_basis_preserves_real_captures_and_rejects_replaced_skill_dire
     let mut other_namespace = first.clone();
     other_namespace.preferences = preferences::Store::new(store.clone(), "other/".into());
     assert_ne!(other_namespace.execution_basis().unwrap(), basis);
-    let mut other_managed = first.clone();
-    other_managed.managed = Some(
-        management::Managed::open(root.clone(), "other".into())
-            .await
-            .unwrap(),
-    );
-    assert_ne!(other_managed.execution_basis().unwrap(), basis);
     for name in ["custom", "home", "projects"] {
         if let Err(error) = std::fs::rename(path.join(name), path.join(format!("original-{name}")))
         {

@@ -96,7 +96,7 @@ impl WireEncoding {
         language: Language,
         provider: &ProviderConfig,
         options: &Value,
-        tools: &[ToolDefinition],
+        tools: &[Arc<ToolDefinition>],
     ) -> Result<Self, ModelError> {
         let options = effective_options(provider, options)?;
         let (codec, options) = match &provider.kind {
@@ -232,7 +232,7 @@ impl WireEncoding {
 
 pub(super) fn anthropic_options(
     options: &Value,
-    tools: &[ToolDefinition],
+    tools: &[Arc<ToolDefinition>],
 ) -> Result<maka_provider_protocol::anthropic::prompt::streaming::StreamOptions, ModelError> {
     use maka_provider_protocol::anthropic::{self, HostedTool};
     let options =

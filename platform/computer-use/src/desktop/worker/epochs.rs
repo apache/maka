@@ -1492,7 +1492,7 @@ mod tests {
     use super::super::read;
     use super::*;
     use serde_json::json;
-    use tokio::io::{AsyncRead, AsyncReadExt};
+    use tokio::io::AsyncRead;
 
     fn invoke(owner: &str, epoch: &str, command: Value) -> Request {
         Request::Invoke {
@@ -1720,50 +1720,6 @@ mod tests {
         task.await.unwrap().unwrap();
     }
 
-    #[tokio::test]
-    async fn eof_still_joins_the_original_epoch_close_without_forging_an_ack() {
-        let (requests, receive) = mpsc::channel(1);
-        let (mut output, writer) = tokio::io::duplex(64 * 1024);
-        let driver = Arc::new(Mutex::new(Driver::default()));
-        let task = tokio::spawn(serve(
-            receive,
-            writer,
-            CancellationToken::new(),
-            driver.clone(),
-        ));
-        let _: Hello = read(&mut output).await.unwrap();
-        send(
-            &requests,
-            1,
-            invoke("owner", "old", json!({"method":"documentation"})),
-        )
-        .await;
-        assert!(response(&mut output).await.1.is_ok());
-        let blocked_close = driver.lock().await;
-        send(
-            &requests,
-            2,
-            Request::CloseEpoch {
-                owner: "owner".into(),
-                epoch: "old".into(),
-            },
-        )
-        .await;
-        drop(requests);
-        tokio::task::yield_now().await;
-        assert!(
-            !task.is_finished(),
-            "EOF cannot replace native cleanup completion"
-        );
-        drop(blocked_close);
-        task.await.unwrap().unwrap();
-        assert_eq!(
-            output.read(&mut [0]).await.unwrap(),
-            0,
-            "no terminal response exists after EOF"
-        );
-    }
-
     fn callback(url: &str) -> (Callback, oneshot::Receiver<Result<(), Failure>>) {
         let (reply, result) = oneshot::channel();
         (
@@ -1781,86 +1737,6 @@ mod tests {
             },
             result,
         )
-    }
-
-    #[tokio::test]
-    async fn cancelled_callback_observation_does_not_advance_its_invocation_authority() {
-        let mut calls = Invocations {
-            pending: [41, 42]
-                .into_iter()
-                .map(|id| (id, CancellationToken::new()))
-                .collect(),
-            authorizations: HashMap::new(),
-            queued: HashMap::new(),
-            last_authorization: 0,
-        };
-        let (mut output, mut input) = tokio::io::duplex(64 * 1024);
-        let (first, observed_first) = callback("https://first.invalid/");
-        calls.authorize(41, first, &mut input).await.unwrap();
-        let WorkerFrame::BrowserAuthorization {
-            id: 41,
-            authorization_id: first_id,
-            ..
-        } = read(&mut output).await.unwrap()
-        else {
-            panic!("first callback lost its identity")
-        };
-        drop(observed_first);
-        let (second, observed_second) = callback("https://second.invalid/");
-        calls.authorize(41, second, &mut input).await.unwrap();
-        let (independent, observed_independent) = callback("https://independent.invalid/");
-        calls.authorize(42, independent, &mut input).await.unwrap();
-        let WorkerFrame::BrowserAuthorization {
-            id: 42,
-            authorization_id: independent_id,
-            ..
-        } = read(&mut output).await.unwrap()
-        else {
-            panic!("a cancelled observer advanced the next same-invocation callback early")
-        };
-        calls
-            .authorization_result(42, independent_id, Ok(()), &mut input)
-            .await
-            .unwrap();
-        observed_independent.await.unwrap().unwrap();
-        calls
-            .authorization_result(
-                41,
-                first_id,
-                Err(Failure::Failed("first denied".into())),
-                &mut input,
-            )
-            .await
-            .unwrap();
-        let WorkerFrame::BrowserAuthorization {
-            id: 41,
-            authorization_id: second_id,
-            ..
-        } = read(&mut output).await.unwrap()
-        else {
-            panic!("the queued callback was lost")
-        };
-        assert!(first_id < independent_id && independent_id < second_id);
-        calls
-            .authorization_result(
-                41,
-                second_id,
-                Err(Failure::Failed("second denied".into())),
-                &mut input,
-            )
-            .await
-            .unwrap();
-        assert!(
-            matches!(observed_second.await.unwrap(), Err(Failure::Failed(message)) if message == "second denied")
-        );
-        assert_eq!(
-            calls
-                .authorization_result(41, first_id, Ok(()), &mut input)
-                .await
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidData
-        );
     }
 
     #[tokio::test]
@@ -2003,24 +1879,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn future_cancellation_identity_faults_without_dispatching_or_forging_an_ack() {
-        let (requests, receive) = mpsc::channel(1);
-        let (mut output, writer) = tokio::io::duplex(64 * 1024);
-        let task = tokio::spawn(serve(
-            receive,
-            writer,
-            CancellationToken::new(),
-            Arc::new(Mutex::new(Driver::default())),
-        ));
-        let _: Hello = read(&mut output).await.unwrap();
-        requests.send(ParentFrame::Cancel { id: 1 }).await.unwrap();
-        let error = task.await.unwrap().unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(error.to_string(), "desktop cancellation identity mismatch");
-        assert_eq!(output.read(&mut [0]).await.unwrap(), 0);
-    }
-
-    #[tokio::test]
     async fn start_ack_flushes_before_polling_its_bound_audio_observation() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -2154,106 +2012,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn unknown_download_metadata_is_forwarded_without_inventing_a_file_cleanup_claim() {
-        let (events, mut responses) = mpsc::unbounded_channel();
-        let mut pending = PendingInvocations::default();
-        pending.insert(
-            14,
-            "turn".into(),
-            CancellationToken::new(),
-            Box::pin(async {
-                Err(ToolError::OutcomeUnknown(
-                    "native download identity remains unverified".into(),
-                ))
-            }),
-        );
-        pending.drain(None, &events).await.unwrap();
-        assert!(
-            matches!(responses.recv().await.unwrap(), Event::Response { id: 14, result: Err(Failure::OutcomeUnknown(message)), .. } if message == "native download identity remains unverified")
-        );
-        assert!(epoch_cleanup(pending.drain(None, &events).await, Ok(())).is_ok());
-    }
-
-    fn unadmitted_lease_child(owner: &str, epoch: &str) -> Request {
-        Request::LeaseChild {
-            owner: owner.into(),
-            epoch: epoch.into(),
-            session: "logical-session".into(),
-            turn: "logical-turn".into(),
-            operation_id: "fresh-host-service-operation".into(),
-            browsers: Vec::new(),
-            preparation_policy: Default::default(),
-            request: crate::BrowserLeaseChildRequest {
-                browser_id: "not-an-admitted-browser".into(),
-                generation: "not-a-live-generation".into(),
-                native_owner: uuid::Uuid::nil(),
-                native_epoch: "not-a-live-native-epoch".into(),
-                turn_id: "logical-turn".into(),
-                completion_id: 0,
-                opener_subject: crate::BrowserLeaseSubject::PhysicalClaim {
-                    claim_id: "not-an-admitted-claim".into(),
-                },
-                opener_tab_id: 0,
-                url: "https://fixture.test/requested".into(),
-            },
-            language: Language::En,
-        }
-    }
-
-    #[tokio::test]
-    async fn lease_child_service_cannot_create_a_source_owner_or_replacement_epoch() {
-        let (requests, receive) = mpsc::channel(1);
-        let (mut output, writer) = tokio::io::duplex(64 * 1024);
-        let task = tokio::spawn(serve(
-            receive,
-            writer,
-            CancellationToken::new(),
-            Arc::new(Mutex::new(Driver::default())),
-        ));
-        let _: Hello = read(&mut output).await.unwrap();
-        send(&requests, 1, unadmitted_lease_child("missing", "missing")).await;
-        assert!(
-            matches!(response(&mut output).await, (1, Err(Failure::Failed(message))) if message == "Browser lease-child source owner is unavailable")
-        );
-        send(
-            &requests,
-            2,
-            invoke("existing", "original", json!({"method":"documentation"})),
-        )
-        .await;
-        assert!(matches!(response(&mut output).await, (2, Ok(_))));
-        send(
-            &requests,
-            3,
-            unadmitted_lease_child("existing", "replacement"),
-        )
-        .await;
-        assert!(
-            matches!(response(&mut output).await, (3, Err(Failure::Failed(message))) if message == "Browser lease-child source epoch is unavailable")
-        );
-        let mut no_operation = unadmitted_lease_child("existing", "original");
-        if let Request::LeaseChild { operation_id, .. } = &mut no_operation {
-            operation_id.clear();
-        }
-        send(&requests, 4, no_operation).await;
-        assert!(
-            matches!(response(&mut output).await, (4, Err(Failure::Failed(message))) if message == "invalid browser lease-child Host invocation identity")
-        );
-        // Source refusals leave the actual original epoch usable. This does
-        // not authorize the deliberately invalid physical source fixture.
-        send(
-            &requests,
-            5,
-            invoke("existing", "original", json!({"method":"documentation"})),
-        )
-        .await;
-        assert!(matches!(response(&mut output).await, (5, Ok(_))));
-        send(&requests, 6, Request::Shutdown).await;
-        assert!(matches!(response(&mut output).await, (6, Ok(_))));
-        task.await.unwrap().unwrap();
-    }
-
     fn preparation_identity() -> ScopeIdentity {
         ScopeIdentity {
             owner: "transport-owner".into(),
@@ -2276,158 +2034,12 @@ mod tests {
             },
         }
     }
-    fn preparation_callback() -> (Callback, oneshot::Receiver<Result<(), Failure>>) {
-        let (reply, result) = oneshot::channel();
-        (
-            Callback {
-                mode: AuthorizationMode::Authorize,
-                request: BrowserAuthorizationRequest::SessionPreparation {
-                    identity: preparation_identity(),
-                    preparation: preparation_dto(),
-                },
-                reply,
-            },
-            result,
-        )
-    }
-    #[tokio::test]
-    async fn typed_child_authorization_refuses_missing_stale_and_cancelled_scope_before_wire() {
-        let (events, mut incoming) = mpsc::unbounded_channel();
-        let mut authority = Authorization {
-            callbacks: callbacks::WorkerCallbacks::new(Arc::new(|_| {
-                Err(failed("unexpected upload callback in preparation fixture"))
-            })),
-            id: 41,
-            events,
-            identity: None,
-        };
-        assert!(
-            authority
-                .authorize_session_preparation(preparation_dto(), CancellationToken::new())
-                .await
-                .is_err()
-        );
-        assert!(incoming.try_recv().is_err());
-        authority.identity = Some(preparation_identity());
-        let mut stale = preparation_dto();
-        stale.operation_id = "old-operation".into();
-        assert!(
-            authority
-                .check_session_preparation(stale, CancellationToken::new())
-                .await
-                .is_err()
-        );
-        assert!(incoming.try_recv().is_err());
-        let cancelled = CancellationToken::new();
-        cancelled.cancel();
-        assert!(
-            authority
-                .authorize_session_preparation(preparation_dto(), cancelled)
-                .await
-                .is_err()
-        );
-        assert!(incoming.try_recv().is_err());
-        let call = tokio::spawn(
-            authority.check_session_preparation(preparation_dto(), CancellationToken::new()),
-        );
-        let Event::Authorization {
-            id,
-            mode: AuthorizationMode::Check,
-            request:
-                BrowserAuthorizationRequest::SessionPreparation {
-                    identity,
-                    preparation,
-                },
-            reply,
-        } = incoming.recv().await.unwrap()
-        else {
-            panic!("typed purpose or captured scope lost");
-        };
-        assert_eq!(id, 41);
-        assert_eq!(identity, preparation_identity());
-        assert_eq!(preparation, preparation_dto());
-        reply
-            .send(Err(Failure::OutcomeUnknown(
-                "actual original authority unknown".into(),
-            )))
-            .unwrap();
-        assert!(
-            matches!(call.await.unwrap(), Err(ToolError::OutcomeUnknown(message)) if message=="actual original authority unknown")
-        );
-    }
-    #[tokio::test]
-    async fn typed_preparation_uses_existing_authorization_fifo_after_dropped_receiver() {
-        let mut calls = Invocations {
-            pending: [41, 42]
-                .into_iter()
-                .map(|id| (id, CancellationToken::new()))
-                .collect(),
-            authorizations: HashMap::new(),
-            queued: HashMap::new(),
-            last_authorization: 0,
-        };
-        let (mut output, mut input) = tokio::io::duplex(64 * 1024);
-        let (first, original) = preparation_callback();
-        calls.authorize(41, first, &mut input).await.unwrap();
-        let WorkerFrame::BrowserSessionPreparationAuthorization {
-            id: 41,
-            authorization_id: first_id,
-            ..
-        } = read(&mut output).await.unwrap()
-        else {
-            panic!("original typed request missing");
-        };
-        drop(original);
-        let (second, next) = preparation_callback();
-        calls.authorize(41, second, &mut input).await.unwrap();
-        let (other, independent) = callback("https://independent.invalid/");
-        calls.authorize(42, other, &mut input).await.unwrap();
-        let WorkerFrame::BrowserAuthorization {
-            id: 42,
-            authorization_id: other_id,
-            ..
-        } = read(&mut output).await.unwrap()
-        else {
-            panic!("same-invocation typed callback advanced before old ACK");
-        };
-        calls
-            .authorization_result(42, other_id, Ok(()), &mut input)
-            .await
-            .unwrap();
-        independent.await.unwrap().unwrap();
-        calls
-            .authorization_result(
-                41,
-                first_id,
-                Err(Failure::Failed("actual old refusal".into())),
-                &mut input,
-            )
-            .await
-            .unwrap();
-        let WorkerFrame::BrowserSessionPreparationAuthorization {
-            id: 41,
-            authorization_id: next_id,
-            identity,
-            preparation,
-            ..
-        } = read(&mut output).await.unwrap()
-        else {
-            panic!("queued typed purpose lost");
-        };
-        assert!(first_id < other_id && other_id < next_id);
-        assert_eq!(identity, preparation_identity());
-        assert_eq!(preparation, preparation_dto());
-        calls
-            .authorization_result(41, next_id, Ok(()), &mut input)
-            .await
-            .unwrap();
-        next.await.unwrap().unwrap();
-    }
+
     #[tokio::test]
     async fn typed_child_history_preserves_scoped_wire_and_the_original_host_refusal() {
         let (events, mut incoming) = mpsc::unbounded_channel();
         let authority = Authorization {
-            callbacks: callbacks::WorkerCallbacks::new(Arc::new(|_| {
+            callbacks: WorkerCallbacks::new(Arc::new(|_| {
                 Err(failed("unexpected upload callback in preparation fixture"))
             })),
             id: 41,

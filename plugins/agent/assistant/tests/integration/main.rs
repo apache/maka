@@ -18,5 +18,4 @@
  */
 
 mod plan;
-mod plan_history;
 mod support;

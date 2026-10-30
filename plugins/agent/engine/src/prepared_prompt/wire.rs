@@ -22,6 +22,7 @@ use super::PreparedPrompt;
 use crate::RunError;
 use maka_agent_facts::{language::Language, model::prompt_source::PreparedWire};
 use maka_model::{ProviderConfig, ToolDefinition, WireEncoding};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 mod backed;
 
@@ -34,7 +35,7 @@ pub(super) async fn compile(
     language: Language,
     provider: &ProviderConfig,
     options: &serde_json::Value,
-    tools: &[ToolDefinition],
+    tools: &[Arc<ToolDefinition>],
     cancellation: &CancellationToken,
 ) -> Result<(), RunError> {
     if cancellation.is_cancelled() {

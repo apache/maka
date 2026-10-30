@@ -17,123 +17,17 @@
  * under the License.
  */
 
-//! Fixture-only prepared source. Semantic reads fail so live and loopback tests
-//! cannot accidentally exercise the explicit in-memory fallback path.
-use maka_agent_facts::model::prompt_source::{Next, NextWire, WireMetadataCursor, WirePosition};
+//! Prepared wire requests fail immediately if the executor opens semantic history.
 use maka_model::{
-    ModelError, ModelRequest,
-    prompt::{Message, Prompt, PromptCursor, PromptSource, WireCursor, WireSource},
+    ModelRequest,
+    prompt::{Message, Prompt, PromptCursor, PromptSource},
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
 
-#[derive(Default)]
-struct Counters {
-    semantic: AtomicUsize,
-    wire_bytes: AtomicUsize,
-}
-pub(crate) struct Reads(Arc<Counters>);
-impl Reads {
-    pub(crate) fn assert_wire_only(&self) {
-        assert_eq!(
-            self.0.semantic.load(Ordering::SeqCst),
-            0,
-            "prepared request must never open semantic history"
-        );
-        assert!(
-            self.0.wire_bytes.load(Ordering::SeqCst) > 0,
-            "provider must consume the prepared body"
-        );
-    }
-}
-struct Source {
-    wire: Arc<dyn WireSource>,
-    counters: Arc<Counters>,
-}
-struct FailedCursor;
-impl PromptSource for Source {
+struct FailedSource;
+impl PromptSource for FailedSource {
     fn open(&self) -> Box<dyn PromptCursor> {
-        self.counters.semantic.fetch_add(1, Ordering::SeqCst);
-        Box::new(FailedCursor)
-    }
-}
-impl PromptCursor for FailedCursor {
-    fn next(&mut self) -> Next<'_> {
-        Box::pin(async {
-            Err(ModelError::Adapter(
-                "fixture semantic history must remain unread".into(),
-            ))
-        })
-    }
-}
-struct Cursor {
-    inner: Box<dyn WireCursor>,
-    counters: Arc<Counters>,
-}
-impl WireCursor for Cursor {
-    fn budget(
-        &self,
-    ) -> Option<Arc<dyn maka_agent_facts::model::prompt_source::source::SourceBudget>> {
-        self.inner.budget()
-    }
-    fn next(&mut self) -> NextWire<'_> {
-        Box::pin(async move {
-            let chunk = self.inner.next().await?;
-            if let Some(chunk) = &chunk {
-                self.counters
-                    .wire_bytes
-                    .fetch_add(chunk.bytes.len(), Ordering::SeqCst);
-            }
-            Ok(chunk)
-        })
-    }
-}
-impl WireSource for Source {
-    fn source_identities(
-        &self,
-    ) -> Option<Arc<dyn maka_agent_facts::model::prompt_source::SourceIdentityLookup>> {
-        self.wire.source_identities()
-    }
-    fn document_count(&self) -> usize {
-        self.wire.document_count()
-    }
-    fn document(
-        &self,
-        index: usize,
-        budget: Arc<dyn maka_agent_facts::model::prompt_source::source::SourceBudget>,
-    ) -> maka_agent_facts::model::prompt_source::NextWireDocument<'_> {
-        self.wire.document(index, budget)
-    }
-    fn budget_factory(
-        &self,
-    ) -> Option<Arc<dyn maka_agent_facts::model::prompt_source::source::SourceBudgetFactory>> {
-        self.wire.budget_factory()
-    }
-    fn acquire_budget(&self) -> maka_agent_facts::model::prompt_source::AcquireWireBudget<'_> {
-        self.wire.acquire_budget()
-    }
-    fn open(&self, start: usize) -> Box<dyn WireCursor> {
-        Box::new(Cursor {
-            inner: self.wire.open(start),
-            counters: self.counters.clone(),
-        })
-    }
-    fn open_at(&self, position: WirePosition) -> Option<Box<dyn WireCursor>> {
-        Some(Box::new(Cursor {
-            inner: self.wire.open_at(position)?,
-            counters: self.counters.clone(),
-        }))
-    }
-    fn open_metadata(&self, start: usize) -> Option<Box<dyn WireMetadataCursor>> {
-        self.wire.open_metadata(start)
-    }
-    fn prefix_identity(
-        &self,
-        count: usize,
-    ) -> maka_agent_facts::model::prompt_source::PrefixIdentity<'_> {
-        self.wire.prefix_identity(count)
+        panic!("prepared request must not open semantic history")
     }
 }
 fn resources() -> maka_model::ModelPreparationResources {
@@ -146,7 +40,7 @@ fn resources() -> maka_model::ModelPreparationResources {
     .unwrap()
 }
 
-pub(crate) async fn prepare_input(input: &mut ModelRequest) -> Reads {
+pub(crate) async fn prepare_input(input: &mut ModelRequest) {
     let messages = input
         .prompt
         .memory_messages()
@@ -181,19 +75,13 @@ pub(crate) async fn prepare_input(input: &mut ModelRequest) -> Reads {
         )
         .await
         .unwrap();
-    let counters = Arc::new(Counters::default());
-    let source = Arc::new(Source {
-        wire: wire.source,
-        counters: counters.clone(),
-    });
     input.prompt = Prompt::new(
-        source.clone(),
+        Arc::new(FailedSource),
         logical.identity(),
         logical.len(),
         logical.breakdown().clone(),
     )
     .with_normalization(input.provider.kind.clone())
-    .with_wire(format, codec, wire.identity, source)
+    .with_wire(format, codec, wire.identity, wire.source)
     .with_instructions(instructions);
-    Reads(counters)
 }

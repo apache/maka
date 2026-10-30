@@ -44,3 +44,9 @@ MAKA_NSH_EVIDENCE=/tmp/maka-nsh-evidence cargo nextest run --locked --workspace 
 This runs a real Host test; it is not a standalone type generator or a TypeScript check of the application.
 
 Use **Pin conversation** in a conversation’s action menu to keep it in the **Pinned** group at the top of the browser. **Unpin conversation** returns it to the ordinary list. The Host stores the choice and orders pages consistently across interfaces and restarts.
+
+**Settings → Skills** discovers skills from a GitHub `owner/repository`, a Git URL or GitHub subdirectory URL, or a directory on the connected Host. Select the skills and their installation location: global or project `.agents/skills` or `.maka/skills`. Same-named skills resolve in this order: project `.maka`, project `.agents`, global `.maka`, global `.agents`. Cards retain every physical instance and indicate which one is effective. Deleting an override reveals the next instance.
+
+Only skills installed through Maka have an update button. Updating replaces their entire directory from the recorded source, including resources, and overwrites local edits. Other skills in the four standard directories can still be inspected and deleted. The source registry lives in the Host database; no npx lockfile or private copy of the skills is created.
+
+**Settings → MCP servers** manages the four corresponding `mcp.json` files through command/HTTP forms. It preserves other entries and custom fields. Selecting a project does not create a conversation. Downloads, file changes and registrations run on the connected Host; saving a project MCP file does not grant it trust.

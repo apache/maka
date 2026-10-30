@@ -159,7 +159,7 @@ impl Owner {
             .map_err(|_| "agent_preferences_unavailable")?;
         let language = self.resolve_language(&snapshot);
         drop(runs);
-        let mcp_revision = self
+        let selected_catalog = self
             .mcp_projects
             .capture(&session.configuration.workspace)
             .await?;
@@ -175,9 +175,9 @@ impl Owner {
             return Err("graph_background_conflict".into());
         }
 
-        let selected_catalog = self.mcp_projects.catalog(mcp_revision.as_deref())?;
         let mut basis = MessageBasis {
-            mcp_revision,
+            mcp_revision: selected_catalog.revision.clone(),
+            mcp_catalog: Some(selected_catalog.clone()),
             language,
             compaction_prompt: Some(self.effective_compaction_prompt(
                 session.configuration.compaction_prompt.as_deref(),
@@ -192,9 +192,13 @@ impl Owner {
             background: Some(target.clone()),
             internal_tools: selected_catalog.definitions.clone(),
             internal_bindings: selected_catalog.bindings.clone(),
-            behavior: self
-                .capture_behavior(&session.configuration.workspace, &snapshot, language)
-                .await?,
+            behavior: self.bot_behavior(
+                &target.session_id,
+                self.capture_behavior(&session.configuration.workspace, &snapshot, language)
+                    .await?,
+                &snapshot,
+                language,
+            ),
             model: Some(source.accepted),
             executor: None,
             workspace: session.configuration.workspace,
@@ -417,6 +421,7 @@ impl Owner {
                             &session_id,
                             &basis.fingerprint,
                             &StoredSessionConfiguration {
+                                parent_session_id: Some(source_session.clone()),
                                 backend: None,
                                 compaction_prompt: None,
                                 collaboration_mode: CollaborationMode::Agent,

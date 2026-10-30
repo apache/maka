@@ -72,7 +72,7 @@ impl EventLog {
                         // Interaction facts wake observers without advancing the execution cursor.
                         commits.metadata();
                         if approval_ready {
-                            commits.native_approvals();
+                            commits.activations();
                         }
                     } else {
                         tx.rollback().await?;

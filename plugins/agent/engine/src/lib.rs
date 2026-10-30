@@ -26,6 +26,7 @@ mod executor;
 pub use executor::ExecutorInput;
 mod handoff;
 pub use handoff::{HandoffGate, HandoffReservation, HeldHandoff, PendingSeal};
+mod frozen_request;
 mod history;
 mod interactions;
 mod model_attempt;
@@ -37,6 +38,10 @@ pub mod pricing;
 mod request_composition;
 pub use history::project as project_model_history;
 mod prune;
+#[cfg(any(test, feature = "test-support"))]
+pub mod retry_fixture;
+mod retry_resume;
+pub use retry_resume::RetryResumeInput;
 mod resume;
 pub use resume::{NativeApprovalExecutor, ResumeContinuation, ResumeInput};
 mod runner;
@@ -356,9 +361,10 @@ impl RunContext {
             let effects = Arc::new(effects);
             let result = cleanup
                 .scope(async {
-                    let result = std::panic::AssertUnwindSafe(async {
+                    // Keep the worker future out of the tracking and cleanup wrapper frames.
+                    let result = std::panic::AssertUnwindSafe(Box::pin(async {
                         run(worker_cancellation.clone(), admitted, effects.clone()).await
-                    })
+                    }))
                     .catch_unwind()
                     .await
                     .unwrap_or_else(|_| {
@@ -510,7 +516,8 @@ impl Engine {
     }
 
     /// Observe replay safety without reserving a source or creating a claim.
-    /// Admission validates the claim against current canonical facts.
+    /// Model continuation observation does not require a live tool catalog.
+    /// Admission validates tool availability and the claim against current canonical facts.
     pub async fn check_continuation(
         &self,
         store: &SessionStore,
@@ -546,7 +553,7 @@ impl Engine {
                 &context,
                 &input,
                 source,
-                tools,
+                matches!(input.work, RunWork::Handoff { .. }).then_some(tools),
                 &cancellation,
                 &shared.loaded_snapshot(&input.invocation.session_id)?,
             )

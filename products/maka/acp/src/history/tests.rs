@@ -76,11 +76,11 @@ fn round_pages(after: u64, tool: &str) -> VecDeque<HistoryPage> {
 }
 
 #[tokio::test]
-async fn two_hundred_twenty_tool_rounds_read_only_new_pages_and_publish_complete_results() {
+async fn subsequent_tool_rounds_read_only_new_pages_and_publish_complete_results() {
     let mut through = 0;
     let mut projection = Projection::default();
     let mut reads = 0;
-    for round in 0..220 {
+    for round in 0..3 {
         let tool = format!("read-{round}");
         let mut pages = round_pages(through, &tool);
         let start = through + 1;

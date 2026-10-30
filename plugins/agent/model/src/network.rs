@@ -57,13 +57,33 @@ impl Transport for Call {
                 biased;
                 _ = self.cancellation.cancelled() => {
                     stop.cancel();
+                    let cleanup_started = tokio::time::Instant::now();
                     tokio::time::timeout(std::time::Duration::from_secs(11), &mut pending).await
-                        .map_err(|_| cleanup_unconfirmed())??
+                        .map_err(|_| {
+                            tracing::error!(
+                                stage = "model_call_cancel_drain",
+                                outcome = "timeout",
+                                timeout_ms = 11000_u64,
+                                elapsed_ms = cleanup_started.elapsed().as_millis(),
+                                "cleanup unconfirmed"
+                            );
+                            cleanup_unconfirmed()
+                        })??
                 },
                 _ = cancellation.cancelled() => {
                     stop.cancel();
+                    let cleanup_started = tokio::time::Instant::now();
                     tokio::time::timeout(std::time::Duration::from_secs(11), &mut pending).await
-                        .map_err(|_| cleanup_unconfirmed())??
+                        .map_err(|_| {
+                            tracing::error!(
+                                stage = "model_request_cancel_drain",
+                                outcome = "timeout",
+                                timeout_ms = 11000_u64,
+                                elapsed_ms = cleanup_started.elapsed().as_millis(),
+                                "cleanup unconfirmed"
+                            );
+                            cleanup_unconfirmed()
+                        })??
                 },
                 response = &mut pending => response?,
             };

@@ -55,6 +55,7 @@ impl Messages {
     }
 }
 
+use super::http_header::{ArrayKey, Header, Prefix};
 use super::wire::source::{FragmentCursor, SourceFragment};
 use crate::prompt::{PreparedWire, WireChunk, WireCursor, WireFormat, WireSource};
 use bytes::Bytes;
@@ -70,7 +71,6 @@ use maka_provider_protocol::anthropic::prompt::{
     },
     streaming::{Context, MessageInfo, Metadata, Selection, StreamOptions},
 };
-use maka_provider_protocol::json_stream::JsonChunks;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -641,7 +641,7 @@ enum AfterDrain {
 }
 struct State {
     wire: PreparedWire,
-    head: Option<std::iter::Peekable<JsonChunks>>,
+    head: Option<Prefix>,
     system: Option<Lane>,
     system_end: usize,
     system_first: bool,
@@ -734,22 +734,11 @@ impl State {
             if self.finished {
                 return Ok(None);
             }
-            if let Some(head) = &mut self.head
-                && let Some(mut bytes) = head.next()
-            {
-                if head.peek().is_none() {
-                    assert_eq!(bytes.pop(), Some(b'}'));
-                    if bytes != b"{" {
-                        bytes.push(b',');
-                    }
-                    bytes.extend_from_slice(if self.system.is_some() {
-                        b"\"system\":["
-                    } else {
-                        b"\"messages\":["
-                    });
-                    self.head = None;
+            if let Some(head) = &mut self.head {
+                if let Some(bytes) = head.next() {
+                    return Ok(Some(bytes));
                 }
-                return Ok(Some(bytes.into()));
+                self.head = None;
             }
 
             if let Some(system) = &mut self.system {
@@ -813,7 +802,7 @@ impl State {
 }
 
 pub(super) fn body(
-    fields: Value,
+    fields: Header,
     wire: PreparedWire,
     context: Arc<Context>,
 ) -> Result<http::RequestBody, ModelError> {
@@ -822,7 +811,11 @@ pub(super) fn body(
         .then(|| Lane::new(&wire, context.clone(), Selection::System))
         .transpose()?;
     let state = State {
-        head: Some(JsonChunks::new(fields).peekable()),
+        head: Some(fields.open(if system.is_some() {
+            ArrayKey::System
+        } else {
+            ArrayKey::Messages
+        })),
         system,
         system_end: context.top_system().map_or(0, |range| range.end),
         system_first: true,

@@ -107,7 +107,7 @@ impl Owner {
         let language = self.resolve_language(&snapshot);
         let text = render(language);
         drop(runs);
-        let mcp_revision = self.mcp_projects.capture(&route.workspace).await?;
+        let selected_catalog = self.mcp_projects.base.clone();
         let runs = self.runs.lock().await;
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
@@ -121,9 +121,9 @@ impl Owner {
             return Ok(None);
         }
 
-        let selected_catalog = self.mcp_projects.catalog(mcp_revision.as_deref())?;
         let mut basis = MessageBasis {
-            mcp_revision,
+            mcp_revision: None,
+            mcp_catalog: None,
             language,
             compaction_prompt: Some(self.effective_compaction_prompt(
                 session.configuration.compaction_prompt.as_deref(),
@@ -144,9 +144,13 @@ impl Owner {
             tools: self.tool_basis.clone(),
             internal_tools: selected_catalog.definitions.clone(),
             internal_bindings: selected_catalog.bindings.clone(),
-            behavior: self
-                .capture_behavior(&route.workspace, &snapshot, language)
-                .await?,
+            behavior: self.bot_behavior(
+                &source.session_id,
+                self.capture_behavior(&route.workspace, &snapshot, language)
+                    .await?,
+                &snapshot,
+                language,
+            ),
         };
         self.prepare_plan_behavior(&source.session_id, &mut basis)
             .await?;
@@ -225,10 +229,21 @@ impl Owner {
             .message_admission(session, message)
             .await
             .map_err(|_| "agent_queue_unavailable")?;
-        if let Some(original) = &original
-            && original != admission
-        {
-            return Err("agent_message_identity_changed".into());
+        if let Some(original) = &original {
+            let mut descriptor = admission.clone();
+            let mut expected: MessageBasis =
+                serde_json::from_value(descriptor.execution.basis.clone())
+                    .map_err(|error| error.to_string())?;
+            let accepted: MessageBasis = serde_json::from_value(original.execution.basis.clone())
+                .map_err(|error| error.to_string())?;
+            expected.mcp_revision = accepted.mcp_revision;
+            expected.internal_tools = accepted.internal_tools;
+            expected.internal_bindings = accepted.internal_bindings;
+            descriptor.execution.basis =
+                serde_json::to_value(expected).map_err(|error| error.to_string())?;
+            if *original != descriptor {
+                return Err("agent_message_identity_changed".into());
+            }
         }
         let cancellation = self.stop.child_token();
         {
@@ -254,7 +269,7 @@ impl Owner {
                 Err(error) if error == "agent_session_unavailable" => return Ok(false),
                 Err(error) => return Err(error),
             };
-            let basis: MessageBasis = serde_json::from_value(admission.execution.basis.clone())
+            let mut basis: MessageBasis = serde_json::from_value(admission.execution.basis.clone())
                 .map_err(|_| "agent_message_basis_invalid")?;
             self.validate_background(&basis).await?;
             basis.validate_background_target(&current)?;
@@ -264,11 +279,20 @@ impl Owner {
             {
                 return Ok(false);
             }
+            // Deferred work captures runtime tools when accepted; retries keep that original basis.
+            let catalog = self.mcp_projects.capture(&basis.workspace).await?;
+            basis.mcp_revision = catalog.revision.clone();
+            basis.mcp_catalog = Some(catalog.clone());
+            basis.internal_tools = catalog.definitions.clone();
+            basis.internal_bindings = catalog.bindings.clone();
+            let mut accepted = admission.clone();
+            accepted.execution.basis =
+                serde_json::to_value(&basis).map_err(|error| error.to_string())?;
             self.store
                 .session(&admission.invocation.session_id)
                 .await
                 .map_err(|error| error.to_string())?
-                .admit_message(admission.clone())
+                .admit_message(accepted)
                 .await
                 .map_err(|_| "agent_admission_unknown")?;
             Ok(true)

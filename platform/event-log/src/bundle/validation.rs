@@ -106,7 +106,7 @@ async fn replay(
             .install(staged, original, sequence - 1, positions)
             .await?;
         let json = match positions {
-            Some(positions) => positions.json(original, sequence, json).await?,
+            Some(positions) => positions.json(original, json).await?,
             None => json,
         };
         let event: RuntimeEvent = serde_json::from_str(&json)?;
@@ -208,6 +208,7 @@ async fn request(
     let Fact::ModelRequested {
         source_scope,
         source_high_water,
+        source_capture,
         source_digest,
         checkpoint_event_id,
         effective_source_digest,
@@ -221,7 +222,10 @@ async fn request(
     if *purpose == ModelPurpose::Main {
         context::safety::model_source_unchanged(db, &selection, event).await?;
     }
-    if *source_high_water >= sequence || *source_scope != selection.scope {
+    if source_capture.publication_watermark >= sequence
+        || *source_high_water > source_capture.publication_watermark
+        || *source_scope != selection.scope
+    {
         return Err(invalid(
             "request source is not its preceding selected history",
         ));
@@ -237,7 +241,13 @@ async fn request(
     let effective = effective_source_digest
         .as_deref()
         .ok_or_else(|| invalid("request lacks effective source evidence"))?;
-    crate::archive::validate_summary(db, &source, effective, sequence).await
+    crate::archive::validate_summary(
+        db,
+        &source,
+        effective,
+        source_capture.publication_watermark + 1,
+    )
+    .await
 }
 
 fn invalid(message: &str) -> StoreError {

@@ -37,6 +37,12 @@ export interface ConversationShell {
   showSidebar(): void;
   hideSidebar(): void;
   dismissRoute(): boolean;
+  /** Opens a conversation in a second pane beside this one, where the shell has one. */
+  openBeside?(sessionId: string): void;
+  /** The conversation open in the pane beside this one, if any. */
+  besideSessionId?(): string | null;
+  /** Present on a pane the shell opened beside another: closes that pane. */
+  closePane?(): void;
 }
 
 export interface ConversationSessionHandle {

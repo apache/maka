@@ -60,6 +60,7 @@ struct Observation {
     cancellation: CancellationToken,
 }
 struct Owned {
+    exports: Arc<BTreeMap<String, Binding>>,
     imports: Arc<BTreeMap<String, Vec<Binding>>>,
     resource: Resource,
     close: Option<Close>,
@@ -785,6 +786,7 @@ impl Owner {
         self.owned.insert(
             instance.identity.clone(),
             Owned {
+                exports: Arc::default(),
                 imports: Arc::new(imports),
                 resource,
                 close: None,
@@ -795,6 +797,24 @@ impl Owner {
                 vm: None,
             },
         );
+        let exports = entry
+            .exports
+            .iter()
+            .map(|(name, declaration)| {
+                let capability = self
+                    .runtime
+                    .own_export(&activation, name)
+                    .map_err(|e| e.to_string())?;
+                Ok((
+                    name.clone(),
+                    self.capture_binding(capability, Arc::new(declaration.contract.clone()))?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        self.owned
+            .get_mut(&instance.identity)
+            .expect("initializing owner")
+            .exports = Arc::new(exports);
         match &entry.implementation {
             Implementation::Native { implementation } => {
                 let factory = self.native.0[implementation].clone();
@@ -805,6 +825,7 @@ impl Owner {
                     services: NativeServices {
                         activation: activation.clone(),
                         imports: self.owned[activation.instance()].imports.clone(),
+                        exports: self.owned[activation.instance()].exports.clone(),
                         dispatch: self.dispatch.clone(),
                         issuer: self.issuer.clone(),
                         preparation_resources: self.preparation_resources.clone(),
@@ -1004,62 +1025,75 @@ impl Owner {
                     .map_err(|e| e.to_string())?
                     .contract
                     .clone();
-                let instance = self
-                    .runtime
-                    .instance(capability.provider())
-                    .map_err(|e| e.to_string())?;
-                let owned = self
-                    .owned
-                    .get(capability.provider().instance())
-                    .ok_or("provider has no captured imports")?;
-                // Use the actual activation's retained plan and captured imports,
-                // never the desired plan or a newly resolved dependency. Child
-                // digests carry the dependency closure without retaining values.
-                let imports: BTreeMap<_, Vec<_>> = owned
-                    .imports
-                    .iter()
-                    .map(|(name, bindings)| {
-                        (
-                            name,
-                            bindings.iter().map(Binding::execution_basis).collect(),
-                        )
-                    })
-                    .collect();
-                let native = owned
-                    .native_owner
-                    .as_ref()
-                    .map(|owner| {
-                        std::panic::catch_unwind(AssertUnwindSafe(|| owner.execution_basis()))
-                            .map(|basis| match basis {
-                                Some(facts) => serde_json::json!({"facts": facts}),
-                                None => {
-                                    serde_json::json!({"activation": capability.provider().epoch()})
-                                }
-                            })
-                            .map_err(|_| "native execution basis panicked")
-                    })
-                    .transpose()?;
-                let mut basis = serde_json::json!({
-                    "identity": instance.identity, "parent": instance.parent,
-                    "package": instance.package, "disabled": instance.disabled,
-                    "configuration": instance.configuration, "entry": instance.entry,
-                    "bindings": instance.bindings, "exports": instance.exports,
-                    "imports": imports, "export": capability.export(), "contract": contract.as_ref(),
-                    "native": native,
-                });
-                basis.sort_all_objects();
-                let digest = maka_agent_facts::artifact::content_digest(
-                    &serde_json::to_vec(&basis).map_err(|e| e.to_string())?,
-                );
-                Ok(Binding(
-                    capability,
-                    contract,
-                    digest.into(),
-                    Arc::new(instance.package.clone()),
-                    Arc::new(AtomicBool::new(false)),
-                ))
+                self.capture_binding(capability, contract)
             })
             .collect()
+    }
+    fn capture_binding(
+        &self,
+        capability: Capability<Service>,
+        contract: Arc<Contract>,
+    ) -> Result<Binding> {
+        let instance = self
+            .runtime
+            .instance(capability.provider())
+            .map_err(|e| e.to_string())?;
+        let owned = self
+            .owned
+            .get(capability.provider().instance())
+            .ok_or("provider has no captured imports")?;
+        // Use the actual activation's retained plan and captured imports,
+        // never the desired plan or a newly resolved dependency. Child
+        // digests carry the dependency closure without retaining values.
+        let imports: BTreeMap<_, Vec<_>> = owned
+            .imports
+            .iter()
+            .map(|(name, bindings)| {
+                (
+                    name,
+                    bindings.iter().map(Binding::execution_basis).collect(),
+                )
+            })
+            .collect();
+        // Own exports follow the caller's logical owner across activations;
+        // capability epochs still fence admission to the original activation.
+        let native = if capability.consumer() == capability.provider() {
+            None
+        } else {
+            owned
+                .native_owner
+                .as_ref()
+                .map(|owner| {
+                    std::panic::catch_unwind(AssertUnwindSafe(|| owner.execution_basis()))
+                        .map(|basis| match basis {
+                            Some(facts) => serde_json::json!({"facts": facts}),
+                            None => {
+                                serde_json::json!({"activation": capability.provider().epoch()})
+                            }
+                        })
+                        .map_err(|_| "native execution basis panicked")
+                })
+                .transpose()?
+        };
+        let mut basis = serde_json::json!({
+            "identity": instance.identity, "parent": instance.parent,
+            "package": instance.package, "disabled": instance.disabled,
+            "configuration": instance.configuration, "entry": instance.entry,
+            "bindings": instance.bindings, "exports": instance.exports,
+            "imports": imports, "export": capability.export(), "contract": contract.as_ref(),
+            "native": native,
+        });
+        basis.sort_all_objects();
+        let digest = maka_agent_facts::artifact::content_digest(
+            &serde_json::to_vec(&basis).map_err(|e| e.to_string())?,
+        );
+        Ok(Binding(
+            capability,
+            contract,
+            digest.into(),
+            Arc::new(instance.package.clone()),
+            Arc::new(AtomicBool::new(false)),
+        ))
     }
     fn capture_ui(
         &self,
@@ -1503,6 +1537,7 @@ impl Owner {
                             operation_scope: None,
                             attachments: attachments.clone(),
                             imports: self.owned[execution.provider().instance()].imports.clone(),
+                            exports: self.owned[execution.provider().instance()].exports.clone(),
                             dispatch: self.dispatch.clone(),
                         };
                         let is_mutation = operation.is_some();

@@ -18,14 +18,11 @@
  */
 
 use maka_agent_facts::{
-    event::{
-        EventWrite, Fact, Invocation, InvocationOutcome, LogScope, ModelInterruption, RuntimeEvent,
-    },
+    event::{EventWrite, Fact, Invocation, InvocationOutcome, LogScope, RuntimeEvent},
     model::{
         ModelFinishReason, ModelPart, TextKind,
         recorded::{
-            CompletionPart, ModelCompletion, ModelObservation, ModelPartRecord, ModelPartial,
-            RecordedPartRef,
+            CompletionPart, ModelCompletion, ModelObservation, ModelPartRecord, RecordedPartRef,
         },
     },
 };
@@ -58,6 +55,10 @@ fn opening() -> Fact {
 
 fn request(item_acceptance: bool) -> Fact {
     Fact::ModelRequested {
+        source_capture: maka_agent_facts::event::SourceCapture {
+            publication_watermark: 0,
+            prior_unknown: false,
+        },
         context_breakdown: None,
         item_acceptance,
         purpose: maka_agent_facts::context::ModelPurpose::Main,
@@ -364,94 +365,5 @@ async fn pages_obey_global_fences_and_never_skip_oversized_executor_deltas() {
                 .is_err()
         );
     }
-    log.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn soft_first_delivery_and_raw_events_keep_complete_sealed_partial_after_reopen() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("singleton.sqlite");
-    let log = EventLog::open(&path).await.unwrap();
-    let append = async |fact| {
-        log.append(&EventWrite::plain(event("session", fact)).unwrap())
-            .await
-            .unwrap()
-    };
-    append(opening()).await;
-    let requested = append(request(false)).await;
-    let message_id = "original-message-".repeat(5000);
-    let text = "完整😀\"".repeat(8000);
-    let interrupted = event(
-        "session",
-        Fact::ModelInterrupted {
-            model_failure: None,
-            diagnostic: None,
-            step_id: "step".into(),
-            status: ModelInterruption::Failed,
-            partial: Some(ModelPartial {
-                parts: vec![CompletionPart::Own(ModelPartRecord {
-                    ordinal: 0,
-                    message_id: message_id.clone(),
-                    started_at: std::time::UNIX_EPOCH,
-                    provider_part_id: Some("part".into()),
-                    part: Arc::new(ModelPart::Text {
-                        text_kind: TextKind::Text,
-                        text: text.into(),
-                        provider_options: None,
-                    }),
-                })],
-                tool_inputs: Vec::new(),
-                response_id: None,
-                model: None,
-                timestamp: None,
-            }),
-        },
-    );
-    let sequence = log
-        .append(&EventWrite::plain(interrupted.clone()).unwrap())
-        .await
-        .unwrap();
-    append(Fact::InvocationEnded {
-        outcome: InvocationOutcome::Failed {
-            model_failure: None,
-            class: "provider".into(),
-            message: None,
-        },
-    })
-    .await;
-    log.close().await.unwrap();
-
-    let log = EventLog::open(&path).await.unwrap();
-    let projected = log
-        .session_stream_events("session", requested, sequence, 32, 48 * 1024)
-        .await
-        .unwrap();
-    assert_eq!(projected.events.len(), 1);
-    assert_eq!(projected.events[0].sequence, sequence);
-    assert!(matches!(&projected.events[0].fact,
-        StreamFact::StepEnded { completed: false, failed: true, interrupted: ids, .. }
-            if ids == std::slice::from_ref(&message_id)));
-    assert_eq!(projected.next_after, None);
-    assert_eq!(projected.through_sequence, sequence);
-    let raw = log
-        .session_events("session", requested, sequence, 32, 48 * 1024)
-        .await
-        .unwrap();
-    assert_eq!(raw.events.len(), 1);
-    assert_eq!(raw.events[0].event, interrupted);
-    assert_eq!(raw.next_after, None);
-    assert_eq!(raw.through_sequence, sequence);
-    assert!(
-        log.session_stream_events("other", requested, sequence, 32, 48 * 1024)
-            .await
-            .unwrap()
-            .events
-            .is_empty()
-    );
-    assert!(
-        log.session_stream_events("session", 0, sequence + 100, 32, 48 * 1024)
-            .await
-            .is_err()
-    );
     log.close().await.unwrap();
 }

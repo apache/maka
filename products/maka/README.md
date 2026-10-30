@@ -40,5 +40,3 @@ In the terminal interface, choose the shared language under **Settings → Appea
 This preference also selects builtin Agent instructions for new work in existing conversations and WorkHub. Already accepted work retains its language; user content and custom instructions remain unchanged.
 
 Bundled packages are installation inputs. Reopening an existing installation uses its committed source and package bytes; rebuilding the checkout does not overwrite a user's composition.
-
-On macOS or Linux, measure concurrent agents with `cargo test --release -p maka-agent-native --lib --no-run`, then pass the printed test executable to `python3 scripts/agent-scale.py --binary PATH`. The default runs five trials each at 10, 100 and 1000 agents through the actual Host, native owner and shared model SDK. A local HTTP fixture holds every request open before streaming; the benchmark verifies durable output, cancellation, socket cleanup and recovery. The JSON report retains all samples, foreground query latency, CPU and peak memory. Run without competing builds; these measurements exclude TUI rendering and external model latency.

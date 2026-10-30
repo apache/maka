@@ -51,6 +51,11 @@ fn parked(reason: ResumeParkReason) -> ResumeResult {
     ResumeResult::Parked { reason }
 }
 
+enum ResumePurpose {
+    Observe,
+    Admit,
+}
+
 struct PreparedResume {
     run: RunInput,
     basis: Arc<MessageBasis>,
@@ -189,6 +194,7 @@ impl Owner {
                     hex::encode(Sha256::digest(identity.as_bytes()))
                 ),
                 runs,
+                ResumePurpose::Observe,
             )
             .await?
         {
@@ -282,7 +288,13 @@ impl Owner {
             basis,
             mut runs,
         } = match self
-            .prepare_resume(input, invocation.clone(), fingerprint, runs)
+            .prepare_resume(
+                input,
+                invocation.clone(),
+                fingerprint,
+                runs,
+                ResumePurpose::Admit,
+            )
             .await?
         {
             ResumePreparation::Ready(prepared) => *prepared,
@@ -375,6 +387,7 @@ impl Owner {
         invocation: Invocation,
         fingerprint: String,
         mut runs: runs::Exclusive,
+        purpose: ResumePurpose,
     ) -> Result<ResumePreparation, String> {
         use ResumeParkReason as Reason;
         let session = self.session(&input.session_id).await?;
@@ -504,7 +517,10 @@ impl Owner {
             Ok(graph) => graph,
             Err(_) => return Ok(ResumePreparation::Unavailable(Reason::SourceNotResumable)),
         };
-        let mcp_revision = self.mcp_projects.capture(workspace).await?;
+        let selected_catalog = match purpose {
+            ResumePurpose::Observe => self.mcp_projects.base.clone(),
+            ResumePurpose::Admit => self.mcp_projects.capture(workspace).await?,
+        };
         runs = self.runs.lock().await;
         if runs.closing || self.stop.is_cancelled() {
             return Ok(ResumePreparation::Unavailable(Reason::Closed));
@@ -529,9 +545,9 @@ impl Owner {
             return Ok(ResumePreparation::Unavailable(Reason::AlreadyContinued));
         }
 
-        let selected_catalog = self.mcp_projects.catalog(mcp_revision.as_deref())?;
         let basis = MessageBasis {
-            mcp_revision,
+            mcp_revision: selected_catalog.revision.clone(),
+            mcp_catalog: Some(selected_catalog.clone()),
             language: configuration.language,
             compaction_prompt: configuration.compaction_prompt.clone(),
             graph,
@@ -574,6 +590,7 @@ impl Owner {
         // Replay the original prepared prompt. Native service tools continue to
         // resolve the live Session permission boundary through their actual owner.
         let tools = self.selected_tools(
+            &input.session_id,
             &basis,
             configuration.tool_discovery,
             configuration.editing_tools,

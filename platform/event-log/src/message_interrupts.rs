@@ -140,7 +140,7 @@ impl EventLog {
             }
             changed |= approval_revoked;
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
-            if approval_revoked { commits.native_approvals(); }
+            if approval_revoked { commits.activations(); }
             if changed { commits.metadata(); }
             Ok(fence.map_or(InterruptReceipt::Conflict, InterruptReceipt::Fenced))
         })).await

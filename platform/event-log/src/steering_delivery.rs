@@ -90,9 +90,7 @@ impl EventLog {
                         .map_err(|error| StoreError::InvalidTransition(error.to_string()))?;
                         match Self::append_in_transaction(&mut tx, &event).await? {
                             AppendResult::Inserted(sequence)
-                            | AppendResult::NativeApprovalSettled(sequence) => {
-                                high = Some(sequence)
-                            }
+                            | AppendResult::ActivationChanged(sequence) => high = Some(sequence),
                             AppendResult::Existing(_) => return Err(StoreError::EventConflict),
                         }
                         count += 1;

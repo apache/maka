@@ -143,15 +143,28 @@ pub trait Provider: Send + Sync {
     }
 }
 
-pub struct Definition {
+/// Validated, immutable descriptor and compiled input schemas shared by definitions.
+pub struct Policy {
     descriptor: Descriptor,
-    implementation: Arc<dyn Provider>,
     configuration: jsonschema::Validator,
     authentication: std::collections::BTreeMap<String, jsonschema::Validator>,
 }
 
-impl Definition {
-    pub fn new(descriptor: Descriptor, implementation: Arc<dyn Provider>) -> Result<Self, Error> {
+impl std::fmt::Debug for Policy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Policy")
+            .field("descriptor", &self.descriptor)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Policy {
+    /// Validate the descriptor and compile all input schemas before sharing policy.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid descriptor or schema.
+    pub fn new(descriptor: Descriptor) -> Result<Self, Error> {
         descriptor.validate()?;
         let compile = |schema: &serde_json::Value| {
             jsonschema::options()
@@ -168,14 +181,27 @@ impl Definition {
             .collect::<Result<_, Error>>()?;
         Ok(Self {
             descriptor,
-            implementation,
             configuration,
             authentication,
         })
     }
+}
+
+pub struct Definition {
+    policy: Arc<Policy>,
+    implementation: Arc<dyn Provider>,
+}
+
+impl Definition {
+    pub fn new(policy: Arc<Policy>, implementation: Arc<dyn Provider>) -> Self {
+        Self {
+            policy,
+            implementation,
+        }
+    }
 
     pub fn descriptor(&self) -> &Descriptor {
-        &self.descriptor
+        &self.policy.descriptor
     }
 
     /// Defaults are materialized once, when creating the connection. Reading a
@@ -185,6 +211,7 @@ impl Definition {
             return Err(Error::InvalidConfiguration);
         };
         let mut configuration = self
+            .policy
             .descriptor
             .configuration_defaults
             .as_object()
@@ -265,6 +292,7 @@ impl Definition {
     ) -> Result<(), Error> {
         self.validate_configuration(&request.connection.configuration)?;
         let validator = self
+            .policy
             .authentication
             .get(&request.method)
             .ok_or_else(|| Error::Invalid("unknown authentication method".into()))?;
@@ -280,6 +308,7 @@ impl Definition {
             ));
         }
         let method = self
+            .policy
             .descriptor
             .authentication
             .iter()
@@ -296,7 +325,7 @@ impl Definition {
             .map_err(|_| Error::InvalidConfiguration)?
             .len()
             > 64 * 1024
-            || !self.configuration.is_valid(configuration)
+            || !self.policy.configuration.is_valid(configuration)
         {
             return Err(Error::InvalidConfiguration);
         }

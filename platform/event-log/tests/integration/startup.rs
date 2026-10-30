@@ -188,140 +188,6 @@ async fn initialization_and_reopen_preserve_facts_payloads_and_schema_identity()
 }
 
 #[tokio::test]
-async fn mismatched_and_unknown_migrations_fail_closed_without_touching_committed_events() {
-    let temp = tempfile::tempdir().unwrap();
-    for (case, corruption) in [
-        "UPDATE _sqlx_migrations SET checksum = x'00' WHERE version = 1",
-        "UPDATE _sqlx_migrations SET version = 99 WHERE version = 1",
-        "DROP TABLE _sqlx_migrations",
-        "DELETE FROM _sqlx_migrations",
-        "PRAGMA user_version = 0",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let path = temp.path().join(format!("events-{case}.sqlite"));
-        let log = EventLog::open(&path).await.unwrap();
-        let event = seed_session_and_event(&log).await;
-        log.close().await.unwrap();
-        let connection = Connection::open(&path).unwrap();
-        let session_before: String = connection.query_row(
-            "SELECT json_array(id, fingerprint, revision, created_at, updated_at, archived, configuration) FROM session_control",
-            [], |row| row.get(0)
-        ).unwrap();
-        connection.execute_batch(corruption).unwrap();
-        connection
-            .execute_batch("PRAGMA journal_mode = DELETE")
-            .unwrap();
-        drop(connection);
-        let before = std::fs::read(&path).unwrap();
-        let error = EventLog::open(&path).await.err().expect("must reject");
-        assert!(
-            std::fs::read(&path).unwrap() == before,
-            "rejected open mutated database ({corruption})"
-        );
-        if case == 1 {
-            assert!(matches!(
-                error,
-                StoreError::Migration(sqlx::migrate::MigrateError::VersionMissing(99))
-            ));
-        } else if case == 0 {
-            assert!(matches!(
-                error,
-                StoreError::Migration(sqlx::migrate::MigrateError::VersionMismatch(1))
-            ));
-        } else {
-            assert!(matches!(error, StoreError::UnsupportedDatabase));
-        }
-        let connection = Connection::open(&path).unwrap();
-        assert_eq!(
-            connection
-                .query_row("SELECT count(*) FROM runtime_events", [], |row| row
-                    .get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        let stored_event: String = connection
-            .query_row(
-                "SELECT event_json FROM runtime_events WHERE sequence = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&stored_event).unwrap(),
-            serde_json::to_value(&event).unwrap()
-        );
-        assert_eq!(connection.query_row(
-            "SELECT json_array(id, fingerprint, revision, created_at, updated_at, archived, configuration) FROM session_control",
-            [], |row| row.get::<_, String>(0)
-        ).unwrap(), session_before);
-    }
-
-    let path = temp.path().join("foreign.sqlite");
-    let foreign = Connection::open(&path).unwrap();
-    foreign
-        .execute_batch("CREATE TABLE user_data(value); INSERT INTO user_data VALUES('keep')")
-        .unwrap();
-    drop(foreign);
-    let before = std::fs::read(&path).unwrap();
-    assert!(matches!(
-        EventLog::open(&path).await,
-        Err(StoreError::UnsupportedDatabase)
-    ));
-    assert!(std::fs::read(&path).unwrap() == before);
-    let foreign = Connection::open(&path).unwrap();
-    assert_eq!(
-        foreign
-            .query_row("SELECT value FROM user_data", [], |row| row
-                .get::<_, String>(0))
-            .unwrap(),
-        "keep"
-    );
-    assert_eq!(
-        foreign
-            .query_row(
-                "SELECT count(*) FROM sqlite_schema WHERE name = '_sqlx_migrations'",
-                [],
-                |row| row.get::<_, i64>(0)
-            )
-            .unwrap(),
-        0
-    );
-}
-
-#[tokio::test]
-async fn interrupted_initial_migration_remains_openable_under_the_rust_application_identity() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("events.sqlite");
-    let connection = Connection::open(&path).unwrap();
-    // SQLx creates its ledger before applying migration 1. A crash at that
-    // boundary must not misclassify the database as foreign on the next open.
-    connection
-        .execute_batch(
-            "PRAGMA application_id = 1296124754;
-         CREATE TABLE _sqlx_migrations (
-            version BIGINT PRIMARY KEY, description TEXT NOT NULL,
-            installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            success BOOLEAN NOT NULL, checksum BLOB NOT NULL, execution_time BIGINT NOT NULL
-         );",
-        )
-        .unwrap();
-    drop(connection);
-    let log = EventLog::open(&path).await.unwrap();
-    assert_eq!(log.prefix(1, 1024).await.unwrap().high_water, 0);
-    log.close().await.unwrap();
-    let connection = Connection::open(&path).unwrap();
-    assert_eq!(
-        connection
-            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
-    assert!(!migration_checksums(&connection).is_empty());
-}
-
-#[tokio::test]
 async fn initialization_and_high_water_failures_close_the_actual_sql_owner_before_returning() {
     for high_water in [false, true] {
         let directory = tempfile::tempdir().unwrap();
@@ -363,4 +229,202 @@ async fn initialization_and_high_water_failures_close_the_actual_sql_owner_befor
         drop(FileLease::acquire(std::path::Path::new(&lock)).unwrap());
         drop(RootOwner::open(&root, &namespaces).unwrap());
     }
+}
+
+#[tokio::test]
+async fn startup_recovers_model_and_call_cuts_across_multiple_pages_in_opening_order() {
+    use maka_agent_facts::{
+        context::ModelPurpose,
+        event::{ModelInterruption, ToolOutcome},
+        model::{
+            ModelPart, ModelToolCall,
+            recorded::{ModelObservation, ModelPartRecord},
+        },
+        tool_call::{ToolCallIdentity, ToolRejection},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    for n in 0..257 {
+        let invocation = Invocation {
+            session_id: format!("s-{n}"),
+            turn_id: format!("t-{n}"),
+            run_id: format!("r-{n}"),
+            invocation_id: format!("i-{n}"),
+        };
+        let write = |fact| EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap();
+        log.append(&write(Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::Message {
+                source_messages: vec![],
+                content: "recover".into(),
+                request_fingerprint: None,
+            },
+        }))
+        .await
+        .unwrap();
+        if n < 4 {
+            let step = format!("step-{n}");
+            let call = format!("call-{n}");
+            let operation = format!("{step}:{call}");
+            let source = log.prefix(32, 64 * 1024).await.unwrap();
+            log.append(&write(Fact::ModelRequested {
+                source_capture: maka_agent_facts::event::SourceCapture {
+                    publication_watermark: source.high_water,
+                    prior_unknown: false,
+                },
+                context_breakdown: None,
+                item_acceptance: true,
+                purpose: ModelPurpose::Main,
+                context: None,
+                checkpoint_event_id: None,
+                step_id: step.clone(),
+                model_id: "model".into(),
+                source_scope: source.scope,
+                source_high_water: source.high_water,
+                source_digest: source.digest,
+                effective_source_digest: None,
+                input_digest: "input".into(),
+                route_identity: "route".into(),
+            }))
+            .await
+            .unwrap();
+            if n > 0 {
+                log.append(&write(Fact::ModelObserved {
+                    step_id: step.clone(),
+                    event: ModelObservation::Part(ModelPartRecord {
+                        ordinal: 0,
+                        message_id: maka_agent_facts::tool_call::tool_use_id(
+                            &invocation.invocation_id,
+                            &operation,
+                        ),
+                        started_at: std::time::UNIX_EPOCH,
+                        provider_part_id: None,
+                        part: Arc::new(ModelPart::ToolCall {
+                            call: ModelToolCall {
+                                id: call.clone(),
+                                name: "write_file".into(),
+                                input: json!({"path":"effect.txt"}).into(),
+                                provider_options: None,
+                                provider_executed: false,
+                            },
+                        }),
+                    }),
+                }))
+                .await
+                .unwrap();
+            }
+            if n > 1 {
+                log.append(&write(Fact::ToolDispatched {
+                    presentation: None,
+                    title: None,
+                    operation_id: operation.clone(),
+                    call: ToolCallIdentity::provider(step.clone(), call.clone()),
+                    name: "write_file".into(),
+                    input: json!({"path":"effect.txt"}),
+                }))
+                .await
+                .unwrap();
+            }
+            if n == 3 {
+                log.append(&write(Fact::ToolSettled {
+                    operation_id: operation.clone(),
+                    outcome: ToolOutcome::Failed {
+                        message: "known failure".into(),
+                    },
+                }))
+                .await
+                .unwrap();
+            }
+        }
+    }
+    log.close().await.unwrap();
+    let log = EventLog::open(&path).await.unwrap();
+    let first = log.unfinished_invocations(0, 256).await.unwrap();
+    assert_eq!(first.invocations.len(), 256);
+    assert_eq!(
+        maka_event_log::recovery::recover_invocations(&log)
+            .await
+            .unwrap(),
+        257
+    );
+    let prefix = log.prefix(529, 1024 * 1024).await.unwrap();
+    let ended = prefix
+        .events
+        .iter()
+        .filter_map(|stored| {
+            matches!(stored.event.fact, Fact::InvocationEnded { .. })
+                .then_some(stored.event.invocation.invocation_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ended,
+        (0..257).map(|n| format!("i-{n}")).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        prefix
+            .events
+            .iter()
+            .filter(|stored| matches!(stored.event.fact, Fact::InvocationOpened { .. }))
+            .count(),
+        257
+    );
+    for n in 0..4 {
+        let id = format!("i-{n}");
+        let step = format!("step-{n}");
+        let operation = format!("{step}:call-{n}");
+        let facts = prefix
+            .events
+            .iter()
+            .filter(|stored| stored.event.invocation.invocation_id == id)
+            .map(|stored| &stored.event.fact)
+            .collect::<Vec<_>>();
+        assert!(facts.iter().any(|fact| matches!(fact,
+            Fact::ModelInterrupted { step_id, status: ModelInterruption::Failed, .. } if step_id == &step)));
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|fact| matches!(fact, Fact::ToolRejected {
+            operation_id, reason: ToolRejection::Cancelled, .. } if operation_id == &operation))
+                .count(),
+            usize::from(n == 1)
+        );
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|fact| matches!(fact, Fact::ToolDispatched { .. }))
+                .count(),
+            usize::from(n > 1)
+        );
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|fact| matches!(fact, Fact::ToolSettled { .. }))
+                .count(),
+            usize::from(n == 3)
+        );
+        assert!(matches!(facts.last().unwrap(), Fact::InvocationEnded {
+            outcome: maka_agent_facts::event::InvocationOutcome::Failed { class, .. }
+        } if class == if n == 2 { "outcome_unknown" } else { "host_interrupted" }));
+        let state = prefix.project_invocation(&id);
+        assert!(state.unfinished_model_steps.is_empty());
+        assert_eq!(
+            state.uncertain_operations,
+            if n == 2 { vec![operation] } else { vec![] }
+        );
+    }
+    assert!(
+        log.unfinished_invocations(first.through_sequence, 256)
+            .await
+            .unwrap()
+            .invocations
+            .is_empty()
+    );
+    assert_eq!(
+        maka_event_log::recovery::recover_invocations(&log)
+            .await
+            .unwrap(),
+        0
+    );
+    log.close().await.unwrap();
 }

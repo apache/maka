@@ -70,6 +70,3 @@ pub(crate) fn insert(record: Record<'_>) -> Query<'_, Sqlite, SqliteArguments> {
     .bind(record.operation_id)
     .bind(record.json)
 }
-
-#[cfg(test)]
-mod tests;

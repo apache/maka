@@ -289,10 +289,9 @@ impl Desktop {
     async fn request(&self, fixture: &mut Fixture) -> ModelRequest {
         self.wait(
             "the submitted message did not reach the provider",
-            fixture.requests.recv(),
+            fixture.next_request(),
         )
         .await
-        .unwrap()
     }
 
     async fn close(self) {
@@ -304,11 +303,7 @@ impl Desktop {
 }
 
 async fn images_fixture() -> Fixture {
-    Fixture::configured(Options {
-        images: true,
-        ..Default::default()
-    })
-    .await
+    Fixture::configured(Options { images: true }).await
 }
 
 fn image_file(fixture: &Fixture) -> (std::path::PathBuf, Vec<u8>) {

@@ -185,7 +185,7 @@ impl EventLog {
                         .await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     if approval_revoked {
-                        commits.native_approvals();
+                        commits.activations();
                     }
                     commits
                         .for_sessions(plan.remove.iter().chain(&plan.archive).map(String::as_str))

@@ -414,16 +414,6 @@ impl Drop for Completion {
 }
 
 #[cfg(test)]
-pub(super) fn setup_fixture() -> Metadata {
-    let (commands, _receive) = mpsc::unbounded_channel();
-    Metadata {
-        scope: uuid::Uuid::new_v4(),
-        state: Arc::default(),
-        commands,
-    }
-}
-
-#[cfg(test)]
 pub(super) fn completion_fixture() -> (Metadata, impl Send) {
     // Retain the real queue receiver without pretending that a Extension event,
     // metadata barrier or completion has been observed.

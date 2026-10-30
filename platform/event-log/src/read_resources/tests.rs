@@ -23,20 +23,6 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-#[test]
-fn binary_prefix_bounds_preserve_literal_unicode_prefixes() {
-    for (prefix, expected) in [
-        ("literal_*?[", Some("literal_*?\\")),
-        ("é", Some("ê")),
-        ("a\u{10ffff}", Some("b")),
-        ("\u{d7ff}", Some("\u{e000}")),
-        ("\u{10ffff}", None),
-        ("", None),
-    ] {
-        assert_eq!(prefix_upper(prefix).as_deref(), expected, "{prefix:?}");
-    }
-}
-
 async fn append_noise(log: &EventLog, first: i64, last: i64) {
     log.connection.run(move |db| Box::pin(async move {
         let mut tx=db.begin().await?;

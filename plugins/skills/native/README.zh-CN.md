@@ -21,6 +21,6 @@
 
 [English](README.md)
 
-将技能库作为普通 Host 服务提供。`provide` 注册工厂，发现与解析委托 `maka-skills`。服务管理有界读取、目录修订和发布回执。调用方使用发现结果中的精确引用与修订，并原样传回分页续读对象。
+将技能库作为普通 Host 服务提供。`sources` 捕获标准用户与工作区目录，`remote` 从临时 Git 快照或本地目录发现技能，`management` 安装、整体替换和删除技能目录。文件是内容权威；`registrations` 仅在既有 Root 数据库登记 Maka 管理的位置与来源，`preferences` 保存启用和置顶选项。模型读取使用发现结果中的精确引用与修订。
 
 [源码](src/lib.rs) · [Cargo 配置](Cargo.toml)

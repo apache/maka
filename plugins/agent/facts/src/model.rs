@@ -26,6 +26,7 @@ pub mod prompt;
 pub mod prompt_source;
 pub mod recorded;
 pub mod request;
+pub mod retry_transport;
 mod tool_input;
 use serde_json::Value;
 pub use tool_input::ToolInput;

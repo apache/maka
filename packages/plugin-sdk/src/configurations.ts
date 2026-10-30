@@ -80,6 +80,12 @@ export const configurations = {
         type: 'boolean',
         default: false,
       },
+      bot: {
+        description:
+          'Enable the Bot mode: one persistent Session that reaches its user only\nthrough `SendUser`, with a Host-owned outbox.',
+        type: 'boolean',
+        default: false,
+      },
       automaticTitles: {
         description: 'Generate a bounded auxiliary title for automatically named conversations.',
         type: 'boolean',
@@ -414,9 +420,8 @@ export const configurations = {
             type: 'string',
             minLength: 1,
           },
-          import: {
-            type: 'string',
-            minLength: 1,
+          target: {
+            $ref: '#/$defs/ServiceTarget',
           },
           method: {
             type: 'string',
@@ -424,7 +429,7 @@ export const configurations = {
           },
         },
         additionalProperties: false,
-        required: ['result', 'confirmation', 'name', 'description', 'import', 'method'],
+        required: ['result', 'confirmation', 'name', 'description', 'target', 'method'],
       },
       AgentToolInput: {
         oneOf: [
@@ -474,6 +479,42 @@ export const configurations = {
       AgentToolConfirmation: {
         type: 'string',
         enum: ['required', 'preapproved'],
+      },
+      ServiceTarget: {
+        description:
+          "A selected service is either an imported provider or the caller's own export.",
+        oneOf: [
+          {
+            type: 'object',
+            properties: {
+              kind: {
+                type: 'string',
+                const: 'import',
+              },
+              name: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['kind', 'name'],
+          },
+          {
+            type: 'object',
+            properties: {
+              kind: {
+                type: 'string',
+                const: 'export',
+              },
+              name: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['kind', 'name'],
+          },
+        ],
       },
     },
   },
@@ -705,6 +746,12 @@ export const configurations = {
           todo: {
             type: 'boolean',
             description: 'Enable the session-scoped, model-maintained checklist.',
+            default: false,
+          },
+          bot: {
+            type: 'boolean',
+            description:
+              'Enable the Bot mode: one persistent Session that reaches its user only\nthrough `SendUser`, with a Host-owned outbox.',
             default: false,
           },
           automaticTitles: {
@@ -1042,16 +1089,15 @@ export const configurations = {
             type: 'string',
             minLength: 1,
           },
-          import: {
-            type: 'string',
-            minLength: 1,
+          target: {
+            $ref: '#/$defs/ServiceTarget',
           },
           method: {
             type: 'string',
             minLength: 1,
           },
         },
-        required: ['result', 'confirmation', 'name', 'description', 'import', 'method'],
+        required: ['result', 'confirmation', 'name', 'description', 'target', 'method'],
       },
       AgentToolInput: {
         oneOf: [
@@ -1102,6 +1148,42 @@ export const configurations = {
         type: 'string',
         enum: ['required', 'preapproved'],
       },
+      ServiceTarget: {
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              kind: {
+                type: 'string',
+                const: 'import',
+              },
+              name: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            required: ['kind', 'name'],
+          },
+          {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              kind: {
+                type: 'string',
+                const: 'export',
+              },
+              name: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            required: ['kind', 'name'],
+          },
+        ],
+        description:
+          "A selected service is either an imported provider or the caller's own export.",
+      },
     },
   },
   skillLibrary: {
@@ -1131,7 +1213,8 @@ export const configurations = {
       },
       manage: {
         type: 'boolean',
-        description: "Enable installation into this instance's own private collection.",
+        description:
+          'Allow management of the configured standard user and project skill directories.',
         default: false,
       },
       preferences: {

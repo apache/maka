@@ -692,6 +692,19 @@ impl SessionStore {
         self.scoped().await?.read_model_view(session, current).await
     }
 
+    /// Read an original request's fixed projection under this Session's custody.
+    pub async fn read_frozen_model_request(
+        &self,
+        invocation: &Invocation,
+        event_id: &str,
+    ) -> Result<crate::context::FrozenModelRequest, StoreError> {
+        self.check_session(&invocation.session_id)?;
+        self.scoped()
+            .await?
+            .read_frozen_model_request(invocation, event_id)
+            .await
+    }
+
     pub async fn read_manual_message_view(
         &self,
         session: &str,

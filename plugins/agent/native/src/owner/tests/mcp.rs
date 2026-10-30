@@ -280,6 +280,7 @@ fn portable(record: &std::path::Path) -> Value {
     }}})
 }
 fn write_config(path: &std::path::Path, config: &Value) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, serde_json::to_vec(config).unwrap()).unwrap();
 }
 async fn trust_project(f: &Fixture, session: &str) -> Value {
@@ -333,7 +334,7 @@ async fn exercise_file_consent() {
     std::fs::create_dir(home.path().join(".agents")).unwrap();
     let global_record = home.path().join("global-record");
     write_config(
-        &home.path().join(".agents/.mcp.json"),
+        &home.path().join(".agents/mcp.json"),
         &portable(&global_record),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -349,9 +350,17 @@ async fn exercise_file_consent() {
         },
     )
     .await;
+    let names = f.query("tools", json!({})).await.unwrap();
+    assert!(
+        names["names"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "mcp__fixture__echo")
+    );
     assert!(
         global_record.exists(),
-        "user MCP fallback is loaded at activation"
+        "the current global catalog is opened when requested"
     );
     let a = f.create("project A").await;
     let roots = f
@@ -362,10 +371,10 @@ async fn exercise_file_consent() {
     let workspace_b = f.owner.session(&b).await.unwrap().configuration.workspace;
     let record_a = home.path().join("a-record");
     let record_b = home.path().join("b-record");
-    let file_a = f.workspace.join("mcp.json");
+    let file_a = f.workspace.join(".maka/mcp.json");
     write_config(&file_a, &portable(&record_a));
     write_config(
-        &std::path::Path::new(&workspace_b.path).join(".mcp.json"),
+        &std::path::Path::new(&workspace_b.path).join(".agents/mcp.json"),
         &portable(&record_b),
     );
     let before = f.query("projectMcp", json!({"sessionId":a})).await.unwrap();
@@ -475,7 +484,7 @@ async fn mcp_project_trust_rejects_model_identity() {
     let f = Fixture::new("http://127.0.0.1:1/v1", None).await;
     let session = f.create("Untrusted").await;
     write_config(
-        &f.workspace.join("mcp.json"),
+        &f.workspace.join(".maka/mcp.json"),
         &portable(&f.workspace.join("record")),
     );
     let view = f
@@ -537,7 +546,7 @@ async fn mcp_slow_startup_does_not_block_other_session_stop_or_owner_shutdown() 
         let mut config = portable(&record);
         config["mcpServers"]["fixture"]["args"][1] = json!("startup-hang");
         config["mcpServers"]["fixture"]["startupTimeoutMs"] = json!(300000);
-        write_config(&f.workspace.join("mcp.json"),&config);
+        write_config(&f.workspace.join(".maka/mcp.json"),&config);
         trust_project(&f,&a).await;
         let sending = { let f=f.clone(); tokio::spawn(async move { f.send(&a).await }) };
         while !record.exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
@@ -569,7 +578,7 @@ async fn mcp_project_catalog_is_used_by_model_skill_search_and_load() {
         let session = f.create("MCP skills").await;
         let mut project = portable(&dir.path().join("project-record"));
         project["mcpServers"]["legacy"] = json!({"disabled":true});
-        write_config(&f.workspace.join("mcp.json"),&project);
+        write_config(&f.workspace.join(".maka/mcp.json"),&project);
         trust_project(&f,&session).await;
         f.send(&session).await.unwrap();
         let (mut socket,_) = listener.accept().await.unwrap();
@@ -586,6 +595,297 @@ async fn mcp_project_catalog_is_used_by_model_skill_search_and_load() {
         assert!(loaded["messages"].as_array().unwrap().iter().rev().find(|m|m["role"]=="tool").unwrap().to_string().contains("MCP skill instructions"));
         response(&mut socket).await;
         f.drained().await;
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_management_preserves_file_fields_and_targets_physical_instances_without_a_session() {
+    let home = tempfile::tempdir().unwrap();
+    let f = Fixture::configured("http://127.0.0.1:1/v1", None, None, None, |configuration| {
+        configuration.assistant = Some(crate::contract::AssistantConfiguration {
+            home: Some(home.path().to_str().unwrap().into()),
+        });
+    })
+    .await;
+    let roots = f
+        .query("directories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    let workspace = f
+        .mutation(
+            2,
+            "selectWorkspace",
+            roots["roots"][0]["selection"].clone(),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    assert!(workspace["path"].is_string());
+    let path = home.path().join(".agents/mcp.json");
+    write_config(
+        &path,
+        &json!({"customRoot":{"preserve":true},"mcpServers":{
+            "same":{"command":"node","args":["old"],"env":{"TOKEN":"secret"},"customServer":{"preserve":true}},
+            "unrelated":{"url":"https://example.com/unrelated"}
+        }}),
+    );
+    let initial = f
+        .query("mcpConfigurations", json!({"workspace":workspace}))
+        .await
+        .unwrap();
+    assert_eq!(initial["locations"].as_array().unwrap().len(), 4);
+    let lower = initial["locations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|location| location["location"] == "user:agents")
+        .unwrap();
+    let save = json!({"workspace":workspace,"location":"user:agents","revision":lower["revision"],"name":"same","change":{"kind":"save","configuration":{"type":"http","url":"https://example.com/updated"}}});
+    assert_eq!(
+        f.mutation(2, "manageMcpServer", save.clone(), Uuid::new_v4())
+            .await
+            .unwrap()["kind"],
+        "saved"
+    );
+    let edited: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(edited["customRoot"]["preserve"], true);
+    assert_eq!(
+        edited["mcpServers"]["same"]["customServer"]["preserve"],
+        true
+    );
+    assert_eq!(
+        edited["mcpServers"]["unrelated"],
+        json!({"url":"https://example.com/unrelated"})
+    );
+    assert!(edited["mcpServers"]["same"].get("command").is_none());
+    assert!(edited["mcpServers"]["same"].get("env").is_none());
+    assert_eq!(
+        f.mutation(2, "manageMcpServer", save, Uuid::new_v4())
+            .await
+            .unwrap()["kind"],
+        "changed"
+    );
+    for target in ["user:maka", "project:agents", "project:maka"] {
+        let inventory = f
+            .query("mcpConfigurations", json!({"workspace":workspace}))
+            .await
+            .unwrap();
+        let location = inventory["locations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|location| location["location"] == target)
+            .unwrap();
+        let result = f.mutation(2,"manageMcpServer",json!({"workspace":workspace,"location":target,"revision":location["revision"],"name":"same","change":{"kind":"save","configuration":{"url":format!("https://example.com/{target}")}}}),Uuid::new_v4()).await.unwrap();
+        assert_eq!(result["kind"], "saved", "{result}");
+    }
+    let inventory = f
+        .query("mcpConfigurations", json!({"workspace":workspace}))
+        .await
+        .unwrap();
+    let highest = &inventory["locations"][0];
+    assert!(highest["servers"][0]["shadowedBy"].is_null());
+    assert_eq!(
+        inventory["locations"][1]["servers"][0]["shadowedBy"],
+        "project:maka"
+    );
+    assert_eq!(f.mutation(2,"manageMcpServer",json!({"workspace":workspace,"location":"project:maka","revision":highest["revision"],"name":"same","change":{"kind":"delete"}}),Uuid::new_v4()).await.unwrap()["kind"],"saved");
+    let inventory = f
+        .query("mcpConfigurations", json!({"workspace":workspace}))
+        .await
+        .unwrap();
+    assert!(
+        inventory["locations"][0]["servers"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(inventory["locations"][1]["servers"][0]["shadowedBy"].is_null());
+    let selected: crate::contract::Workspace = serde_json::from_value(workspace.clone()).unwrap();
+    let proposal = f.owner.mcp_projects.proposal(&selected).await.unwrap();
+    assert!(
+        !f.owner.mcp_projects.trusted(&proposal).await.unwrap(),
+        "saving does not grant project trust"
+    );
+    assert!(
+        f.query("list", json!({"filter":"all","position":{"kind":"start"}}))
+            .await
+            .unwrap()["sessions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let model_scope = f
+        .issuer
+        .issue_with(
+            Identity::Agent {
+                invocation: Invocation {
+                    session_id: "uncreated".into(),
+                    turn_id: "turn".into(),
+                    run_id: "run".into(),
+                    invocation_id: "invocation".into(),
+                },
+                operation_id: None,
+            },
+            true,
+            CancellationToken::new(),
+        )
+        .unwrap();
+    let denied = f
+        .app
+        .client()
+        .start(
+            f.binding(2).await,
+            "mcpConfigurations".into(),
+            json!({"workspace":workspace}),
+            model_scope,
+            Attachments::new().into(),
+        )
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap_err();
+    assert_eq!(denied, "agent_mcp_user_action_required");
+    f.app.shutdown().await.unwrap();
+    f.config.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_global_edits_apply_to_new_admissions_and_retire_unused_connections() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let home = tempfile::tempdir().unwrap();
+        let first_record = home.path().join("first-record");
+        let next_record = home.path().join("next-record");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(&format!("http://{}/v1",listener.local_addr().unwrap()),None,None,None,|configuration| {
+            configuration.assistant = Some(crate::contract::AssistantConfiguration { home: Some(home.path().to_str().unwrap().into()) });
+        }).await;
+        write_config(&home.path().join(".agents/mcp.json"),&portable(&first_record));
+        let session = f.create("MCP live configuration").await;
+        f.send(&session).await.unwrap();
+        let (mut first,_) = listener.accept().await.unwrap();
+        request(&mut first).await;
+        assert_eq!(f.send(&session).await.unwrap()["kind"],"queued");
+        let inventory = f.query("mcpConfigurations",json!({})).await.unwrap();
+        let target = inventory["locations"].as_array().unwrap().iter().find(|target|target["location"] == "user:agents").unwrap();
+        let result = f.mutation(2,"manageMcpServer",json!({"location":"user:agents","revision":target["revision"],"name":"fixture","change":{"kind":"save","configuration":portable(&next_record)["mcpServers"]["fixture"]}}),Uuid::new_v4()).await.unwrap();
+        assert_eq!(result["kind"],"saved");
+        assert_eq!(f.send(&session).await.unwrap()["kind"],"queued");
+        let tools = f.query("tools",json!({})).await.unwrap();
+        assert!(tools["names"].as_array().unwrap().iter().any(|name|name == "mcp__fixture__echo"));
+        let pids = |record: &std::path::Path| std::fs::read_to_string(record).unwrap().lines().filter_map(|line|serde_json::from_str::<Value>(line).unwrap()["pid"].as_i64()).collect::<Vec<_>>();
+        assert_eq!(pids(&next_record).len(),1,"repeated catalog reads reuse the connection");
+        #[cfg(unix)] {
+            // SAFETY: signal zero only checks existence of this fixture's numeric process ID.
+            assert_eq!(unsafe { libc::kill(pids(&first_record)[0] as i32,0) },0);
+        }
+        echo_turn(&listener,first,"ORIGINAL_CONNECTION",false).await;
+        let (mut queued,_) = listener.accept().await.unwrap();
+        request(&mut queued).await;
+        echo_turn(&listener,queued,"QUEUED_CONNECTION",false).await;
+        let (mut latest,_) = listener.accept().await.unwrap();
+        request(&mut latest).await;
+        echo_turn(&listener,latest,"UPDATED_CONNECTION",false).await;
+        f.drained().await;
+        assert_eq!(calls(&first_record),2);
+        assert_eq!(calls(&next_record),1);
+        #[cfg(unix)] {
+            // SAFETY: signal zero only probes the process; no signal is delivered.
+            assert_eq!(unsafe { libc::kill(pids(&first_record)[0] as i32,0) },-1,"superseded connection is reaped after its accepted work finishes");
+        }
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_edits_do_not_rebind_a_tool_waiting_for_approval() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let home = tempfile::tempdir().unwrap();
+        let original = home.path().join("approval-original");
+        let replacement = home.path().join("approval-replacement");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(&format!("http://{}/v1",listener.local_addr().unwrap()),None,None,None,|configuration| {
+            configuration.assistant = Some(crate::contract::AssistantConfiguration { home: Some(home.path().to_str().unwrap().into()) });
+        }).await;
+        let mut configuration = portable(&original);
+        configuration["mcpServers"]["fixture"]["preapproved"] = json!(false);
+        write_config(&home.path().join(".maka/mcp.json"),&configuration);
+        let session = f.create("Approval keeps its MCP connection").await;
+        f.send(&session).await.unwrap();
+        let (mut first,_) = listener.accept().await.unwrap();
+        request(&mut first).await;
+        service_tools::named_tool_response(&mut first,"mcp__fixture__echo",json!({"marker":"PARKED_ORIGINAL"})).await;
+        let pending = approval(&f,&session).await;
+        assert_eq!(calls(&original),0);
+        write_config(&home.path().join(".maka/mcp.json"),&portable(&replacement));
+        f.query("tools",json!({})).await.unwrap();
+        let result = f.mutation(2,"respond",json!({"sessionId":session,"requestId":pending.request_id,"answer":{"kind":"service_approval","decision":"allow"}}),Uuid::new_v4()).await.unwrap();
+        assert_eq!(result["record"]["outcome"]["decision"],"allow");
+        let (mut next,_) = listener.accept().await.unwrap();
+        let request = request(&mut next).await;
+        assert!(request["messages"].as_array().unwrap().iter().any(|message|message["role"] == "tool" && message.to_string().contains("PARKED_ORIGINAL")));
+        response(&mut next).await;
+        f.drained().await;
+        assert_eq!(calls(&original),1);
+        assert_eq!(calls(&replacement),0,"approval targets the original connection after the current files change");
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_connection_survives_model_retry_park_and_resumed_execution() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let home = tempfile::tempdir().unwrap();
+        let original = home.path().join("retry-original");
+        let replacement = home.path().join("retry-replacement");
+        let latest = home.path().join("retry-latest");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None, None, None,
+            |configuration| {
+                configuration.assistant = Some(crate::contract::AssistantConfiguration {
+                    home: Some(home.path().to_str().unwrap().into()),
+                });
+            },
+        ).await;
+        let file = home.path().join(".agents/mcp.json");
+        write_config(&file, &portable(&original));
+        let session = f.create("Model retry retains its MCP connection").await;
+        f.send(&session).await.unwrap();
+        let store = f.session(&session).await;
+        let mut commits = store.subscribe_commits().unwrap();
+        let (mut first, _) = listener.accept().await.unwrap();
+        request(&mut first).await;
+        let body = r#"{"error":{"type":"rate_limit_error","message":"retry later"}}"#;
+        first.write_all(format!("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 60\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        drop(first);
+        loop {
+            if let Some(checkpoint) = store.activation_checkpoint(&session).await.unwrap() {
+                assert!(matches!(checkpoint.checkpoint.suspension,
+                    maka_agent_facts::native_approval::ActivationSuspension::ModelRetry { .. }));
+                break;
+            }
+            commits.changed().await.unwrap();
+        }
+        f.drained().await;
+        write_config(&file, &portable(&replacement));
+        f.query("tools", json!({})).await.unwrap();
+        let (mut resumed, _) = listener.accept().await.unwrap();
+        request(&mut resumed).await;
+        assert!(store.activation_checkpoint(&session).await.unwrap().is_none());
+        write_config(&file, &portable(&latest));
+        f.query("tools", json!({})).await.unwrap();
+        echo_turn(&listener, resumed, "RETRIED_ORIGINAL", false).await;
+        f.drained().await;
+        assert_eq!(calls(&original), 1);
+        assert_eq!(calls(&replacement), 0);
+        assert_eq!(calls(&latest), 0);
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     }).await.unwrap();

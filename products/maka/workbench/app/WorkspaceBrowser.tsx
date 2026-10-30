@@ -48,7 +48,7 @@ import {
   controlDisabledStyle,
 } from './ui';
 import { Icon } from './Icon';
-import type { Browsing, BrowserScope, BrowserWorkspace } from './browsing';
+import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
 import {
   hasForkPrefix,
@@ -75,14 +75,37 @@ export type WorkspaceBrowserProps = {
     label?: string,
   ): Promise<void>;
   newConversation(expectedSessionId: string | null): void;
+  /** Open the persistent Bot; absent when the Bot mode is not offered. */
+  openBot?(expectedSessionId: string | null): void;
+  /** The Bot Session, listed only through its own entry. */
+  botSession?(): string | null;
   settings(expectedSessionId: string | null): void;
   search(expectedSessionId: string | null): void;
   changeSession(action: SessionAction, expectedSessionId: string | null): Promise<void>;
+  /** Whether a conversation can open in a pane beside the current one. */
+  canOpenBeside?(): boolean;
+  /** The conversation open beside the selected one, marked like a selected row. */
+  beside?(): string | null;
+  openBeside?(sessionId: string): void;
+};
+
+type WorkspaceGroup = {
+  key: string;
+  name: string;
+  project: BrowserProject | null;
+  sessions: string[];
 };
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const titleBarRow = () => ownTitleBar && props.docked();
+  // Desktop rows hold one line; the terminal's also name the workspace.
+  const rowHeight = () => (compact() ? 32 : platform.isTerminal ? 48 : 36);
   const browser = props.browsing;
+  const visibleSessions = computed(() => {
+    const bot = props.botSession?.() ?? null;
+    const sessions = browser.sessions();
+    return bot === null ? sessions : sessions.filter((session) => session.id !== bot);
+  });
   const choosingWorkspace = signal(false);
   const actions = signal<{ session: SessionActionTarget; origin: string | null } | null>(null);
   const actionsAnchor = signal<ViewRef | null>(null);
@@ -105,7 +128,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         tr('Project')
       );
     return (
-      browser.sessions()[0]?.workspace.path.split('/').filter(Boolean).at(-1) ?? tr('Workspace')
+      visibleSessions()[0]?.workspace.path.split('/').filter(Boolean).at(-1) ?? tr('Workspace')
     );
   };
   const scopes = computed(() => [
@@ -131,16 +154,68 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       })),
   ]);
   const sessionsById = computed(
-    () => new Map(browser.sessions().map((session) => [session.id, session])),
+    () => new Map(visibleSessions().map((session) => [session.id, session])),
   );
   const scopesById = computed(() => new Map(scopes().map((scope) => [scope.id, scope])));
-  const firstUnpinned = computed(() => browser.sessions().find((session) => !session.pinned)?.id);
-  const hasPinned = () => browser.sessions()[0]?.pinned === true;
-  const rowIds = computed(() =>
-    choosingWorkspace()
-      ? scopes().map((scope) => scope.id)
-      : browser.sessions().map((session) => session.id),
+  const firstUnpinned = computed(() => visibleSessions().find((session) => !session.pinned)?.id);
+  const hasPinned = () => visibleSessions()[0]?.pinned === true;
+  // The desktop lists conversations under their workspaces instead of
+  // choosing a scope: pinned ones first, then each workspace in the order of
+  // its latest loaded conversation, then active projects with none loaded.
+  const collapsed = signal<ReadonlySet<string>>(new Set());
+  const groups = computed(() => {
+    const projects = new Map(browser.projects().map((project) => [project.reference.id, project]));
+    const byKey = new Map<string, WorkspaceGroup>();
+    const add = (key: string, name: string, project: BrowserProject | null) => {
+      const group = { key, name, project, sessions: [] };
+      byKey.set(key, group);
+      return group;
+    };
+    for (const session of visibleSessions()) {
+      const projectId = session.workspace.projectId;
+      const key = session.pinned
+        ? 'pinned'
+        : projectId
+          ? `project:${projectId}`
+          : `path:${session.workspace.path}`;
+      const project = (projectId && projects.get(projectId)) || null;
+      const group =
+        byKey.get(key) ??
+        add(
+          key,
+          session.pinned
+            ? tr('Pinned')
+            : (project?.name ??
+                (session.workspace.path.split('/').filter(Boolean).at(-1) ||
+                  session.workspace.path)),
+          session.pinned ? null : project,
+        );
+      group.sessions.push(session.id);
+    }
+    if (browser.filter() === 'all')
+      for (const project of projects.values())
+        if (!project.archived && !byKey.has(`project:${project.reference.id}`))
+          add(`project:${project.reference.id}`, project.name, project);
+    return [...byKey.values()];
+  });
+  const groupsById = computed(
+    () => new Map(groups().map((group) => [`group:${group.key}`, group])),
   );
+  const rowIds = computed(() =>
+    platform.isTerminal
+      ? choosingWorkspace()
+        ? scopes().map((scope) => scope.id)
+        : visibleSessions().map((session) => session.id)
+      : groups().flatMap((group) => [
+          `group:${group.key}`,
+          ...(collapsed().has(group.key) ? [] : group.sessions),
+        ]),
+  );
+  const toggleGroup = (key: string) => {
+    const next = new Set(collapsed());
+    if (!next.delete(key)) next.add(key);
+    collapsed.set(next);
+  };
   const select = async ({ id, origin }: { id: string; origin: string | null }) => {
     if (!alive || props.selected() !== origin || props.switching()) return;
     navigationNotice.set(null);
@@ -209,15 +284,38 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   effect(() => {
     if (props.focusRequest()) untracked(focusBrowser);
   });
+  // Hidden rows can extend a page without making the List emit its end edge again.
+  const endRequest = signal<{
+    rows: number;
+    scope: BrowserScope;
+    filter: ReturnType<Browsing['filter']>;
+  } | null>(null);
+  const loadMore = () => {
+    if (!choosingWorkspace())
+      endRequest.set({ rows: rowIds().length, scope: browser.scope(), filter: browser.filter() });
+  };
   effect(() => {
-    const rows = browser.sessions().length;
+    const rows = rowIds().length;
+    const requested = endRequest();
     if (
-      !choosingWorkspace() &&
-      !browser.loading() &&
-      !browser.error() &&
-      rows < Math.ceil(viewportHeight() / (compact() ? 32 : 48))
-    )
-      void browser.loadMore();
+      requested &&
+      (browser.scope() !== requested.scope ||
+        browser.filter() !== requested.filter ||
+        rows > requested.rows)
+    ) {
+      endRequest.set(null);
+      return;
+    }
+    if (requested && rows < requested.rows) {
+      endRequest.set({ ...requested, rows });
+      return;
+    }
+    if (choosingWorkspace() || browser.loading() || browser.error()) return;
+    if (requested || rows < Math.ceil(viewportHeight() / rowHeight())) {
+      void browser.loadMore().then((result) => {
+        if (alive && endRequest() === requested && result === 'complete') endRequest.set(null);
+      });
+    }
   });
   const createWorkspace = ({
     workspace,
@@ -272,6 +370,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       </View>
       <Button
         accessibilityLabel={tr('New conversation')}
+        ref={(node) => {
+          if (platform.isTerminal) return;
+          navigationTarget = node;
+          focusBrowser();
+        }}
         disabled={props.switching()}
         onPress={inputAction(props.newConversation, props.selected())}
         style={{
@@ -291,23 +394,54 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         <Icon name="plus" color={C.secondary} />
         <Text style={{ color: C.text, fontSize: 14 }}>{tr('New conversation')}</Text>
       </Button>
-      <Button
-        accessibilityLabel={tr('Choose workspace scope')}
-        ref={(node) => {
-          navigationTarget = node;
-          focusBrowser();
-        }}
-        onPress={inputAction(toggleScopes, null)}
-        style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-        hoverStyle={{ backgroundColor: C.raised }}
-        focusStyle={{ backgroundColor: C.line }}
-      >
-        <Icon name="folder" color={C.secondary} />
-        <Text style={[{ color: C.secondary, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
-          {scopeLabel()}
-        </Text>
-        <Icon name="down" color={C.secondary} />
-      </Button>
+      <If when={props.openBot !== undefined}>
+        <Button
+          accessibilityLabel={tr('Maka Bot')}
+          disabled={props.switching()}
+          onPress={inputAction(
+            (origin: string | null) => props.openBot?.(origin),
+            props.selected(),
+          )}
+          style={{
+            backgroundColor:
+              props.botSession?.() != null && props.selected() === props.botSession?.()
+                ? C.line
+                : 'transparent',
+            height: compact() ? 32 : 40,
+            flexDirection: 'row',
+            gap: 8,
+            paddingHorizontal: 8,
+            paddingVertical: 8,
+            alignItems: 'center',
+            borderRadius: 8,
+          }}
+          hoverStyle={{ backgroundColor: C.raised }}
+          focusStyle={{ backgroundColor: C.line }}
+          disabledStyle={controlDisabledStyle}
+        >
+          <Icon name="activity" color={C.accent} />
+          <Text style={{ color: C.text, fontSize: 14 }}>{tr('Maka Bot')}</Text>
+        </Button>
+      </If>
+      <If when={platform.isTerminal}>
+        <Button
+          accessibilityLabel={tr('Choose workspace scope')}
+          ref={(node) => {
+            navigationTarget = node;
+            focusBrowser();
+          }}
+          onPress={inputAction(toggleScopes, null)}
+          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+          hoverStyle={{ backgroundColor: C.raised }}
+          focusStyle={{ backgroundColor: C.line }}
+        >
+          <Icon name="folder" color={C.secondary} />
+          <Text style={[{ color: C.secondary, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
+            {scopeLabel()}
+          </Text>
+          <Icon name="down" color={C.secondary} />
+        </Button>
+      </If>
       <Button
         accessibilityLabel={tr('Search conversations')}
         tooltip={textTooltip(() => `${tr('Search conversations')} · ${keymap.label('mod+o')}`)}
@@ -330,49 +464,70 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           {tr('Search titles and messages…')}
         </Text>
       </Button>
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 4,
-          padding: compact() ? 0 : 4,
-          backgroundColor: C.background,
-          borderRadius: 8,
-        }}
-      >
+      <If when={platform.isTerminal}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 4,
+            padding: compact() ? 0 : 4,
+            backgroundColor: C.background,
+            borderRadius: 8,
+          }}
+        >
+          <Button
+            selected={browser.filter() === 'all'}
+            accessibilityLabel={tr('Show active conversations')}
+            style={{ ...controlStyle, flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
+            selectedStyle={{ backgroundColor: C.raised }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+            onPress={inputAction(chooseFilter, 'all')}
+          >
+            <Text style={{ color: browser.filter() === 'all' ? C.text : C.muted }}>
+              {tr('Active')}
+            </Text>
+          </Button>
+          <Button
+            selected={browser.filter() === 'archived'}
+            accessibilityLabel={tr('Show archived conversations')}
+            style={{ ...controlStyle, flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
+            selectedStyle={{ backgroundColor: C.raised }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+            onPress={inputAction(chooseFilter, 'archived')}
+          >
+            <Text style={{ color: browser.filter() === 'archived' ? C.text : C.muted }}>
+              {tr('Archived')}
+            </Text>
+          </Button>
+        </View>
+      </If>
+      <If when={!platform.isTerminal && browser.filter() === 'archived'}>
         <Button
-          selected={browser.filter() === 'all'}
           accessibilityLabel={tr('Show active conversations')}
-          style={{ ...controlStyle, flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
-          selectedStyle={{ backgroundColor: C.raised }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
           onPress={inputAction(chooseFilter, 'all')}
-        >
-          <Text style={{ color: browser.filter() === 'all' ? C.text : C.muted }}>
-            {tr('Active')}
-          </Text>
-        </Button>
-        <Button
-          selected={browser.filter() === 'archived'}
-          accessibilityLabel={tr('Show archived conversations')}
-          style={{ ...controlStyle, flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
-          selectedStyle={{ backgroundColor: C.raised }}
+          style={{
+            ...controlStyle,
+            flexDirection: 'row',
+            justifyContent: 'flex-start',
+            alignItems: 'center',
+            gap: 8,
+            paddingHorizontal: 8,
+          }}
           hoverStyle={controlHoverStyle()}
           focusStyle={controlFocusStyle()}
-          onPress={inputAction(chooseFilter, 'archived')}
         >
-          <Text style={{ color: browser.filter() === 'archived' ? C.text : C.muted }}>
-            {tr('Archived')}
-          </Text>
+          <Icon name="back" color={C.secondary} />
+          <Text style={{ color: C.text, fontWeight: '600' }}>{tr('Archived')}</Text>
         </Button>
-      </View>
+      </If>
       <List
         ref={(node) => {
           list = node;
         }}
         each={rowIds()}
-        estimatedItemSize={compact() ? 32 : 48}
+        estimatedItemSize={rowHeight()}
         empty={() => (
           <View
             style={{ height: viewportHeight(), alignItems: 'center', justifyContent: 'center' }}
@@ -387,9 +542,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           </View>
         )}
         onLayout={({ bounds: frame }) => viewportHeight.set(frame.size.height)}
-        onLoadMore={() => {
-          if (!choosingWorkspace()) void browser.loadMore();
-        }}
+        onLoadMore={loadMore}
         style={{ flex: 1, minHeight: 32 }}
         accessibilityLabel={choosingWorkspace() ? tr('Workspace scopes') : tr('Conversations')}
       >
@@ -457,6 +610,90 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   </View>
                 );
               }
+              const initialGroup = groupsById().get(key());
+              if (initialGroup) {
+                const group = () => groupsById().get(key()) ?? initialGroup;
+                const hovered = signal(false);
+                const open = () => !collapsed().has(group().key);
+                const project = () => group().project;
+                return (
+                  <View
+                    onMouseEnter={() => hovered.set(true)}
+                    onMouseLeave={() => hovered.set(false)}
+                    style={{
+                      flexDirection: 'row',
+                      height: rowHeight(),
+                      paddingVertical: compact() ? 0 : 2,
+                      // Each workspace after the first starts its own block.
+                      marginTop: key() === rowIds()[0] ? 0 : 8,
+                    }}
+                  >
+                    <Button
+                      accessibilityLabel={tr(open() ? 'Collapse {name}' : 'Expand {name}', {
+                        name: group().name,
+                      })}
+                      onPress={inputAction(toggleGroup, group().key)}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 4,
+                        paddingHorizontal: 8,
+                        borderRadius: 8,
+                      }}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
+                    >
+                      <Icon name={open() ? 'down' : 'right'} color={C.muted} />
+                      <Text
+                        style={[
+                          { ...captionTextStyle, color: C.secondary, fontWeight: '600', flex: 1 },
+                          { numberOfLines: 1 },
+                        ]}
+                      >
+                        {group().name}
+                      </Text>
+                    </Button>
+                    <If
+                      when={
+                        project()?.selection && !project()?.archived && browser.filter() === 'all'
+                      }
+                    >
+                      <Button
+                        accessibilityLabel={tr('New conversation in {name}', {
+                          name: group().name,
+                        })}
+                        tooltip={textTooltip(() =>
+                          tr('New conversation in {name}', { name: group().name }),
+                        )}
+                        disabled={props.switching() || !project()?.available}
+                        onPress={inputAction(createWorkspace, {
+                          workspace: {
+                            kind: 'project',
+                            project: project()!.reference,
+                            selection: project()!.selection!,
+                          },
+                          origin: props.selected(),
+                          label: project()!.path ?? project()!.name,
+                        })}
+                        style={{
+                          width: 32,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          borderRadius: 8,
+                          opacity: hovered() ? 1 : 0,
+                        }}
+                        hoverStyle={controlHoverStyle()}
+                        focusStyle={{ opacity: 1 }}
+                        disabledStyle={controlDisabledStyle}
+                      >
+                        <Icon name="plus" color={C.muted} />
+                      </Button>
+                    </If>
+                  </View>
+                );
+              }
               const session = () => sessionsById().get(key());
               let actionTrigger: ViewRef | undefined;
               cleanup(() => {
@@ -473,6 +710,23 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               // the selected row, while the pointer is on the row, or while its
               // menu is open.
               const hovered = signal(false);
+              // The desktop names the workspace only where the group does not.
+              const desktopCaption = () => {
+                const current = session();
+                if (!current) return '';
+                return [
+                  current.activity === 'working' || current.activity === 'waiting'
+                    ? sessionStatusCaption[current.activity]
+                    : '',
+                  current.branch && !hasForkPrefix(current.title) ? tr('Fork') : '',
+                  current.pinned
+                    ? current.workspace.path.split('/').filter(Boolean).at(-1) ||
+                      current.workspace.path
+                    : '',
+                ]
+                  .filter(Boolean)
+                  .join(' · ');
+              };
               const actionsShown = () =>
                 platform.isTerminal ||
                 hovered() ||
@@ -482,8 +736,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 <View>
                   <If
                     when={
+                      platform.isTerminal &&
                       hasPinned() &&
-                      (key() === browser.sessions()[0]?.id || key() === firstUnpinned())
+                      (key() === visibleSessions()[0]?.id || key() === firstUnpinned())
                     }
                   >
                     <Text
@@ -509,7 +764,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                     }
                     style={{
                       flexDirection: 'row',
-                      height: compact() ? 32 : 48,
+                      height: rowHeight(),
                       paddingVertical: compact() ? 0 : 2,
                     }}
                   >
@@ -525,7 +780,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                           ? {}
                           : {
                               backgroundColor:
-                                props.selected() === key() || hovered() ? C.line : C.surface,
+                                props.selected() === key() ||
+                                props.beside?.() === key() ||
+                                hovered()
+                                  ? C.line
+                                  : C.surface,
                             }),
                       }}
                     >
@@ -540,6 +799,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                           flex: 1,
                           minWidth: 0,
                           paddingHorizontal: 8,
+                          // Under its workspace, past the workspace's disclosure icon.
+                          paddingLeft: platform.isTerminal ? 8 : 28,
                           justifyContent: 'center',
                           borderRadius: 8,
                           backgroundColor: platform.isTerminal
@@ -571,28 +832,40 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                           >
                             {session()?.title || tr('Untitled conversation')}
                           </Text>
+                          <If when={!platform.isTerminal && desktopCaption()}>
+                            <Text
+                              style={[
+                                { ...captionTextStyle, color: C.muted, flexShrink: 1 },
+                                { numberOfLines: 1 },
+                              ]}
+                            >
+                              {desktopCaption()}
+                            </Text>
+                          </If>
                           <If when={session()?.hasUnread}>
                             <Icon name="unread" color={C.accent} />
                           </If>
                         </View>
-                        <Text
-                          style={[
-                            { color: C.muted, fontSize: 12, lineHeight: 16 },
-                            { numberOfLines: 1 },
-                          ]}
-                        >
-                          {session()?.activity === 'working'
-                            ? `${sessionStatusCaption.working} · `
-                            : session()?.activity === 'waiting'
-                              ? `${sessionStatusCaption.waiting} · `
+                        <If when={platform.isTerminal}>
+                          <Text
+                            style={[
+                              { color: C.muted, fontSize: 12, lineHeight: 16 },
+                              { numberOfLines: 1 },
+                            ]}
+                          >
+                            {session()?.activity === 'working'
+                              ? `${sessionStatusCaption.working} · `
+                              : session()?.activity === 'waiting'
+                                ? `${sessionStatusCaption.waiting} · `
+                                : ''}
+                            {/* Forks renamed or titled before the prefix still read as forks. */}
+                            {session()?.branch && !hasForkPrefix(session()!.title)
+                              ? `${tr('Fork')} · `
                               : ''}
-                          {/* Forks renamed or titled before the prefix still read as forks. */}
-                          {session()?.branch && !hasForkPrefix(session()!.title)
-                            ? `${tr('Fork')} · `
-                            : ''}
-                          {session()?.workspace.path.split('/').filter(Boolean).at(-1) ||
-                            session()?.workspace.path}
-                        </Text>
+                            {session()?.workspace.path.split('/').filter(Boolean).at(-1) ||
+                              session()?.workspace.path}
+                          </Text>
+                        </If>
                       </Button>
                       <Button
                         ref={(node) => {
@@ -701,6 +974,27 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           <Icon name="settings" color={C.secondary} />
           <Text style={{ color: C.secondary }}>{tr('Settings')}</Text>
         </Button>
+        <If when={!platform.isTerminal}>
+          <Button
+            selected={browser.filter() === 'archived'}
+            accessibilityLabel={tr(
+              browser.filter() === 'archived'
+                ? 'Show active conversations'
+                : 'Show archived conversations',
+            )}
+            tooltip={textTooltip(() => tr('Archived'))}
+            onPress={inputAction(
+              chooseFilter,
+              browser.filter() === 'archived' ? 'all' : 'archived',
+            )}
+            style={{ ...controlStyle, width: 32, alignItems: 'center', justifyContent: 'center' }}
+            selectedStyle={{ backgroundColor: C.raised }}
+            hoverStyle={{ backgroundColor: C.raised }}
+            focusStyle={{ backgroundColor: C.line }}
+          >
+            <Icon name="archive" color={C.secondary} />
+          </Button>
+        </If>
       </View>
       <Each of={actions() ? [actions()!] : []} key={(target) => target}>
         {(item) => {
@@ -713,6 +1007,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               close={closeActions}
               notice={(message) => navigationNotice.set({ kind: 'action', message })}
               change={(action) => props.changeSession(action, target.origin)}
+              openBeside={
+                props.canOpenBeside?.() && target.session.id !== props.selected()
+                  ? () => props.openBeside?.(target.session.id)
+                  : undefined
+              }
             />
           );
         }}

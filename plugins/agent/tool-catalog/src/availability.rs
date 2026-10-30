@@ -22,7 +22,7 @@ use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::tools::ToolError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 pub const SEARCH: &str = "tool_search";
 
@@ -61,6 +61,7 @@ fn state_error(error: maka_session_state::Error) -> ToolError {
 #[derive(Clone)]
 pub struct Availability {
     catalog: ToolCatalog,
+    names: Arc<[String]>,
     behavior: Option<maka_agent_facts::execution::BehaviorId>,
     loaded: LoadedTools,
 }
@@ -100,8 +101,8 @@ impl Availability {
             invocation,
             execution,
             cwd,
-            tools: catalog.names().into_iter().collect(),
-            available_tools: catalog.names().into_iter().collect(),
+            tools: BTreeSet::new(),
+            available_tools: self.names.clone(),
             cancellation,
         };
         catalog.bind_native_request(request).await?;
@@ -111,15 +112,12 @@ impl Availability {
             .0
             .update_loaded(|names| names.retain(|name| catalog.contains(name)))
             .map_err(state_error)?;
-        Ok(Self {
-            catalog,
-            behavior: self.behavior.clone(),
-            loaded: self.loaded.clone(),
-        })
+        Ok(self.with_subset(catalog))
     }
 
     pub fn new(catalog: ToolCatalog, loaded: LoadedTools) -> Self {
         Self {
+            names: catalog.names().into(),
             catalog,
             behavior: None,
             loaded,
@@ -136,8 +134,19 @@ impl Availability {
                 .any(|definition| !self.direct(&definition.name))
     }
     pub fn nested(&self) -> Self {
+        self.with_subset(self.catalog.nested())
+    }
+
+    fn with_subset(&self, catalog: ToolCatalog) -> Self {
+        // Binding and nesting can only remove names from this frozen ceiling.
+        let names = if catalog.entries.len() == self.names.len() {
+            self.names.clone()
+        } else {
+            catalog.names().into()
+        };
         Self {
-            catalog: self.catalog.nested(),
+            catalog,
+            names,
             behavior: self.behavior.clone(),
             loaded: self.loaded.clone(),
         }
@@ -316,6 +325,139 @@ fn direct(name: &str) -> bool {
 #[cfg(test)]
 mod state_tests {
     use super::*;
+
+    #[test]
+    fn binding_ceiling_names_share_refresh_and_outlive_only_their_catalog_data() {
+        use crate::request::{BindingFuture, BindingRequest, BoundTool, RequestBinding};
+        use crate::{
+            PreparationFuture, ToolCallContext, ToolHandler, ToolNesting, ToolPreparer,
+            ToolRegistration, ToolSemantics,
+        };
+        use maka_agent_facts::event::Invocation;
+        use std::{
+            collections::BTreeMap,
+            future::Future,
+            sync::Mutex,
+            task::{Context, Poll, Waker},
+        };
+
+        struct Handler;
+        impl ToolPreparer for Handler {
+            fn names(&self) -> Vec<String> {
+                ["alpha", "beta", "gamma"].map(str::to_owned).into()
+            }
+            fn prepare(
+                &self,
+                _: String,
+                _: Value,
+                _: ToolCallContext,
+                _: tokio_util::sync::CancellationToken,
+            ) -> PreparationFuture {
+                Box::pin(async { Err(ToolRejection::Unavailable) })
+            }
+        }
+        struct Capture {
+            selected: BTreeSet<String>,
+            ceiling: Arc<[String]>,
+        }
+        struct Binding(Arc<Mutex<Vec<Capture>>>);
+        impl RequestBinding for Binding {
+            fn bind(&self, request: BindingRequest) -> BindingFuture {
+                self.0.lock().unwrap().push(Capture {
+                    selected: request.tools.clone(),
+                    ceiling: request.available_tools.clone(),
+                });
+                let projected = request
+                    .tools
+                    .into_iter()
+                    .map(|name| {
+                        let tool = if request.cwd == "drop-alpha" && name == "alpha" {
+                            BoundTool::Unavailable
+                        } else {
+                            BoundTool::Prepared(Arc::new(Handler))
+                        };
+                        (name, tool)
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                Box::pin(async move { Ok(projected) })
+            }
+        }
+        fn capture(view: &Availability, cwd: &str) -> Availability {
+            let mut pending = std::pin::pin!(view.capture(
+                None,
+                Invocation {
+                    session_id: "session".into(),
+                    turn_id: "turn".into(),
+                    run_id: "run".into(),
+                    invocation_id: "invocation".into(),
+                },
+                None,
+                cwd.into(),
+                tokio_util::sync::CancellationToken::new()
+            ));
+            match pending
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+            {
+                Poll::Ready(result) => result.unwrap(),
+                Poll::Pending => panic!("fixture binding has no asynchronous external work"),
+            }
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let binding = Arc::new(Binding(seen.clone()));
+        let catalog = ToolCatalog::new(["alpha", "beta", "gamma"].map(|name| ToolRegistration {
+            definition: ToolDefinition {
+                name: name.into(),
+                description: name.into(),
+                input_schema: serde_json::json!({"type":"string"}),
+                provider: None,
+                output_schema: None,
+                freeform: None,
+            },
+            nesting: if name == "gamma" {
+                ToolNesting::DirectOnly
+            } else {
+                ToolNesting::Nestable
+            },
+            semantics: ToolSemantics::Parallel,
+            handler: ToolHandler::Prepared(Arc::new(Handler)),
+        }))
+        .unwrap()
+        .with_request_binding(BTreeSet::from(["alpha".into()]), binding.clone())
+        .unwrap()
+        .with_request_binding(BTreeSet::from(["beta".into(), "gamma".into()]), binding)
+        .unwrap();
+        let definition = Arc::downgrade(&catalog.shared_definitions().next().unwrap());
+        let view = Availability::new(catalog, LoadedTools::temporary().unwrap());
+        let first = capture(&view, "keep");
+        let narrowed = capture(&view, "drop-alpha");
+        let refreshed = capture(&narrowed, "keep");
+        let nested = narrowed.nested();
+        let nested_capture = capture(&nested, "keep");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 6);
+        assert_eq!(seen[0].selected, BTreeSet::from(["alpha".into()]));
+        assert_eq!(
+            seen[1].selected,
+            BTreeSet::from(["beta".into(), "gamma".into()])
+        );
+        assert_eq!(seen[0].ceiling.as_ref(), ["alpha", "beta", "gamma"]);
+        for next in &seen[1..4] {
+            assert!(Arc::ptr_eq(&seen[0].ceiling, &next.ceiling));
+        }
+        assert_eq!(seen[4].ceiling.as_ref(), ["beta", "gamma"]);
+        assert!(!Arc::ptr_eq(&seen[0].ceiling, &seen[4].ceiling));
+        assert_eq!(seen[5].selected, BTreeSet::from(["beta".into()]));
+        assert_eq!(seen[5].ceiling.as_ref(), ["beta"]);
+        assert!(first.all().contains("alpha"));
+        assert!(!refreshed.all().contains("alpha"));
+        drop((view, first, narrowed, refreshed, nested, nested_capture));
+        assert!(
+            definition.upgrade().is_none(),
+            "retained name snapshots must not retain tool definitions"
+        );
+        assert_eq!(seen[0].ceiling.as_ref(), ["alpha", "beta", "gamma"]);
+    }
 
     #[test]
     fn discovery_handles_restore_clear_and_retire_together() {

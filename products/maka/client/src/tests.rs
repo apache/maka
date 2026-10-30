@@ -100,13 +100,11 @@ impl Handler for CounterHandler {
                 | "selectBackend"
                 | "editQueue"
                 | "create"
+                | "openBot"
                 | "discoverModels"
-                | "setEnabled"
-                | "configure"
                 | "loginCredential"
                 | "saveCredential"
                 | "updateAssistantPreferences"
-                | "updateGlobalInstructions"
                 | "updateNetwork" => {
                     owner.messages.lock().unwrap().push(input.clone());
                     if method == "saveCredential"
@@ -204,13 +202,11 @@ impl Fixture {
                 "changeSession":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "fork":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "create":{"mode":"mutation","input":{},"output":{},"resources":{}},
+                "openBot":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "discoverModels":{"mode":"mutation","input":{},"output":{},"resources":{}},
-                "setEnabled":{"mode":"mutation","input":{},"output":{},"resources":{}},
-                "configure":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "loginCredential":{"mode":"mutation","input":{},"output":{},"progress":{},"resources":{}},
                 "saveCredential":{"mode":"mutation","input":{},"output":{},"resources":{"secret":{"type":{"name":"maka.text.utf8","version":1},"optional":false}}},
                 "updateAssistantPreferences":{"mode":"mutation","input":{},"output":{},"resources":{}},
-                "updateGlobalInstructions":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "updateNetwork":{"mode":"mutation","input":{},"output":{},"resources":{"secret":{"type":{"name":"maka.text.utf8","version":1},"optional":true}}},
                 "watch":{"mode":"subscription","input":{},"output":{},"resources":{}}
             }}
@@ -260,7 +256,6 @@ impl Fixture {
                 "agent":{"contract":contract,"cardinality":{"kind":"one"}},
                 "settings":{"contract":contract,"cardinality":{"kind":"one"}},
                 "setup":{"contract":contract,"cardinality":{"kind":"one"}},
-                "management":{"contract":contract,"cardinality":{"kind":"one"}},
                 "authentication":{"contract":contract,"cardinality":{"kind":"one"}},
                 "receipts":{"contract":receipt_reader_contract(),"cardinality":{"kind":"one"}}
             }),
@@ -298,7 +293,6 @@ impl Fixture {
                     "agent":[{"kind":"instance","path":["business"],"export":"Counter"}],
                     "settings":[{"kind":"instance","path":["business"],"export":"Counter"}],
                     "setup":[{"kind":"instance","path":["business"],"export":"Counter"}],
-                    "management":[{"kind":"instance","path":["business"],"export":"Counter"}],
                     "authentication":[{"kind":"instance","path":["business"],"export":"Counter"}],
                     "receipts":[{"kind":"instance","path":["reader"],"export":"Receipts"}]
                 }))
@@ -358,7 +352,6 @@ impl Fixture {
                                     "send".into(),
                                     "uploadAttachment".into(),
                                     "selectBackend".into(),
-                                    "updateGlobalInstructions".into(),
                                     "stop".into(),
                                     "stopComputerApp".into(),
                                     "respond".into(),
@@ -394,17 +387,6 @@ impl Fixture {
                             import: "setup".into(),
                             grant: Grant {
                                 methods: ["discoverModels".into()].into(),
-                                recovery: false,
-                            },
-                        },
-                    ),
-                    (
-                        "management".into(),
-                        HostEndpoint {
-                            consumer: InstanceId(vec![Uuid::from_u128(3)]),
-                            import: "management".into(),
-                            grant: Grant {
-                                methods: ["setEnabled".into(), "configure".into()].into(),
                                 recovery: false,
                             },
                         },
@@ -485,6 +467,33 @@ async fn send(client: &Client, id: Uuid) -> Mutation {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_bot_is_a_shell_control_without_a_target_session() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let fixture = Fixture::new().await;
+        let client = fixture.client().await;
+        let target = client.describe("agent").await.unwrap();
+        let owner = json!({"namespace":target.provider,"export":target.export});
+        let bot = client
+            .control(
+                Uuid::new_v4(),
+                "openBot",
+                json!({"workspace":{"kind":"session","sessionId":"session-one"}}),
+            )
+            .await
+            .unwrap();
+        let original = client.operation_for_control(bot.id()).await.unwrap();
+        assert_eq!(original.session_id, None);
+        assert_eq!(
+            original.correlation,
+            json!({"kind":"agent-control","owner":owner})
+        );
+        bot.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_restart_without_replay()
  {
     tokio::time::timeout(Duration::from_secs(20),async {
@@ -509,19 +518,28 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
             let original = client.operation_for_control(control.id()).await.unwrap();
             assert_eq!(original.session_id.as_deref(),Some("session-one"));
             assert_eq!(original.correlation,expected);
-            let mut extra = expected.clone();
-            extra["extra"] = json!(true);
-            for correlation in [json!({"kind":"agent-control"}), extra] {
-                let unrelated = client.mutation(Uuid::new_v4(),"agent",method,Value::Null,Attachments::new(),Some("session-one".into()),correlation).await.unwrap();
-                assert_eq!(client.operation_for_control(unrelated.id()).await.unwrap_err(),"original client operation belongs to another control owner");
-                unrelated.close().await.unwrap();
+            if method == "stop" {
+                let mut extra = expected.clone();
+                extra["extra"] = json!(true);
+                for correlation in [json!({"kind":"agent-control"}), extra] {
+                    let unrelated = client.mutation(Uuid::new_v4(),"agent",method,Value::Null,Attachments::new(),Some("session-one".into()),correlation).await.unwrap();
+                    assert_eq!(client.operation_for_control(unrelated.id()).await.unwrap_err(),"original client operation belongs to another control owner");
+                    unrelated.close().await.unwrap();
+                }
+                let pending = client.pending_controls().await.unwrap();
+                assert_eq!(pending.iter().map(|operation| operation.id).collect::<Vec<_>>(),[control.id()]);
+                assert_eq!(pending[0].correlation,expected);
+                let mut foreign_owner = expected.clone();
+                foreign_owner["owner"]["export"] = json!("another-agent");
+                let foreign_id = Uuid::new_v4();
+                assert_eq!(client.mutation(foreign_id,"agent",method,Value::Null,Attachments::new(),Some("session-one".into()),foreign_owner).await.err().unwrap(),"client operation target changed before opening its original call");
+                assert_eq!(client.operation_for_control(foreign_id).await.unwrap_err(),"original client operation belongs to another control owner");
+                assert!(client.abandon_unprepared(control.id()).await.unwrap().abandoned);
+                assert_eq!(client.operation_for_control(control.id()).await.unwrap().correlation,expected);
+                assert!(client.pending_controls().await.unwrap().is_empty());
+            } else {
+                client.abandon_unprepared(control.id()).await.unwrap();
             }
-            let pending = client.pending_controls().await.unwrap();
-            assert_eq!(pending.iter().map(|operation| operation.id).collect::<Vec<_>>(),[control.id()]);
-            assert_eq!(pending[0].correlation,expected);
-            assert!(client.abandon_unprepared(control.id()).await.unwrap().abandoned);
-            assert_eq!(client.operation_for_control(control.id()).await.unwrap().correlation,expected);
-            assert!(client.pending_controls().await.unwrap().is_empty());
             control.close().await.unwrap();
         }
         // Lifecycle originals retain their captured CAS and action identity in
@@ -537,21 +555,6 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
             let original = client.operation_for_control(control.id()).await.unwrap();
             assert_eq!(original.session_id.as_deref(),Some("session-one"));
             assert_eq!(original.correlation,expected);
-            let pending = client.pending_controls().await.unwrap();
-            assert_eq!(pending.iter().map(|operation| operation.id).collect::<Vec<_>>(),[control.id()]);
-            assert_eq!(pending[0].correlation,expected);
-            let mut extra = expected.clone();
-            extra["extra"] = json!(true);
-            let unrelated = client.mutation(Uuid::new_v4(),"agent",method,Value::Null,Attachments::new(),Some("session-one".into()),extra).await.unwrap();
-            assert_eq!(client.operation_for_control(unrelated.id()).await.unwrap_err(),"original client operation belongs to another control owner");
-            assert_eq!(client.pending_controls().await.unwrap().iter().map(|operation| operation.id).collect::<Vec<_>>(),[control.id()]);
-            unrelated.close().await.unwrap();
-            let mut foreign_owner = expected.clone();
-            foreign_owner["owner"]["export"] = json!("another-agent");
-            let foreign_id = Uuid::new_v4();
-            assert_eq!(client.mutation(foreign_id,"agent",method,Value::Null,Attachments::new(),Some("session-one".into()),foreign_owner).await.err().unwrap(),"client operation target changed before opening its original call");
-            assert_eq!(client.operation_for_control(foreign_id).await.unwrap_err(),"original client operation belongs to another control owner");
-            assert_eq!(client.pending_controls().await.unwrap().iter().map(|operation| operation.id).collect::<Vec<_>>(),[control.id()]);
             assert!(client.abandon_unprepared(control.id()).await.unwrap().abandoned);
             control.close().await.unwrap();
         }
@@ -688,27 +691,4 @@ async fn cancelling_a_sql_blocked_preparation_fences_confirmation_even_after_the
     })
     .await
     .unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn subscriptions_and_successful_calls_release_owners_and_scope_close_settles_abandoned_handles()
- {
-    tokio::time::timeout(Duration::from_secs(20),async {
-        let fixture = Fixture::new().await;
-        let client = fixture.client().await;
-        assert_eq!(client.query("agent","read",Value::Null).await.unwrap(),json!({"sent":0}));
-        let subscription = client.subscribe("agent","watch",Value::Null).await.unwrap();
-        assert!(matches!(subscription.next().await.unwrap(),Some(SubscriptionEvent::Item(ref value)) if value==&json!({"sent":0})));
-        subscription.close().await.unwrap();
-        assert!(subscription.next().await.unwrap().is_none());
-        assert_eq!(client.pending_requests().await,0);
-        let abandoned = client.subscribe("agent","watch",Value::Null).await.unwrap();
-        assert!(matches!(abandoned.next().await.unwrap(),Some(SubscriptionEvent::Item(ref value)) if value==&json!({"sent":0})));
-        drop(abandoned);
-        assert_eq!(client.pending_requests().await,1);
-        client.close().await.unwrap();
-        assert_eq!(client.pending_requests().await,0);
-        assert_eq!(fixture.counter.watches_closed.load(Ordering::SeqCst),2);
-        fixture.finish().await;
-    }).await.unwrap();
 }

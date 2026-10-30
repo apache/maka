@@ -60,18 +60,11 @@ struct Inner {
     identity: Arc<SourceIdentity>,
     builder: Mutex<Option<RequestBackingBuilder>>,
     published: AtomicU64,
-    #[cfg(test)]
-    write_jobs: AtomicU64,
     close_result: Mutex<Option<Result<(), String>>>,
     serial: Arc<tokio::sync::Mutex<()>>,
     access: Arc<tokio::sync::Mutex<()>>,
 }
 impl CaptureArena {
-    #[cfg(test)]
-    pub(crate) fn write_jobs(&self) -> u64 {
-        self.0.write_jobs.load(Ordering::Relaxed)
-    }
-
     pub(super) fn captured(&self) -> &CapturedSource {
         &self.0.captured
     }
@@ -98,8 +91,6 @@ impl CaptureArena {
             identity: Arc::new(SourceIdentity),
             builder: Mutex::new(None),
             published: AtomicU64::new(0),
-            #[cfg(test)]
-            write_jobs: AtomicU64::new(0),
             close_result: Mutex::new(None),
             serial: Arc::new(tokio::sync::Mutex::new(())),
             access: Arc::new(tokio::sync::Mutex::new(())),
@@ -167,8 +158,6 @@ impl CaptureArena {
         write: impl FnOnce(&mut RequestBackingBuilder) -> io::Result<T> + Send + 'static,
     ) -> io::Result<T> {
         let access = self.0.access.clone().lock_owned().await;
-        #[cfg(test)]
-        self.0.write_jobs.fetch_add(1, Ordering::Relaxed);
         let arena = self.clone();
         self.0
             .captured

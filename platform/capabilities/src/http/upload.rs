@@ -46,20 +46,52 @@ pub struct Receipt {
 impl Receipt {
     /// Confirm source custody was released before settling the resource ticket.
     pub async fn finish(&mut self) -> Result<serde_json::Value, Error> {
-        tokio::time::timeout(
+        let cleanup_started = tokio::time::Instant::now();
+        let outcome = match tokio::time::timeout(
             Duration::from_secs(5),
             self.dropped.wait_for(|value| *value),
         )
         .await
-        .map_err(|_| Error::CleanupUnconfirmed)?
-        .map_err(|_| Error::CleanupUnconfirmed)?;
-        tokio::time::timeout(
+        {
+            Ok(Ok(_)) => None,
+            Ok(Err(_)) => Some("channel_closed"),
+            Err(_) => Some("timeout"),
+        };
+        if let Some(outcome) = outcome {
+            tracing::error!(
+                stage = "upload_source_drop",
+                outcome,
+                timeout_ms = 5000_u64,
+                elapsed_ms = cleanup_started.elapsed().as_millis(),
+                source_dropped = *self.dropped.borrow(),
+                in_flight_chunks = *self.chunks.borrow(),
+                "cleanup unconfirmed"
+            );
+            return Err(Error::CleanupUnconfirmed);
+        }
+        let cleanup_started = tokio::time::Instant::now();
+        let outcome = match tokio::time::timeout(
             Duration::from_secs(5),
             self.chunks.wait_for(|value| *value == 0),
         )
         .await
-        .map_err(|_| Error::CleanupUnconfirmed)?
-        .map_err(|_| Error::CleanupUnconfirmed)?;
+        {
+            Ok(Ok(_)) => None,
+            Ok(Err(_)) => Some("channel_closed"),
+            Err(_) => Some("timeout"),
+        };
+        if let Some(outcome) = outcome {
+            tracing::error!(
+                stage = "upload_chunks_drain",
+                outcome,
+                timeout_ms = 5000_u64,
+                elapsed_ms = cleanup_started.elapsed().as_millis(),
+                source_dropped = *self.dropped.borrow(),
+                in_flight_chunks = *self.chunks.borrow(),
+                "cleanup unconfirmed"
+            );
+            return Err(Error::CleanupUnconfirmed);
+        }
         let progress = self.progress.lock().unwrap();
         // These are bytes handed to the HTTP transport, not a claim that the
         // remote endpoint committed them (especially on cancellation).

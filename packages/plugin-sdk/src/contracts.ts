@@ -233,6 +233,108 @@ export const contracts = {
           },
           resources: {},
         },
+        botOutbox: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutboxRead',
+            type: 'object',
+            properties: {
+              after: {
+                description:
+                  'Return messages with a sequence greater than this cursor, oldest first.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                default: 0,
+              },
+              limit: {
+                description:
+                  'Most messages to return, at most 100. Zero reads only the head\n(`sessionId` and `through`).',
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+                maximum: 100,
+                default: 100,
+              },
+            },
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutbox',
+            type: 'object',
+            properties: {
+              enabled: {
+                type: 'boolean',
+              },
+              sessionId: {
+                type: ['string', 'null'],
+              },
+              through: {
+                description: 'Highest sequence recorded so far; 0 when empty.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              messages: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentBotMessage',
+                },
+                maxItems: 100,
+              },
+              nextAfter: {
+                description: 'Pass as `after` to read the next page; absent when caught up.',
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['enabled', 'through', 'messages'],
+            $defs: {
+              AgentBotMessage: {
+                description: 'One message the Bot deliberately sent to its user.',
+                type: 'object',
+                properties: {
+                  sequence: {
+                    description: 'Monotonic position in the outbox, starting at 1.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    description: 'The model-chosen idempotency key of the `SendUser` call.',
+                    type: 'string',
+                  },
+                  index: {
+                    description: 'Position of this message within its `SendUser` call.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                  at: {
+                    description: 'Milliseconds since the Unix epoch when the message was recorded.',
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  turnId: {
+                    description:
+                      "The Turn whose work sent this message, so clients can show it as that\nTurn's reply.",
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['sequence', 'messageId', 'index', 'text', 'at'],
+              },
+            },
+          },
+          resources: {},
+        },
         catalog: {
           mode: 'subscription',
           input: {
@@ -414,6 +516,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -503,6 +610,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -1604,6 +1712,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -1693,6 +1806,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -2985,6 +3099,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -3074,6 +3193,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -4979,6 +5099,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -5068,6 +5193,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -5553,6 +5679,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -5642,6 +5773,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -7970,6 +8102,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -8059,6 +8196,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -9029,6 +9167,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -9118,6 +9261,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -10693,6 +10837,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -10782,6 +10931,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -11242,6 +11392,188 @@ export const contracts = {
           },
           resources: {},
         },
+        manageMcpServer: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpConfigurationChange',
+            type: 'object',
+            properties: {
+              workspace: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              location: {
+                $ref: '#/$defs/ConfigurationLocation',
+              },
+              name: {
+                type: 'string',
+              },
+              revision: {
+                type: 'string',
+              },
+              change: {
+                $ref: '#/$defs/AgentMcpServerChange',
+              },
+            },
+            additionalProperties: false,
+            required: ['location', 'name', 'revision', 'change'],
+            $defs: {
+              AgentWorkspace: {
+                type: 'object',
+                properties: {
+                  worktree: {
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  projectId: {
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  identity: {
+                    type: 'string',
+                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'directoryIdentity', 'identity'],
+              },
+              Binding: {
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  source_identity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'common_dir',
+                  'source',
+                  'source_identity',
+                  'base_commit',
+                  'directory',
+                ],
+              },
+              ConfigurationLocation: {
+                description:
+                  'Standard user/project configuration locations, ordered from highest precedence.',
+                type: 'string',
+                enum: ['project:maka', 'project:agents', 'user:maka', 'user:agents'],
+              },
+              AgentMcpServerChange: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'save',
+                      },
+                      configuration: true,
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'configuration'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'delete',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpConfigurationResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'saved',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+          },
+          resources: {},
+        },
         markRead: {
           mode: 'mutation',
           input: {
@@ -11298,6 +11630,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -11387,6 +11724,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -11730,6 +12068,166 @@ export const contracts = {
           },
           resources: {},
         },
+        mcpConfigurations: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpConfigurations',
+            type: 'object',
+            properties: {
+              workspace: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            $defs: {
+              AgentWorkspace: {
+                type: 'object',
+                properties: {
+                  worktree: {
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  projectId: {
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  identity: {
+                    type: 'string',
+                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'directoryIdentity', 'identity'],
+              },
+              Binding: {
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  source_identity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'common_dir',
+                  'source',
+                  'source_identity',
+                  'base_commit',
+                  'directory',
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpConfigurationList',
+            type: 'object',
+            properties: {
+              locations: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentMcpConfigurationLocation',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['locations'],
+            $defs: {
+              AgentMcpConfigurationLocation: {
+                type: 'object',
+                properties: {
+                  location: {
+                    $ref: '#/$defs/ConfigurationLocation',
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'string',
+                  },
+                  servers: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentMcpConfigurationEntry',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['location', 'path', 'revision', 'servers'],
+              },
+              ConfigurationLocation: {
+                description:
+                  'Standard user/project configuration locations, ordered from highest precedence.',
+                type: 'string',
+                enum: ['project:maka', 'project:agents', 'user:maka', 'user:agents'],
+              },
+              AgentMcpConfigurationEntry: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  configuration: true,
+                  shadowedBy: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ConfigurationLocation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'configuration'],
+              },
+            },
+          },
+          resources: {},
+        },
         metadata: {
           mode: 'mutation',
           input: {
@@ -11887,6 +12385,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -11976,6 +12479,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -12408,6 +12912,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -12497,6 +13006,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -12938,6 +13448,184 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['toolUseId', 'startSequence'],
+              },
+            },
+          },
+          resources: {},
+        },
+        openBot: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOpen',
+            description: "Open this installation's Bot Session, creating it on first use.",
+            type: 'object',
+            properties: {
+              workspace: {
+                $ref: '#/$defs/AgentWorkspaceSelection',
+              },
+              title: {
+                type: ['string', 'null'],
+                minLength: 1,
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['workspace'],
+            $defs: {
+              AgentWorkspaceSelection: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'isolated_git',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      project: {
+                        $ref: '#/$defs/AgentProjectRef',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'project', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              AgentDirectorySelection: {
+                type: 'object',
+                properties: {
+                  rootId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  segments: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['rootId', 'segments', 'directoryIdentity'],
+              },
+              AgentProjectRef: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOpened',
+            oneOf: [
+              {
+                description: '`created` is false when the existing Bot Session was returned.',
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'opened',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  created: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId', 'created'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentBotRejection',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+            $defs: {
+              AgentBotRejection: {
+                oneOf: [
+                  {
+                    description: 'The Bot mode is not enabled for this Agent.',
+                    type: 'string',
+                    const: 'disabled',
+                  },
+                  {
+                    description: 'The Session could not be created; see the creation reason.',
+                    type: 'string',
+                    const: 'creation_rejected',
+                  },
+                ],
               },
             },
           },
@@ -15002,6 +15690,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -15091,6 +15784,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -19204,6 +19898,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -19293,6 +19992,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -19630,6 +20330,117 @@ export const contracts = {
                   'history_unavailable',
                   'managed_session',
                   'closed',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        selectWorkspace: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentDirectorySelection',
+            type: 'object',
+            properties: {
+              rootId: {
+                type: 'string',
+                minLength: 1,
+              },
+              segments: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+              },
+              directoryIdentity: {
+                type: 'string',
+                pattern: '^sha256:[a-f0-9]{64}$',
+              },
+            },
+            additionalProperties: false,
+            required: ['rootId', 'segments', 'directoryIdentity'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_AgentWorkspace',
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentWorkspace',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              AgentWorkspace: {
+                type: 'object',
+                properties: {
+                  worktree: {
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  projectId: {
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  identity: {
+                    type: 'string',
+                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'directoryIdentity', 'identity'],
+              },
+              Binding: {
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  source_identity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'common_dir',
+                  'source',
+                  'source_identity',
+                  'base_commit',
+                  'directory',
                 ],
               },
             },
@@ -20016,6 +20827,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -20105,6 +20921,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -22720,6 +23537,108 @@ export const contracts = {
               ComputerAppRisk: {
                 type: 'string',
                 enum: ['low', 'high'],
+              },
+            },
+          },
+          resources: {},
+        },
+        watchBotOutbox: {
+          mode: 'subscription',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutboxRead',
+            type: 'object',
+            properties: {
+              after: {
+                description:
+                  'Return messages with a sequence greater than this cursor, oldest first.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                default: 0,
+              },
+              limit: {
+                description:
+                  'Most messages to return, at most 100. Zero reads only the head\n(`sessionId` and `through`).',
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+                maximum: 100,
+                default: 100,
+              },
+            },
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutbox',
+            type: 'object',
+            properties: {
+              enabled: {
+                type: 'boolean',
+              },
+              sessionId: {
+                type: ['string', 'null'],
+              },
+              through: {
+                description: 'Highest sequence recorded so far; 0 when empty.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              messages: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentBotMessage',
+                },
+                maxItems: 100,
+              },
+              nextAfter: {
+                description: 'Pass as `after` to read the next page; absent when caught up.',
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['enabled', 'through', 'messages'],
+            $defs: {
+              AgentBotMessage: {
+                description: 'One message the Bot deliberately sent to its user.',
+                type: 'object',
+                properties: {
+                  sequence: {
+                    description: 'Monotonic position in the outbox, starting at 1.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    description: 'The model-chosen idempotency key of the `SendUser` call.',
+                    type: 'string',
+                  },
+                  index: {
+                    description: 'Position of this message within its `SendUser` call.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                  at: {
+                    description: 'Milliseconds since the Unix epoch when the message was recorded.',
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  turnId: {
+                    description:
+                      "The Turn whose work sent this message, so clients can show it as that\nTurn's reply.",
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['sequence', 'messageId', 'index', 'text', 'at'],
               },
             },
           },
@@ -25431,6 +26350,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  parentSessionId: {
+                    type: ['string', 'null'],
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -25519,6 +26443,7 @@ export const contracts = {
                   },
                 },
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -26967,6 +27892,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  parentSessionId: {
+                    type: ['string', 'null'],
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -27055,6 +27985,7 @@ export const contracts = {
                   },
                 },
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -29585,53 +30516,30 @@ export const contracts = {
     interface: {
       kind: 'service',
       methods: {
-        apply: {
+        delete: {
           mode: 'mutation',
           input: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              change: {
-                $ref: '#/$defs/SkillLibraryChange',
+              workspace: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
-              digest: {
+              reference: {
                 type: 'string',
-                minLength: 71,
-                maxLength: 71,
               },
             },
-            required: ['change', 'digest'],
-            title: 'SkillLibraryReview',
+            required: ['reference'],
+            title: 'SkillLibraryManageSkill',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              SkillLibraryChange: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  workspace: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentWorkspace',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  kind: {
-                    $ref: '#/$defs/SkillLibraryChangeKind',
-                  },
-                  reference: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  revision: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                required: ['kind', 'reference', 'revision'],
-              },
               AgentWorkspace: {
                 type: 'object',
                 additionalProperties: false,
@@ -29702,10 +30610,6 @@ export const contracts = {
                 ],
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
-              SkillLibraryChangeKind: {
-                type: 'string',
-                enum: ['install', 'update', 'delete'],
-              },
             },
           },
           output: {
@@ -29723,17 +30627,6 @@ export const contracts = {
                   },
                 },
                 required: ['kind', 'reference'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'changed',
-                  },
-                },
-                required: ['kind'],
-                additionalProperties: false,
               },
               {
                 type: 'object',
@@ -29755,53 +30648,30 @@ export const contracts = {
           },
           resources: {},
         },
-        deleteSource: {
-          mode: 'mutation',
+        discoverSource: {
+          mode: 'query',
           input: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              change: {
-                $ref: '#/$defs/SkillLibraryChange',
+              workspace: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
-              digest: {
+              source: {
                 type: 'string',
-                minLength: 71,
-                maxLength: 71,
               },
             },
-            required: ['change', 'digest'],
-            title: 'SkillLibraryReview',
+            required: ['source'],
+            title: 'SkillLibraryDiscoverSource',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              SkillLibraryChange: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  workspace: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentWorkspace',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  kind: {
-                    $ref: '#/$defs/SkillLibraryChangeKind',
-                  },
-                  reference: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  revision: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                required: ['kind', 'reference', 'revision'],
-              },
               AgentWorkspace: {
                 type: 'object',
                 additionalProperties: false,
@@ -29872,141 +30742,290 @@ export const contracts = {
                 ],
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
-              SkillLibraryChangeKind: {
-                type: 'string',
-                enum: ['install', 'update', 'delete'],
-              },
             },
           },
           output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'applied',
-                  },
-                  reference: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'reference'],
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              source: {
+                $ref: '#/$defs/SkillLibrarySourceSnapshot',
               },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'changed',
-                  },
+              skills: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/SkillLibrarySourceSkill',
                 },
-                required: ['kind'],
-                additionalProperties: false,
               },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'rejected',
-                  },
-                  reason: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'reason'],
-              },
-            ],
-            title: 'SkillLibraryChangeResult',
+            },
+            required: ['source', 'skills'],
+            title: 'SkillLibraryDiscoveredSource',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              SkillLibrarySourceSnapshot: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'git',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      reference: {
+                        type: ['string', 'null'],
+                      },
+                      revision: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'url', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      path: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'path'],
+                  },
+                ],
+                description:
+                  'The exact source snapshot selected during discovery, or last installed.',
+              },
+              SkillLibrarySourceSkill: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  directory: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  description: {
+                    type: 'string',
+                  },
+                },
+                required: ['directory', 'name', 'description'],
+              },
+            },
           },
           resources: {},
         },
-        importSource: {
+        install: {
           mode: 'mutation',
           input: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              bytes: {
-                type: 'integer',
-                format: 'uint',
-                minimum: 1,
+              workspace: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
-              digest: {
-                type: 'string',
-                minLength: 71,
-                maxLength: 71,
+              location: {
+                $ref: '#/$defs/ConfigurationLocation',
+              },
+              source: {
+                $ref: '#/$defs/SkillLibrarySourceSnapshot',
+              },
+              skills: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
               },
             },
-            required: ['bytes', 'digest'],
-            title: 'SkillLibraryImportSource',
+            required: ['location', 'source', 'skills'],
+            title: 'SkillLibraryInstall',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              AgentWorkspace: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  worktree: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                  },
+                  projectId: {
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  identity: {
+                    type: 'string',
+                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
+                  },
+                },
+                required: ['path', 'directoryIdentity', 'identity'],
+              },
+              Binding: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  source_identity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                required: [
+                  'id',
+                  'common_dir',
+                  'source',
+                  'source_identity',
+                  'base_commit',
+                  'directory',
+                ],
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+              },
+              ConfigurationLocation: {
+                type: 'string',
+                enum: ['project:maka', 'project:agents', 'user:maka', 'user:agents'],
+                description:
+                  'Standard user/project configuration locations, ordered from highest precedence.',
+              },
+              SkillLibrarySourceSnapshot: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'git',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      reference: {
+                        type: ['string', 'null'],
+                      },
+                      revision: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'url', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      path: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'path'],
+                  },
+                ],
+                description:
+                  'The exact source snapshot selected during discovery, or last installed.',
+              },
+            },
           },
           output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'applied',
-                  },
-                  reference: {
-                    type: 'string',
-                  },
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              results: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/SkillLibraryInstallOutcome',
                 },
-                required: ['kind', 'reference'],
               },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'changed',
-                  },
-                },
-                required: ['kind'],
-                additionalProperties: false,
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'rejected',
-                  },
-                  reason: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'reason'],
-              },
-            ],
-            title: 'SkillLibraryChangeResult',
+            },
+            required: ['results'],
+            title: 'SkillLibraryInstallResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          resources: {
-            file: {
-              type: {
-                name: 'maka.bytes',
-                version: 1,
+            $defs: {
+              SkillLibraryInstallOutcome: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'installed',
+                      },
+                      reference: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      directory: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'directory', 'reason'],
+                  },
+                ],
               },
-              optional: false,
-            },
-            id: {
-              type: {
-                name: 'maka.text.utf8',
-                version: 1,
-              },
-              optional: false,
             },
           },
+          resources: {},
         },
         list: {
           mode: 'query',
@@ -30146,6 +31165,12 @@ export const contracts = {
                   writable: {
                     type: 'boolean',
                   },
+                  targets: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/SkillLibraryTarget',
+                    },
+                  },
                   preferencesWritable: {
                     type: 'boolean',
                   },
@@ -30183,6 +31208,7 @@ export const contracts = {
                 required: [
                   'kind',
                   'writable',
+                  'targets',
                   'preferencesWritable',
                   'preferenceRevision',
                   'revision',
@@ -30205,6 +31231,25 @@ export const contracts = {
             title: 'SkillLibraryPage',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
+              SkillLibraryTarget: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/ConfigurationLocation',
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'path'],
+              },
+              ConfigurationLocation: {
+                type: 'string',
+                enum: ['project:maka', 'project:agents', 'user:maka', 'user:agents'],
+                description:
+                  'Standard user/project configuration locations, ordered from highest precedence.',
+              },
               SkillLibraryEntry: {
                 type: 'object',
                 additionalProperties: false,
@@ -30212,13 +31257,28 @@ export const contracts = {
                   bundled: {
                     type: 'boolean',
                   },
-                  installed: {
-                    type: 'boolean',
+                  location: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ConfigurationLocation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
-                  imported: {
-                    type: 'boolean',
-                    description:
-                      'Imported authoring source; unavailable to the model until explicitly installed.',
+                  path: {
+                    type: 'string',
+                  },
+                  installation: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/SkillLibraryInstallation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                   preference: {
                     $ref: '#/$defs/SkillPreference',
@@ -30250,8 +31310,7 @@ export const contracts = {
                 },
                 required: [
                   'bundled',
-                  'installed',
-                  'imported',
+                  'path',
                   'preference',
                   'reference',
                   'source',
@@ -30260,6 +31319,59 @@ export const contracts = {
                   'valid',
                   'issues',
                 ],
+              },
+              SkillLibraryInstallation: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  source: {
+                    $ref: '#/$defs/SkillLibrarySourceSnapshot',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                required: ['source', 'directory'],
+              },
+              SkillLibrarySourceSnapshot: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'git',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      reference: {
+                        type: ['string', 'null'],
+                      },
+                      revision: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'url', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      path: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'path'],
+                  },
+                ],
+                description:
+                  'The exact source snapshot selected during discovery, or last installed.',
               },
               SkillPreference: {
                 type: 'object',
@@ -31160,308 +32272,6 @@ export const contracts = {
           },
           resources: {},
         },
-        preview: {
-          mode: 'query',
-          input: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              workspace: {
-                anyOf: [
-                  {
-                    $ref: '#/$defs/AgentWorkspace',
-                  },
-                  {
-                    type: 'null',
-                  },
-                ],
-              },
-              kind: {
-                $ref: '#/$defs/SkillLibraryChangeKind',
-              },
-              reference: {
-                type: 'string',
-                minLength: 1,
-              },
-              revision: {
-                type: 'string',
-                minLength: 1,
-              },
-            },
-            required: ['kind', 'reference', 'revision'],
-            title: 'SkillLibraryChange',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            $defs: {
-              AgentWorkspace: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  worktree: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/Binding',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                    description:
-                      'Native owner allocation; never accepted from a caller as workspace authority.',
-                  },
-                  projectId: {
-                    type: ['string', 'null'],
-                    format: 'uuid',
-                    description: "Optional membership in this Agent's canonical Project catalog.",
-                  },
-                  path: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
-                },
-                required: ['path', 'directoryIdentity', 'identity'],
-              },
-              Binding: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  common_dir: {
-                    type: 'string',
-                  },
-                  source: {
-                    type: 'string',
-                  },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  base_commit: {
-                    type: 'string',
-                  },
-                  directory: {
-                    type: 'string',
-                  },
-                },
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
-                description: 'Immutable allocation intent, not the current child branch or HEAD.',
-              },
-              SkillLibraryChangeKind: {
-                type: 'string',
-                enum: ['install', 'update', 'delete'],
-              },
-            },
-          },
-          output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
-                  },
-                  review: {
-                    $ref: '#/$defs/SkillLibraryReview',
-                  },
-                  target: {
-                    type: 'string',
-                  },
-                  entries: {
-                    type: 'integer',
-                    format: 'uint',
-                    minimum: 0,
-                  },
-                  paths: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  pathsTruncated: {
-                    type: 'boolean',
-                  },
-                  locallyModified: {
-                    type: 'boolean',
-                  },
-                },
-                required: [
-                  'kind',
-                  'review',
-                  'target',
-                  'entries',
-                  'paths',
-                  'pathsTruncated',
-                  'locallyModified',
-                ],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'changed',
-                  },
-                },
-                required: ['kind'],
-                additionalProperties: false,
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'rejected',
-                  },
-                  reason: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'reason'],
-              },
-            ],
-            title: 'SkillLibraryPreview',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            $defs: {
-              SkillLibraryReview: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  change: {
-                    $ref: '#/$defs/SkillLibraryChange',
-                  },
-                  digest: {
-                    type: 'string',
-                    minLength: 71,
-                    maxLength: 71,
-                  },
-                },
-                required: ['change', 'digest'],
-              },
-              SkillLibraryChange: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  workspace: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentWorkspace',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  kind: {
-                    $ref: '#/$defs/SkillLibraryChangeKind',
-                  },
-                  reference: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  revision: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                required: ['kind', 'reference', 'revision'],
-              },
-              AgentWorkspace: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  worktree: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/Binding',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                    description:
-                      'Native owner allocation; never accepted from a caller as workspace authority.',
-                  },
-                  projectId: {
-                    type: ['string', 'null'],
-                    format: 'uuid',
-                    description: "Optional membership in this Agent's canonical Project catalog.",
-                  },
-                  path: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
-                },
-                required: ['path', 'directoryIdentity', 'identity'],
-              },
-              Binding: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  common_dir: {
-                    type: 'string',
-                  },
-                  source: {
-                    type: 'string',
-                  },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  base_commit: {
-                    type: 'string',
-                  },
-                  directory: {
-                    type: 'string',
-                  },
-                },
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
-                description: 'Immutable allocation intent, not the current child branch or HEAD.',
-              },
-              SkillLibraryChangeKind: {
-                type: 'string',
-                enum: ['install', 'update', 'delete'],
-              },
-            },
-          },
-          resources: {},
-        },
         read: {
           mode: 'query',
           input: {
@@ -31665,13 +32475,28 @@ export const contracts = {
                   bundled: {
                     type: 'boolean',
                   },
-                  installed: {
-                    type: 'boolean',
+                  location: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ConfigurationLocation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
-                  imported: {
-                    type: 'boolean',
-                    description:
-                      'Imported authoring source; unavailable to the model until explicitly installed.',
+                  path: {
+                    type: 'string',
+                  },
+                  installation: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/SkillLibraryInstallation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                   preference: {
                     $ref: '#/$defs/SkillPreference',
@@ -31703,8 +32528,7 @@ export const contracts = {
                 },
                 required: [
                   'bundled',
-                  'installed',
-                  'imported',
+                  'path',
                   'preference',
                   'reference',
                   'source',
@@ -31713,6 +32537,65 @@ export const contracts = {
                   'valid',
                   'issues',
                 ],
+              },
+              ConfigurationLocation: {
+                type: 'string',
+                enum: ['project:maka', 'project:agents', 'user:maka', 'user:agents'],
+                description:
+                  'Standard user/project configuration locations, ordered from highest precedence.',
+              },
+              SkillLibraryInstallation: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  source: {
+                    $ref: '#/$defs/SkillLibrarySourceSnapshot',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                required: ['source', 'directory'],
+              },
+              SkillLibrarySourceSnapshot: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'git',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      reference: {
+                        type: ['string', 'null'],
+                      },
+                      revision: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'url', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      path: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'path'],
+                  },
+                ],
+                description:
+                  'The exact source snapshot selected during discovery, or last installed.',
               },
               SkillPreference: {
                 type: 'object',
@@ -32032,436 +32915,135 @@ export const contracts = {
           },
           resources: {},
         },
-      },
-    },
-  },
-  skillOutcomes: {
-    name: 'maka.skills.Outcomes',
-    version: 1,
-    transport: 'remote',
-    interface: {
-      kind: 'service',
-      methods: {
-        read: {
-          mode: 'query',
+        update: {
+          mode: 'mutation',
           input: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              source: {
-                $ref: '#/$defs/DeploymentRef',
-              },
-              namespace: {
-                $ref: '#/$defs/InstanceId',
-              },
-              export: {
-                type: 'string',
-              },
-              method: {
-                type: 'string',
-              },
-              operation: {
-                type: 'string',
-                format: 'uuid',
-              },
-              fingerprint: {
-                type: 'string',
-              },
-              contract: {
-                $ref: '#/$defs/RecoveryContract',
-              },
-              recovery: {
-                $ref: '#/$defs/RecoveryProtocol',
-              },
-            },
-            required: [
-              'source',
-              'namespace',
-              'export',
-              'method',
-              'operation',
-              'fingerprint',
-              'contract',
-              'recovery',
-            ],
-            title: 'RecoveryRef',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            $defs: {
-              DeploymentRef: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  stateDomain: {
-                    type: 'string',
-                  },
-                  deployment: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                required: ['stateDomain', 'deployment', 'revision'],
-              },
-              InstanceId: {
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-              },
-              RecoveryContract: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  version: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  transport: {
-                    $ref: '#/$defs/Transport',
-                  },
-                  digest: {
-                    type: 'string',
-                  },
-                },
-                required: ['name', 'version', 'transport', 'digest'],
-                description:
-                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
-              },
-              Transport: {
-                type: 'string',
-                enum: ['local', 'remote'],
-              },
-              RecoveryProtocol: {
-                type: 'string',
-                enum: ['journal_v1'],
-              },
-            },
-          },
-          output: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              original: {
-                $ref: '#/$defs/OperationReply',
-              },
-              published: {
+              workspace: {
                 anyOf: [
                   {
-                    $ref: '#/$defs/SkillLibraryChangeResult',
+                    $ref: '#/$defs/AgentWorkspace',
                   },
                   {
                     type: 'null',
                   },
                 ],
               },
+              reference: {
+                type: 'string',
+              },
             },
-            required: ['original'],
-            description:
-              'Canonical publication evidence alongside the unmodified original Host facts.',
-            title: 'SkillLibraryOutcome',
+            required: ['reference'],
+            title: 'SkillLibraryManageSkill',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              OperationReply: {
+              AgentWorkspace: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reference: {
-                    $ref: '#/$defs/RecoveryRef',
+                  worktree: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
                   },
-                  receipt: {
-                    $ref: '#/$defs/Receipt',
+                  projectId: {
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  identity: {
+                    type: 'string',
+                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
                   },
                 },
-                required: ['reference', 'receipt'],
+                required: ['path', 'directoryIdentity', 'identity'],
               },
-              RecoveryRef: {
+              Binding: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
                   source: {
-                    $ref: '#/$defs/DeploymentRef',
-                  },
-                  namespace: {
-                    $ref: '#/$defs/InstanceId',
-                  },
-                  export: {
                     type: 'string',
                   },
-                  method: {
+                  source_identity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  base_commit: {
                     type: 'string',
                   },
-                  operation: {
+                  directory: {
                     type: 'string',
-                    format: 'uuid',
-                  },
-                  fingerprint: {
-                    type: 'string',
-                  },
-                  contract: {
-                    $ref: '#/$defs/RecoveryContract',
-                  },
-                  recovery: {
-                    $ref: '#/$defs/RecoveryProtocol',
                   },
                 },
                 required: [
+                  'id',
+                  'common_dir',
                   'source',
-                  'namespace',
-                  'export',
-                  'method',
-                  'operation',
-                  'fingerprint',
-                  'contract',
-                  'recovery',
+                  'source_identity',
+                  'base_commit',
+                  'directory',
                 ],
-              },
-              DeploymentRef: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  stateDomain: {
-                    type: 'string',
-                  },
-                  deployment: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                required: ['stateDomain', 'deployment', 'revision'],
-              },
-              InstanceId: {
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-              },
-              RecoveryContract: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  version: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  transport: {
-                    $ref: '#/$defs/Transport',
-                  },
-                  digest: {
-                    type: 'string',
-                  },
-                },
-                required: ['name', 'version', 'transport', 'digest'],
-                description:
-                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
-              },
-              Transport: {
-                type: 'string',
-                enum: ['local', 'remote'],
-              },
-              RecoveryProtocol: {
-                type: 'string',
-                enum: ['journal_v1'],
-              },
-              Receipt: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'not_recorded',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                    description:
-                      'An authorized lookup found no row at the exact original reference.',
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'recorded',
-                      },
-                      outcome: {
-                        $ref: '#/$defs/OperationOutcome',
-                      },
-                      cleanup: {
-                        $ref: '#/$defs/OperationCleanup',
-                      },
-                    },
-                    required: ['kind', 'outcome', 'cleanup'],
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'unavailable',
-                      },
-                      diagnostic: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['kind', 'diagnostic'],
-                  },
-                ],
-                description:
-                  "A caller's receipt observation, never an execution grant. Unavailable makes\nno claim about the journal's contents or physical cleanup.",
-              },
-              OperationOutcome: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'unresolved',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'returned',
-                      },
-                      value: true,
-                    },
-                    required: ['kind', 'value'],
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'unknown',
-                      },
-                      diagnostic: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['kind', 'diagnostic'],
-                  },
-                ],
-                description:
-                  'Unresolved means no durable result is known, including after process loss.',
-              },
-              OperationCleanup: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'unconfirmed',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'confirmed',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'failed',
-                      },
-                      diagnostic: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['kind', 'diagnostic'],
-                  },
-                ],
-              },
-              SkillLibraryChangeResult: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'applied',
-                      },
-                      reference: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['kind', 'reference'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'changed',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'rejected',
-                      },
-                      reason: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['kind', 'reason'],
-                  },
-                ],
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
             },
+          },
+          output: {
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'applied',
+                  },
+                  reference: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'reference'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'reason'],
+              },
+            ],
+            title: 'SkillLibraryChangeResult',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
           },
           resources: {},
         },

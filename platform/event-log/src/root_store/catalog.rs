@@ -425,6 +425,46 @@ impl RootStore {
         self.partitions[index].root_observe_session(id, index).await
     }
 
+    /// String references still owned by accepted messages or parked activations.
+    pub async fn accepted_execution_references(
+        &self,
+        owner: &str,
+        field: &str,
+    ) -> Result<std::collections::BTreeSet<String>, StoreError> {
+        self.require_open()?;
+        self.control.validate_root()?;
+        crate::sessions::validate_id(owner)?;
+        let message_path = format!(
+            "$.execution.basis.{}",
+            serde_json::to_string(field).map_err(|error| invalid(&error.to_string()))?
+        );
+        let checkpoint_path = format!(
+            "$.nativeBasis.{}",
+            serde_json::to_string(field).map_err(|error| invalid(&error.to_string()))?
+        );
+        let pages = try_join_all(self.partitions.iter().enumerate().map(|(index, part)| {
+            let owner = owner.to_owned();
+            let message_path = message_path.clone();
+            let checkpoint_path = checkpoint_path.clone();
+            part.connection.read(move |db| Box::pin(async move {
+                Ok(sqlx::query_scalar::<_, Option<String>>(
+                    "SELECT json_extract(a.record_json,?3) FROM message_admissions a
+                     JOIN root_control.session_routes r ON r.session_id=a.session_id
+                     WHERE r.partition=?2 AND r.ready=1 AND r.visible=1
+                     AND json_extract(a.record_json,'$.execution.owner')=?1
+                     AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=a.session_id AND d.remove_session=1)
+                     UNION ALL
+                     SELECT json_extract(c.checkpoint_json,?4) FROM native_approval_checkpoints c
+                     JOIN root_control.session_routes r ON r.session_id=c.session_id
+                     WHERE r.partition=?2 AND r.ready=1 AND r.visible=1 AND c.active=1
+                     AND substr(c.session_id,1,length(?1))=?1
+                     AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=c.session_id AND d.remove_session=1)"
+                ).bind(owner).bind(index as i64).bind(message_path).bind(checkpoint_path).fetch_all(db).await?)
+            }))
+        })).await?;
+        Ok(pages.into_iter().flatten().flatten().collect())
+    }
+
     pub async fn pending_message_sessions(
         &self,
         owner: &str,

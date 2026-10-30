@@ -63,6 +63,10 @@ async fn steering_is_exact_once_session_scoped_and_atomic_with_rebuildable_user_
     log.append(&write(
         "a",
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             step_id: "step".into(),

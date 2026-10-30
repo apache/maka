@@ -624,9 +624,7 @@ export function WorkspacePicker(props: {
                     >
                       {currentDirectory(read)?.path ??
                         read.trail.at(-1)?.path ??
-                        tr(
-                          'Open a location, then choose the folder where the conversation can work.',
-                        )}
+                        tr('Open a location, then choose a workspace folder.')}
                     </Text>
                   </View>
                 )}

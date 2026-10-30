@@ -21,6 +21,4 @@
 
 [English](README.md)
 
-定义技能库服务契约、配置和发布结果。原生执行与 SDK 生成共用这些声明。接口入口是 `contract`，持久发布结果见 `outcomes`。
-
-[源码](src/lib.rs) · [Cargo 配置](Cargo.toml)
+定义技能发现、来源快照、安装来源记录和管理操作。原生实现与 SDK 生成共用 `contract`；变更复用 Host 的普通操作回执。

@@ -226,6 +226,7 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
         owner.owned.insert(
             provider.instance().clone(),
             Owned {
+                exports: Arc::default(),
                 imports: Arc::new(BTreeMap::new()),
                 resource: owner
                     .runtime
@@ -261,6 +262,7 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
         owner.owned.insert(
             consumer.instance().clone(),
             Owned {
+                exports: Arc::default(),
                 imports: Arc::new(BTreeMap::new()),
                 resource,
                 close: Some(Box::pin(async { Ok(()) })),
@@ -372,6 +374,7 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
             owner.owned.insert(
                 activation.instance().clone(),
                 Owned {
+                    exports: Arc::default(),
                     imports: Arc::new(BTreeMap::new()),
                     resource,
                     close: Some(Box::pin(async { Ok(()) })),
@@ -629,6 +632,7 @@ async fn retiring_subscription_waits_for_cleanup(consumer_only: bool, loading_co
         owner.owned.insert(
             activation.instance().clone(),
             Owned {
+                exports: Arc::default(),
                 imports: Arc::new(BTreeMap::new()),
                 resource: owner
                     .runtime

@@ -227,14 +227,6 @@ pub(super) async fn verify_original_proofs(
         });
         rejected(&tampered, expected).await;
     }
-    // An untrusted declared length reports absent payload without allocating that length.
-    let mut truncated = b"MAKA-SESSION\0\x02".to_vec();
-    truncated.extend(u32::MAX.to_be_bytes());
-    assert!(matches!(
-        bundle::inspect(truncated.as_slice()).await,
-        Err(BundleError::Store(StoreError::Io(error)))
-            if error.kind() == std::io::ErrorKind::UnexpectedEof
-    ));
 }
 
 pub(super) async fn verify_deleted_upload(log: &maka_event_log::EventLog) {

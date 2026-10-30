@@ -38,6 +38,10 @@ import {
 
 export const workspaceMessages = {
   'Pin conversation': ['Pin conversation', '置顶会话', '置頂對話'],
+  'Open to the side': ['Open to the side', '在右侧打开', '在右側開啟'],
+  'Close side pane': ['Close side pane', '关闭右侧对话', '關閉右側對話'],
+  'Collapse {name}': ['Collapse {name}', '收起 {name}', '收合 {name}'],
+  'Expand {name}': ['Expand {name}', '展开 {name}', '展開 {name}'],
   'Unpin conversation': ['Unpin conversation', '取消置顶', '取消置頂'],
   Pinned: ['Pinned', '已置顶', '已置頂'],
   'Actions for {title}': ['Actions for {title}', '{title} 的操作', '{title} 的操作'],
@@ -236,10 +240,10 @@ export const workspaceMessages = {
     '此工作区不是 Git 工作区。',
     '此工作區不是 Git 工作區。',
   ],
-  'Open a location, then choose the folder where the conversation can work.': [
-    'Open a location, then choose the folder where the conversation can work.',
-    '打开一个位置，然后选择对话可以使用的文件夹。',
-    '開啟一個位置，然後選擇對話可以使用的資料夾。',
+  'Open a location, then choose a workspace folder.': [
+    'Open a location, then choose a workspace folder.',
+    '打开一个位置，然后选择工作区文件夹。',
+    '開啟一個位置，然後選擇工作區資料夾。',
   ],
   'Open conversation {title}': [
     'Open conversation {title}',

@@ -185,7 +185,7 @@ impl EventLog {
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     commits.metadata();
                     if approval_revoked {
-                        commits.native_approvals();
+                        commits.activations();
                     }
                     Ok(SessionRemovalResult::Accepted(SessionRetirement::Removing))
                 })

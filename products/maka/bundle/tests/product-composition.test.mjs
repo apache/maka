@@ -33,6 +33,49 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+test('own Session tools grant the original Agent service without an import cycle', async () => {
+  const { composition, instanceNames, packageNames } = await import(
+    '../dist/authoring/composition.mjs'
+  );
+  const keys = Object.fromEntries(instanceNames.map((name, index) => [name, `key-${index}`]));
+  const { host, native } = composition({
+    locale: 'en',
+    hostDeployment: 'host',
+    keys,
+    packages: Object.fromEntries(
+      packageNames.map((name) => [name, { id: name, revision: 'a'.repeat(64) }]),
+    ),
+    agent: {
+      workspaceRoots: [],
+      tools: [
+        {
+          name: 'SessionUpdate',
+          description: 'Update a conversation',
+          target: { kind: 'export', name: 'agent' },
+          method: 'metadata',
+          result: 'json',
+          confirmation: 'preapproved',
+        },
+      ],
+    },
+  });
+  assert.deepEqual(host.instances.agent.bindings, {});
+  assert.deepEqual(native, [
+    {
+      origin: [keys.agent],
+      consumer: [keys.agent],
+      provider: [keys.agent],
+      export: 'agent',
+      methods: ['metadata'],
+      recovery: true,
+    },
+  ]);
+  assert.deepEqual(host.instances.agent.configuration.values.tools[0].target, {
+    kind: 'export',
+    name: 'agent',
+  });
+});
+
 test('publishing plugin packages preserves unchanged files and removes obsolete bytes', async () => {
   const { bundle } = await import('../../../../scripts/plugins/build.mjs');
   const output = mkdtempSync(resolve(tmpdir(), 'maka-product-publication-'));
@@ -74,7 +117,7 @@ test('native Web tools freeze their display contract while retaining explicit cu
         {
           name: 'WorkspacePage',
           description: 'Fetch a page',
-          import: 'web',
+          target: { kind: 'import', name: 'web' },
           method: 'fetch',
           result: 'json',
           confirmation: 'preapproved',
@@ -82,7 +125,7 @@ test('native Web tools freeze their display contract while retaining explicit cu
         {
           name: 'WorkspaceQuery',
           description: 'Search the web',
-          import: 'web',
+          target: { kind: 'import', name: 'web' },
           method: 'search',
           result: 'json',
           confirmation: 'preapproved',
@@ -90,7 +133,7 @@ test('native Web tools freeze their display contract while retaining explicit cu
         {
           name: 'CustomPage',
           description: 'Use a custom card',
-          import: 'web',
+          target: { kind: 'import', name: 'web' },
           method: 'fetch',
           result: 'json',
           confirmation: 'preapproved',

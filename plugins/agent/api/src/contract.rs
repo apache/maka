@@ -18,11 +18,13 @@
  */
 
 use maka_agent_facts::execution::DirectoryIdentity;
+mod mcp_management;
 use maka_agent_facts::execution::WorkspaceIdentity;
 use maka_agent_facts::history::RowPosition;
 use maka_agent_ports::session::history::Cursor;
 use maka_agent_ports::session::history::Role;
 use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
+pub use mcp_management::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -50,6 +52,8 @@ mod recap;
 pub use recap::*;
 mod scheduler;
 pub use scheduler::*;
+mod bot;
+pub use bot::*;
 mod recall;
 pub use imports::*;
 pub use recall::*;
@@ -99,6 +103,10 @@ pub struct Configuration {
     /// Enable the session-scoped, model-maintained checklist.
     #[serde(default)]
     pub todo: bool,
+    /// Enable the Bot mode: one persistent Session that reaches its user only
+    /// through `SendUser`, with a Host-owned outbox.
+    #[serde(default)]
+    pub bot: bool,
     /// Generate a bounded auxiliary title for automatically named conversations.
     #[serde(default)]
     pub automatic_titles: bool,
@@ -162,8 +170,7 @@ pub struct ServiceTool {
     pub name: String,
     #[schemars(length(min = 1))]
     pub description: String,
-    #[schemars(length(min = 1))]
-    pub import: String,
+    pub target: maka_plugin_core::contract::ServiceTarget,
     #[schemars(length(min = 1))]
     pub method: String,
 }
@@ -706,6 +713,9 @@ pub struct DataSource {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSession")]
 pub struct Session {
+    /// Session that initiated creation, independent of fork ancestry and task ownership.
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub parent_session_id: Option<String>,
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<SessionBranch>")]
     pub branch: Option<SessionBranch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1651,6 +1661,18 @@ pub fn contract() -> Contract {
                     method::<ChecklistRead, Checklist>(MethodMode::Subscription),
                 ),
                 (
+                    "openBot".into(),
+                    method::<BotOpen, BotOpened>(MethodMode::Mutation),
+                ),
+                (
+                    "botOutbox".into(),
+                    method::<BotOutboxRead, BotOutbox>(MethodMode::Query),
+                ),
+                (
+                    "watchBotOutbox".into(),
+                    method::<BotOutboxRead, BotOutbox>(MethodMode::Subscription),
+                ),
+                (
                     "schedules".into(),
                     method::<ScheduleRead, Schedules>(MethodMode::Query),
                 ),
@@ -1698,9 +1720,15 @@ pub fn contract() -> Contract {
                     "project".into(),
                     method::<ProjectChange, ProjectResult>(MethodMode::Mutation),
                 ),
+                ("mcpConfigurations".into(), method::<McpConfigurations, McpConfigurationList>(MethodMode::Query)),
+                ("manageMcpServer".into(), method::<McpConfigurationChange, McpConfigurationResult>(MethodMode::Mutation)),
                 (
                     "directories".into(),
                     method::<Directories, DirectoryPage>(MethodMode::Query),
+                ),
+                (
+                    "selectWorkspace".into(),
+                    method::<DirectorySelection, Option<Workspace>>(MethodMode::Mutation),
                 ),
                 (
                     "observe".into(),
