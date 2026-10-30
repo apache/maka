@@ -1425,7 +1425,7 @@ export function createConversationUi(
     settings: (sessionId) => invokeCommand({ id: 'settings', sessionId }),
     search: (sessionId) => invokeCommand({ id: 'sessions', sessionId }),
     canOpenBeside: () => !!shell()?.openBeside,
-    beside: () => shell()?.besideSessionId?.() ?? null,
+    beside: () => shell()?.besideSessionIds?.() ?? [],
     openBeside: (sessionId) => shell()?.openBeside?.(sessionId),
   };
   let wasDocked = shell()?.sidebarDocked();

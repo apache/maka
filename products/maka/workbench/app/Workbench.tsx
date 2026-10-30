@@ -35,6 +35,11 @@ export const canDockBrowser = (withPreview = false) =>
   windowSize().width >=
   CENTER_DOCK_WIDTH + BROWSER_MIN + GAP + (withPreview && canDockPreview() ? PREVIEW_MIN + GAP : 0);
 export const canDockPreview = () => windowSize().width >= CENTER_DOCK_WIDTH + PREVIEW_MIN + GAP;
+/** The most conversations the desktop shows beside the selected one. */
+export const SIDE_PANES = 3;
+/** How many side panes fit at their minimum width beside the selected conversation. */
+export const sidePaneRoom = (browser: boolean) =>
+  Math.max(1, Math.floor((windowSize().width - (browser ? BROWSER_MIN : 0)) / CENTER_MIN) - 1);
 
 export function Workbench(props: {
   expanded(): boolean;
@@ -44,20 +49,22 @@ export function Workbench(props: {
   closePreview(): void;
   navigation(): JSX.Element;
   preview(docked: boolean): JSX.Element;
-  /** A second conversation beside the first, while one is open. */
-  sideShown?(): boolean;
-  side?(): JSX.Element;
+  /** Conversations beside the first, one per fixed slot, while each is open. */
+  sides?: { shown(): boolean; render(): JSX.Element }[];
   children: JSX.Element;
 }) {
   const preferredWidth = signal(32 * CELL);
   const preferredPreviewWidth = signal(48 * CELL);
   const preview = () => props.previewShown() && canDockPreview();
   const browser = () => props.expanded() && canDockBrowser(props.previewShown());
-  // The side pane stays mounted while it is open and shows where both
-  // conversations keep their minimum width.
-  const side = () =>
-    (props.sideShown?.() ?? false) &&
-    windowSize().width >= 2 * CENTER_MIN + (browser() ? BROWSER_MIN : 0);
+  // A side pane stays mounted while it is open and shows, left to right,
+  // while every conversation up to it keeps its minimum width.
+  const sideVisible = (slot: number) => {
+    const sides = props.sides ?? [];
+    if (!sides[slot]?.shown()) return false;
+    const rank = sides.slice(0, slot + 1).filter((side) => side.shown()).length;
+    return windowSize().width >= (rank + 1) * CENTER_MIN + (browser() ? BROWSER_MIN : 0);
+  };
   const previewDialog = signal(false);
   let wasDocked = canDockPreview();
   effect(() => {
@@ -91,9 +98,20 @@ export function Workbench(props: {
         <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
           {props.children}
         </ResizablePanel>
-        <ResizablePanel visible={side()} minSize={CENTER_MIN} style={{ minHeight: 0 }}>
-          <If when={props.sideShown?.()}>{props.side?.()}</If>
-        </ResizablePanel>
+        <Each of={(props.sides ?? []).map((_, slot) => slot)} key={(slot) => slot}>
+          {(slot) => {
+            const pane = props.sides![slot()]!;
+            return (
+              <ResizablePanel
+                visible={sideVisible(slot())}
+                minSize={CENTER_MIN}
+                style={{ minHeight: 0 }}
+              >
+                <If when={pane.shown()}>{pane.render()}</If>
+              </ResizablePanel>
+            );
+          }}
+        </Each>
         <ResizablePanel
           visible={preview()}
           size={preferredPreviewWidth()}

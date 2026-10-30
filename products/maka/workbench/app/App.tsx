@@ -34,7 +34,7 @@ import {
   type ConversationSessionHandle,
   type ConversationPreviewHandle,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
-import { Workbench, canDockBrowser, canDockPreview } from './Workbench';
+import { SIDE_PANES, Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
 import { initializeAppearance } from './appearance';
@@ -50,7 +50,7 @@ type Configuration = {
 };
 type SavedRoot = {
   sessionId: string | null;
-  sideSessionId?: string | null;
+  sideSessionIds?: (string | null)[];
   sidebarExpanded: boolean;
   settings: { model?: ModelSelection } | null;
   panel: PanelRoute | null;
@@ -69,9 +69,15 @@ function App(
   const settingsOpened = signal(saved?.settings !== null && saved?.settings !== undefined);
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
   const session = signal<ConversationSessionHandle | null>(null);
-  // The desktop can show a second conversation beside the selected one.
-  const side = signal(platform.isTerminal ? null : (saved?.sideSessionId ?? null));
-  const sideSession = signal<ConversationSessionHandle | null>(null);
+  // The desktop can show more conversations beside the selected one, each in
+  // a fixed slot so a pane keeps its place while the others open and close.
+  const restoredSides = platform.isTerminal ? [] : (saved?.sideSessionIds ?? []);
+  const sides = Array.from({ length: SIDE_PANES }, (_, slot) => ({
+    id: signal<string | null>(restoredSides[slot] ?? null),
+    handle: signal<ConversationSessionHandle | null>(null),
+  }));
+  const besides = () => sides.flatMap((pane) => (pane.id() === null ? [] : [pane.id()!]));
+  const sideSlot = (id: string) => sides.findIndex((pane) => pane.id() === id);
   const preview = signal<ConversationPreviewHandle | null>(null);
   const notice = signal<unknown | null>(null);
   let alive = true;
@@ -102,17 +108,23 @@ function App(
     if (panel) plugins.closePanel(panel.instance);
   });
   const previewShown = () => plugins.panel() !== null || (preview()?.shown() ?? false);
-  const openSide = async (id: string | null): Promise<boolean> => {
+  const openSide = async (slot: number, id: string | null): Promise<boolean> => {
     if (!alive || blocked()) return false;
-    const original = side();
-    const owner = sideSession();
+    const pane = sides[slot]!;
+    const original = pane.id();
+    const owner = pane.handle();
     try {
       if (id !== original && owner && !(await owner.leave())) return false;
-      if (!alive || blocked() || side() !== original || (id !== null && id === selected()))
+      if (
+        !alive ||
+        blocked() ||
+        pane.id() !== original ||
+        (id !== null && id !== original && (id === selected() || sideSlot(id) >= 0))
+      )
         return false;
       batch(() => {
-        if (id === null) sideSession.set(null);
-        side.set(id);
+        if (id === null) pane.handle.set(null);
+        pane.id.set(id);
       });
       return true;
     } catch (reason) {
@@ -122,8 +134,9 @@ function App(
   };
   const openSession = async (id: string | null): Promise<boolean> => {
     if (!alive || blocked()) return false;
-    // A conversation is open in one pane at a time; selecting the side one moves it here.
-    if (id !== null && id === side() && !(await openSide(null))) return false;
+    // A conversation is open in one pane at a time; selecting a side one moves it here.
+    const from = id === null ? -1 : sideSlot(id);
+    if (from >= 0 && !(await openSide(from, null))) return false;
     const generation = ++navigationGeneration;
     const original = selected();
     const owner = session();
@@ -134,7 +147,7 @@ function App(
         blocked() ||
         generation !== navigationGeneration ||
         selected() !== original ||
-        (id !== null && id === side())
+        (id !== null && sideSlot(id) >= 0)
       )
         return false;
       batch(() => {
@@ -180,18 +193,28 @@ function App(
       ? {}
       : {
           openBeside(id: string) {
-            if (id !== selected()) void openSide(id);
+            if (id === selected() || sideSlot(id) >= 0) return;
+            const used = sides.flatMap((pane, slot) => (pane.id() === null ? [] : [slot]));
+            const room = Math.min(SIDE_PANES, sidePaneRoom(canDockBrowser(previewShown())));
+            const last = used.at(-1) ?? -1;
+            // A new pane opens right of the others; with no room left it
+            // replaces the rightmost one.
+            const free = (from: number) =>
+              sides.findIndex((pane, slot) => slot >= from && pane.id() === null);
+            const slot =
+              used.length >= room ? last : free(last + 1) >= 0 ? free(last + 1) : free(0);
+            if (slot >= 0) void openSide(slot, id);
           },
-          besideSessionId: side,
+          besideSessionIds: besides,
         }),
   };
-  const sideShell: ConversationShell = {
-    sessionId: side,
+  const sideShell = (slot: number): ConversationShell => ({
+    sessionId: sides[slot]!.id,
     visible: shell.visible,
     blocked,
-    openSession: openSide,
+    openSession: (id) => openSide(slot, id),
     openSettings: shell.openSettings,
-    // The main pane holds the browser; this one sits beside it.
+    // The main pane holds the browser; these sit beside it.
     sidebarShown: () => true,
     sidebarDocked: () => true,
     previewDocked: () => false,
@@ -199,13 +222,13 @@ function App(
     hideSidebar() {},
     dismissRoute: shell.dismissRoute,
     closePane() {
-      void openSide(null);
+      void openSide(slot, null);
     },
-  };
+  });
   cleanup(
     props.saveWith(async () => ({
       sessionId: selected(),
-      sideSessionId: side(),
+      sideSessionIds: sides.map((pane) => pane.id()),
       sidebarExpanded: sidebarExpanded(),
       settings: settingsOpened() ? { model: settingsModel() } : null,
       panel: plugins.panelRoute(),
@@ -237,15 +260,16 @@ function App(
           if (panel) plugins.closePanel(panel.instance);
           else preview()?.close();
         }}
-        sideShown={() => side() !== null}
-        side={() =>
-          runtime.renderView(configuration.session, conversationSessionView, {
-            shell: sideShell,
-            attach(handle) {
-              if (sideSession() !== handle) sideSession.set(handle);
-            },
-          })
-        }
+        sides={sides.map((pane, slot) => ({
+          shown: () => pane.id() !== null,
+          render: () =>
+            runtime.renderView(configuration.session, conversationSessionView, {
+              shell: sideShell(slot),
+              attach(handle) {
+                if (pane.handle() !== handle) pane.handle.set(handle);
+              },
+            }),
+        }))}
         navigation={() =>
           runtime.renderView(configuration.navigation, conversationNavigationView, { shell })
         }
