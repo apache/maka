@@ -162,7 +162,22 @@ async fn run_inner(
             .expect("request object")
             .remove("stream_options");
     }
-    let mut events = events::Events::new(prepared.anthropic);
+    let request::Prepared {
+        url,
+        headers,
+        body,
+        mut decoder,
+        compatible,
+        anthropic,
+        mut anthropic_source,
+        mut chat,
+    } = prepared;
+    let mut encoded_header = tokio::select! {
+        biased;
+        _ = context.cancellation.cancelled() => return Err(ModelError::Cancelled),
+        header = super::http_header::Header::freeze(body) => header,
+    };
+    let mut events = events::Events::new(anthropic);
     events.evidence.quota_scope = quota_scope;
     let mut retried = remembered;
     loop {
@@ -170,10 +185,10 @@ async fn run_inner(
             context,
             http::Request {
                 method: http::Method::Post,
-                url: prepared.url.clone(),
-                headers: prepared.headers.clone(),
-                body: if let Some((source, options, language)) = &prepared.chat {
-                    let fields = prepared.body.clone();
+                url: url.clone(),
+                headers: headers.clone(),
+                body: if let Some((source, options, language)) = &chat {
+                    let fields = encoded_header.clone();
                     let source = source.clone();
                     let options = options.clone();
                     let language = *language;
@@ -181,11 +196,8 @@ async fn run_inner(
                         body::chat(fields.clone(), source.clone(), options.clone(), language)
                     })
                 } else {
-                    let (wire, context) = prepared
-                        .anthropic_source
-                        .as_ref()
-                        .expect("Anthropic encoding");
-                    let fields = prepared.body.clone();
+                    let (wire, context) = anthropic_source.as_ref().expect("Anthropic encoding");
+                    let fields = encoded_header.clone();
                     let wire = wire.clone();
                     let context = context.clone();
                     http::RequestBody::replayable(move || {
@@ -224,17 +236,13 @@ async fn run_inner(
                 {
                     return Err(events.evidence.provider(
                         error::http_body_error(status, error),
-                        prepared.anthropic,
+                        anthropic,
                         retry_after,
                     ));
                 }
                 Err(error) => return Err(error),
             };
-            if prepared.compatible
-                && !retried
-                && status == 400
-                && prepared.body.get("stream_options").is_some()
-            {
+            if compatible && !retried && status == 400 && encoded_header.has_stream_options() {
                 let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
                 if text.contains("stream_options") || text.contains("include_usage") {
                     {
@@ -244,11 +252,11 @@ async fn run_inner(
                         }
                         cache.insert(route.clone());
                     }
-                    prepared
-                        .body
-                        .as_object_mut()
-                        .expect("request object")
-                        .remove("stream_options");
+                    encoded_header = tokio::select! {
+                        biased;
+                        _ = context.cancellation.cancelled() => return Err(ModelError::Cancelled),
+                        header = encoded_header.without_usage() => header,
+                    };
                     retried = true;
                     body.0.close().await.map_err(body_error)?;
                     continue;
@@ -256,15 +264,15 @@ async fn run_inner(
             }
             return Err(events.evidence.provider(
                 error::http_error(status, &bytes),
-                prepared.anthropic,
+                anthropic,
                 retry_after,
             ));
         }
         // Request bytes have been dispatched. Retain only the decoder and
         // protocol metadata while receiving; output owns its actual queue budget.
-        drop(prepared.body);
-        drop(prepared.anthropic_source.take());
-        drop(prepared.chat.take());
+        drop(encoded_header);
+        drop(anthropic_source.take());
+        drop(chat.take());
         loop {
             let chunk = tokio::time::timeout(context.idle_timeout, body.0.next())
                 .await
@@ -289,11 +297,8 @@ async fn run_inner(
                     // Bound the vector of decoded events even if an HTTP peer
                     // combines many records into one transport chunk.
                     for bytes in bytes.chunks(16 * 1024) {
-                        let mut decoded = prepared.decoder.push(bytes)?;
-                        prepared
-                            .decoder
-                            .resolve(&mut decoded, &context.cancellation)
-                            .await?;
+                        let mut decoded = decoder.push(bytes)?;
+                        decoder.resolve(&mut decoded, &context.cancellation).await?;
                         emit(decoded, &mut events, context, &shared).await?;
                         if events.finished {
                             body.0.close().await.map_err(body_error)?;
@@ -302,11 +307,8 @@ async fn run_inner(
                     }
                 }
                 None => {
-                    let mut decoded = prepared.decoder.finish()?;
-                    prepared
-                        .decoder
-                        .resolve(&mut decoded, &context.cancellation)
-                        .await?;
+                    let mut decoded = decoder.finish()?;
+                    decoder.resolve(&mut decoded, &context.cancellation).await?;
                     emit(decoded, &mut events, context, &shared).await?;
                     return if events.finished {
                         Ok(())

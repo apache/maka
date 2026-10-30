@@ -75,13 +75,14 @@ pub(crate) async fn encoded_request_bytes(
         http::RequestBody::stream(body.chunks())
     } else {
         let prepared = super::request::prepare(input).await?;
+        let header = super::http_header::Header::freeze(prepared.body).await;
         if let Some((source, options, language)) = prepared.chat {
-            super::body::chat(prepared.body, source, options, language)
+            super::body::chat(header, source, options, language)
         } else {
             let (wire, context) = prepared
                 .anthropic_source
                 .expect("prepared Anthropic source");
-            super::anthropic::body(prepared.body, wire, context)?
+            super::anthropic::body(header, wire, context)?
         }
     };
     let mut chunks = body.into_stream();

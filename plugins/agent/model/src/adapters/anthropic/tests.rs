@@ -241,9 +241,13 @@ async fn source_request_bytes(messages: &[crate::prompt::Message]) -> Vec<u8> {
         source: frozen.source,
     };
     let context = metadata(&wire).await.unwrap().context;
-    let mut stream = body(json!({"model":"model"}), wire, context)
-        .unwrap()
-        .into_stream();
+    let mut stream = body(
+        Header::freeze(json!({"model":"model"})).await,
+        wire,
+        context,
+    )
+    .unwrap()
+    .into_stream();
     let mut actual = Vec::new();
     while let Some(bytes) = stream.next().await {
         actual.extend_from_slice(&bytes.unwrap());

@@ -26,23 +26,40 @@ enum Task {
     Value(Value),
     String(String, usize),
     Array(std::vec::IntoIter<Value>, bool),
-    Object(serde_json::map::IntoIter, bool),
+    Object(serde_json::map::IntoIter, bool, bool),
+    MemberEnd,
     Byte(u8),
 }
 
 pub struct JsonChunks {
     stack: Vec<Task>,
+    offset: usize,
+}
+
+/// Encoded byte boundaries of a member in the root object, excluding its comma.
+pub enum MemberBoundary<'a> {
+    Start { key: &'a str, offset: usize },
+    End { offset: usize },
 }
 impl JsonChunks {
     pub fn new(value: Value) -> Self {
         Self {
             stack: vec![Task::Value(value)],
+            offset: 0,
         }
     }
-}
-impl Iterator for JsonChunks {
-    type Item = Vec<u8>;
-    fn next(&mut self) -> Option<Self::Item> {
+    /// Encode one ordinary chunk while exposing only root-object member positions.
+    pub fn next_with_member_boundaries(
+        &mut self,
+        member: impl FnMut(MemberBoundary<'_>),
+    ) -> Option<Vec<u8>> {
+        self.next_chunk(true, member)
+    }
+    fn next_chunk(
+        &mut self,
+        track: bool,
+        mut member: impl FnMut(MemberBoundary<'_>),
+    ) -> Option<Vec<u8>> {
         let mut bytes = Vec::with_capacity(CHUNK);
         while bytes.len() < CHUNK - 32 {
             let Some(task) = self.stack.pop() else { break };
@@ -63,7 +80,9 @@ impl Iterator for JsonChunks {
                     }
                     Value::Object(values) => {
                         bytes.push(b'{');
-                        self.stack.push(Task::Object(values.into_iter(), true));
+                        let root = self.offset == 0 && bytes.len() == 1 && self.stack.is_empty();
+                        self.stack
+                            .push(Task::Object(values.into_iter(), true, root));
                     }
                 },
                 Task::String(string, mut offset) => {
@@ -112,21 +131,39 @@ impl Iterator for JsonChunks {
                     }
                     None => bytes.push(b']'),
                 },
-                Task::Object(mut values, first) => match values.next() {
+                Task::Object(mut values, first, root) => match values.next() {
                     Some((key, value)) => {
                         if !first {
                             bytes.push(b',');
                         }
-                        self.stack.push(Task::Object(values, false));
+                        self.stack.push(Task::Object(values, false, root));
+                        if track && root {
+                            member(MemberBoundary::Start {
+                                key: &key,
+                                offset: self.offset + bytes.len(),
+                            });
+                            self.stack.push(Task::MemberEnd);
+                        }
                         self.stack.push(Task::Value(value));
                         self.stack.push(Task::Byte(b':'));
                         self.stack.push(Task::Value(Value::String(key)));
                     }
                     None => bytes.push(b'}'),
                 },
+                Task::MemberEnd => member(MemberBoundary::End {
+                    offset: self.offset + bytes.len(),
+                }),
             }
         }
+        self.offset += bytes.len();
         (!bytes.is_empty()).then_some(bytes)
+    }
+}
+
+impl Iterator for JsonChunks {
+    type Item = Vec<u8>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_chunk(false, |_| {})
     }
 }
 
