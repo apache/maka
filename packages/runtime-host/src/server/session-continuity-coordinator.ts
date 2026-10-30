@@ -202,6 +202,13 @@ interface AssistantBacklog {
     runId: string;
     stream: ActiveAssistantStream;
     interrupted?: true;
+    /**
+     * Length of the deferred channel when the completion was attached. Events
+     * deferred before that point are Host-earlier than the marker and are
+     * released ahead of it once the payout reaches it; events deferred after
+     * stay behind it.
+     */
+    deferredMark: number;
   };
 }
 
@@ -719,6 +726,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             backlog.completion = {
               runId: rootTurn.runId,
               stream: { ...stream },
+              deferredMark: subscriber.deferred.length,
             };
           }
         }
@@ -1653,6 +1661,17 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       }
       subscriber.assistantBacklog.delete(key);
       if (completion) {
+        // The completion marker sits in the middle of the deferred channel by
+        // Host time: events deferred before the stream completed are older than
+        // it and reach the subscriber first, events deferred after stay behind
+        // it. Release exactly that recorded prefix, then enqueue the marker.
+        let earlier = Math.min(completion.deferredMark, subscriber.deferred.length);
+        while (earlier > 0 && subscriber.deferred.length > 0 && subscriber.phase === 'open') {
+          const next = subscriber.deferred.shift()!;
+          subscriber.deferredBytes -= next.bytes;
+          next.work();
+          earlier -= 1;
+        }
         this.#enqueueAssistantCompletion(
           subscriber,
           subscriber.sessionId,
@@ -1682,6 +1701,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       backlog.completion = {
         runId,
         stream: { ...stream, text: finalText },
+        deferredMark: subscriber.deferred.length,
         ...(interrupted ? { interrupted } : {}),
       };
       this.#payAssistantBacklog(subscriber, state);
@@ -1702,6 +1722,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         ),
       () => Buffer.byteLength(finalText, 'utf8'),
     );
+    // Dropping the entry may have emptied the backlog while deferred events
+    // (this completion included) were still waiting behind it; only a drain
+    // releases them, and nothing else fires once the map is empty.
+    this.#drainDeferred(subscriber);
   }
 
   #ownedSubscriber(connectionId: string, subscriptionId: string): Subscriber | undefined {
