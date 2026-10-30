@@ -52,6 +52,8 @@ mod recap;
 pub use recap::*;
 mod scheduler;
 pub use scheduler::*;
+mod bot;
+pub use bot::*;
 mod recall;
 pub use imports::*;
 pub use recall::*;
@@ -101,6 +103,10 @@ pub struct Configuration {
     /// Enable the session-scoped, model-maintained checklist.
     #[serde(default)]
     pub todo: bool,
+    /// Enable the Bot mode: one persistent Session that reaches its user only
+    /// through `SendUser`, with a Host-owned outbox.
+    #[serde(default)]
+    pub bot: bool,
     /// Generate a bounded auxiliary title for automatically named conversations.
     #[serde(default)]
     pub automatic_titles: bool,
@@ -1653,6 +1659,18 @@ pub fn contract() -> Contract {
                 (
                     "watchChecklist".into(),
                     method::<ChecklistRead, Checklist>(MethodMode::Subscription),
+                ),
+                (
+                    "openBot".into(),
+                    method::<BotOpen, BotOpened>(MethodMode::Mutation),
+                ),
+                (
+                    "botOutbox".into(),
+                    method::<BotOutboxRead, BotOutbox>(MethodMode::Query),
+                ),
+                (
+                    "watchBotOutbox".into(),
+                    method::<BotOutboxRead, BotOutbox>(MethodMode::Subscription),
                 ),
                 (
                     "schedules".into(),

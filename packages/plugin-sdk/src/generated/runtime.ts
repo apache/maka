@@ -5100,6 +5100,11 @@ export interface AgentConfiguration {
    */
   todo?: boolean;
   /**
+   * Enable the Bot mode: one persistent Session that reaches its user only
+   * through `SendUser`, with a Host-owned outbox.
+   */
+  bot?: boolean;
+  /**
    * Generate a bounded auxiliary title for automatically named conversations.
    */
   automaticTitles?: boolean;

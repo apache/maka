@@ -42,6 +42,7 @@ mod plan;
 mod preferences;
 mod projects;
 pub(crate) use notifications::ReturnRoute;
+mod bot;
 mod git;
 mod global_instructions;
 mod mcp;
@@ -192,6 +193,7 @@ pub(crate) struct Owner {
     pub recall: Arc<recall::Recall>,
     scheduler: Arc<scheduler::Scheduler>,
     todo: Arc<todo::Todo>,
+    bot: Arc<bot::Bot>,
     goals: Arc<goal::Goals>,
     plans: Arc<plan::Plans>,
     recap_storage: Arc<maka_host_runtime::storage::Storage>,
@@ -428,6 +430,18 @@ impl Owner {
         if settings.todo {
             additional.extend(todo.tools());
         }
+        let bot = Arc::new(bot::Bot::new(persistence.store().clone(), prefix.clone()));
+        // Bot identity must be known before activation schedules queued work.
+        if let Err(error) = bot.load().await {
+            configuration
+                .shutdown()
+                .await
+                .map_err(|_| "agent_configuration_cleanup_unconfirmed")?;
+            return Err(format!("agent_bot_unavailable: {error}"));
+        }
+        if settings.bot {
+            additional.extend(bot.tools());
+        }
         let mut mcp = match crate::mcp::Servers::open(
             &settings.mcp_servers,
             persistence.store().clone(),
@@ -486,6 +500,14 @@ impl Owner {
                 catalog.tools = catalog
                     .tools
                     .with_always_visible(&["GoalStatus"])
+                    .map_err(|error| error.to_string())?;
+            }
+            // The Bot's only voice and its rules must not hide behind tool discovery.
+            // Other Sessions never select SendUser, so this does not reach them.
+            if settings.bot {
+                catalog.tools = catalog
+                    .tools
+                    .with_always_visible(&[bot::SEND_USER])
                     .map_err(|error| error.to_string())?;
             }
             if settings.recall {
@@ -569,6 +591,7 @@ impl Owner {
             goals,
             auxiliary,
             todo,
+            bot,
             recap_storage,
             scheduler,
             recall,
@@ -727,6 +750,15 @@ impl Owner {
             });
         }
         let mut tools = input.tools;
+        // SendUser follows Bot identity, never a requested tool list.
+        if tools
+            .as_ref()
+            .is_some_and(|names| names.iter().any(|name| name == bot::SEND_USER))
+        {
+            return Ok(Created::Rejected {
+                reason: Rejection::ToolsUnavailable,
+            });
+        }
         if let Some(names) = &mut tools {
             names.sort();
             if names.windows(2).any(|pair| pair[0] == pair[1]) {
@@ -1036,6 +1068,7 @@ impl Owner {
     }
     fn selected_tools(
         &self,
+        session: &str,
         basis: &MessageBasis,
         discovery: bool,
         editing: Option<maka_agent_facts::execution::EditingTools>,
@@ -1045,14 +1078,19 @@ impl Owner {
             None => self.mcp_projects.catalog(basis.mcp_revision.as_deref())?,
         };
         let selected = plan::select(&catalog.tools, basis, &catalog.planning);
+        // SendUser is granted by Bot identity, independent of the tool list.
+        let bot = self.bot.is(session);
         let excluded: Vec<_> = selected
             .definitions()
             .map(|definition| definition.name.as_str())
             .filter(|name| {
-                (basis.graph.is_none() && crate::workhub::tasks::graph::NAMES.contains(name))
-                    || basis.allowed_tools.as_ref().is_some_and(|allowed| {
-                        !allowed.iter().any(|allowed| allowed.as_str() == *name)
-                    })
+                let speaks = *name == bot::SEND_USER;
+                (speaks && !bot)
+                    || (basis.graph.is_none() && crate::workhub::tasks::graph::NAMES.contains(name))
+                    || (!(speaks && bot)
+                        && basis.allowed_tools.as_ref().is_some_and(|allowed| {
+                            !allowed.iter().any(|allowed| allowed.as_str() == *name)
+                        }))
                     || editing.is_some_and(|editing| {
                         self.editing_tools
                             .iter()
@@ -1274,9 +1312,13 @@ impl Owner {
             } else {
                 selected_catalog.bindings.clone()
             },
-            behavior: self
-                .capture_behavior(&session.configuration.workspace, &snapshot, language)
-                .await?,
+            behavior: self.bot_behavior(
+                &id,
+                self.capture_behavior(&session.configuration.workspace, &snapshot, language)
+                    .await?,
+                &snapshot,
+                language,
+            ),
             model,
             executor,
             workspace: session.configuration.workspace.clone(),
@@ -1311,6 +1353,7 @@ impl Owner {
                     vec![]
                 } else {
                     self.selected_tools(
+                        &id,
                         &basis,
                         false,
                         basis.model.as_ref().and_then(|model| model.editing_tools),
@@ -1486,6 +1529,7 @@ impl Owner {
             owner.engine.drain().await;
             let scheduler = owner.scheduler.finish().await;
             let todo = owner.todo.finish().await;
+            let bot = owner.bot.finish().await;
             let goals = owner.goals.finish().await;
             let plans = owner.plans.finish().await;
             let graph = match &owner.graphs {
@@ -1510,6 +1554,7 @@ impl Owner {
             mcp?;
             scheduler?;
             todo?;
+            bot?;
             goals?;
             plans?;
             graph?;

@@ -1058,6 +1058,46 @@ export function createConversationUi(
   const commandNew = (context: ActionContext) => {
     if (closeCommand(context)) newConversation(context.sessionId);
   };
+  // The Bot is one persistent Session per installation; the first open creates it
+  // in the current conversation's workspace, later opens return the same Session.
+  // `undefined` until the Host has answered; then the Bot Session or `null` for none.
+  const botSession = signal<string | null | undefined>(undefined);
+  const refreshBotSession = async () => {
+    const head = await host.query('agent', 'botOutbox', { limit: 0 });
+    if (alive) botSession.set(head.sessionId ?? null);
+    return head.sessionId ?? null;
+  };
+  void refreshBotSession().catch(() => {});
+  const commandBot = (context: ActionContext) => {
+    const sessionId = context.sessionId;
+    if (!closeCommand(context)) return;
+    void (async () => {
+      try {
+        error.set('');
+        // An existing Bot opens directly; only its first open needs a workspace.
+        const existing = botSession() ?? (await refreshBotSession().catch(() => null));
+        if (existing !== null) {
+          await switchSession(existing, { sessionId, instance: null });
+          return;
+        }
+        if (sessionId === null)
+          throw new UiError('Open a conversation first; the Bot starts in its workspace.');
+        const result = await control('openBot', {
+          workspace: { kind: 'session', sessionId },
+        });
+        if (!alive) return;
+        if (result.kind !== 'opened')
+          throw new UiError('Bot could not be opened: {reason}', {
+            reason: result.reason ?? result.kind,
+          });
+        botSession.set(result.sessionId);
+        await switchSession(result.sessionId, { sessionId, instance: null });
+        if (result.created) await browsing.refresh();
+      } catch (reason) {
+        report(reason);
+      }
+    })();
+  };
   const commandWorkspace = (context: ActionContext) => {
     if (closeCommand(context)) open({ kind: 'workspaces', sessionId: context.sessionId });
   };
@@ -1219,6 +1259,10 @@ export function createConversationUi(
               id: result.session.id,
               title: result.session.title,
             });
+          if (original.method === 'openBot' && result.kind === 'opened') {
+            botSession.set(result.sessionId);
+            await switchSession(result.sessionId);
+          }
           if (original.method === 'create' && original.id === pendingCreateAttempt()) {
             updatePending({
               target:
@@ -1376,6 +1420,8 @@ export function createConversationUi(
     },
     create,
     newConversation: (sessionId) => invokeCommand({ id: 'new', sessionId }),
+    openBot: (sessionId) => invokeCommand({ id: 'bot', sessionId }),
+    botSession,
     settings: (sessionId) => invokeCommand({ id: 'settings', sessionId }),
     search: (sessionId) => invokeCommand({ id: 'sessions', sessionId }),
     canOpenBeside: () => !!shell()?.openBeside,
@@ -1589,6 +1635,7 @@ export function createConversationUi(
               {(id) => (
                 <Conversation
                   client={host.session(id())}
+                  botSession={botSession}
                   visible={() =>
                     selected() === id() && overlay() === null && (shell()?.visible() ?? false)
                   }
@@ -1999,6 +2046,7 @@ export function createConversationUi(
       // A side pane holds one open conversation; navigation belongs to the main pane.
       if (side && ['new', 'workspace', 'browse', 'sessions'].includes(id)) return false;
       if (id === 'files') return handle() !== null && workspace() !== null;
+      if (id === 'bot') return true;
       if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
         return handle() !== null;
       if (id === 'stop') return handle()?.invocation() != null;
@@ -2020,6 +2068,8 @@ export function createConversationUi(
           return commandFind(source);
         case 'new':
           return commandNew(source);
+        case 'bot':
+          return commandBot(source);
         case 'workspace':
           return commandWorkspace(source);
         case 'models':

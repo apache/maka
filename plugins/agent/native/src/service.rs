@@ -235,6 +235,34 @@ impl Handler for Agent {
                         }
                     }
                 }
+                "openBot" => {
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .open_bot(decode(input)?, operation, context.scope())
+                            .await?,
+                    )
+                }
+                "botOutbox" => encode(owner.bot_outbox(&decode(input)?).await?),
+                "watchBotOutbox" => {
+                    let input: BotOutboxRead = decode(input)?;
+                    let mut changes = owner.bot_changes();
+                    let mut through = None;
+                    loop {
+                        changes.borrow_and_update();
+                        let page = owner.bot_outbox(&input).await?;
+                        let observed = (page.session_id.clone(), page.through);
+                        if through.as_ref() != Some(&observed) {
+                            through = Some(observed);
+                            context.emit(encode(page)?).await?;
+                        }
+                        tokio::select! {
+                            biased;
+                            _ = context.scope().cancellation.cancelled() => return Err("bot_observation_cancelled".into()),
+                            result = changes.changed() => result.map_err(|_| "bot_observation_closed")?,
+                        }
+                    }
+                }
                 "schedules" => encode(owner.schedules(decode(input)?).await?),
                 "watchSchedules" | "scheduleAlerts" => {
                     let mut changes = owner.schedule_changes();

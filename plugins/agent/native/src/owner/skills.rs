@@ -173,7 +173,9 @@ impl Owner {
         };
         let input = serde_json::to_value(SkillToolRequest {
             workspace: Some(session.configuration.workspace),
-            tools: self.selected_tools(&basis, false, Some(editing))?.names(),
+            tools: self
+                .selected_tools(&input.session_id, &basis, false, Some(editing))?
+                .names(),
             input: maka_skills_api::contract::ModelSearch {
                 query: input.query,
                 limit: None,

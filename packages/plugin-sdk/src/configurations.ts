@@ -80,6 +80,12 @@ export const configurations = {
         type: 'boolean',
         default: false,
       },
+      bot: {
+        description:
+          'Enable the Bot mode: one persistent Session that reaches its user only\nthrough `SendUser`, with a Host-owned outbox.',
+        type: 'boolean',
+        default: false,
+      },
       automaticTitles: {
         description: 'Generate a bounded auxiliary title for automatically named conversations.',
         type: 'boolean',
@@ -740,6 +746,12 @@ export const configurations = {
           todo: {
             type: 'boolean',
             description: 'Enable the session-scoped, model-maintained checklist.',
+            default: false,
+          },
+          bot: {
+            type: 'boolean',
+            description:
+              'Enable the Bot mode: one persistent Session that reaches its user only\nthrough `SendUser`, with a Host-owned outbox.',
             default: false,
           },
           automaticTitles: {

@@ -1732,6 +1732,7 @@ async fn actual_host_startup_resumes_due_model_retry_once() {
         let tools = fixture
             .owner
             .selected_tools(
+                &session,
                 &basis,
                 configuration.tool_discovery,
                 configuration.editing_tools,

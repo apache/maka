@@ -30,6 +30,8 @@ mod title_tests;
 
 mod todo_tests;
 
+mod bot_tests;
+
 mod computer_controls;
 
 mod service_tools;
@@ -639,6 +641,7 @@ impl Fixture {
             goals: false,
             plans: false,
             todo: false,
+            bot: false,
             automatic_titles: false,
             recaps: false,
             recall: false,

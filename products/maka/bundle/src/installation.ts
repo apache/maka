@@ -211,6 +211,8 @@ export function installation(
     recall: true,
     scheduledTasks: true,
     todo: true,
+    // Registers SendUser for the Bot Session only; nothing runs until the user opens the Bot.
+    bot: true,
     goals: true,
     plans: true,
     automaticTitles: true,

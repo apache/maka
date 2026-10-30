@@ -63,6 +63,7 @@ const CONTROL_METHODS: &[&str] = &[
     "metadata",
     "changeSession",
     "fork",
+    "openBot",
 ];
 const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
@@ -733,7 +734,8 @@ impl Client {
         }
         let owner = self.service_owner("agent").await?;
         let correlation = control_correlation(method, &input, &owner)?;
-        let session_id = if method == "create" {
+        // Creation targets no existing Session.
+        let session_id = if matches!(method, "create" | "openBot") {
             None
         } else {
             Some(

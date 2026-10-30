@@ -100,6 +100,7 @@ impl Handler for CounterHandler {
                 | "selectBackend"
                 | "editQueue"
                 | "create"
+                | "openBot"
                 | "discoverModels"
                 | "loginCredential"
                 | "saveCredential"
@@ -201,6 +202,7 @@ impl Fixture {
                 "changeSession":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "fork":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "create":{"mode":"mutation","input":{},"output":{},"resources":{}},
+                "openBot":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "discoverModels":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "loginCredential":{"mode":"mutation","input":{},"output":{},"progress":{},"resources":{}},
                 "saveCredential":{"mode":"mutation","input":{},"output":{},"resources":{"secret":{"type":{"name":"maka.text.utf8","version":1},"optional":false}}},
@@ -462,6 +464,33 @@ async fn send(client: &Client, id: Uuid) -> Mutation {
         )
         .await
         .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_bot_is_a_shell_control_without_a_target_session() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let fixture = Fixture::new().await;
+        let client = fixture.client().await;
+        let target = client.describe("agent").await.unwrap();
+        let owner = json!({"namespace":target.provider,"export":target.export});
+        let bot = client
+            .control(
+                Uuid::new_v4(),
+                "openBot",
+                json!({"workspace":{"kind":"session","sessionId":"session-one"}}),
+            )
+            .await
+            .unwrap();
+        let original = client.operation_for_control(bot.id()).await.unwrap();
+        assert_eq!(original.session_id, None);
+        assert_eq!(
+            original.correlation,
+            json!({"kind":"agent-control","owner":owner})
+        );
+        bot.close().await.unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

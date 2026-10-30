@@ -75,6 +75,10 @@ export type WorkspaceBrowserProps = {
     label?: string,
   ): Promise<void>;
   newConversation(expectedSessionId: string | null): void;
+  /** Open the persistent Bot; absent when the Bot mode is not offered. */
+  openBot?(expectedSessionId: string | null): void;
+  /** The Bot Session, listed only through its own entry. */
+  botSession?(): string | null;
   settings(expectedSessionId: string | null): void;
   search(expectedSessionId: string | null): void;
   changeSession(action: SessionAction, expectedSessionId: string | null): Promise<void>;
@@ -97,6 +101,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   // Desktop rows hold one line; the terminal's also name the workspace.
   const rowHeight = () => (compact() ? 32 : platform.isTerminal ? 48 : 36);
   const browser = props.browsing;
+  const visibleSessions = computed(() => {
+    const bot = props.botSession?.() ?? null;
+    const sessions = browser.sessions();
+    return bot === null ? sessions : sessions.filter((session) => session.id !== bot);
+  });
   const choosingWorkspace = signal(false);
   const actions = signal<{ session: SessionActionTarget; origin: string | null } | null>(null);
   const actionsAnchor = signal<ViewRef | null>(null);
@@ -119,7 +128,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         tr('Project')
       );
     return (
-      browser.sessions()[0]?.workspace.path.split('/').filter(Boolean).at(-1) ?? tr('Workspace')
+      visibleSessions()[0]?.workspace.path.split('/').filter(Boolean).at(-1) ?? tr('Workspace')
     );
   };
   const scopes = computed(() => [
@@ -145,11 +154,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       })),
   ]);
   const sessionsById = computed(
-    () => new Map(browser.sessions().map((session) => [session.id, session])),
+    () => new Map(visibleSessions().map((session) => [session.id, session])),
   );
   const scopesById = computed(() => new Map(scopes().map((scope) => [scope.id, scope])));
-  const firstUnpinned = computed(() => browser.sessions().find((session) => !session.pinned)?.id);
-  const hasPinned = () => browser.sessions()[0]?.pinned === true;
+  const firstUnpinned = computed(() => visibleSessions().find((session) => !session.pinned)?.id);
+  const hasPinned = () => visibleSessions()[0]?.pinned === true;
   // The desktop lists conversations under their workspaces instead of
   // choosing a scope: pinned ones first, then each workspace in the order of
   // its latest loaded conversation, then active projects with none loaded.
@@ -162,7 +171,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       byKey.set(key, group);
       return group;
     };
-    for (const session of browser.sessions()) {
+    for (const session of visibleSessions()) {
       const projectId = session.workspace.projectId;
       const key = session.pinned
         ? 'pinned'
@@ -196,7 +205,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     platform.isTerminal
       ? choosingWorkspace()
         ? scopes().map((scope) => scope.id)
-        : browser.sessions().map((session) => session.id)
+        : visibleSessions().map((session) => session.id)
       : groups().flatMap((group) => [
           `group:${group.key}`,
           ...(collapsed().has(group.key) ? [] : group.sessions),
@@ -385,6 +394,35 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         <Icon name="plus" color={C.secondary} />
         <Text style={{ color: C.text, fontSize: 14 }}>{tr('New conversation')}</Text>
       </Button>
+      <If when={props.openBot !== undefined}>
+        <Button
+          accessibilityLabel={tr('Maka Bot')}
+          disabled={props.switching()}
+          onPress={inputAction(
+            (origin: string | null) => props.openBot?.(origin),
+            props.selected(),
+          )}
+          style={{
+            backgroundColor:
+              props.botSession?.() != null && props.selected() === props.botSession?.()
+                ? C.line
+                : 'transparent',
+            height: compact() ? 32 : 40,
+            flexDirection: 'row',
+            gap: 8,
+            paddingHorizontal: 8,
+            paddingVertical: 8,
+            alignItems: 'center',
+            borderRadius: 8,
+          }}
+          hoverStyle={{ backgroundColor: C.raised }}
+          focusStyle={{ backgroundColor: C.line }}
+          disabledStyle={controlDisabledStyle}
+        >
+          <Icon name="activity" color={C.accent} />
+          <Text style={{ color: C.text, fontSize: 14 }}>{tr('Maka Bot')}</Text>
+        </Button>
+      </If>
       <If when={platform.isTerminal}>
         <Button
           accessibilityLabel={tr('Choose workspace scope')}
@@ -700,7 +738,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                     when={
                       platform.isTerminal &&
                       hasPinned() &&
-                      (key() === browser.sessions()[0]?.id || key() === firstUnpinned())
+                      (key() === visibleSessions()[0]?.id || key() === firstUnpinned())
                     }
                   >
                     <Text

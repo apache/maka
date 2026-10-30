@@ -75,6 +75,7 @@ impl Owner {
         self.recover_removed_sessions();
         self.scheduler.bind(self);
         self.todo.bind(self);
+        self.bot.bind(self);
         self.goals.bind(self);
         self.plans.bind(self);
         self.start_plans();
@@ -688,6 +689,7 @@ impl Owner {
             }
             let tools = owner
                 .selected_tools(
+                    &invocation.session_id,
                     &basis,
                     configuration.tool_discovery,
                     configuration.editing_tools,
@@ -909,6 +911,7 @@ impl Owner {
         }
         let tools = self
             .selected_tools(
+                &invocation.session_id,
                 &basis,
                 configuration.tool_discovery,
                 configuration.editing_tools,
@@ -1072,10 +1075,17 @@ impl Owner {
                 configuration.tool_mode = source.accepted.tool_mode;
                 configuration.code_language = source.accepted.code_language;
                 configuration.editing_tools = source.accepted.editing_tools;
-                let tools =
-                    self.selected_tools(&basis, basis.tool_discovery, configuration.editing_tools)?;
-                let allow_prior_unknown =
-                    basis.background.is_none() && delivered.message.origin.is_none();
+                let tools = self.selected_tools(
+                    &invocation.session_id,
+                    &basis,
+                    basis.tool_discovery,
+                    configuration.editing_tools,
+                )?;
+                // The Bot Session lives across crashes: its wakes and delegated results must
+                // continue after an unknown tool outcome, with the model told, not replayed.
+                let allow_prior_unknown = (basis.background.is_none()
+                    && delivered.message.origin.is_none())
+                    || self.bot.is(&invocation.session_id);
                 PreparedRun::Model(Box::new(RunInput {
                     model_source: Some(Arc::new(source)),
                     model_revision: Some(prepared.revision),

@@ -82,6 +82,8 @@ import type {
   ModelDetails,
 } from '../../../../products/maka/workbench/app/modelSelection';
 import { CompactionDivider } from '../../../../products/maka/workbench/app/CompactionDivider';
+import { createBotTranscript } from '../../../../products/maka/workbench/app/botTranscript';
+import { BotReply, BotWorking } from '../../../../products/maka/workbench/app/BotReply';
 import {
   MessageRow,
   type MessageViewState,
@@ -183,6 +185,8 @@ export type ConversationHandle = Omit<
 type ConversationProps = {
   client: ScopedHost;
   control: Control;
+  /** The Bot Session when the application knows it; `null` for none; `undefined` if unknown. */
+  botSession?(): string | null | undefined;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
   /**
    * Edit and resend a user message, or regenerate a reply (desktop): fork before
@@ -337,6 +341,9 @@ export function Conversation(props: ConversationProps) {
   const recovering = signal(false);
   const notice = createText();
   const reading = signal<'chat' | 'trajectory'>('chat');
+  // In the Bot Session, Chat shows what the Bot told the user (SendUser); its own
+  // replies and steps stay in Trajectory.
+  const bot = createBotTranscript(host, sessionId, () => props.botSession?.());
   const readingSize = signal({ width: 640, height: 192 });
   const innerReader = signal<string | null>(null);
   // The process group whose activity list last reported its end.
@@ -463,14 +470,53 @@ export function Conversation(props: ConversationProps) {
   type DisplayEntry =
     | { kind: 'summary'; key: string; turnId: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
-    | { kind: 'row'; key: string; rowId: string; repeats?: number };
+    | { kind: 'row'; key: string; rowId: string; repeats?: number }
+    | { kind: 'bot'; key: string; turnId: string }
+    | { kind: 'botWorking'; key: string };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
+    // Until the Host has said whether this is the Bot, assume it is: showing the model's
+    // own text on the Bot's Chat would publish internal output, while a short blank on an
+    // ordinary conversation only delays it. Reading a Bot never becomes visible by failing.
+    const botChat = bot.identity() !== 'ordinary' && reading() === 'chat';
+    // The Bot's reply to a Turn is what it sent with SendUser during that Turn,
+    // shown after the Turn's own entries.
+    let openTurn: string | undefined;
+    let workingShown = false;
+    // Chat hides the model's own output. Until the running Turn has its own header,
+    // show that the Bot is at work, where that header will appear so it replaces
+    // this row in place instead of arriving above an already shown reply.
+    const working = (turnId: string | undefined) => {
+      const running = runTurn();
+      if (run() !== 'running' || workingShown || (turnId !== undefined && turnId !== running))
+        return;
+      const headed = result.some(
+        (item) =>
+          running !== null &&
+          ((item.kind === 'process' && item.group.turnId === running) ||
+            (item.kind === 'summary' && item.turnId === running)),
+      );
+      if (headed) return;
+      workingShown = true;
+      result.push({ kind: 'botWorking', key: 'bot/working' });
+    };
+    const speak = () => {
+      if (openTurn !== undefined) {
+        working(openTurn);
+        if (bot.forTurn(openTurn).length > 0)
+          result.push({ kind: 'bot', key: `bot/${openTurn}`, turnId: openTurn });
+      }
+      openTurn = undefined;
+    };
     for (const entry of projection().entries) {
       const row = entry.kind === 'message' ? projection().rowsById.get(entry.rowId) : undefined;
       const turnId = entry.kind === 'process' ? entry.turnId : row?.turnId;
       const turn = turnId ? projection().turns.get(turnId) : undefined;
+      if (botChat && turnId !== openTurn) {
+        speak();
+        openTurn = turnId;
+      }
       if (
         turn &&
         (entry.kind === 'process' ||
@@ -491,6 +537,10 @@ export function Conversation(props: ConversationProps) {
         if (!turn || !turnExpanded(turn)) continue;
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
+        // Only SendUser publishes for the Bot. The model's own text, including a
+        // deliberately silent Turn's conclusion, stays internal in Trajectory; a real
+        // failure is a failure row, which this does not hide.
+        if (botChat && row.role === 'assistant') continue;
         if (entry.processTurnId && turn && !turnExpanded(turn)) continue;
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
@@ -498,13 +548,18 @@ export function Conversation(props: ConversationProps) {
         if (
           reading() === 'trajectory' &&
           (row.role === 'user' ||
-            row.finalOutput ||
+            (row.finalOutput && bot.identity() === 'ordinary') ||
             row.role === 'compaction' ||
             (!row.turnId && row.role !== 'failure'))
         )
           continue;
         result.push({ kind: 'row', key: entry.key, rowId: entry.rowId, repeats: entry.repeats });
       }
+    }
+    if (botChat) {
+      speak();
+      // The running Turn may not be projected yet (its message is still pending).
+      working(undefined);
     }
     return result;
   });
@@ -2190,6 +2245,7 @@ export function Conversation(props: ConversationProps) {
   });
   cleanup(() => {
     alive = false;
+    bot.close();
     historyIdentity = {};
     navigation.set(null);
     wakeReconnect?.();
@@ -2524,6 +2580,27 @@ export function Conversation(props: ConversationProps) {
                           />
                         );
                       }
+                      if (initial.kind === 'botWorking')
+                        return (
+                          <BotWorking
+                            detail={() => {
+                              const tool = latestToolActivity(
+                                toolActivity(),
+                                invocation(),
+                                runTurn(),
+                              );
+                              return tool ? `${tool.name}` : '';
+                            }}
+                          />
+                        );
+                      if (initial.kind === 'bot')
+                        return (
+                          <BotReply
+                            messages={() => bot.forTurn(initial.turnId)}
+                            openLink={props.openLink}
+                            userScroll={() => cancelNavigation()}
+                          />
+                        );
                       const first = currentRow(initial.rowId);
                       if (!first) return <View />;
                       const row = () => currentRow(initial.rowId) ?? first;

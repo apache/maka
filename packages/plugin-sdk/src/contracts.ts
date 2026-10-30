@@ -233,6 +233,108 @@ export const contracts = {
           },
           resources: {},
         },
+        botOutbox: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutboxRead',
+            type: 'object',
+            properties: {
+              after: {
+                description:
+                  'Return messages with a sequence greater than this cursor, oldest first.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                default: 0,
+              },
+              limit: {
+                description:
+                  'Most messages to return, at most 100. Zero reads only the head\n(`sessionId` and `through`).',
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+                maximum: 100,
+                default: 100,
+              },
+            },
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutbox',
+            type: 'object',
+            properties: {
+              enabled: {
+                type: 'boolean',
+              },
+              sessionId: {
+                type: ['string', 'null'],
+              },
+              through: {
+                description: 'Highest sequence recorded so far; 0 when empty.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              messages: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentBotMessage',
+                },
+                maxItems: 100,
+              },
+              nextAfter: {
+                description: 'Pass as `after` to read the next page; absent when caught up.',
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['enabled', 'through', 'messages'],
+            $defs: {
+              AgentBotMessage: {
+                description: 'One message the Bot deliberately sent to its user.',
+                type: 'object',
+                properties: {
+                  sequence: {
+                    description: 'Monotonic position in the outbox, starting at 1.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    description: 'The model-chosen idempotency key of the `SendUser` call.',
+                    type: 'string',
+                  },
+                  index: {
+                    description: 'Position of this message within its `SendUser` call.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                  at: {
+                    description: 'Milliseconds since the Unix epoch when the message was recorded.',
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  turnId: {
+                    description:
+                      "The Turn whose work sent this message, so clients can show it as that\nTurn's reply.",
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['sequence', 'messageId', 'index', 'text', 'at'],
+              },
+            },
+          },
+          resources: {},
+        },
         catalog: {
           mode: 'subscription',
           input: {
@@ -13351,6 +13453,184 @@ export const contracts = {
           },
           resources: {},
         },
+        openBot: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOpen',
+            description: "Open this installation's Bot Session, creating it on first use.",
+            type: 'object',
+            properties: {
+              workspace: {
+                $ref: '#/$defs/AgentWorkspaceSelection',
+              },
+              title: {
+                type: ['string', 'null'],
+                minLength: 1,
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['workspace'],
+            $defs: {
+              AgentWorkspaceSelection: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'isolated_git',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      project: {
+                        $ref: '#/$defs/AgentProjectRef',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'project', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              AgentDirectorySelection: {
+                type: 'object',
+                properties: {
+                  rootId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  segments: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['rootId', 'segments', 'directoryIdentity'],
+              },
+              AgentProjectRef: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOpened',
+            oneOf: [
+              {
+                description: '`created` is false when the existing Bot Session was returned.',
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'opened',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  created: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId', 'created'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentBotRejection',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+            $defs: {
+              AgentBotRejection: {
+                oneOf: [
+                  {
+                    description: 'The Bot mode is not enabled for this Agent.',
+                    type: 'string',
+                    const: 'disabled',
+                  },
+                  {
+                    description: 'The Session could not be created; see the creation reason.',
+                    type: 'string',
+                    const: 'creation_rejected',
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         pendingInteractions: {
           mode: 'query',
           input: {
@@ -23104,6 +23384,108 @@ export const contracts = {
               ComputerAppRisk: {
                 type: 'string',
                 enum: ['low', 'high'],
+              },
+            },
+          },
+          resources: {},
+        },
+        watchBotOutbox: {
+          mode: 'subscription',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutboxRead',
+            type: 'object',
+            properties: {
+              after: {
+                description:
+                  'Return messages with a sequence greater than this cursor, oldest first.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                default: 0,
+              },
+              limit: {
+                description:
+                  'Most messages to return, at most 100. Zero reads only the head\n(`sessionId` and `through`).',
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+                maximum: 100,
+                default: 100,
+              },
+            },
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutbox',
+            type: 'object',
+            properties: {
+              enabled: {
+                type: 'boolean',
+              },
+              sessionId: {
+                type: ['string', 'null'],
+              },
+              through: {
+                description: 'Highest sequence recorded so far; 0 when empty.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              messages: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentBotMessage',
+                },
+                maxItems: 100,
+              },
+              nextAfter: {
+                description: 'Pass as `after` to read the next page; absent when caught up.',
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['enabled', 'through', 'messages'],
+            $defs: {
+              AgentBotMessage: {
+                description: 'One message the Bot deliberately sent to its user.',
+                type: 'object',
+                properties: {
+                  sequence: {
+                    description: 'Monotonic position in the outbox, starting at 1.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    description: 'The model-chosen idempotency key of the `SendUser` call.',
+                    type: 'string',
+                  },
+                  index: {
+                    description: 'Position of this message within its `SendUser` call.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                  at: {
+                    description: 'Milliseconds since the Unix epoch when the message was recorded.',
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  turnId: {
+                    description:
+                      "The Turn whose work sent this message, so clients can show it as that\nTurn's reply.",
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['sequence', 'messageId', 'index', 'text', 'at'],
               },
             },
           },
