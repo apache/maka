@@ -469,12 +469,21 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       if (!prepared.ok) {
         throw new Error(`Artifact ${record.id} could not be copied: ${prepared.reason}`);
       }
+      // A plain source carries no content anchor in its record: capture one
+      // here so the mutation can prove the bytes it publishes are the ones
+      // this selection saw. An image source anchors on its recorded digest
+      // instead and is verified against it under the writer lock below. An
+      // unreadable plain source leaves the anchor undefined; the writer lock
+      // below refuses to publish without one.
+      const sourceDigest =
+        record.imageDelivery?.status === 'ready' ? undefined : await hashPreparedArtifact(prepared);
       const created = await this.copyConversationArtifact(
         prepared,
         input.targetSessionId,
         targetId,
         input.existingTarget === 'reuse_verified',
         imageArchiveLimits,
+        sourceDigest,
       );
       artifactIds.set(record.id, created.id);
       relativePaths.set(record.relativePath, created.relativePath);
@@ -489,6 +498,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     targetId: string,
     reuseVerified: boolean,
     imageArchiveLimits: ImageArchiveLimits,
+    sourceDigest: string | undefined,
   ): Promise<ArtifactRecord> {
     const source = prepared.record;
     const name = sanitizeArtifactName(source.name);
@@ -523,6 +533,21 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           throw artifactReplayConflict(targetId);
         }
         return { ...existing };
+      }
+      if (source.imageDelivery?.status !== 'ready') {
+        // The fresh copy of a plain source acts on a selection made outside
+        // this lock, so it owes the payload the same recheck reuse performs:
+        // a writer that removed or replaced the source in between must fail
+        // the copy rather than publish bytes no record vouches for. An anchor
+        // the selection could not capture means the source was already
+        // unreadable or the wrong size, and equally refuses to publish.
+        const currentSource = this.records.find((record) => record.id === source.id);
+        if (!isDeepStrictEqual(currentSource, source)) throw artifactReplayConflict(source.id);
+        const current = await this.prepareRecordRead(source, source.sizeBytes);
+        const currentDigest = current.ok ? await hashPreparedArtifact(current) : undefined;
+        if (currentDigest === undefined || currentDigest !== sourceDigest) {
+          throw artifactReplayConflict(source.id);
+        }
       }
       assertImageArchiveQuota(this.records, { ...expected, imageArchiveLimits });
       return this.publishNewArtifactUnlocked(
