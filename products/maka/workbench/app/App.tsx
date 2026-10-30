@@ -195,7 +195,10 @@ function App(
           openBeside(id: string) {
             if (id === selected() || sideSlot(id) >= 0) return;
             const used = sides.flatMap((pane, slot) => (pane.id() === null ? [] : [slot]));
-            const room = Math.min(SIDE_PANES, sidePaneRoom(canDockBrowser(previewShown())));
+            const room = Math.min(
+              SIDE_PANES,
+              sidePaneRoom(sidebarExpanded() && canDockBrowser(previewShown())),
+            );
             const last = used.at(-1) ?? -1;
             // A new pane opens right of the others; with no room left it
             // replaces the rightmost one.
