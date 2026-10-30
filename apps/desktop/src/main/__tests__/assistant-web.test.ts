@@ -277,7 +277,9 @@ test('HTTP serves app, validates messages, streams state, and closes live connec
   await writeFile(join(assets, 'index.html'), '<h1>Maka</h1>');
   const sent: unknown[] = [];
   let closed = false;
+  const cardCalls: unknown[] = [];
   const backend: AssistantWebBackend = {
+    cardAction: async input => { cardCalls.push(input); return { selectedKey: input.actionKey ?? null }; },
     state: async () => ({
       conversationId: 'owner',
       working: true,
@@ -309,7 +311,7 @@ test('HTTP serves app, validates messages, streams state, and closes live connec
     req.end();
   });
   try {
-    for (const path of ['/api/history', '/api/events', '/api/avatar', '/api/messages', '/']) {
+    for (const path of ['/api/history', '/api/events', '/api/avatar', '/api/messages', '/api/card-action', '/']) {
       assert.equal(await rawRequest(`attacker.example:${server.port}`, `http://attacker.example:${server.port}`, path), 403);
       assert.equal(await rawRequest(`attacker.example:${server.port}`, undefined, path), 403);
     }
@@ -356,6 +358,14 @@ test('HTTP serves app, validates messages, streams state, and closes live connec
       200,
     );
     assert.deepEqual(sent, [input]);
+    const choice = { conversationId: 'owner', cardId: 'card-1', actionKey: '0:1' };
+    const chosen = await fetch(url + '/api/card-action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(choice) });
+    assert.equal(chosen.status, 200);
+    assert.deepEqual(await chosen.json(), { selectedKey: '0:1' });
+    assert.deepEqual(cardCalls, [choice]);
+    const invalidChoice = await fetch(url + '/api/card-action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...choice, actionKey: 'invalid' }) });
+    assert.equal(invalidChoice.status, 400);
+    assert.equal(cardCalls.length, 1);
     const proxyInput = { ...input, id: 'web-proxy-message-123456' };
     assert.equal(
       (
@@ -394,3 +404,8 @@ test('HTTP serves app, validates messages, streams state, and closes live connec
   }
   assert.ok(closed);
 });
+
+ test('web history preserves structured assistant cards', () => {
+ const card = { type: 'offer' as const, title: '报销', items: [{ title: '整理材料' }] };
+ assert.deepEqual(visibleWebMessage({ ...assistant('card'), card } as StoredMessage, 3)?.card, card);
+ });

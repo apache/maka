@@ -1,0 +1,52 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+.maka-message-card {
+  margin-top: 10px; width: 360px; max-width: 100%; height: auto; max-height: 300px; min-width: 0;
+  display: flex; flex-direction: column; overflow: hidden; padding: 0;
+  background: var(--background); color: var(--foreground); border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  border-radius: 16px; box-shadow: 0 2px 8px color-mix(in srgb, var(--foreground) 3%, transparent);
+}
+.maka-message-card-heading { flex: 0 0 auto; padding: 13px 16px 10px; border-bottom: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent); max-height: 76px; overflow: auto; }
+.maka-message-card h3, .maka-message-card h4 { margin: 0; color: var(--foreground); overflow-wrap: anywhere; }
+.maka-message-card h3 { font-size: 16px; font-weight: 600; line-height: 1.4; }
+.maka-message-card h4 { font-size: 13px; font-weight: 600; line-height: 1.5; }
+.maka-message-card p { margin: 4px 0 0; font-size: 13px; line-height: 1.6; color: var(--muted-foreground); white-space: pre-wrap; overflow-wrap: anywhere; }
+.maka-message-card-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 10px 16px; scrollbar-width: thin; overscroll-behavior: contain; }
+.maka-message-card-body:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.maka-message-card-intro { padding-bottom: 10px; }
+.maka-message-card-items { display: flex; flex-direction: column; gap: 9px; }
+.maka-message-card-item { min-width: 0; display: flex; gap: 12px; }
+.maka-message-card-content { min-width: 0; flex: 1; }
+.maka-message-card-cover { flex: 0 0 72px; width: 72px; max-height: 80px; border-radius: 8px; overflow: hidden; background: color-mix(in srgb, var(--foreground) 5%, var(--background)); }
+.maka-message-card-cover .maka-markdown-image-resource { margin: 0; display: block; }
+.maka-message-card-cover img { width: 72px; height: 80px; object-fit: cover; display: block; margin: 0; border: 0; }
+.maka-message-card dl { margin: 4px 0 0; display: flex; flex-wrap: wrap; gap: 3px 12px; font-size: 11px; color: var(--muted-foreground); line-height: 1.5; }
+.maka-message-card dl > div { display: flex; gap: 5px; min-width: 0; }
+.maka-message-card dt, .maka-message-card dd { margin: 0; overflow-wrap: anywhere; }
+.maka-message-card-actions { flex: 0 0 auto; max-height: 104px; overflow: auto; display: flex; flex-wrap: wrap; gap: 7px; padding: 10px; border-top: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent); scrollbar-width: thin; }
+.maka-message-card-action { flex: 1 1 90px; min-width: 0; display: flex; }
+.maka-message-card-action > * { width: 100%; text-align: center; overflow-wrap: anywhere; white-space: normal; }
+.maka-message-card-actions .maka-message-card-reply { height: auto; min-height: 36px; border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent); border-radius: 9px; padding: 8px 10px; background: color-mix(in srgb, var(--foreground) 5%, var(--background)); color: var(--foreground); font-size: 12px; font-weight: 500; line-height: 1.5; box-shadow: none; }
+.maka-message-card-actions .maka-message-card-reply:hover:not(:disabled) { background: color-mix(in srgb, var(--foreground) 10%, var(--background)); }
+.maka-message-card-actions .maka-message-card-reply:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.maka-message-card-actions .maka-message-card-reply:disabled { opacity: .55; }
+.maka-message-card-action > a, .maka-message-card-disabled-link { padding: 8px 10px; font-size: 12px; line-height: 1.5; }
+.maka-message-card-disabled-link { opacity: .55; cursor: default; }
+.maka-message-card-hint { flex: 0 0 auto; max-height: 44px; overflow: auto; padding: 4px 12px 8px; font-size: 12px; color: var(--muted-foreground); }

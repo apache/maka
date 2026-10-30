@@ -978,6 +978,7 @@ function projectText(
       ts: event.ts,
       text: event.content.text,
       ...(event.content.summary !== undefined ? { summary: event.content.summary } : {}),
+      ...(event.content.card !== undefined ? { card: event.content.card } : {}),
       ...(event.content.interrupted ? { interrupted: true } : {}),
       ...(event.content.providerOptions !== undefined
         ? { providerOptions: structuredClone(event.content.providerOptions) }

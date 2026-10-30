@@ -17,10 +17,11 @@
  * under the License.
  */
 
+import { PersonalAssistantCardActions } from './card-actions.js';
 import type { ComponentProps } from 'react';
 import { PersonalAssistantChatLayout } from './chat-presentation.js';
 import { PersonalAssistantTaskFloat } from './task-float.js';
 export function PersonalAssistantTaskLayout({ session, ...props }: ComponentProps<typeof PersonalAssistantChatLayout> & { session?: { id: string; labels?: readonly string[] } }) {
   const layout = <PersonalAssistantChatLayout session={session} {...props} />;
-  return session?.labels?.includes('personal-assistant') ? <div className="personal-assistant-chat-frame" hidden={props.hidden}>{layout}{!props.hidden && <PersonalAssistantTaskFloat key={session.id} sessionId={session.id} />}</div> : layout;
+  return session?.labels?.includes('personal-assistant') ? <PersonalAssistantCardActions key={session.id} sessionId={session.id}><div className="personal-assistant-chat-frame" hidden={props.hidden}>{layout}{!props.hidden && <PersonalAssistantTaskFloat key={session.id} sessionId={session.id} />}</div></PersonalAssistantCardActions> : layout;
 }

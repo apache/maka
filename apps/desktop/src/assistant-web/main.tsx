@@ -17,11 +17,13 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Theme } from '@astryxdesign/core/theme';
 import { makaTheme } from '../renderer/astryx-theme/maka.js';
 import { LocaleProvider } from '../../../../packages/ui/src/locale-context.js';
+import { MessageCard, MessageCardActionsContext, type MessageCardActions } from '../../../../packages/ui/src/message-card.js';
+import '../../../../packages/ui/src/message-card.css';
 import { Markdown } from '../../../../packages/ui/src/markdown.js';
 import { MessageSummary } from '../../../../packages/ui/src/message-summary.js';
 import type { WebAvatar, WebHistory, WebMessage, WebState } from '../shared/assistant-web.js';
@@ -109,6 +111,14 @@ function messageTime(at: number) {
   const today = date.toDateString() === new Date().toDateString();
   return `${today ? '今天 ' : date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) + ' '}${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
 }
+function WebCard({ card, id, conversationId }: { card: NonNullable<WebMessage['card']>; id: string; conversationId: string }) {
+  const actions = useMemo<MessageCardActions>(() => ({
+    read: cardId => api('/api/card-action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversationId, cardId }) }),
+    choose: (cardId, actionKey) => api('/api/card-action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversationId, cardId, actionKey }) }),
+  }), [conversationId]);
+  return <MessageCardActionsContext.Provider value={actions}><MessageCard card={card} messageId={id} imageDisplay="link" /></MessageCardActionsContext.Provider>;
+}
+
 function App() {
   const [messages, setMessages] = useState<WebMessage[]>([]);
   const [pending, setPending] = useState<Pending[]>(restore);
@@ -358,9 +368,10 @@ function App() {
             >
               {m.role === 'assistant' ? <AssistantAvatar avatar={state?.avatar} /> : <UserAvatar />}
               <div className="bubble">
-                <MessageSummary summary={m.summary}>
+                {(!m.card || m.summary || m.text.trim() !== m.card.title.trim()) && <MessageSummary summary={m.summary}>
                   <Markdown text={m.text} density="compact" imageDisplay="link" />
-                </MessageSummary>
+                </MessageSummary>}
+                {m.card && state && <WebCard card={m.card} id={m.id} conversationId={state.conversationId} />}
               </div>
             </article>
           </div>

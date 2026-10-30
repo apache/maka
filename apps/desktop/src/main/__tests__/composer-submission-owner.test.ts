@@ -22,12 +22,12 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { act, createElement, Fragment } from 'react';
+import { act, createElement, Fragment, useContext } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import {
-  AstryxLocaleProvider, LocaleProvider, ToastProvider,
+  AstryxLocaleProvider, LocaleProvider, ToastProvider, MessageCardSendContext,
   type ComposerHandle, type ComposerInteraction, type ComposerProps, type ComposerSendMetadata, type LiveTurnBuffer, type TurnPresentation, type TurnViewModel,
 } from '@maka/ui';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
@@ -218,8 +218,9 @@ function harness(options: {
   let staged!: ReturnType<typeof useComposerStaging>;
   let queued!: ReturnType<typeof useConversationQueue>;
   let mentions!: NonNullable<ReturnType<typeof useComposerMentionsContext>>;
+  let sendCard: ((text: string) => Promise<boolean>) | undefined;
   let shellRenders = 0;
-  function Probe() { staged = useComposerStaging(); queued = useConversationQueue(); mentions = useComposerMentionsContext()!; return null; }
+  function Probe() { sendCard = useContext(MessageCardSendContext); staged = useComposerStaging(); queued = useConversationQueue(); mentions = useComposerMentionsContext()!; return null; }
   function Composer(props: RegionProps) { region = props; return null; }
   let transcriptRenders = 0;
   function Transcript(props: TranscriptProps) { transcript = props; transcriptRenders += 1; return null; }
@@ -277,6 +278,7 @@ function harness(options: {
   })));
   return {
     root, commands, published,
+    get sendCard() { return sendCard; },
     get target() { return target; },
     get conversation() { return conversation; },
     get region() { assert.ok(region, 'the Composer slot rendered'); return region; },
@@ -1180,4 +1182,29 @@ describe('Composer submission ownership', () => {
       assert.equal(name in Conversation, false, `${name} is not a public Conversation capability`);
     }
   });
+});
+
+
+test('card requests use the active conversation send path without touching the composer draft', async () => {
+  const submitted: Array<{ sessionId: string; text: string; attachments: unknown }> = [];
+  const h = harness({ ownerSessionId: 'A', services: {
+    submitMessage: async (sessionId, _placement, command) => {
+      submitted.push({ sessionId, text: command.text, attachments: command.attachmentItems });
+      return { ok: true, disposition: 'turn_started', turnId: 'card-turn', attachments: [], inlineReferences: [], skillInvocation: { loaded: [], failed: [], receipts: [] } };
+    },
+  } });
+  await act(async () => h.target.setActiveId('A'));
+  await act(async () => h.published[0]!([userTurn('earlier', 'hello')]));
+  h.region.composerRef.current = {
+    getText: () => 'unsent draft',
+    setText: () => assert.fail('card must not replace draft'),
+    clearDraft: () => assert.fail('card must not clear draft'),
+  };
+  assert.ok(h.sendCard);
+  await act(async () => assert.equal(await h.sendCard!('整理报销材料'), true));
+  assert.deepEqual(submitted, [{ sessionId: 'A', text: '整理报销材料', attachments: undefined }]);
+  assert.equal(h.region.composerRef.current?.getText?.(), 'unsent draft');
+  await act(async () => h.target.setActiveId('B'));
+  await act(async () => assert.equal(await h.sendCard!('stale card'), false));
+  assert.equal(submitted.length, 1, 'an old card must not send into a different conversation');
 });

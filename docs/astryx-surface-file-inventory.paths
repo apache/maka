@@ -70,6 +70,7 @@ apps/desktop/src/renderer/features/overlays/ui/overlays-context.tsx
 apps/desktop/src/renderer/features/overlays/ui/overlays-root.tsx
 apps/desktop/src/renderer/features/overlays/ui/search-modal-host.tsx
 apps/desktop/src/renderer/features/personal-assistant/avatar.tsx
+apps/desktop/src/renderer/features/personal-assistant/card-actions.tsx
 apps/desktop/src/renderer/features/personal-assistant/chat-presentation.tsx
 apps/desktop/src/renderer/features/personal-assistant/original-reader.css
 apps/desktop/src/renderer/features/personal-assistant/original-reader.tsx
@@ -300,6 +301,8 @@ packages/ui/src/markdown-image.tsx
 packages/ui/src/markdown-math.tsx
 packages/ui/src/markdown.tsx
 packages/ui/src/mermaid-diagram.tsx
+packages/ui/src/message-card.css
+packages/ui/src/message-card.tsx
 packages/ui/src/message-summary.tsx
 packages/ui/src/model-picker-internals.tsx
 packages/ui/src/model-picker.tsx

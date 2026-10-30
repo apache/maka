@@ -206,3 +206,5 @@ export { formatCompactTokenCount } from './compact-token-count.js';
 export * from './revision-staged-context.js';
 
 export { TranscriptDisclosure } from './transcript-disclosure.js';
+
+export { MessageCard, MessageCardSendContext, MessageCardActionsContext, type MessageCardActions } from './message-card.js';

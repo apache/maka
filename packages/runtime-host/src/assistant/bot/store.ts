@@ -17,11 +17,21 @@
  * under the License.
  */
 
+import { isDeepStrictEqual } from 'node:util';
+import {
+  isAssistantCard,
+  assistantMessageText,
+  type AssistantCard,
+} from '@maka/core/assistant-card';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import type { StoredMessage } from '@maka/core/session';
-import { assistantBatchOutputTurnId, assistantOutputTurnId } from './turn-ids.js';
+import {
+  assistantInputTurnId,
+  assistantBatchOutputTurnId,
+  assistantOutputTurnId,
+} from './turn-ids.js';
 
 export interface DiscoveryFeedbackLink {
   id: string;
@@ -61,6 +71,7 @@ export class BotStore {
       CREATE TABLE IF NOT EXISTS notification_decisions(call_id TEXT NOT NULL, inbox_id TEXT NOT NULL,
         at INTEGER NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(call_id,inbox_id));
       CREATE INDEX IF NOT EXISTS notification_decisions_inbox ON notification_decisions(inbox_id,at);
+      CREATE TABLE IF NOT EXISTS card_replies(card_id TEXT PRIMARY KEY, action_key TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS discovery_messages(message_id TEXT PRIMARY KEY, discovery_ids TEXT NOT NULL, delivered_at INTEGER);
       CREATE TABLE IF NOT EXISTS discovery_feedback(user_id TEXT NOT NULL, message_id TEXT NOT NULL,
         PRIMARY KEY(user_id,message_id));
@@ -101,26 +112,64 @@ export class BotStore {
     return Number(this.db.prepare('SELECT COALESCE(MAX(seq),0) n FROM inbox').get()!.n);
   }
   post(input: InboxInput, visible?: StoredMessage) {
+    return this.transaction(() => this.postInTransaction(input, visible));
+  }
+  private postInTransaction(input: InboxInput, visible?: StoredMessage) {
+    const existing = this.db.prepare('SELECT * FROM inbox WHERE id=?').get(input.id);
+    const content = JSON.stringify(input.content);
+    if (existing) {
+      if (
+        existing.content !== content ||
+        existing.type !== input.type ||
+        existing.source !== input.source ||
+        existing.task !== (input.taskId ?? null)
+      )
+        throw Error('Inbox message identity already has different content');
+      return Number(existing.seq);
+    }
+    const result = this.db
+      .prepare('INSERT INTO inbox(id,type,source,at,task,content) VALUES(?,?,?,?,?,?)')
+      .run(input.id, input.type, input.source, Date.now(), input.taskId ?? null, content);
+    if (visible) this.queueVisible(visible);
+    // A fresh event retries a failed worker, without a timed restart storm.
+    this.set('error', null);
+    return Number(result.lastInsertRowid);
+  }
+  cardSelection(cardId: string): string | null {
+    return (
+      (this.db.prepare('SELECT action_key FROM card_replies WHERE card_id=?').get(cardId)
+        ?.action_key as string) ?? null
+    );
+  }
+  /** Selection, Inbox admission and visible reply commit together; the first choice wins. */
+  chooseCard(cardId: string, actionKey: string): string {
     return this.transaction(() => {
-      const existing = this.db.prepare('SELECT * FROM inbox WHERE id=?').get(input.id);
-      const content = JSON.stringify(input.content);
-      if (existing) {
-        if (
-          existing.content !== content ||
-          existing.type !== input.type ||
-          existing.source !== input.source ||
-          existing.task !== (input.taskId ?? null)
-        )
-          throw Error('Inbox message identity already has different content');
-        return Number(existing.seq);
-      }
-      const result = this.db
-        .prepare('INSERT INTO inbox(id,type,source,at,task,content) VALUES(?,?,?,?,?,?)')
-        .run(input.id, input.type, input.source, Date.now(), input.taskId ?? null, content);
-      if (visible) this.queueVisible(visible);
-      // A fresh event retries a failed worker, without a timed restart storm.
-      this.set('error', null);
-      return Number(result.lastInsertRowid);
+      const row = this.db.prepare('SELECT payload,delivered FROM outbox WHERE id=?').get(cardId);
+      const message = row && JSON.parse(String(row.payload));
+      if (!row?.delivered || message?.type !== 'assistant' || !isAssistantCard(message.card))
+        throw Error('Unknown or undelivered card');
+      if (!/^\d+:\d+$/.test(actionKey)) throw Error('Invalid card action');
+      const [itemIndex, actionIndex] = actionKey.split(':').map(Number);
+      const action = message.card.items[itemIndex]?.actions?.[actionIndex];
+      if (!action || action.kind !== 'reply') throw Error('Invalid card reply');
+      const selected = this.cardSelection(cardId);
+      if (selected !== null) return selected;
+      const id = `assistant-card-reply:${cardId}`;
+      const content = { text: action.value };
+      this.postInTransaction(
+        { id, type: 'user_message', source: 'user', content },
+        {
+          ...content,
+          type: 'user',
+          id,
+          turnId: assistantInputTurnId(id),
+          ts: Date.now(),
+        },
+      );
+      this.db
+        .prepare('INSERT INTO card_replies(card_id,action_key) VALUES(?,?)')
+        .run(cardId, actionKey);
+      return actionKey;
     });
   }
   list(input: { after?: number; limit?: number; type?: InboxType }) {
@@ -224,7 +273,8 @@ export class BotStore {
       const previous = JSON.parse(String(old.payload));
       if (
         previous.text !== ('text' in message ? message.text : undefined) ||
-        previous.summary !== (message.type === 'assistant' ? message.summary : undefined)
+        previous.summary !== (message.type === 'assistant' ? message.summary : undefined) ||
+        !isDeepStrictEqual(previous.card, message.type === 'assistant' ? message.card : undefined)
       )
         throw Error('Message ID has different text');
       return previous as StoredMessage;
@@ -238,6 +288,7 @@ export class BotStore {
   queueVisibleBatch(
     batchId: string,
     texts: readonly {
+      card?: AssistantCard;
       summary?: string;
       text: string;
       discoveryIds?: string[];
@@ -250,11 +301,16 @@ export class BotStore {
           items.map((entry) => ({
             text: entry.text,
             ...(entry.summary !== undefined ? { summary: entry.summary } : {}),
+            ...(entry.card !== undefined ? { card: entry.card } : {}),
             ...(entry.discoveryIds?.length
               ? { discoveryIds: [...new Set(entry.discoveryIds)].sort() }
               : {}),
           })),
         );
+      for (const entry of texts) {
+        if (entry.card !== undefined && !isAssistantCard(entry.card))
+          throw Error('Invalid assistant card');
+      }
       for (const entry of texts)
         for (const id of entry.discoveryIds ?? [])
           if (!this.db.prepare("SELECT 1 FROM inbox WHERE id=? AND type='discovery'").get(id))
@@ -287,6 +343,7 @@ export class BotStore {
           ts: timestamp,
           text,
           ...(summary !== undefined ? { summary } : {}),
+          ...(entry.card !== undefined ? { card: entry.card } : {}),
           modelId: 'assistant-bot',
         });
         if (entry.discoveryIds?.length)
@@ -315,7 +372,7 @@ export class BotStore {
         return {
           messageId: String(row.id),
           discoveryIds: JSON.parse(String(row.discovery_ids)),
-          text: m.text,
+          text: assistantMessageText(m),
           at: new Date(Number(row.delivered_at)).toISOString(),
         };
       });

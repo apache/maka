@@ -48,6 +48,8 @@
  * item without reviving the retired 0.1.x StoredMessage history path.
  */
 
+import { assistantCardText } from '@maka/core/assistant-card';
+
 import {
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
@@ -420,6 +422,7 @@ export function estimateRuntimeEventChars(event: RuntimeEvent): number {
     // attachment-only user message must not estimate to zero, or the
     // history-compact gate drops a model-visible event (#4804).
     if (content.kind === 'text') {
+      if (content.card) total += assistantCardText(content.card).length;
       for (const quote of content.quotes ?? []) {
         total += formatQuoteRefs([quote]).length;
       }
@@ -1009,7 +1012,10 @@ export function buildRuntimeEventModelReplayPlan(
           // envelope); the raw text is a UI/transcript projection only.
           content: steeringReplay
             ? buildSteeringEnvelope(formatTextWithInlineRefs(event.content))
-            : formatTextWithInlineRefs(event.content),
+            : formatTextWithInlineRefs(event.content) +
+              (role === 'assistant' && event.content.card
+                ? '\n\n' + assistantCardText(event.content.card)
+                : ''),
           ...(steeringReplay ? { steering: { eventId: event.id } } : {}),
           ...(runtimeContextName !== undefined ? { runtimeContextName } : {}),
           ...(event.content.attachments ? { attachments: event.content.attachments } : {}),

@@ -402,3 +402,5 @@ textarea::placeholder {
     max-width: min(680px, calc(100% - 44px));
   }
 }
+
+.bubble:has(.maka-message-card) { width: min(388px, calc(100% - 44px)); }

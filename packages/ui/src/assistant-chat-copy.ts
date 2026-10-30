@@ -20,10 +20,10 @@
 import type { ShippedUiCatalog, UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 const COPY = {
-  en: { chatOptions: 'Chat options', expand: 'Show details', collapse: 'Collapse' },
-  'zh-CN': { chatOptions: '聊天选项', expand: '展开详情', collapse: '收起' },
-  'zh-TW': { chatOptions: '聊天選項', expand: '展開詳情', collapse: '收起' },
-} satisfies ShippedUiCatalog<{ chatOptions: string; expand: string; collapse: string }>;
+  en: { chatOptions: 'Chat options', expand: 'Show details', collapse: 'Collapse', cardSent: 'Sent', cardFailed: 'Could not send. Please try again.' },
+  'zh-CN': { chatOptions: '聊天选项', expand: '展开详情', collapse: '收起', cardSent: '已发送', cardFailed: '未能发送，请重试。' },
+  'zh-TW': { chatOptions: '聊天選項', expand: '展開詳情', collapse: '收起', cardSent: '已傳送', cardFailed: '未能傳送，請重試。' },
+} satisfies ShippedUiCatalog<{ chatOptions: string; expand: string; collapse: string; cardSent: string; cardFailed: string }>;
 
 export function assistantChatCopy(locale: UiLocale) {
   return (COPY as Partial<UiCatalog<typeof COPY.en>>)[locale] ?? COPY.en;

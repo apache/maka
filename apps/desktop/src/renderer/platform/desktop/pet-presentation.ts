@@ -57,6 +57,7 @@ export function createDesktopPetPresentation(): NonNullable<
                   id: m.id,
                   text: m.text,
                   summary: m.summary,
+                  card: m.card,
                 })),
               });
             initialized = true;
