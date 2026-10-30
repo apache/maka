@@ -163,6 +163,19 @@ async fn accepted_parts_are_visible_before_seal_and_unaccepted_parts_wait_for_co
         } else {
             assert!(before.is_empty());
         }
+        log.append(&event(
+            "a",
+            observe(
+                "a",
+                ModelObservation::Finished {
+                    reason: ModelFinishReason::Stop,
+                    usage: ModelUsage::default(),
+                    provider_options: None,
+                },
+            ),
+        ))
+        .await
+        .unwrap();
         let sealed = log
             .append(&event(
                 "a",

@@ -393,15 +393,13 @@ async fn midturn_compaction_keeps_image_references_without_replaying_messages() 
         .unwrap()
         .unwrap();
     assert_ne!(copied.id(), "anchor-image");
-    assert_eq!(
-        branch
-            .read_artifact_chunk("branch", copied.id(), 0, 8)
-            .await
-            .unwrap()
-            .unwrap()
-            .bytes,
-        image.bytes
-    );
+    let copied_image = branch
+        .read_artifact_chunk("branch", copied.id(), 0, original_image.len())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(copied_image.total_bytes, image.total_bytes);
+    assert_eq!(copied_image.bytes, image.bytes);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {

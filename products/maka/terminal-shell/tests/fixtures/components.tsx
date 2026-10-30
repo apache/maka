@@ -141,7 +141,7 @@ function CompletionComposer() {
   const owner: ComposerSession<JSX.Element> = {
     sessionId: 'original-session',
     draft,
-    changeDraft: draft.set,
+    changeDraft: (text) => draft.set(text),
     editable: () => true,
     empty: () => false,
     workspace: () => '/workspace',
