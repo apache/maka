@@ -20,10 +20,29 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { pathWithinRoot, samePath, trimTrailingPathSeparators } from '../absolute-path.js';
+import {
+  isNormalizedAbsolutePath,
+  pathWithinRoot,
+  samePath,
+  trimTrailingPathSeparators,
+} from '../absolute-path.js';
 import { canonicalWindowsPath } from '../windows-path.js';
 
 describe('absolute path comparison', () => {
+  it('recognizes the POSIX root and contains canonical POSIX descendants', () => {
+    assert.equal(isNormalizedAbsolutePath('/'), true);
+    assert.equal(pathWithinRoot('/', '/'), true);
+    assert.equal(pathWithinRoot('/tmp/file.txt', '/'), true);
+    assert.equal(pathWithinRoot('/', '/tmp'), false);
+
+    for (const path of ['relative', '/tmp/../etc', '/tmp//file', 'C:\\Windows']) {
+      assert.equal(pathWithinRoot(path, '/'), false, path);
+    }
+    for (const path of ['//', '/tmp/', '/./', '/\0']) {
+      assert.equal(isNormalizedAbsolutePath(path), false, path);
+    }
+  });
+
   it('uses Windows case-insensitive rules while preserving POSIX case', () => {
     assert.equal(pathWithinRoot('C:\\WORKSPACE\\Src', 'c:\\workspace'), true);
     assert.equal(pathWithinRoot('/Workspace/src', '/workspace'), false);
