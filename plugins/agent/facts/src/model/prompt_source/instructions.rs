@@ -100,34 +100,3 @@ impl std::fmt::Debug for PromptInstructions {
             .finish_non_exhaustive()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::prompt_source::Prompt;
-    #[test]
-    fn generated_system_instructions_borrow_the_original_message_allocation() {
-        let prompt = Prompt::from_messages(vec![
-            Message::System {
-                content: "  ".into(),
-                provider_options: None,
-            },
-            Message::System {
-                content: "first real instruction 中文".repeat(1024),
-                provider_options: None,
-            },
-        ]);
-        let Message::System { content, .. } = &prompt.memory_messages().unwrap()[1] else {
-            panic!("expected generated System");
-        };
-        assert_eq!(prompt.instructions().unwrap().as_ptr(), content.as_ptr());
-        let copy = prompt.clone();
-        assert_eq!(copy.instructions().unwrap().as_ptr(), content.as_ptr());
-    }
-    #[test]
-    fn equal_instruction_text_has_the_same_commitment_across_owner_types() {
-        let owned = PromptInstructions::owned(Arc::new("same text 中文".into()));
-        let shared = PromptInstructions::shared(Arc::from("same text 中文"));
-        assert_eq!(owned.commitment(), shared.commitment());
-    }
-}

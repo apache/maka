@@ -25,16 +25,8 @@ use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::model::ModelFinishReason;
 use maka_agent_facts::model::ModelToolCall;
-use maka_agent_facts::tools::ToolExecutor;
-use maka_agent_facts::tools::ToolFuture;
 use maka_event_log::EventLog;
-use maka_tools::*;
-use serde_json::{Value, json};
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
-use tokio_util::sync::CancellationToken;
+use std::sync::Arc;
 
 pub async fn close(log: Arc<EventLog>) {
     let log = match Arc::try_unwrap(log) {
@@ -44,42 +36,6 @@ pub async fn close(log: Arc<EventLog>) {
     log.close().await.unwrap();
 }
 
-#[derive(Default)]
-pub struct Effect(pub AtomicUsize);
-impl ToolExecutor for Effect {
-    fn names(&self) -> Vec<String> {
-        ["echo", "direct", "withheld"].map(String::from).into()
-    }
-    fn invoke(&self, _: String, input: Value, _: CancellationToken) -> ToolFuture {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async move { Ok(input) })
-    }
-}
-pub fn catalog(effect: Arc<Effect>) -> ToolCatalog {
-    ToolCatalog::new(["echo", "direct"].map(|name| ToolRegistration {
-        definition: ToolDefinition {
-            freeform: None,
-            output_schema: None,
-            provider: None,
-            name: name.into(),
-            description: "fixture".into(),
-            input_schema: json!({"type":"object","properties":{"n":{"type":"integer"}},
-                "required":["n"],"additionalProperties":false}),
-        },
-        nesting: if name == "direct" {
-            ToolNesting::DirectOnly
-        } else {
-            ToolNesting::Nestable
-        },
-        semantics: if name == "direct" {
-            ToolSemantics::FinishTurn
-        } else {
-            ToolSemantics::Parallel
-        },
-        handler: ToolHandler::Immediate(effect.clone()),
-    }))
-    .unwrap()
-}
 pub fn invocation(id: &str) -> Invocation {
     Invocation {
         session_id: format!("session-{id}"),

@@ -106,12 +106,6 @@ pub(super) fn completion_parts(step: String, parts: Vec<ModelPart>) -> Vec<Compl
         .map(|(ordinal, part)| CompletionPart::Own(record(&step, ordinal as u64, part)))
         .collect()
 }
-pub(super) fn tool_observation(
-    step: &str,
-    call: maka_agent_facts::model::ModelToolCall,
-) -> ModelObservation {
-    ModelObservation::Part(record(step, 0, ModelPart::ToolCall { call }))
-}
 pub(super) async fn partial(log: &EventLog, session: &str, text: &str) -> (ModelPartRecord, u64) {
     log.append(&event(session, opening())).await.unwrap();
     let sequence = log.append(&event(session, request(session))).await.unwrap();

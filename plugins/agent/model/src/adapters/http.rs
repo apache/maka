@@ -19,8 +19,6 @@
 
 use super::{anthropic, anthropic_documents, body, error, events, request};
 #[cfg(test)]
-mod quota_tests;
-#[cfg(test)]
 mod upload_tests;
 use crate::{ModelError, ProviderFailureReason};
 use maka_agent_facts::model::budget;

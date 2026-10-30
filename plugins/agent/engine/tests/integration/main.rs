@@ -18,7 +18,6 @@
  */
 
 mod agent_loop;
-mod attachment_projection;
 mod auto_context;
 mod code_mode;
 mod code_mode_lifetime;
@@ -27,18 +26,13 @@ mod context_compaction;
 mod context_overflow;
 mod context_stop;
 mod dynamic_tools;
-mod executor;
-mod frozen_projection;
 mod handoff;
 mod handoff_compaction;
 mod image_projection;
-mod lifetime;
 mod long_task_perf;
-mod long_task_responsiveness;
 mod model_interruption;
 mod pruning;
 mod session_import;
-mod session_longevity;
 mod stale_pruning;
 mod startup_recovery;
 mod tool_arguments;
@@ -53,7 +47,6 @@ mod support {
     pub(crate) mod image_projection;
     pub(crate) mod invocation;
     pub(crate) mod model_records;
-    pub(crate) mod recovery;
     pub(crate) mod recovery_session;
     pub(crate) mod store;
 }

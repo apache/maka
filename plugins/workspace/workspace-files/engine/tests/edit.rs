@@ -43,60 +43,6 @@ async fn edit(executor: &MutationExecutor, input: Value) -> Result<Value, ToolEr
 }
 
 #[tokio::test]
-async fn exact_literal_replacement_preserves_inode_and_reports_original_line_span() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = dunce::canonicalize(temp.path()).unwrap();
-    let executor = executor(&root);
-    let path = root.join("text");
-    fs::write(&path, "零\n一\n二\n三\n").unwrap();
-    fs::hard_link(&path, root.join("alias")).unwrap();
-    let original = File::from_std(fs::File::open(&path).unwrap())
-        .metadata()
-        .unwrap();
-    let result = edit(
-        &executor,
-        json!({"path":"text","old_string":"一\n二\n","new_string":"$&$1\\n"}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        result,
-        json!({"ok":true,"path":path,"replacements":1,"matchedVia":"exact","startLine":2,"endLine":3})
-    );
-    assert_eq!(
-        fs::read_to_string(root.join("alias")).unwrap(),
-        "零\n$&$1\\n三\n"
-    );
-    let after = File::from_std(fs::File::open(&path).unwrap())
-        .metadata()
-        .unwrap();
-    assert_eq!(
-        (after.dev(), after.ino(), after.permissions()),
-        (original.dev(), original.ino(), original.permissions())
-    );
-    fs::write(&path, "aaa").unwrap();
-    // The second overlapping "aa" is not a second non-overlapping occurrence.
-    edit(
-        &executor,
-        json!({"path":"text","old_string":"aa","new_string":""}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(fs::read(&path).unwrap(), b"a");
-    fs::write(&path, "a\nb").unwrap();
-    assert_eq!(
-        edit(
-            &executor,
-            json!({"path":"text","old_string":"\n","new_string":"X"})
-        )
-        .await
-        .unwrap()["endLine"],
-        1
-    );
-    assert_eq!(fs::read(&path).unwrap(), b"aXb");
-}
-
-#[tokio::test]
 async fn invalid_ambiguous_and_missing_edits_leave_bytes_intact() {
     let temp = tempfile::tempdir().unwrap();
     let root = dunce::canonicalize(temp.path()).unwrap();

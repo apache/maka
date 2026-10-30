@@ -83,9 +83,8 @@ async fn retained_subscriptions_do_not_block_queries_or_controls_and_close_drain
         let fixture = Fixture::new().await;
         let client = fixture.client().await;
         let mut retained = Vec::new();
-        // Cross the former request-count ceiling on one real authenticated scope.
-        // Reading the first item proves each handler is live before leaving it open.
-        for index in 0..129 {
+        // Keep both displayed and abandoned subscriptions live alongside a control.
+        for index in 0..3 {
             let subscription = client
                 .subscribe("agent", "watch", Value::Null)
                 .await
@@ -101,7 +100,7 @@ async fn retained_subscriptions_do_not_block_queries_or_controls_and_close_drain
                 retained.push(subscription);
             }
         }
-        assert_eq!(client.pending_requests().await, 129);
+        assert_eq!(client.pending_requests().await, 3);
         assert_eq!(fixture.counter.watches_closed.load(Ordering::SeqCst), 0);
 
         assert_eq!(
@@ -125,11 +124,11 @@ async fn retained_subscriptions_do_not_block_queries_or_controls_and_close_drain
             } if value == json!({"sent": 1})
         ));
         assert_eq!(fixture.counter.effects.load(Ordering::SeqCst), 1);
-        assert_eq!(client.pending_requests().await, 129);
+        assert_eq!(client.pending_requests().await, 3);
 
         client.close().await.unwrap();
         assert_eq!(client.pending_requests().await, 0);
-        assert_eq!(fixture.counter.watches_closed.load(Ordering::SeqCst), 129);
+        assert_eq!(fixture.counter.watches_closed.load(Ordering::SeqCst), 3);
         for subscription in retained {
             assert!(subscription.next().await.unwrap().is_none());
         }

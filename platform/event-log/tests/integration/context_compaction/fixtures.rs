@@ -200,10 +200,6 @@ pub(super) async fn closed(
     first
 }
 pub(super) async fn prepared(log: &EventLog, id: &str) -> Vec<EventWrite> {
-    prepare_trace(log, id, false).await
-}
-
-pub(super) async fn prepare_trace(log: &EventLog, id: &str, fail: bool) -> Vec<EventWrite> {
     log.append(&event(
         id,
         Fact::InvocationOpened {
@@ -228,33 +224,6 @@ pub(super) async fn prepare_trace(log: &EventLog, id: &str, fail: bool) -> Vec<E
     let output = step(id, &format!("{id}-summary"), SUMMARY);
     let summary = output_summary(&output);
     log.append(&request(id, &source)).await.unwrap();
-    if fail {
-        log.append_batch(&[
-            event(
-                id,
-                Fact::ModelInterrupted {
-                    partial: None,
-                    model_failure: None,
-                    diagnostic: None,
-                    step_id: format!("{id}-summary"),
-                    status: maka_agent_facts::event::ModelInterruption::Failed,
-                },
-            ),
-            event(
-                id,
-                Fact::InvocationEnded {
-                    outcome: InvocationOutcome::Failed {
-                        model_failure: None,
-                        class: "summary_failed".into(),
-                        message: None,
-                    },
-                },
-            ),
-        ])
-        .await
-        .unwrap();
-        return Vec::new();
-    }
     log.append_batch(&[event(
         id,
         Fact::ModelCompleted {

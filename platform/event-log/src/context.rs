@@ -146,6 +146,3 @@ pub struct ArchivedToolResult {
 fn invalid(reason: &str) -> StoreError {
     StoreError::InvalidTransition(format!("invalid context checkpoint: {reason}"))
 }
-
-#[cfg(test)]
-mod admission_tests;

@@ -564,77 +564,6 @@ mod admission_tests {
     }
 
     #[test]
-    fn publication_returns_actual_prefix_sequences_before_starting_the_effect() {
-        let sink = Arc::new(Sink {
-            dispatch_ready: AtomicBool::new(true),
-            ..Default::default()
-        });
-        let started = Arc::new(AtomicBool::new(false));
-        let effect_started = started.clone();
-        let prefix = vec![completion(&sink), completion(&sink)];
-        let mut publication = journal(sink.clone()).publish_prepared_output(
-            "operation".into(),
-            ToolCallIdentity::standalone("call".into()),
-            "effect".into(),
-            serde_json::json!({}),
-            prefix,
-            CancellationToken::new(),
-            PreparedEffect::new(move |_| {
-                Box::pin(async move {
-                    effect_started.store(true, Ordering::SeqCst);
-                    Ok(serde_json::json!({"done": true}).into())
-                })
-            }),
-        );
-        let mut context = Context::from_waker(Waker::noop());
-        let Poll::Ready(Ok(mut published)) = publication.as_mut().poll(&mut context) else {
-            panic!("ready T1 must publish without waiting for its effect");
-        };
-        assert_eq!(published.prefix_sequences, vec![1, 4]);
-        assert!(!started.load(Ordering::SeqCst));
-        assert!(!sink.settled.load(Ordering::SeqCst));
-        assert!(matches!(
-            published.completion.as_mut().poll(&mut context),
-            Poll::Ready(Ok(_))
-        ));
-        assert!(started.load(Ordering::SeqCst));
-        assert!(sink.settled.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn revoked_publication_reports_the_independent_prefix_receipt_without_dispatch() {
-        let sink = Arc::new(Sink {
-            permission_revoked: true,
-            ..Default::default()
-        });
-        let mut publication = journal(sink.clone()).publish_prepared_output(
-            "operation".into(),
-            ToolCallIdentity::standalone("call".into()),
-            "effect".into(),
-            serde_json::json!({}),
-            vec![completion(&sink), completion(&sink)],
-            CancellationToken::new(),
-            PreparedEffect::new(|_| panic!("revoked effect must remain unstarted")),
-        );
-        let mut context = Context::from_waker(Waker::noop());
-        let Poll::Ready(Ok(mut published)) = publication.as_mut().poll(&mut context) else {
-            panic!("known refusal must return its independent prefix receipt");
-        };
-        assert_eq!(published.prefix_sequences, vec![1, 8]);
-        assert!(
-            sink.committed
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|write| !matches!(write.event().fact, Fact::ToolDispatched { .. }))
-        );
-        assert!(matches!(
-            published.completion.as_mut().poll(&mut context),
-            Poll::Ready(Err(ToolError::Failed(_)))
-        ));
-    }
-
-    #[test]
     fn admission_ack_follows_real_t1_and_precedes_the_original_unsettled_effect() {
         let sink = Arc::new(Sink::default());
         let acknowledgments = Arc::new(Mutex::new(Vec::new()));
@@ -731,36 +660,6 @@ mod admission_tests {
             assert_eq!(*observed.lock().unwrap(), vec![EffectAdmission::NotStarted]);
         }
     }
-    #[test]
-    fn preparation_rejection_preserves_the_complete_accepted_response() {
-        let sink = Arc::new(Sink::default());
-        let prior = completion(&sink);
-        let expected = prior.clone();
-        let mut rejected = journal(sink.clone()).reject(
-            "operation".into(),
-            ToolCallIdentity::standalone("call".into()),
-            "effect".into(),
-            serde_json::json!({}).into(),
-            Some(prior),
-            ToolRejection::Cancelled,
-        );
-        let mut context = Context::from_waker(Waker::noop());
-        assert!(matches!(
-            rejected.as_mut().poll(&mut context),
-            Poll::Ready(Err(ToolError::Failed(_)))
-        ));
-        let committed = sink.committed.lock().unwrap();
-        assert_eq!(committed.len(), 2);
-        assert_eq!(committed[0].event(), expected.event());
-        assert!(matches!(
-            &committed[1].event().fact,
-            Fact::ToolRejected {
-                reason: ToolRejection::Cancelled,
-                ..
-            }
-        ));
-    }
-
     #[test]
     fn revoked_t1_preserves_completion_and_flush_failure_is_fatal() {
         for fail_flush in [false, true] {

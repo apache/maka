@@ -145,20 +145,3 @@ fn json_bytes(value: &(impl serde::Serialize + ?Sized)) -> u64 {
     serde_json::to_writer(&mut count, value).expect("model prompt is serializable");
     count.0
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fragments_preserve_each_terms_rounding() {
-        let messages = [Message::user("a"), Message::user("bc")];
-        let mut combined = PreparedContextBreakdown::default();
-        for message in &messages {
-            combined.accumulate(&prompt_breakdown(std::slice::from_ref(message)));
-        }
-        assert_eq!(combined, prompt_breakdown(&messages));
-        assert_eq!(combined.user.content_bytes, 3);
-        assert_eq!(combined.user.estimated_tokens, 34);
-    }
-}

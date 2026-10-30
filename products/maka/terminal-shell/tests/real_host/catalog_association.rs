@@ -55,13 +55,7 @@ async fn associate_change_and_clear_catalog_model_without_changing_request_ident
         let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
         wait_editable_composer(&mut view).await;
         shortcut(&mut view, 'p');
-        select_palette(
-            &mut view,
-            "Search commands…",
-            "Connections & models",
-            "Connections & models",
-        )
-        .await;
+        select_command(&mut view, "Connections & models").await;
         activate(&mut view, "Edit connection NSH fixture").await;
         activate(&mut view, "Manage models").await;
         activate(&mut view, "Edit model fixture-model").await;

@@ -20,7 +20,7 @@
 use super::*;
 use std::{
     sync::{Arc, mpsc},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 #[tokio::test]
@@ -253,79 +253,4 @@ async fn artifact_callback_panic_closes_original_owner_instead_of_reusing_it() {
         b"durable"
     );
     reopened.close().await.unwrap();
-}
-
-#[tokio::test]
-#[ignore = "measures a real 51,847,623-byte copy and queued writer latency"]
-async fn full_artifact_copy_and_following_writer_latency_measurement() {
-    let temp = tempfile::tempdir().unwrap();
-    let log = Arc::new(
-        EventLog::open(&temp.path().join("runtime.sqlite"))
-            .await
-            .unwrap(),
-    );
-    log.create_session("session", "create", &json!({}), 1)
-        .await
-        .unwrap();
-    let bytes = vec![0x5a; 51_847_623];
-    let record = artifact("measured", &bytes);
-    log.commit_artifact(record, bytes).await.unwrap();
-    let (entered, waiting) = tokio::sync::oneshot::channel();
-    let (release, gate) = mpsc::channel();
-    let reader = log.clone();
-    let copy = tokio::spawn(async move {
-        reader
-            .with_artifact(
-                ArtifactReadScope::Session("session"),
-                "measured",
-                move |_, reader| {
-                    entered.send(Instant::now()).unwrap();
-                    gate.recv_timeout(Duration::from_secs(10)).unwrap();
-                    let started = Instant::now();
-                    let mut buffer = [0u8; 64 * 1024];
-                    let mut copied = 0;
-                    loop {
-                        let count = reader.read(&mut buffer).unwrap();
-                        if count == 0 {
-                            break;
-                        }
-                        assert!(buffer[..count].iter().all(|&byte| byte == 0x5a));
-                        copied += count;
-                    }
-                    (copied, started, Instant::now())
-                },
-            )
-            .await
-            .unwrap()
-            .unwrap()
-    });
-    let gate_entered = tokio::time::timeout(Duration::from_secs(10), waiting)
-        .await
-        .unwrap()
-        .unwrap();
-    let enqueue_started = Instant::now();
-    let configuration = json!({});
-    let follower = log.create_session("following", "create-following", &configuration, 2);
-    tokio::pin!(follower);
-    assert!(futures_util::poll!(&mut follower).is_pending());
-    let released = Instant::now();
-    release.send(()).unwrap();
-    follower.await.unwrap();
-    let follower_finished = Instant::now();
-    let (copied, copy_started, copy_finished) = copy.await.unwrap();
-    assert_eq!(copied, 51_847_623);
-    assert!(follower_finished >= copy_finished);
-    println!(
-        "{}",
-        json!({
-            "case": "full_artifact_copy_and_following_writer_latency_measurement",
-            "bytes": copied,
-            "gateSetupSeconds": released.duration_since(gate_entered).as_secs_f64(),
-            "writerEnqueueToReleaseSeconds": released.duration_since(enqueue_started).as_secs_f64(),
-            "copySeconds": copy_finished.duration_since(copy_started).as_secs_f64(),
-            "writerAfterReleaseSeconds": follower_finished.duration_since(released).as_secs_f64(),
-            "writerAfterCopySeconds": follower_finished.duration_since(copy_finished).as_secs_f64(),
-        })
-    );
-    log.shutdown().await.unwrap();
 }

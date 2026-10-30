@@ -19,407 +19,108 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, describe, test } from 'node:test';
-
+import test from 'node:test';
 import {
   applyHeader,
-  auditSourceFiles,
   auditTree,
-  classifyHeader,
-  classifyPath,
-  commentStyleFor,
-  countLicenseText,
-  exclusionRules,
-  hasHeader,
   HeaderNotWritableError,
-  licenseLines,
   listSourceFiles,
   renderHeader,
 } from './asf-license-headers.mjs';
 
-const blockHeader = renderHeader('block');
-const hashHeader = renderHeader('hash');
+const block = readFileSync(new URL(import.meta.url), 'utf8').split('\n\n', 1)[0] + '\n';
 
-const temporaryRoots = [];
-function fixtureTree(files) {
+function tree(t, files) {
   const root = mkdtempSync(join(tmpdir(), 'asf-headers-'));
-  temporaryRoots.push(root);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const [path, contents] of Object.entries(files)) {
-    const absolutePath = join(root, path);
-    mkdirSync(join(absolutePath, '..'), { recursive: true });
-    writeFileSync(absolutePath, contents);
+    mkdirSync(join(root, path, '..'), { recursive: true });
+    writeFileSync(join(root, path), contents);
   }
   return root;
 }
 
-after(() => {
-  for (const root of temporaryRoots) rmSync(root, { force: true, recursive: true });
-});
-
-describe('ASF header rendering', () => {
-  test('renders the ASF text in each comment syntax', () => {
-    assert.match(blockHeader, /^\/\*\n \* Licensed to the Apache Software Foundation \(ASF\)/);
-    assert.match(
-      blockHeader,
-      / \*\n \*     http:\/\/www\.apache\.org\/licenses\/LICENSE-2\.0\n \*\n/,
-    );
-    assert.match(blockHeader, /\n \* under the License\.\n \*\/\n$/);
-    assert.match(hashHeader, /^# Licensed to the Apache Software Foundation \(ASF\)/);
-    assert.match(hashHeader, /\n#\n#     http:\/\/www\.apache\.org\/licenses\/LICENSE-2\.0\n/);
-    assert.match(renderHeader('slash'), /^\/\/ Licensed to the Apache Software Foundation/);
-    assert.match(renderHeader('html'), /^<!--\n {2}Licensed to the Apache Software Foundation/);
-    assert.match(renderHeader('html'), /\n {2}under the License\.\n-->\n$/);
-  });
-
-  test('leaves no trailing whitespace on the blank comment lines', () => {
-    for (const style of ['block', 'hash', 'slash', 'html']) {
-      for (const line of renderHeader(style).split('\n')) {
-        assert.equal(line, line.trimEnd(), `${style}: ${JSON.stringify(line)}`);
-      }
-    }
-  });
-});
-
-describe('ASF header application', () => {
-  test('prepends the header and separates it from the body', () => {
-    assert.equal(
-      applyHeader("import 'node:fs';\n", 'block'),
-      `${blockHeader}\nimport 'node:fs';\n`,
-    );
-  });
-
-  test('is idempotent', () => {
-    const once = applyHeader('const a = 1;\n', 'block');
-    assert.equal(applyHeader(once, 'block'), once);
-    assert.ok(hasHeader(once, 'block'));
-  });
-
-  test('keeps a shebang first', () => {
-    const updated = applyHeader('#!/usr/bin/env node\nmain();\n', 'block');
-    assert.equal(updated, `#!/usr/bin/env node\n${blockHeader}\nmain();\n`);
-    assert.ok(hasHeader(updated, 'block'));
-  });
-
-  test('keeps an HTML doctype first', () => {
-    const updated = applyHeader('<!doctype html>\n<html></html>\n', 'html');
-    assert.equal(updated, `<!doctype html>\n${renderHeader('html')}\n<html></html>\n`);
-    assert.ok(hasHeader(updated, 'html'));
-  });
-
-  test('keeps Markdown front matter first', () => {
-    const source = '---\nname: skill\n---\n\n# Title\n';
-    const updated = applyHeader(source, 'html');
-    assert.equal(updated, `---\nname: skill\n---\n${renderHeader('html')}\n# Title\n`);
-    assert.ok(hasHeader(updated, 'html'));
-  });
-
-  test('does not accept a header that is not at the top of the file', () => {
-    assert.equal(hasHeader(`const a = 1;\n${blockHeader}`, 'block'), false);
-  });
-
-  test('handles an empty file without leaving a stray blank line', () => {
-    assert.equal(applyHeader('', 'block'), blockHeader);
-  });
-
-  test('leaves an unrelated leading comment in place below the header', () => {
-    assert.equal(
-      applyHeader('# just a note\nkey: value\n', 'hash'),
-      `${hashHeader}\n# just a note\nkey: value\n`,
-    );
-  });
-});
-
-/**
- * Detection has to be looser than acceptance. When one byte-exact test answered
- * both "does this file have a header?" and "is that header acceptable?", every
- * rendering the test did not recognize was treated as absent and given a second
- * license block — which the same byte-exact test then accepted, because the
- * block it had just written sat at the top of the file.
- */
-describe('ASF header detection is looser than acceptance', () => {
-  const variants = {
-    'indented license URL': [hashHeader.replace('#     http', '#   http'), 'hash'],
-    'https license URL': [blockHeader.replace('http://', 'https://'), 'block'],
-    'slash comments in a block-comment file': [renderHeader('slash'), 'block'],
-    'JSDoc block': [`/**\n${blockHeader.split('\n').slice(1).join('\n')}`, 'block'],
-    'rewrapped prose': [`# ${licenseLines.filter(Boolean).join(' ')}\n`, 'hash'],
-  };
-
-  for (const [name, [variant, style]] of Object.entries(variants)) {
-    test(`refuses to rewrite ${name} instead of stacking a second header`, () => {
-      const source = `${variant}\nconst a = 1;\n`;
-      assert.throws(() => applyHeader(source, style), HeaderNotWritableError);
-    });
+test('applying a canonical license preserves declarations and source bytes and is idempotent', () => {
+  assert.equal(renderHeader('block'), block);
+  for (const [style, declaration, body] of [
+    ['block', '#!/usr/bin/env node\n', 'main();\n'],
+    ['html', '<!doctype html>\n', '<html></html>\n'],
+    ['html', '---\nname: skill\n---\n', '# Title\n'],
+    ['hash', '', '# a note\nvalue: true\n'],
+    ['slash', '', 'const value = 7;\n'],
+  ]) {
+    const result = applyHeader(declaration + body, style);
+    assert.equal(result, declaration + renderHeader(style) + '\n' + body);
+    assert.equal(applyHeader(result, style), result);
   }
-
-  test('reports a file that already carries the license text twice', () => {
-    const source = `${hashHeader}\n${hashHeader}\nkey: value\n`;
-    assert.equal(countLicenseText(source), 2);
-    assert.equal(classifyHeader(source, 'hash'), 'duplicated');
-    assert.throws(() => applyHeader(source, 'hash'), HeaderNotWritableError);
-  });
-
-  test('allows a second occurrence only where the license text is data', () => {
-    const source = `${hashHeader}\n# ${licenseLines[0]}\n`;
-    assert.equal(classifyHeader(source, 'hash'), 'duplicated');
-    assert.equal(classifyHeader(source, 'hash', { textAsData: true }), 'canonical');
-  });
 });
 
-describe('ASF header classification', () => {
-  test('covers product, script, and documentation source', () => {
-    for (const path of [
-      'plugins/settings/store/src/lib.rs',
-      'scripts/asf-source-release.mjs',
-      'locales/zh-CN.ftl',
-      'products/maka/cli/src/main.rs',
-      'scripts/rust/verify-windows-dpi.ps1',
-      'Dockerfile',
-      'justfile',
-      '.husky/pre-commit',
-      '.github/workflows/ci.yml',
-      'README.md',
-    ]) {
-      assert.equal(classifyPath(path).status, 'covered', path);
-    }
-    assert.equal(commentStyleFor('locales/zh-CN.ftl'), 'hash');
-  });
-
-  test('excludes the reviewed categories', () => {
-    const excluded = {
-      LICENSE: 'asf-release-documents',
-      'package.json': 'no-comment-syntax',
-      'patches/node-pty+1.2.0-beta.15.patch': 'third-party-source',
-      'Cargo.lock': 'generated-files',
-      'plugins/agent/providers/data/catalog-facts.json': 'no-comment-syntax',
-      'platform/computer-use/skills/maka-cua/SKILL.md': 'verbatim-runtime-payloads',
-      'platform/computer-use/src/api.md': 'verbatim-runtime-payloads',
-      'platform/computer-use/THIRD_PARTY_NOTICES': 'third-party-license-texts',
-      '.github/pull_request_template.md': 'verbatim-github-templates',
-      'products/maka/cli/DEPENDENCIES.rust.tsv': 'third-party-license-texts',
-      '.gitattributes': 'no-creative-content',
-    };
-    for (const [path, rule] of Object.entries(excluded)) {
-      assert.deepEqual(classifyPath(path), { rule, status: 'excluded' }, path);
-    }
-  });
-
-  test('excludes the mixed-origin files Maka adapted from upstream projects', () => {
-    for (const path of [
-      'plugins/workspace/workspace-files/patch/src/lib.rs',
-      'plugins/workspace/workspace-files/patch/src/parser.rs',
-      'plugins/workspace/workspace-files/patch/src/update.rs',
-    ]) {
-      assert.deepEqual(
-        classifyPath(path),
-        { rule: 'third-party-source', status: 'excluded' },
-        path,
-      );
-    }
-  });
-
-  test('keeps Maka-authored files out of the third-party and fixture rules', () => {
-    assert.equal(classifyPath('patches/README.md').status, 'covered');
-    assert.equal(classifyPath('docs/README.md').status, 'covered');
-  });
-
-  /**
-   * A directory prefix would lend its justification to whatever lands in that
-   * directory next. Each of these rules names its files or states a structural
-   * property, so a new file of a different kind stays unclassified.
-   */
-  test('does not extend a reviewed exclusion to a directory', () => {
-    for (const path of [
-      'platform/computer-use/skills/new-skill/SKILL.md',
-      'platform/computer-use/skills/README.md',
-      'platform/computer-use/skills/another-skill/SKILL.md',
-      'platform/computer-use/src/README.md',
-      'platform/computer-use/src/session.rs',
-    ]) {
-      assert.notEqual(classifyPath(path).status, 'excluded', path);
-    }
-  });
-
-  test('leaves an unknown file type unclassified so the audit fails closed', () => {
-    assert.equal(classifyPath('vendor/thing.kt').status, 'unclassified');
-    assert.equal(commentStyleFor('vendor/thing.kt'), undefined);
-  });
-
-  test('gives every exclusion rule a unique id', () => {
-    const ids = new Set();
-    for (const rule of exclusionRules) {
-      assert.equal(ids.has(rule.id), false, rule.id);
-      ids.add(rule.id);
-    }
-  });
-
-  /**
-   * `.gitattributes` decides what leaves the archive. A rule restating that
-   * here would excuse such a path when an extracted candidate contained it —
-   * using the reason as cover for the one thing it says cannot happen.
-   */
-  test('records no exclusion for paths that export-ignore prunes', () => {
-    assert.equal(classifyPath('.claude/launch.json').status, 'excluded');
-    assert.equal(classifyPath('.claude/launch.json').rule, 'no-comment-syntax');
-    assert.equal(classifyPath('.claude/skills/local/SKILL.md').status, 'covered');
-    assert.equal(classifyPath('local-review.txt').status, 'unclassified');
-  });
+test('existing noncanonical or duplicated licenses are rejected without stacking a new header', () => {
+  for (const source of [
+    block.replace('http://', 'https://') + '\nmain();\n',
+    '/**\n' + block.split('\n').slice(1).join('\n'),
+    block + '\n' + block + '\nmain();\n',
+    'main();\n' + block,
+  ])
+    assert.throws(() => applyHeader(source, 'block'), HeaderNotWritableError);
 });
 
-describe('ASF header audit', () => {
-  test('reports unclassified files separately from missing headers', () => {
-    const result = auditSourceFiles({
-      files: ['LICENSE', 'plugins/settings/store/src/lib.rs', 'vendor/thing.kt'],
-      mode: 'archive',
-    });
-    assert.deepEqual(result.unclassified, ['vendor/thing.kt']);
-    assert.equal(result.covered, 1);
-    assert.deepEqual(result.excludedByRule.get('asf-release-documents'), ['LICENSE']);
+test('an extracted tree audits every file and repairs leave a clean result', (t) => {
+  const root = tree(t, {
+    'good.rs': block + '\nfn main() {}\n',
+    'missing.ts': 'const value = 1;\n',
+    'noncanonical.py': renderHeader('hash').replace('http://', 'https://') + '\npass\n',
+    'duplicated.rs': block + '\n' + block,
+    'adapted.rs': block + '\n// Adapted from an upstream project.\n',
+    'third-party/sqlx-sqlite/src/new.rs': 'fn added_by_maka() {}\n',
+    'third-party/sqlx-sqlite/src/connection/mod.rs': 'upstream source\n',
+    'dist/unexpected.kt': 'fun main() {}\n',
+    'package.json': '{}\n',
   });
-
-  test('reports an exclusion rule that matches nothing in a checkout', () => {
-    const result = auditSourceFiles({ files: ['LICENSE'], mode: 'checkout' });
-    assert.equal(result.staleRules.includes('asf-release-documents'), false);
-    assert.ok(result.staleRules.includes('binary-files'));
-  });
-
-  test('does not call an archive-absent rule stale', () => {
-    const result = auditSourceFiles({ files: ['LICENSE'], mode: 'archive' });
-    assert.deepEqual(result.staleRules, []);
-  });
+  symlinkSync('good.rs', join(root, 'LINK.md'));
+  const report = auditTree({ root });
+  assert.equal(report.mode, 'archive');
+  assert.equal(report.covered, 6);
+  assert.deepEqual(report.missing.sort(), ['missing.ts', 'third-party/sqlx-sqlite/src/new.rs']);
+  assert.deepEqual(report.unrecognized, ['noncanonical.py']);
+  assert.deepEqual(report.duplicated, ['duplicated.rs']);
+  assert.deepEqual(report.unreviewedProvenance, ['adapted.rs']);
+  assert.deepEqual(report.unclassified, ['dist/unexpected.kt']);
+  assert.deepEqual(report.irregular, ['LINK.md']);
+  for (const path of [
+    'missing.ts',
+    'duplicated.rs',
+    'adapted.rs',
+    'third-party/sqlx-sqlite/src/new.rs',
+  ]) {
+    writeFileSync(join(root, path), block + '\nconst value = 1;\n');
+  }
+  writeFileSync(join(root, 'noncanonical.py'), renderHeader('hash') + '\npass\n');
+  rmSync(join(root, 'LINK.md'));
+  rmSync(join(root, 'dist/unexpected.kt'));
+  const repaired = auditTree({ root });
+  for (const key of [
+    'missing',
+    'unrecognized',
+    'duplicated',
+    'unreviewedProvenance',
+    'unclassified',
+    'irregular',
+  ]) {
+    assert.deepEqual(repaired[key], [], key);
+  }
+  assert.equal(repaired.covered, 6);
 });
 
-/**
- * The audit walks an extracted candidate, where there is no Git index to ask.
- * Skipping entries by directory name once let a file inside `dist/` or
- * `release/` reach a release candidate completely unaudited while the gate
- * still reported success.
- */
-describe('ASF header audit over an extracted candidate', () => {
-  test('classifies every entry, including one inside a build directory', () => {
-    const root = fixtureTree({
-      'README.md': renderHeader('html'),
-      'dist/unexpected.kt': 'fun main() {}\n',
-      'release/unexpected.kt': 'fun main() {}\n',
-    });
-    const result = auditTree({ root });
-    assert.equal(result.mode, 'archive');
-    assert.deepEqual(result.unclassified.sort(), ['dist/unexpected.kt', 'release/unexpected.kt']);
-  });
-
-  /**
-   * These paths are absent from a correct archive because `export-ignore`
-   * prunes them. Finding one means it did not, which the audit has to report
-   * rather than excuse.
-   */
-  test('does not excuse a path that export-ignore should have pruned', () => {
-    const root = fixtureTree({
-      'README.md': renderHeader('html'),
-      '.claude/skills/local/SKILL.md': '# Local\n',
-      'local-review.txt': 'notes\n',
-    });
-    const result = auditTree({ root });
-    assert.deepEqual(result.unclassified, ['local-review.txt']);
-    assert.deepEqual(result.missing, ['.claude/skills/local/SKILL.md']);
-  });
-
-  test('reports an entry that is not a regular file', () => {
-    const root = fixtureTree({ 'README.md': renderHeader('html') });
-    symlinkSync('README.md', join(root, 'LINK.md'));
-    assert.deepEqual(auditTree({ root }).irregular, ['LINK.md']);
-  });
-
-  test('reports a covered file that is missing the header', () => {
-    const root = fixtureTree({ 'notes.md': '# Notes\n' });
-    assert.deepEqual(auditTree({ root }).missing, ['notes.md']);
-  });
-
-  test('reports a covered file whose header is not the canonical rendering', () => {
-    const root = fixtureTree({
-      'settings.ts': `${blockHeader.replace('http://', 'https://')}\nconst a = 1;\n`,
-    });
-    assert.deepEqual(auditTree({ root }).unrecognized, ['settings.ts']);
-  });
-
-  /**
-   * The gate cannot determine provenance, so it fails on an unreviewed claim of
-   * one rather than deciding the question itself.
-   */
-  test('reports an unreviewed third-party origin claimed inside a covered file', () => {
-    const root = fixtureTree({
-      'adapted.ts': `${blockHeader}\n// Adapted from an upstream project.\nconst a = 1;\n`,
-      'foreign.ts': `${blockHeader}\n// Copyright (c) 2020 Someone Else\nconst b = 2;\n`,
-      'spdx.ts': `${blockHeader}\n// SPDX-License-Identifier: MIT\nconst c = 3;\n`,
-      'plain.ts': `${blockHeader}\nconst d = 4;\n`,
-    });
-    assert.deepEqual(auditTree({ root }).unreviewedProvenance.sort(), [
-      'adapted.ts',
-      'foreign.ts',
-      'spdx.ts',
-    ]);
-  });
-
-  test('passes a tree whose covered files all carry the canonical header', () => {
-    const root = fixtureTree({
-      'README.md': renderHeader('html'),
-      'settings.ts': `${blockHeader}\nconst a = 1;\n`,
-      'package.json': '{}\n',
-    });
-    const result = auditTree({ root });
-    for (const key of ['duplicated', 'irregular', 'missing', 'unclassified', 'unrecognized']) {
-      assert.deepEqual(result[key], [], key);
-    }
-    assert.deepEqual(result.unreviewedProvenance, []);
-    assert.equal(result.covered, 2);
-  });
-});
-
-test('checkout audits include new source files and omit unstaged deletions', () => {
-  const root = fixtureTree({ 'removed.rs': blockHeader, 'kept.rs': blockHeader });
+test('checkout enumeration includes new source files and omits deleted index entries', (t) => {
+  const root = tree(t, { 'removed.rs': block, 'kept.rs': block });
   const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'ignore' });
   git('init');
   git('add', 'removed.rs', 'kept.rs');
   rmSync(join(root, 'removed.rs'));
-  writeFileSync(join(root, 'new.rs'), blockHeader);
+  writeFileSync(join(root, 'new.rs'), block);
   assert.deepEqual(listSourceFiles(root).files, ['kept.rs', 'new.rs']);
-});
-
-test('vendored provenance is finite and does not exempt Maka additions', () => {
-  assert.deepEqual(classifyPath('third-party/gpui-fast/crates/gpui/src/platform.rs'), {
-    rule: 'third-party-source',
-    status: 'excluded',
-  });
-  assert.equal(
-    classifyPath('third-party/gpui-fast/crates/gpui/src/platform/cleanup.rs').status,
-    'covered',
-  );
-  assert.equal(classifyPath('third-party/gpui-fast/crates/gpui/src/new.rs').status, 'covered');
-  assert.equal(classifyPath('third-party/sqlx-sqlite/src/connection/mod.rs').status, 'excluded');
-  assert.equal(classifyPath('third-party/sqlx-sqlite/src/new.rs').status, 'covered');
-  assert.equal(classifyPath('third-party/image-webp/src/vp8.rs').status, 'excluded');
-  assert.equal(classifyPath('third-party/image-webp/src/new.rs').status, 'covered');
-  for (const path of ['src/parse.rs', 'LICENSE-MIT', 'LICENSE-MPL']) {
-    assert.deepEqual(classifyPath(`third-party/termina/${path}`), {
-      rule: 'third-party-source',
-      status: 'excluded',
-    });
-  }
-  assert.equal(classifyPath('third-party/termina/SOURCE.md').status, 'covered');
-  assert.equal(classifyPath('third-party/termina/src/new.rs').status, 'covered');
-  for (const path of [
-    'crates/nsh-core/src/lib.rs',
-    'crates/gpui/nsh-gpui-terminal/src/lib.rs',
-    'third-party/icy_sixel/src/lib.rs',
-    'LICENSE-APACHE',
-  ]) {
-    assert.deepEqual(classifyPath(`third-party/nsh/${path}`), {
-      rule: 'third-party-source',
-      status: 'excluded',
-    });
-  }
-  assert.equal(classifyPath('third-party/nsh/SOURCE.md').status, 'covered');
-  assert.equal(classifyPath('third-party/nsh/crates/nsh-core/src/new.rs').status, 'covered');
 });

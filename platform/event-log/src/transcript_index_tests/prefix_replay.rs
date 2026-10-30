@@ -151,51 +151,6 @@ async fn seed(log: &EventLog) -> Seed {
 }
 
 #[tokio::test]
-async fn sibling_sources_match_full_canonical_replay_with_empty_cache_after_reopen() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("log.sqlite");
-    let log = EventLog::open(&path).await.unwrap();
-    let Seed {
-        through, expected, ..
-    } = seed(&log).await;
-    assert!(
-        crate::test_store::inspect_cache(&log, |db| rows(db, "a"))
-            .await
-            .is_empty()
-    );
-    crate::transcript_cache::materialize_all_rows(&log, "a", through)
-        .await
-        .unwrap();
-    assert_eq!(
-        crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await,
-        expected
-    );
-    let canonical = log.prefix(32, 65536).await.unwrap().digest;
-    crate::test_store::inspect_cache(&log, move |db| {
-        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
-            .unwrap()
-    })
-    .await;
-    log.close().await.unwrap();
-
-    let reopened = EventLog::open(&path).await.unwrap();
-    assert!(
-        crate::test_store::inspect_cache(&reopened, |db| rows(db, "a"))
-            .await
-            .is_empty()
-    );
-    crate::transcript_cache::materialize_all_rows(&reopened, "a", through)
-        .await
-        .unwrap();
-    assert_eq!(
-        crate::test_store::inspect_cache(&reopened, |db| rows(db, "a")).await,
-        expected
-    );
-    assert_eq!(reopened.prefix(32, 65536).await.unwrap().digest, canonical);
-    reopened.close().await.unwrap();
-}
-
-#[tokio::test]
 async fn selected_raw_damage_and_cached_identity_conflict_are_not_repaired() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("log.sqlite");

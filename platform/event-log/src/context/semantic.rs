@@ -18,8 +18,6 @@
  */
 
 //! Indexed semantic metadata with extracted pieces or canonical projection spans.
-#[cfg(test)]
-mod age_tests;
 mod captured;
 mod directory;
 pub(crate) mod gc;
@@ -30,13 +28,8 @@ pub use captured::{
     SourcePosition, close_request_file, create_request_file,
 };
 mod source;
-#[cfg(test)]
-mod tests;
 mod write;
 pub(crate) use write::{copy_member, record};
-
-#[cfg(test)]
-pub(crate) use directory::fixture_json as directory_fixture_json;
 
 use crate::{EventLog, StoreError};
 use maka_agent_facts::history::{

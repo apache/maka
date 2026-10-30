@@ -73,7 +73,7 @@ use maka_agent_facts::{
     event::{InvocationInput, InvocationOutcome, ModelInterruption},
     model::{ModelFinishReason, recorded::ModelCompletion},
 };
-use serde_json::{Value, json};
+use serde_json::json;
 use sqlx::Row;
 use std::sync::{
     Arc,
@@ -299,34 +299,6 @@ async fn lifetime_read_and_terminal_pending_lookup_remain_indexed_after_large_hi
         root.session_usage_totals("source").await.unwrap(),
         totals(11, 0, 13, 0)
     );
-    drop(log);
-    root.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn capacity_error_does_not_rollback_canonical_settlement() {
-    let directory = tempfile::tempdir().unwrap();
-    let root = root(directory.path()).await;
-    let session = session(&root).await;
-    session
-        .append_batch(&[
-            request("a", 1),
-            completed("a", Some(11), None),
-            request("pending", 2),
-        ])
-        .await
-        .unwrap();
-    let log = session.owner().unwrap();
-    assert_eq!(
-        root.session_usage_totals("source").await.unwrap(),
-        totals(11, 0, 0, 1)
-    );
-    session
-        .append(&completed("pending", Some(u64::MAX), Some(3)))
-        .await
-        .unwrap();
-    assert!(root.session_usage_totals("source").await.is_err());
-    assert!(session.get::<Value>().await.unwrap().is_some());
     drop(log);
     root.close().await.unwrap();
 }

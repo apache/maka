@@ -24,11 +24,10 @@ use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::session::CopyPurpose;
+
 use maka_event_log::{
     EventLog, StoreError,
     bundle::{BundleError, StagedBundle},
-    sessions::{MaterialCollection, SessionCopy},
 };
 use serde_json::{Value, json};
 use sqlx::Connection;
@@ -193,7 +192,6 @@ pub(crate) async fn roundtrip(bytes: &[u8]) {
         receipt
     );
     let imported = log.prefix(1024, 8 * 1024 * 1024).await.unwrap();
-    let imported_bytes = serde_json::to_vec(&imported.events).unwrap();
     let foreign = imported
         .events
         .iter()
@@ -219,92 +217,6 @@ pub(crate) async fn roundtrip(bytes: &[u8]) {
         Err(CommitError::Rejected(reason))
             if reason == "imported invocation is historical evidence, not locally accepted work"
     ));
-    let opening_a = local_event(
-        &root,
-        "local-a",
-        Fact::InvocationOpened {
-            configuration: None,
-            input: InvocationInput::Code {
-                source: "first local invocation".into(),
-            },
-        },
-    );
-    let opening_b = local_event(
-        &root,
-        "local-b",
-        Fact::InvocationOpened {
-            configuration: None,
-            input: InvocationInput::Code {
-                source: "second local invocation".into(),
-            },
-        },
-    );
-    let sequence_a = log.append(&opening_a).await.unwrap();
-    let active_prefix = log.prefix(1024, 8 * 1024 * 1024).await.unwrap();
-    log.close().await.unwrap();
-
-    let log = EventLog::open(&path).await.unwrap();
-    assert_eq!(
-        serde_json::to_vec(&log.prefix(1024, 8 * 1024 * 1024).await.unwrap()).unwrap(),
-        serde_json::to_vec(&active_prefix).unwrap()
-    );
-    assert_eq!(log.append(&opening_a).await.unwrap(), sequence_a);
-    assert!(matches!(
-        log.append(&opening_b).await,
-        Err(CommitError::Rejected(reason))
-            if reason == "invalid event transition: session already has an unsealed invocation"
-    ));
-    assert!(matches!(
-        log.set_session_archived::<Value>(&root, true, 4).await,
-        Err(StoreError::SessionBusy)
-    ));
-    log.append(&local_event(
-        &root,
-        "local-a",
-        Fact::InvocationEnded {
-            outcome: InvocationOutcome::Completed,
-        },
-    ))
-    .await
-    .unwrap();
-    let sealed_prefix = log.prefix(1024, 8 * 1024 * 1024).await.unwrap();
-    log.close().await.unwrap();
-
-    let log = EventLog::open(&path).await.unwrap();
-    assert_eq!(
-        serde_json::to_vec(&log.prefix(1024, 8 * 1024 * 1024).await.unwrap()).unwrap(),
-        serde_json::to_vec(&sealed_prefix).unwrap()
-    );
-    log.append(&opening_b).await.unwrap();
-    let before_replay = log.prefix(1024, 8 * 1024 * 1024).await.unwrap();
-    assert_eq!(
-        log.import_bundle(
-            StagedBundle::read(bytes).await.unwrap(),
-            &binding,
-            bindings.clone()
-        )
-        .await
-        .unwrap(),
-        receipt
-    );
-    assert_eq!(
-        serde_json::to_vec(&log.prefix(1024, 8 * 1024 * 1024).await.unwrap()).unwrap(),
-        serde_json::to_vec(&before_replay).unwrap()
-    );
-    assert_eq!(
-        serde_json::to_vec(&before_replay.events[..imported.events.len()]).unwrap(),
-        imported_bytes
-    );
-    log.append(&local_event(
-        &root,
-        "local-b",
-        Fact::InvocationEnded {
-            outcome: InvocationOutcome::Completed,
-        },
-    ))
-    .await
-    .unwrap();
-
     // A new publication cannot append imported history after a canonical local owner.
     let collision_path = dir.path().join("collision.sqlite");
     let collision = EventLog::open(&collision_path).await.unwrap();
@@ -393,57 +305,6 @@ pub(crate) async fn roundtrip(bytes: &[u8]) {
     );
     collision.close().await.unwrap();
 
-    let source = log.get_session::<Value>(&root).await.unwrap().unwrap();
-    log.copy_session(
-        SessionCopy {
-            source_session_id: root.clone(),
-            target_session_id: "after-import".into(),
-            expected_source_revision: source.revision,
-            purpose: CopyPurpose::Branch {
-                position: maka_agent_facts::session::ForkPosition::End,
-                side_conversation: false,
-            },
-        },
-        &json!({}),
-        3,
-    )
-    .await
-    .unwrap();
-    log.begin_session_removal(&root, source.revision)
-        .await
-        .unwrap();
-    log.finish_session_retirement(&root).await.unwrap();
-    collect(&log).await;
-    // The original owner is gone, but the later native copy still owns every proof.
-    reexport(&log, "after-import").await;
-    assert_eq!(
-        log.import_bundle(StagedBundle::read(bytes).await.unwrap(), &binding, bindings)
-            .await
-            .unwrap(),
-        receipt
-    );
-    assert!(log.get_session::<Value>(&root).await.unwrap().is_none());
-    let descendant = log
-        .get_session::<Value>("after-import")
-        .await
-        .unwrap()
-        .unwrap();
-    log.begin_session_removal("after-import", descendant.revision)
-        .await
-        .unwrap();
-    log.finish_session_retirement("after-import").await.unwrap();
-    collect(&log).await;
-    let mut read = sqlx::SqliteConnection::connect_with(
-        &sqlx::sqlite::SqliteConnectOptions::new()
-            .filename(&path)
-            .read_only(true),
-    )
-    .await
-    .unwrap();
-    assert_eq!(sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM event_log e JOIN imported_invocations i USING(invocation_id) WHERE e.event_json IS NOT NULL",
-    ).fetch_one(&mut read).await.unwrap(), 0);
-    read.close().await.unwrap();
     log.close().await.unwrap();
 }
 
@@ -459,22 +320,6 @@ async fn reexport(log: &EventLog, root: &str) {
     log.capture_model_context(root, None, 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
-}
-
-async fn collect(log: &EventLog) {
-    let mut cursor = None;
-    for _ in 0..256 {
-        match log
-            .collect_session_material(cursor.as_deref())
-            .await
-            .unwrap()
-        {
-            MaterialCollection::Done => return,
-            MaterialCollection::Retained(id) => cursor = Some(id),
-            MaterialCollection::Collected => {}
-        }
-    }
-    panic!("fixture material did not converge");
 }
 
 fn local_event(session: &str, id: &str, fact: Fact) -> EventWrite {

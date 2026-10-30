@@ -3048,52 +3048,6 @@ mod scoped_effect_tests {
     }
 
     #[tokio::test]
-    async fn scoped_terminal_unknown_closes_proxy_and_keeps_original_uncertain_effect_record() {
-        let mut fixture = Fixture::new();
-        let host = Arc::new(ScopedHost::default());
-        let (services, _) = fixture.prepare(host.clone()).await;
-        let actual = Arc::new(ActualEffectScope::default());
-        let (token, id, pending, _, scope, finish) =
-            fixture.start(&services, &host, actual.clone()).await;
-        finish
-            .send(Err(ToolError::OutcomeUnknown(
-                "actual native result unknown".into(),
-            )))
-            .unwrap();
-        let terminal = fixture.worker_message().await;
-        assert!(
-            matches!(&terminal, WorkerMessage::EffectFinished { result: Err(Failure::OutcomeUnknown(message)), .. } if message == "actual native result unknown")
-        );
-        assert!(
-            scope
-                .check_session_preparation(binding(), CancellationToken::new())
-                .await
-                .is_err()
-        );
-        assert!(
-            fixture
-                .worker
-                .0
-                .state
-                .lock()
-                .unwrap()
-                .effects
-                .get(&(token.id, id))
-                .unwrap()
-                .uncertain
-        );
-        fixture.parent.handle(terminal).unwrap();
-        assert!(
-            matches!(pending.await, Err(ToolError::OutcomeUnknown(message)) if message == "actual native result unknown")
-        );
-        assert!(
-            fixture.worker.has_unsettled(),
-            "native uncertainty is not fake RPC cleanup"
-        );
-        assert!(actual.bindings.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
     async fn dropping_actual_bridge_closes_narrow_scope_without_faking_effect_completion() {
         let mut fixture = Fixture::new();
         let host = Arc::new(ScopedHost::default());

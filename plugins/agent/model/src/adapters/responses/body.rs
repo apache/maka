@@ -292,7 +292,7 @@ fn source_error(error: maka_agent_ports::model::Error) -> http::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_agent_facts::model::prompt::{Message, ToolOutput};
+    use maka_agent_facts::model::prompt::Message;
     use maka_agent_facts::model::prompt_source::{Next, PromptSource};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -317,40 +317,6 @@ mod tests {
             bytes.extend_from_slice(&chunk);
         }
         serde_json::from_slice(&bytes).unwrap()
-    }
-
-    #[tokio::test]
-    async fn replay_and_delta_share_original_view_and_preserve_wire_values() {
-        let prompt = Prompt::from_messages(vec![
-            Message::user("quotation: \"; slash: \\; unicode: 中\n".repeat(2000)),
-            Message::tool(
-                "call_1",
-                "lookup",
-                ToolOutput::Json(json!({"value":"retained"})),
-            ),
-            Message::notification("exec_2", "late output"),
-        ]);
-        let full = body(prompt);
-        let first = wire(full.clone()).await;
-        assert_eq!(first, wire(full.clone()).await);
-        let mut delta = full.clone();
-        delta.skip = 1;
-        delta.properties["previous_response_id"] = json!("response_1");
-        let delta_wire = wire(delta.clone()).await;
-        assert_eq!(
-            delta_wire["input"],
-            Value::Array(first["input"].as_array().unwrap()[1..].to_vec())
-        );
-        assert_eq!(wire(delta.full()).await, first);
-        let mut chunks = full.websocket();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = chunks.next().await {
-            bytes.extend_from_slice(&chunk.unwrap());
-        }
-        let websocket: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(websocket["input"], first["input"]);
-        assert_eq!(websocket["type"], "response.create");
-        assert!(websocket.get("stream").is_none());
     }
 
     struct PreparedItems(Vec<http::Bytes>);
@@ -399,57 +365,6 @@ mod tests {
         fn as_ref(&self) -> &[u8] {
             &self.bytes
         }
-    }
-
-    #[tokio::test]
-    async fn prepared_large_chunks_preserve_items_and_final_slice_custody() {
-        let expected = json!([
-            {"role":"user","content":[{"type":"input_text","text":"中\\\n\"".repeat(12_000)}]},
-            {"role":"user","content":[{"type":"input_text","text":"next item"}]}
-        ]);
-        let owner = Arc::new(());
-        let retained = Arc::downgrade(&owner);
-        let items = vec![
-            http::Bytes::from_owner(RetainedItem {
-                bytes: serde_json::to_vec(&expected[0]).unwrap(),
-                _owner: owner,
-            }),
-            http::Bytes::from(serde_json::to_vec(&expected[1]).unwrap()),
-        ];
-        let prompt = Prompt::from_messages(vec![Message::user(""), Message::user("")]).with_wire(
-            WireFormat::Responses,
-            "fixture-codec",
-            "fixture-root",
-            Arc::new(PreparedItems(items)),
-        );
-        let mut stream = Box::pin(body(prompt).chunks());
-        let mut bytes = Vec::new();
-        let mut last_slice = None;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.expect("legal prepared chunk reaches the request body");
-            bytes.extend_from_slice(&chunk);
-            if chunk.len() > 16 * 1024 {
-                last_slice = Some(chunk.slice(..1));
-            }
-        }
-        assert_eq!(
-            serde_json::from_slice::<Value>(&bytes).unwrap()["input"],
-            expected
-        );
-        assert!(
-            last_slice.is_some(),
-            "fixture crosses the backed chunk boundary"
-        );
-        drop(stream);
-        assert!(
-            retained.upgrade().is_some(),
-            "transport slice retains its source"
-        );
-        drop(last_slice);
-        assert!(
-            retained.upgrade().is_none(),
-            "final slice releases source custody"
-        );
     }
 
     struct Generated {

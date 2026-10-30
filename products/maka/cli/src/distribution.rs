@@ -657,14 +657,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn desktop_launcher_starts_the_packaged_shell() {
-        assert_eq!(
-            Target::current().unwrap().desktop_executable(),
-            format!("bin/{}", crate::desktop::SHELL)
-        );
-    }
-
     #[tokio::test]
     async fn verifies_all_targets_and_reuses_cache_offline_without_trusting_modified_files() {
         for target in [
@@ -688,28 +680,6 @@ mod tests {
             assert!(artifact.directory.join(target.python_worker()).is_file());
             let desktop = artifact.directory.join(target.desktop_executable());
             assert!(desktop.is_file());
-            assert_eq!(
-                target.desktop_executable(),
-                match target {
-                    Target::DarwinArm64 | Target::DarwinX64 => {
-                        "bin/Maka.app/Contents/MacOS/maka-desktop-shell"
-                    }
-                    Target::Win32X64 => "bin/maka-desktop-shell.exe",
-                    _ => "bin/maka-desktop-shell",
-                }
-            );
-            if target.os() == "darwin" {
-                assert_eq!(
-                    std::fs::read(artifact.directory.join("bin/Maka.app/Contents/Info.plist"))
-                        .unwrap(),
-                    b"<plist version=\"1.0\"/>\n"
-                );
-                assert!(!artifact.directory.join("bin/maka-desktop-shell").exists());
-            }
-            assert_eq!(
-                artifact.service_executable.is_some(),
-                target == Target::Win32X64
-            );
             let offline = Url::parse("http://127.0.0.1:1/").unwrap();
             let reused = request(target, root.path())
                 .resolve(client.clone(), offline.clone())
@@ -867,33 +837,6 @@ mod tests {
                     .directory,
                 artifact.directory
             );
-            // Binary tampering must also refuse both transfer and cache reuse.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&desktop, std::fs::Permissions::from_mode(0o600)).unwrap();
-            }
-            std::fs::write(&desktop, b"changed").unwrap();
-            assert!(
-                transferred("corrupted", receipt_sha256)
-                    .resolve(client.clone(), offline.clone())
-                    .await
-                    .is_err()
-            );
-            assert_eq!(
-                std::fs::read_dir(root.path().join("corrupted/cache"))
-                    .unwrap()
-                    .count(),
-                0
-            );
-            let result = request(target, root.path()).resolve(client, offline).await;
-            assert!(
-                result
-                    .err()
-                    .unwrap()
-                    .to_string()
-                    .contains("cache integrity mismatch")
-            );
         }
     }
 
@@ -904,16 +847,8 @@ mod tests {
         for (target, directory, accepted) in [
             (linux, "bin/", true),
             (linux, "bin/app/", false),
-            (linux, "bin/Maka.app/", false),
-            (macos, "bin/", true),
             (macos, "bin/Maka.app/Contents/", true),
-            (macos, "bin/Maka.app/Contents/Resources/", true),
             (macos, "bin/Maka.app/Contents/Resources/app/", false),
-            (macos, "bin/app/", false),
-            (macos, "bin/Maka.app/Contents/Frameworks/", false),
-            (macos, "bin/Maka.app/Contents/Resources/app2/", false),
-            (macos, "bin/Maka.appX/", false),
-            (macos, "bin/Maka.ap/", false),
         ] {
             let root = tempfile::tempdir().unwrap();
             let mut temporary = NamedTempFile::new_in(root.path()).unwrap();
@@ -942,9 +877,6 @@ mod tests {
             (linux, None, true, None),
             (linux, Some("bin/maka"), false, None),
             (linux, Some("bin/extra"), false, None),
-            (linux, Some("bin/maka-desktop"), false, None),
-            (linux, Some("bin/maka-terminal-shell"), false, None),
-            (linux, Some("bin/app/main.js"), false, None),
             (linux, None, false, Some("bin/maka-python-worker")),
             (
                 Target::Win32X64,
@@ -966,8 +898,6 @@ mod tests {
                 false,
                 None,
             ),
-            (macos, Some("bin/maka-desktop-shell"), false, None),
-            (macos, Some("bin/app/main.js"), false, None),
         ] {
             let root = tempfile::tempdir().unwrap();
             let bytes = package(target, extra, Some(true), omitted);

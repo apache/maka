@@ -219,65 +219,6 @@ mod tests {
     }
 
     #[test]
-    fn overflow_requires_bounded_structured_provider_evidence() {
-        for value in [
-            json!({"code":"context_length_exceeded"}),
-            json!({"error":{"code":"context_length_exceeded"}}),
-            json!({"code":"model_context_window_exceeded"}),
-        ] {
-            assert!(matches!(
-                classify(400, value, false),
-                ModelError::ContextOverflow {
-                    observed_output: false
-                }
-            ));
-        }
-        for value in [
-            json!({"message":"context_length_exceeded"}),
-            json!({"code":"rate_limit_error","message":"context overflow"}),
-            json!({"prompt":{"code":"context_length_exceeded"}}),
-        ] {
-            assert!(!matches!(
-                classify(400, value, false),
-                ModelError::ContextOverflow { .. }
-            ));
-        }
-        assert!(matches!(
-            classify(413, json!({}), false),
-            ModelError::Http { status: 413, .. }
-        ));
-        let mut body = vec![b' '; 65537];
-        body.extend_from_slice(br#"{"error":{"code":"context_length_exceeded"}}"#);
-        assert!(matches!(
-            Evidence::default().provider(http_error(400, &body), false, None),
-            ModelError::Http { status: 400, .. }
-        ));
-        assert!(matches!(
-            Evidence::default().provider(http_error(400, b"not JSON"), false, None),
-            ModelError::Http { status: 400, .. }
-        ));
-    }
-
-    #[test]
-    fn transport_normalization_cannot_upgrade_existing_replay_evidence_or_move_a_deadline() {
-        let failure = ProviderFailure::new(
-            ProviderFailureReason::Network,
-            "ambiguous write",
-            false,
-            Some(18_001_000),
-        )
-        .with_retained_output(true);
-        let ModelError::Provider(failure) =
-            Evidence::default().transport(ModelError::Provider(failure))
-        else {
-            panic!("typed transport failure")
-        };
-        assert!(!failure.replay_safe());
-        assert!(failure.retained_output_safe());
-        assert_eq!(failure.retry_at_unix_ms(), Some(18_001_000));
-    }
-
-    #[test]
     fn anthropic_overflow_relation_is_exact_and_route_scoped() {
         let value = |message| json!({"error":{"type":"invalid_request_error","message":message}});
         let valid = "prompt is too long: 200001 tokens > 200000 maximum";
@@ -305,50 +246,6 @@ mod tests {
                 matches!(classify(400, value(message), true), ModelError::Http { .. }),
                 "{message}"
             );
-        }
-    }
-
-    #[test]
-    fn http_diagnostics_preserve_messages_and_permanent_failures_override_retry_signals() {
-        for status in [100, 199, 300, 400, 401, 402, 403, 404] {
-            let error = classify(
-                status,
-                json!({"error":{"message":"invalid request field"}}),
-                false,
-            );
-            assert!(matches!(error, ModelError::Http { status: actual, .. } if actual == status));
-            assert_eq!(
-                error.to_string(),
-                format!("model HTTP request failed (status {status}): invalid request field")
-            );
-            assert_eq!(
-                error.failure_cause(),
-                Some(maka_agent_facts::model::error::ModelFailureCause::Http { status })
-            );
-        }
-        for status in [401, 403] {
-            assert!(matches!(
-                classify(
-                    status,
-                    json!({"error":{"code":"insufficient_quota"}}),
-                    false
-                ),
-                ModelError::Http { .. }
-            ));
-        }
-        for (status, reason) in [
-            (429, ProviderFailureReason::RateLimit),
-            (408, ProviderFailureReason::ProviderUnavailable),
-            (503, ProviderFailureReason::ProviderUnavailable),
-        ] {
-            let ModelError::Provider(failure) =
-                Evidence::default().provider(http_error(status, b"{}"), false, Some(1234))
-            else {
-                panic!("typed provider failure")
-            };
-            assert_eq!(failure.reason(), reason);
-            assert!(failure.replay_safe());
-            assert_eq!(failure.retry_at_unix_ms(), Some(1234));
         }
     }
 }

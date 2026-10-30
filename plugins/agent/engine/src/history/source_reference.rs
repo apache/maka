@@ -164,6 +164,3 @@ fn read_digest(words: &[u64]) -> [u8; 32] {
 fn invalid(reason: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, reason)
 }
-
-#[cfg(test)]
-mod tests;

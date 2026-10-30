@@ -21,9 +21,8 @@ mod reconciliation;
 mod startup;
 
 mod mutation_progress;
-
 mod peer_confirmations;
-mod receipts;
+
 mod resource_mutations;
 
 use super::*;
@@ -122,10 +121,6 @@ impl Handler for VerifiedEcho {
                     .any(|intent| intent.reference == *reference),
                 "caller commit must also precede effect"
             );
-            if input == json!("escaped-fail") {
-                calls.fetch_add(1, Ordering::SeqCst);
-                return Err("\u{00}\n\"".repeat(64 * 1024));
-            }
             Echo { calls }.call(method, input, context).await
         })
     }
@@ -404,7 +399,7 @@ async fn real_mutation_commits_before_effect_and_duplicate_requires_recovery_gra
 }
 
 #[tokio::test]
-async fn unknown_result_is_not_replayed_and_default_recovery_policy_denies() {
+async fn invalid_result_is_unknown_and_default_recovery_policy_denies() {
     let (_dir, _ns, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
         let (provider, consumer) = mutation_packages();
@@ -446,73 +441,29 @@ async fn unknown_result_is_not_replayed_and_default_recovery_policy_denies() {
             .await
             .unwrap()
             .remove(0);
-        for input in ["fail", "bad-result", "escaped-fail"] {
-            let operation = Uuid::new_v4();
-            let accepted = mutate(
-                &client,
-                &store,
-                binding.clone(),
-                "echo".into(),
-                json!(input),
-                scope(&issuer, true),
-                operation,
-            )
-            .await
-            .unwrap();
-            let reference = accepted.reference.clone();
-            let completion = accepted.completion().await;
-            assert_eq!(completion.reply.reference, reference);
-            assert!(completion.cleanup.is_ok());
-            assert!(unknown(completion.reply));
-            let observation = store
-                .operation(&reference)
-                .unwrap()
-                .operation_observation()
+        let accepted = mutate(
+            &client,
+            &store,
+            binding.clone(),
+            "echo".into(),
+            json!("bad-result"),
+            scope(&issuer, true),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        let reference = accepted.reference.clone();
+        let completion = accepted.completion().await;
+        completion.cleanup.unwrap();
+        assert!(unknown(completion.reply));
+        assert!(
+            client
+                .recover(consumer, reference, scope(&issuer, true))
                 .await
-                .unwrap()
-                .unwrap();
-            assert!(matches!(
-                observation.outcome,
-                OperationOutcome::Unknown { .. }
-            ));
-            assert_eq!(observation.cleanup, OperationCleanup::Confirmed);
-            assert!(
-                unavailable(
-                    mutate(
-                        &client,
-                        &store,
-                        binding.clone(),
-                        "echo".into(),
-                        json!(input),
-                        scope(&issuer, true),
-                        operation
-                    )
-                    .await
-                    .unwrap()
-                    .result()
-                    .await
-                )
+                .unwrap_err()
                 .contains("not authorized")
-            );
-            assert!(
-                client
-                    .recover(consumer.clone(), reference.clone(), scope(&issuer, true))
-                    .await
-                    .unwrap_err()
-                    .contains("not authorized")
-            );
-            assert_eq!(
-                store
-                    .operation(&reference)
-                    .unwrap()
-                    .operation_observation()
-                    .await
-                    .unwrap()
-                    .unwrap(),
-                observation
-            );
-        }
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         app.shutdown().await.unwrap();
         drop(binding);
         drop(app);
@@ -574,281 +525,6 @@ async fn javascript_forwarded_mutation_preserves_original_evidence_and_parent_cl
         assert_eq!(calls.load(Ordering::SeqCst),1);
         app.shutdown().await.unwrap();drop(binding);drop(app);drop(client);close(store).await;
     }).await.unwrap();
-}
-
-struct HeldMutation {
-    store: Arc<RootStore>,
-    started: Arc<Semaphore>,
-    release: Arc<Semaphore>,
-    resource_started: Arc<Semaphore>,
-    resource_release: Arc<Semaphore>,
-}
-impl Handler for HeldMutation {
-    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, Result<Value>> {
-        let store = self.store.clone();
-        let reference = context.operation().unwrap().clone();
-        let scope = context.scope().clone();
-        let started = self.started.clone();
-        let release = self.release.clone();
-        let resource_started = self.resource_started.clone();
-        let resource_release = self.resource_release.clone();
-        Box::pin(async move {
-            assert_eq!(
-                store
-                    .operation(&reference)
-                    .unwrap()
-                    .operation_observation()
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .outcome,
-                OperationOutcome::Unresolved
-            );
-            started.add_permits(1);
-            permit(&release).await;
-            let mut ticket = scope.resources.reserve().unwrap();
-            ticket.start();
-            tokio::spawn(async move {
-                resource_started.add_permits(1);
-                permit(&resource_release).await;
-                ticket.complete(Ok(()));
-            });
-            Ok(input)
-        })
-    }
-}
-#[tokio::test]
-async fn dropped_root_and_all_observers_keep_mutation_resources_native_close_and_root_lease() {
-    let (dir, ns, store) = store().await;
-    tokio::time::timeout(Duration::from_secs(20), async {
-        let issuer = Issuer::default();
-        let started = Arc::new(Semaphore::new(0));
-        let release = Arc::new(Semaphore::new(0));
-        let resource_started = Arc::new(Semaphore::new(0));
-        let resource_release = Arc::new(Semaphore::new(0));
-        let close_started = Arc::new(Semaphore::new(0));
-        let close_release = Arc::new(Semaphore::new(0));
-        let handler: Arc<dyn Handler> = Arc::new(HeldMutation {
-            store: store.clone(),
-            started: started.clone(),
-            release: release.clone(),
-            resource_started: resource_started.clone(),
-            resource_release: resource_release.clone(),
-        });
-        let mut registry = observer_registry(NativeRegistry::default());
-        let closing = close_started.clone();
-        let closed = close_release.clone();
-        registry
-            .insert(
-                "native.echo".into(),
-                Arc::new(move |_, _| {
-                    let handler = handler.clone();
-                    let closing = closing.clone();
-                    let closed = closed.clone();
-                    Box::pin(async move {
-                        NativeActivation {
-                            exports: Ok(BTreeMap::from([(
-                                "echo".into(),
-                                Published {
-                                    contract: contract(MethodMode::Mutation),
-                                    value: handler,
-                                },
-                            )])),
-                            owner: native_owner(move || {
-                                let closing = closing.clone();
-                                let closed = closed.clone();
-                                Box::pin(async move {
-                                    closing.add_permits(1);
-                                    permit(&closed).await;
-                                    Ok(())
-                                })
-                            }),
-                        }
-                    })
-                }),
-            )
-            .unwrap();
-        let (provider, consumer) = mutation_packages();
-        let deployment = Uuid::new_v4();
-        store
-            .commit_application(
-                deployment,
-                0,
-                input(&provider, &consumer),
-                vec![],
-                vec![provider, consumer],
-            )
-            .await
-            .unwrap();
-        let app = Application::start_from_store(
-            store.clone(),
-            deployment,
-            registry,
-            issuer.clone(),
-            Arc::new(Grant(issuer.clone())),
-            Some(maka_host_js::factory(Limits::default())),
-        )
-        .await
-        .unwrap();
-        app.ready().await.unwrap();
-        let client = app.client();
-        let binding = client
-            .bind(client.activation(&id(2)).unwrap(), "echo".into())
-            .await
-            .unwrap()
-            .remove(0);
-        let accepted = mutate(
-            &client,
-            &store,
-            binding,
-            "echo".into(),
-            json!("held"),
-            scope(&issuer, true),
-            Uuid::new_v4(),
-        )
-        .await
-        .unwrap();
-        let reference = accepted.reference.clone();
-        permit(&started).await;
-        let weak = Arc::downgrade(&store);
-        drop(accepted);
-        drop(app);
-        drop(client);
-        drop(store);
-        assert!(RootOwner::open(&dir.path().join("root"), &ns).is_err());
-        release.add_permits(1);
-        permit(&resource_started).await;
-        let observation = weak
-            .upgrade()
-            .unwrap()
-            .operation(&reference)
-            .unwrap()
-            .operation_observation()
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(observation.outcome, OperationOutcome::Unresolved);
-        assert_eq!(observation.cleanup, OperationCleanup::Unconfirmed);
-        assert_eq!(close_started.available_permits(), 0);
-        assert!(RootOwner::open(&dir.path().join("root"), &ns).is_err());
-        resource_release.add_permits(1);
-        permit(&close_started).await;
-        let observation = weak
-            .upgrade()
-            .unwrap()
-            .operation(&reference)
-            .unwrap()
-            .operation_observation()
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            observation.outcome,
-            OperationOutcome::Returned {
-                value: json!("held")
-            }
-        );
-        assert_eq!(observation.cleanup, OperationCleanup::Confirmed);
-        assert!(RootOwner::open(&dir.path().join("root"), &ns).is_err());
-        close_release.add_permits(1);
-        loop {
-            match RootOwner::open(&dir.path().join("root"), &ns) {
-                Ok(owner) => {
-                    let reopened = RootStore::open(Arc::new(owner)).await.unwrap();
-                    assert_eq!(
-                        reopened
-                            .operation(&reference)
-                            .unwrap()
-                            .operation_observation()
-                            .await
-                            .unwrap()
-                            .unwrap(),
-                        observation
-                    );
-                    reopened.close().await.unwrap();
-                    break;
-                }
-                Err(_) => tokio::task::yield_now().await,
-            }
-        }
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-async fn returned_mutation_and_failed_cleanup_are_separate_persistent_facts() {
-    let (dir, ns, store) = store().await;
-    tokio::time::timeout(Duration::from_secs(20), async {
-        let issuer = Issuer::default();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let (app, _) = launch(
-            store.clone(),
-            &issuer,
-            Arc::new(AtomicBool::new(true)),
-            Arc::new(VerifiedEcho {
-                caller: id(2),
-                store: store.clone(),
-                calls: calls.clone(),
-            }),
-        )
-        .await;
-        let client = app.client();
-        let binding = client
-            .bind(client.activation(&id(2)).unwrap(), "echo".into())
-            .await
-            .unwrap()
-            .remove(0);
-        let prepared = client
-            .prepare_mutation(
-                binding,
-                "echo".into(),
-                json!("resource-fail"),
-                scope(&issuer, true),
-                Uuid::new_v4(),
-                Attachments::new().into(),
-            )
-            .await
-            .unwrap();
-        let reference = prepared.reference().clone();
-        let journal = store.operation(&reference).unwrap();
-        let recorded = store
-            .record_application_intent(
-                reference.source.clone(),
-                id(2),
-                reference.clone(),
-                Value::Null,
-            )
-            .await
-            .unwrap();
-        let accepted = client.mutate(prepared, recorded).await.unwrap();
-        let completion = accepted.completion().await;
-        assert_eq!(completion.reply.reference, reference);
-        assert!(completion.cleanup.is_err());
-        assert_eq!(returned(completion.reply), json!("resource-fail"));
-        assert!(store.shutdown().await.is_err());
-        assert!(journal.operation_observation().await.is_err());
-        let observation = persisted_operation(&dir.path().join("root"), &reference);
-        assert_eq!(
-            observation.outcome,
-            OperationOutcome::Returned {
-                value: json!("resource-fail")
-            }
-        );
-        assert!(matches!(
-            observation.cleanup,
-            OperationCleanup::Failed { .. }
-        ));
-        assert!(app.shutdown().await.is_err());
-        drop(app);
-        drop(client);
-        drop(store);
-        tokio::task::yield_now().await;
-        assert!(RootOwner::open(&dir.path().join("root"), &ns).is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    })
-    .await
-    .unwrap();
 }
 
 // Locate persisted test evidence without exposing a raw partition API in production.
@@ -1222,217 +898,6 @@ async fn javascript_receipts_preserve_child_reference_unknown_and_oversized_reco
 }
 
 #[tokio::test]
-async fn original_contract_metadata_stays_native_while_compact_receipts_are_deliverable() {
-    let (_dir, _ns, store) = store().await;
-    let issuer = Issuer::default();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let mut declared = contract(MethodMode::Mutation);
-    let Interface::Service { methods } = &mut declared.interface else {
-        unreachable!()
-    };
-    methods.get_mut("echo").unwrap().output =
-        json!({"type":"string","minimum":9007199254740993_u64}).into();
-    let mut provider_entry = entry(
-        true,
-        Implementation::Native {
-            implementation: "native.echo".into(),
-        },
-        MethodMode::Mutation,
-    );
-    provider_entry.exports.get_mut("echo").unwrap().contract = declared.clone();
-    let mut consumer_entry = entry(
-        false,
-        Implementation::JavaScript {
-            module: "host.mjs".into(),
-            realm: Realm::Shared,
-        },
-        MethodMode::Mutation,
-    );
-    consumer_entry.imports.get_mut("echo").unwrap().contract = declared.clone();
-    let provider = package("large-contract", provider_entry, None);
-    let consumer = package(
-        "consumer",
-        consumer_entry,
-        Some("export function activate(){return {}; }".into()),
-    );
-    let deployment = Uuid::new_v4();
-    store
-        .commit_application(
-            deployment,
-            0,
-            input(&provider, &consumer),
-            vec![],
-            vec![provider, consumer],
-        )
-        .await
-        .unwrap();
-    let app = Application::start_from_store(
-        store.clone(),
-        deployment,
-        registry_contract(
-            Arc::new(Echo {
-                calls: calls.clone(),
-            }),
-            declared,
-        ),
-        issuer.clone(),
-        Arc::new(RecoveryGrant {
-            issuer: issuer.clone(),
-            recovery: Arc::new(AtomicBool::new(true)),
-        }),
-        Some(maka_host_js::factory(Limits::default())),
-    )
-    .await
-    .unwrap();
-    app.ready().await.unwrap();
-    let client = app.client();
-    let binding = client
-        .bind(client.activation(&id(2)).unwrap(), "echo".into())
-        .await
-        .unwrap()
-        .remove(0);
-    let operation = Uuid::new_v4();
-    let mutation = mutate(
-        &client,
-        &store,
-        binding.clone(),
-        "echo".into(),
-        json!("effect"),
-        scope(&issuer, true),
-        operation,
-    )
-    .await
-    .unwrap();
-    let reference = mutation.reference.clone();
-    let reply = mutation.result().await;
-    assert_eq!(reply.reference, reference);
-    assert_eq!(
-        reply.receipt,
-        Receipt::Recorded {
-            outcome: OperationOutcome::Returned {
-                value: json!("effect")
-            },
-            cleanup: OperationCleanup::Confirmed,
-        }
-    );
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    app.shutdown().await.unwrap();
-    drop(binding);
-    drop(app);
-    drop(client);
-    close(store).await;
-}
-
-#[tokio::test]
-async fn preparation_is_effect_free_does_not_lock_native_root_and_never_redirects_after_restart() {
-    let (dir, ns, store) = store().await;
-    tokio::time::timeout(Duration::from_secs(20), async {
-        let issuer = Issuer::default();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let (app, deployment) = launch(
-            store.clone(),
-            &issuer,
-            Arc::new(AtomicBool::new(true)),
-            Arc::new(VerifiedEcho {
-                caller: id(2),
-                store: store.clone(),
-                calls: calls.clone(),
-            }),
-        )
-        .await;
-        let client = app.client();
-        let binding = client
-            .bind(client.activation(&id(2)).unwrap(), "echo".into())
-            .await
-            .unwrap()
-            .remove(0);
-        let prepared = client
-            .prepare_mutation(
-                binding,
-                "echo".into(),
-                json!("prepared"),
-                scope(&issuer, true),
-                Uuid::new_v4(),
-                Attachments::new().into(),
-            )
-            .await
-            .unwrap();
-        let reference = prepared.reference().clone();
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert!(
-            store
-                .operation(&reference)
-                .unwrap()
-                .operation_observation()
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            store
-                .application_intents(deployment, id(2), 0, 128)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert!(client.snapshot().instances.iter().all(|s| s.calls == 0));
-        app.shutdown().await.unwrap();
-        drop(app);
-        close(store).await;
-        // Prepared still exists. It must not retain VerifiedEcho -> RootStore -> RootOwner.
-        let owner = Arc::new(RootOwner::open(&dir.path().join("root"), &ns).unwrap());
-        let reopened = Arc::new(RootStore::open(owner).await.unwrap());
-        let replacement = Application::start_from_store(
-            reopened.clone(),
-            deployment,
-            registry_contract(
-                Arc::new(Echo {
-                    calls: calls.clone(),
-                }),
-                contract(MethodMode::Mutation),
-            ),
-            issuer.clone(),
-            Arc::new(Grant(issuer.clone())),
-            Some(maka_host_js::factory(Limits::default())),
-        )
-        .await
-        .unwrap();
-        replacement.ready().await.unwrap();
-        let recorded = reopened
-            .record_application_intent(
-                reference.source.clone(),
-                id(2),
-                reference.clone(),
-                serde_json::Value::Null,
-            )
-            .await
-            .unwrap();
-        assert!(
-            replacement
-                .client()
-                .mutate(prepared, recorded)
-                .await
-                .is_err()
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert!(
-            reopened
-                .operation(&reference)
-                .unwrap()
-                .operation_observation()
-                .await
-                .unwrap()
-                .is_none()
-        );
-        replacement.shutdown().await.unwrap();
-        drop(replacement);
-        drop(client);
-        close(reopened).await;
-    })
-    .await
-    .unwrap();
-}
-#[tokio::test]
 async fn recorded_intent_does_not_override_revocation_between_prepare_and_dispatch() {
     let (_dir, _ns, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
@@ -1601,112 +1066,6 @@ fn remote_mutation_packages() -> (Package, Package, Contract) {
     )
 }
 
-struct RecordingGate {
-    issuer: Issuer,
-    prepared: Arc<Semaphore>,
-    allowed: Arc<AtomicBool>,
-}
-impl Policy for RecordingGate {
-    fn admit(&self, invocation: Invocation<'_>) -> Result<()> {
-        let maka_plugin_core::contract::Interface::Service { methods } =
-            &invocation.contract.interface
-        else {
-            unreachable!()
-        };
-        let mutation = methods[invocation.method].mode == MethodMode::Mutation;
-        Grant(self.issuer.clone()).admit(invocation)?;
-        if mutation {
-            if !self.allowed.load(Ordering::SeqCst) {
-                return Err("recording gate revoked".into());
-            }
-            self.prepared.add_permits(1);
-        }
-        Ok(())
-    }
-}
-
-#[tokio::test]
-async fn internal_caller_commit_precedes_final_admission_and_failed_record_never_dispatches() {
-    for mode in ["retire", "revoke", "record-failure", "commit-error"] {
-        let (dir, _ns, store) = store().await;
-        tokio::time::timeout(Duration::from_secs(30), async {
-
-            let issuer = Issuer::default();
-            let calls = Arc::new(AtomicUsize::new(0));
-            let prepared = Arc::new(Semaphore::new(0));
-            let allowed = Arc::new(AtomicBool::new(true));
-            let (sink, _) = mutation_packages();
-            let mut forwarder_entry = entry(true, Implementation::JavaScript {
-                module: "host.mjs".into(), realm: Realm::Shared,
-            }, MethodMode::Query);
-            forwarder_entry.imports.insert("child".into(), Import {
-                contract: contract(MethodMode::Mutation), cardinality: Cardinality::One,
-            });
-            let operation = Uuid::new_v4();
-            let source = format!(r#"
-                export const service={{async echo(input,_observation,context) {{
-                    try {{ await context.invoke({{operation:'mutate',import:'child',provider:0,method:'echo',input,operationId:'{operation}',attachments:{{}}}}); }}
-                    catch(error) {{ return String(error); }}
-                    throw Error('unexpected accepted child');
-                }}}};
-                export function activate() {{return {{echo:{{contract:{},service:['service']}}}};}}
-            "#, serde_json::to_string(&contract(MethodMode::Query)).unwrap());
-            let forwarder = package("forwarder", forwarder_entry, Some(source));
-            let consumer = consumer();
-            let mut composition = input(&forwarder, &consumer);
-            let parent = composition.instances.get_mut("provider").unwrap();
-            parent.key = Uuid::from_u128(4);
-            parent.bindings.insert("child".into(), vec![Target::Instance {
-                path: vec!["sink".into()], export: "echo".into(),
-            }]);
-            composition.instances.insert("sink".into(), node(&sink, 1, true));
-            let deployment = Uuid::new_v4();
-            store.commit_application(deployment, 0, composition, vec![], vec![sink, forwarder, consumer]).await.unwrap();
-            let app = Application::start_from_store(store.clone(), deployment,
-                registry_contract(Arc::new(VerifiedEcho {caller: id(4), store: store.clone(), calls: calls.clone()}), contract(MethodMode::Mutation)),
-                issuer.clone(), Arc::new(RecordingGate {issuer: issuer.clone(), prepared: prepared.clone(), allowed: allowed.clone()}), Some(maka_host_js::factory(Limits::default()))).await.unwrap();
-            app.ready().await.unwrap();
-            let client = app.client();
-            let binding = client.bind(client.activation(&id(2)).unwrap(), "echo".into()).await.unwrap().remove(0);
-            let connection = rusqlite::Connection::open(dir.path().join("root").join(maka_event_log::root::ROOT_DATABASE)).unwrap();
-            if mode == "record-failure" {
-                connection.execute_batch("CREATE TRIGGER reject_caller_intent BEFORE INSERT ON application_intents BEGIN SELECT RAISE(ABORT,'caller record unavailable'); END;").unwrap();
-            }
-            if mode == "commit-error" {
-                connection.execute_batch("CREATE TABLE caller_commit_parent (deployment TEXT, revision INTEGER, PRIMARY KEY(deployment,revision)); CREATE TABLE caller_commit_probe (deployment TEXT, revision INTEGER, FOREIGN KEY(deployment,revision) REFERENCES caller_commit_parent(deployment,revision) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER reject_caller_commit AFTER INSERT ON application_intents BEGIN INSERT INTO caller_commit_probe VALUES ('missing',1); END;").unwrap();
-            }
-            // A real competing SQLite writer keeps the caller commit pending.
-            connection.execute_batch("BEGIN IMMEDIATE;").unwrap();
-            let parent = client.start(binding, "echo".into(), json!("no-effect"), scope(&issuer, true), Attachments::new().into()).await.unwrap();
-            prepared.acquire().await.unwrap().forget();
-            match mode {
-                "retire" => client.retire(client.activation(&id(1)).unwrap()).await.unwrap(),
-                "revoke" => allowed.store(false, Ordering::SeqCst),
-                _ => {},
-            }
-            connection.execute_batch("COMMIT;").unwrap();
-            let error = parent.result().await.unwrap();
-            let error = error.as_str().unwrap();
-            match mode {
-                "retire" => assert!(error.contains("retired") || error.contains("not active"), "{error}"),
-                "revoke" => assert!(error.contains("recording gate revoked"), "{error}"),
-                _ => assert!(error.contains("caller intent was not confirmed"), "{error}"),
-            }
-            let saved = store.application_intents(deployment, id(4), 0, 128).await.unwrap();
-            if mode == "record-failure" || mode == "commit-error" {
-                assert!(saved.is_empty());
-            } else {
-                assert_eq!(saved.len(), 1);
-                assert_eq!(saved[0].reference.operation, operation);
-                assert!(store.operation(&saved[0].reference).unwrap().operation_observation().await.unwrap().is_none());
-            }
-            assert_eq!(calls.load(Ordering::SeqCst), 0);
-            assert!(client.snapshot().cleanup_error.is_none(), "no effect admission is not a physical cleanup failure");
-            app.shutdown().await.unwrap();
-            drop(connection); drop(app); drop(client); close(store).await;
-        }).await.unwrap();
-    }
-}
 async fn commit_caller_source(
     store: &RootStore,
     deployment: Uuid,

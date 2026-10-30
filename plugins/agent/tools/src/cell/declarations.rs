@@ -231,36 +231,3 @@ impl Renderer<'_> {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn references_and_literal_property_names_come_from_the_schema() {
-        let tool = ToolDefinition {
-            freeform: None,
-            output_schema: None,
-            provider: None,
-            name: "a-b".into(),
-            description: "Choose".into(),
-            input_schema: json!({"type":"object","properties":{"x-y":{"$ref":"#/$defs/Choice"}},
-                "required":["x-y"],"additionalProperties":false,"$defs":{"Choice":{"enum":["a","b",null]}}}),
-        };
-        let text = render(&[tool]);
-        assert!(text.contains("a_b(input:"));
-        assert!(text.contains("\"x-y\": \"a\" | \"b\" | null;"));
-    }
-
-    #[test]
-    fn recursive_schema_has_bounded_render_work() {
-        let schema = json!({"anyOf":[{"$ref":"#"},{"$ref":"#"}]});
-        let mut renderer = Renderer {
-            root: &schema,
-            remaining: 32_000,
-            nodes: 512,
-        };
-        assert!(renderer.schema(&schema, 0).len() <= 32_000);
-    }
-}

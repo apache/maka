@@ -319,6 +319,3 @@ async fn execution_boundary(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

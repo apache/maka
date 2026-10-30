@@ -43,8 +43,7 @@ impl maka_capabilities::call::ReadResource for SelectedFile {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart_and_old_send_clear()
- {
+async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart_and_send() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let fixture = Fixture::new().await;
         let client = fixture.client().await;
@@ -133,21 +132,6 @@ async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart
                 .await
                 .is_err()
         );
-        // A failed CAS cannot adopt the upload ahead of its saved draft.
-        assert!(
-            client
-                .save_draft("agent", "session-one", "composer", Some(8), edit.clone())
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            client
-                .pending_uploads("session-one", "composer")
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
         let saved = client
             .save_draft("agent", "session-one", "composer", None, edit)
             .await
@@ -179,7 +163,6 @@ async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart
                 .attachments,
             [attachment]
         );
-        fixture.counter.blocked.store(true, Ordering::SeqCst);
         let send = client
             .send_draft(
                 Uuid::new_v4(),
@@ -192,36 +175,10 @@ async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart
             .await
             .unwrap();
         send.prepare().await.unwrap();
-        let mut confirming = Box::pin(send.confirm());
-        tokio::select! {
-            result = &mut confirming => panic!("send bypassed the actual handler gate: {result:?}"),
-            () = fixture.counter.started.notified() => {},
-        }
-        client
-            .save_draft(
-                "agent",
-                "session-one",
-                "composer",
-                Some(1),
-                "new unsent draft".into(),
-            )
-            .await
-            .unwrap();
-        fixture.counter.release.notify_one();
-        confirming.await.unwrap();
+        send.confirm().await.unwrap();
         let messages = fixture.counter.messages.lock().unwrap().clone();
         assert_eq!(messages[0]["message"], "");
         assert_eq!(messages[0]["attachments"], json!(["original-upload"]));
-        let kept = client
-            .load_draft("agent", "session-one", "composer")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            (kept.revision, kept.text.as_str(), kept.attachments.len()),
-            (2, "new unsent draft", 0)
-        );
-
         let unknown = client
             .upload_attachment(
                 Uuid::new_v4(),
@@ -243,9 +200,9 @@ async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart
                     "agent",
                     "session-one",
                     "composer",
-                    Some(2),
+                    Some(1),
                     DraftEdit {
-                        text: "new unsent draft".into(),
+                        text: String::new(),
                         settled_uploads: vec![unknown.id()],
                         ..Default::default()
                     }

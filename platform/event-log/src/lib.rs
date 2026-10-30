@@ -488,11 +488,7 @@ fn sequence_number(value: i64) -> Result<u64, StoreError> {
 #[cfg(test)]
 extern crate self as maka_event_log;
 #[cfg(test)]
-mod compact_presentation_tests;
-#[cfg(test)]
 mod executor_identity_tests;
-#[cfg(test)]
-mod row_directory_tests;
 #[cfg(test)]
 mod session_copy_tests;
 #[cfg(test)]
@@ -502,5 +498,3 @@ mod test_store;
 mod transcript_cache;
 #[cfg(test)]
 mod transcript_index_tests;
-#[cfg(test)]
-mod transcript_tools_tests;

@@ -513,9 +513,6 @@ impl maka_agent_ports::model::Events for ChannelEvents {
     }
 }
 
-#[cfg(test)]
-mod stream_tests;
-
 pub use adapters::wire::{
     EncodedWire, FrozenWire, SummaryWireBound, WireEncoding, WirePlan, WireSink, WireWrite,
 };

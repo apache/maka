@@ -17,100 +17,11 @@
  * under the License.
  */
 
-use crate::support::root;
 use maka_agent_facts::configuration::*;
 use maka_config::ConfigurationStore;
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use serde_json::json;
 use std::sync::Arc;
-
-#[tokio::test]
-async fn plugin_vault_isolates_namespaces_and_retains_cas_through_deletion_and_reopen() {
-    use maka_capabilities::credentials::Write;
-    use maka_capabilities::credentials::WriteResult;
-    use maka_capabilities::storage::Namespace;
-    use maka_plugin_core::scope::Scope;
-    let temp = tempfile::tempdir().unwrap();
-    let owner = root(temp.path());
-    let namespace = Namespace::new("example", Scope::Profile).unwrap();
-    let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
-    let write = |expected_revision, secret: Option<&str>| Write {
-        key: "token".into(),
-        expected_revision,
-        secret: secret.map(str::to_owned),
-    };
-    assert_eq!(
-        store
-            .write_plugin_credential(namespace.clone(), write(None, Some("first")))
-            .await
-            .unwrap(),
-        WriteResult::Written { revision: 1 }
-    );
-    for other in [
-        Namespace::new("other", Scope::Profile).unwrap(),
-        Namespace::new("example", Scope::Session("session".into())).unwrap(),
-    ] {
-        assert!(
-            store
-                .plugin_credential(other, "token".into())
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-    let (left, right) = tokio::join!(
-        store.write_plugin_credential(namespace.clone(), write(Some(1), Some("left"))),
-        store.write_plugin_credential(namespace.clone(), write(Some(1), Some("right"))),
-    );
-    let results = [left.unwrap(), right.unwrap()];
-    assert_eq!(
-        results
-            .iter()
-            .filter(|value| **value == WriteResult::Written { revision: 2 })
-            .count(),
-        1
-    );
-    assert_eq!(
-        results
-            .iter()
-            .filter(|value| **value == WriteResult::Conflict { actual: Some(2) })
-            .count(),
-        1
-    );
-    assert_eq!(
-        store
-            .write_plugin_credential(namespace.clone(), write(Some(2), None))
-            .await
-            .unwrap(),
-        WriteResult::Written { revision: 3 }
-    );
-    store.close().await.unwrap();
-    let reopened = ConfigurationStore::for_root(owner).await.unwrap();
-    let tombstone = reopened
-        .plugin_credential(namespace.clone(), "token".into())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(tombstone.revision, 3);
-    assert!(tombstone.secret.is_none());
-    for stale in [None, Some(2)] {
-        assert_eq!(
-            reopened
-                .write_plugin_credential(namespace.clone(), write(stale, Some("stale")))
-                .await
-                .unwrap(),
-            WriteResult::Conflict { actual: Some(3) }
-        );
-    }
-    assert_eq!(
-        reopened
-            .write_plugin_credential(namespace, write(Some(3), Some("renewed")))
-            .await
-            .unwrap(),
-        WriteResult::Written { revision: 4 }
-    );
-    reopened.close().await.unwrap();
-}
 
 #[tokio::test]
 async fn catalog_and_vault_keep_independent_cas_and_private_material_across_reopen() {

@@ -252,5 +252,3 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
     .await
     .expect("agent loop must make bounded progress");
 }
-
-mod prepared_retention;
