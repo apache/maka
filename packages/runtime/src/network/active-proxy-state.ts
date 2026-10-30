@@ -20,11 +20,34 @@
 import type { ProxySettings } from '@maka/core/settings/network-settings';
 
 let activeProxy: ProxySettings | null = null;
+let blockedReason: string | null = null;
+
+/**
+ * Raised instead of sending when the network policy asks for a proxy this
+ * process cannot use. Going direct would route traffic past that policy.
+ */
+export class ActiveProxyBlockedError extends Error {
+  constructor(readonly reason: string) {
+    super(`Outbound request blocked: ${reason}`);
+    this.name = 'ActiveProxyBlockedError';
+  }
+}
 
 export function setActiveProxy(proxy: ProxySettings | null): void {
   activeProxy = proxy?.enabled ? proxy : null;
+  blockedReason = null;
+}
+
+/** Refuses outbound requests until the next `setActiveProxy`. */
+export function blockActiveProxy(reason: string): void {
+  activeProxy = null;
+  blockedReason = reason;
 }
 
 export function resolveActiveProxy(): ProxySettings | null {
   return activeProxy;
+}
+
+export function assertActiveProxyUsable(): void {
+  if (blockedReason !== null) throw new ActiveProxyBlockedError(blockedReason);
 }

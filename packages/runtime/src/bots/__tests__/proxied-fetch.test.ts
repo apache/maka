@@ -25,7 +25,11 @@ import { createServer } from 'node:http';
 import net from 'node:net';
 import { ProxyAgent } from 'undici';
 import { PROXY_DEFAULTS } from '@maka/core/settings/network-settings';
-import { setActiveProxy } from '../../network/active-proxy-state.js';
+import {
+  ActiveProxyBlockedError,
+  blockActiveProxy,
+  setActiveProxy,
+} from '../../network/active-proxy-state.js';
 import { proxiedFetch } from '../proxied-fetch.js';
 // A minimal HTTP proxy that is also the fake upstream. It accepts either
 // proxy request form (CONNECT tunneling, or the absolute-form forwarding
@@ -97,6 +101,32 @@ function startStreamingProxy(): Promise<{
 }
 
 describe('proxiedFetch', () => {
+  test('refuses to send while the active proxy is blocked, until a proxy is set', async () => {
+    let requests = 0;
+    const server = createServer((_request, response) => {
+      requests += 1;
+      response.end('direct');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as net.AddressInfo;
+    const url = `http://127.0.0.1:${port}/`;
+    try {
+      blockActiveProxy('proxy credential missing');
+      await assert.rejects(proxiedFetch(url), ActiveProxyBlockedError);
+      // Blocked means nothing left the process: a direct request would route
+      // around the proxy the policy asks for.
+      assert.equal(requests, 0);
+
+      setActiveProxy(null);
+      const response = await proxiedFetch(url);
+      assert.equal(await response.text(), 'direct');
+      assert.equal(requests, 1);
+    } finally {
+      setActiveProxy(null);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   test('returns a streaming proxied response at headers, before body EOF', async () => {
     const proxy = await startStreamingProxy();
     setActiveProxy({
