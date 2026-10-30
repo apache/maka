@@ -237,15 +237,34 @@ pub(super) async fn selected_view(
     before: u64,
     prior_unknown: bool,
 ) -> Result<ContextView, StoreError> {
-    let session = selection
-        .session
-        .as_deref()
-        .ok_or_else(|| invalid("context requires a Session"))?;
-    super::semantic::available(connection, session).await?;
     let captured: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sequence),0) FROM event_log")
         .fetch_one(&mut *connection)
         .await?;
     let captured = crate::sequence_number(captured)?;
+    selected_view_at(
+        connection,
+        selection,
+        high_water,
+        before,
+        prior_unknown,
+        captured,
+    )
+    .await
+}
+
+pub(super) async fn selected_view_at(
+    connection: &mut SqliteConnection,
+    selection: &Selection,
+    high_water: u64,
+    before: u64,
+    prior_unknown: bool,
+    captured: u64,
+) -> Result<ContextView, StoreError> {
+    let session = selection
+        .session
+        .as_deref()
+        .ok_or_else(|| invalid("context requires a Session"))?;
+    super::semantic::available_at(connection, session, captured).await?;
     let before = before.min(captured.saturating_add(1));
     let (baseline, source_evidence) =
         latest_with_evidence(connection, selection, high_water).await?;

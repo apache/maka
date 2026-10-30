@@ -40,11 +40,25 @@ impl Evidence {
 pub(crate) fn current() -> Evidence {
     CURRENT.try_with(Clone::clone).unwrap_or_default()
 }
+#[track_caller]
 pub(crate) fn unconfirmed() -> crate::RunError {
-    let _ = CURRENT.try_with(|evidence| evidence.0.store(true, Ordering::Release));
+    let caller = std::panic::Location::caller();
+    let _ = CURRENT.try_with(|evidence| {
+        if !evidence.0.swap(true, Ordering::AcqRel) {
+            tracing::error!(
+                stage = "execution_cleanup_evidence",
+                outcome = "cleanup_unconfirmed",
+                file = caller.file(),
+                line = caller.line(),
+                column = caller.column(),
+                "cleanup unconfirmed"
+            );
+        }
+    });
     crate::RunError::CleanupUnconfirmed
 }
 
+#[track_caller]
 pub(crate) fn preparation_failed(error: std::io::Error) -> crate::RunError {
     let _ = unconfirmed();
     crate::RunError::PreparationCleanup(error)

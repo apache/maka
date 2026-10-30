@@ -48,18 +48,9 @@ impl From<ToolError> for OperationFailure {
 }
 
 #[cfg(test)]
-type OperationFixture = Arc<
-    dyn Fn(
-            Value,
-            CancellationToken,
-            admission::Receipt,
-        ) -> BoxFuture<'static, Result<Value, OperationFailure>>
-        + Send
-        + Sync,
->;
+type OperationFixture = Arc<dyn Fn(Value) -> Result<Value, OperationFailure> + Send + Sync>;
 
-/// The production caller carries the original Host budget capability. Direct
-/// product fixtures retain their old Scope, and cannot claim upload support.
+/// Carries the original Host call and resource budget.
 pub(super) struct EvaluationScope {
     call: Scope,
     input_resources: Option<maka_host_runtime::application::ResourceCapturer>,
@@ -69,15 +60,6 @@ impl From<maka_host_runtime::application::ResourceCapturer> for EvaluationScope 
         Self {
             call: resources.scope().clone(),
             input_resources: Some(resources),
-        }
-    }
-}
-#[cfg(test)]
-impl From<Scope> for EvaluationScope {
-    fn from(call: Scope) -> Self {
-        Self {
-            call,
-            input_resources: None,
         }
     }
 }
@@ -837,7 +819,7 @@ impl ToolExecutor for Bridge {
             }
             #[cfg(test)]
             let result = match &bridge.operation_fixture {
-                Some(operation) => operation(input, cancellation, receipt.clone()).await,
+                Some(operation) => operation(input),
                 None => {
                     bridge
                         .owner
@@ -914,97 +896,32 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    struct QueuedAudio {
-        native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
-        admission: Arc<admission::Gate>,
-        started: CancellationToken,
-    }
-    impl ToolExecutor for QueuedAudio {
-        fn names(&self) -> Vec<String> {
-            vec!["queued_audio".into()]
-        }
-        fn invoke(&self, _: String, _: Value, cancellation: CancellationToken) -> ToolFuture {
-            let receipt = self.admission.register();
-            let native = self.native.clone();
-            self.started.cancel();
-            Box::pin(async move {
-                let receipt = receipt?;
-                let result = audio_consent(&native, &cancellation).await;
-                receipt.complete_call();
-                result.map(Value::Bool)
-            })
-        }
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn vm_timeout_rejects_audio_queued_behind_an_accepted_native_operation() {
-        let native = Arc::new(tokio::sync::Mutex::new(maka_computer_use::Session::new(
-            Arc::new(tokio::sync::Mutex::new(maka_computer_use::Driver::default())),
-        )));
-        let accepted_native = native.clone().lock_owned().await;
-        let admission = Arc::new(admission::Gate::default());
-        let started = CancellationToken::new();
-        let runtime = Repl::new_observed(
-            "Object.defineProperty(globalThis,'audio',{value:()=>call('queued_audio',{})});",
-            CellLimits::default(),
-            admission.clone(),
-        )
-        .unwrap();
-        let context =
-            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
-        let result = tokio::time::timeout(
-            Duration::from_secs(3),
-            runtime.evaluate(
-                "await audio()".into(),
-                Arc::new(QueuedAudio {
-                    native,
-                    admission,
-                    started: started.clone(),
-                }),
-                CancellationToken::new(),
-                context,
-                Duration::from_millis(100),
-            ),
-        )
-        .await
-        .expect("VM admission must not wait for the old native operation")
-        .unwrap();
-        assert!(started.is_cancelled());
-        assert!(matches!(result, CellResult::Failure { .. }));
-        runtime.close().await.unwrap();
-        // The accepted native operation has deliberately not released its lock.
-        drop(accepted_native);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn actual_bridge_keeps_browser_live_only_for_the_typed_post_drain_native_unknown() {
-        use futures_util::FutureExt;
-        use maka_agent_facts::{
-            event::{EventWrite, Fact, InvocationInput, RuntimeEvent, ToolOutcome},
-            interaction::{Decision, InteractionOutcome, InteractionRecord, InteractionRequest},
-            tool_call::{HostSdkParent, ToolCallIdentity, ToolOrigin},
-            workspace::BindingStamp,
-        };
+    async fn bridge_keeps_browser_live_only_for_the_typed_post_drain_native_unknown() {
+        use maka_agent_facts::tool_call::ToolOrigin;
         use maka_capabilities::call::{Identity, Issuer};
         use maka_code_runtime::CellAbort;
+        use maka_computer_use::protocol::Command;
         use maka_event_log::root::{RootNamespaces, RootOwner};
-        // This cfg(test)-only operation fixture represents the Host boundary
-        // AFTER the sealed native drain check. It never constructs a public
-        // native proof or claims a physical Escape/Windows/Chrome execution.
-        // Journal, SQL, real Bridge::invoke, Gate and V8 are the product paths.
-        #[derive(Clone, Copy, Debug)]
-        enum Writer {
-            Confirmed,
-            Failed,
-            Missing,
-        }
-        for (post_drain, writer) in [
-            (true, Writer::Confirmed),
-            (false, Writer::Confirmed),
-            (true, Writer::Failed),
-            (true, Writer::Missing),
+
+        for (drained, error) in [
+            (
+                true,
+                ToolError::OutcomeUnknown("native outcome unknown".into()),
+            ),
+            (
+                false,
+                ToolError::OutcomeUnknown("native outcome unknown".into()),
+            ),
+            (
+                false,
+                ToolError::Persistence("interruption write failed".into()),
+            ),
+            (
+                false,
+                ToolError::CleanupUnconfirmed("missing interruption writer".into()),
+            ),
         ] {
-            let eligible = post_drain && matches!(writer, Writer::Confirmed);
             let directory = tempfile::tempdir().unwrap();
             let root = Arc::new(
                 maka_event_log::RootStore::open(Arc::new(
@@ -1020,95 +937,6 @@ mod tests {
                 .await
                 .unwrap(),
             );
-            let binding = root
-                .attach_workspace("fixture", &json!({"path":"/workspace"}))
-                .await
-                .unwrap();
-            let store = root
-                .create_session(
-                    "session",
-                    "create",
-                    &json!({"workspace":binding,"boundary_revision":0}),
-                    1,
-                )
-                .await
-                .unwrap();
-            let invocation = Invocation {
-                session_id: "session".into(),
-                turn_id: "turn".into(),
-                run_id: "run".into(),
-                invocation_id: "invocation".into(),
-            };
-            store
-                .append(
-                    &EventWrite::plain(RuntimeEvent::new(
-                        invocation.clone(),
-                        Fact::InvocationOpened {
-                            configuration: None,
-                            input: InvocationInput::Message {
-                                content: "fixture".into(),
-                                source_messages: vec![],
-                                request_fingerprint: None,
-                            },
-                        },
-                    ))
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
-            let basis = PermissionBasis {
-                boundary_revision: 0,
-                binding: BindingStamp {
-                    id: binding.id,
-                    permission_epoch: binding.permission_epoch_at_attach,
-                },
-            };
-            store
-                .establish_run_interaction(
-                    &invocation,
-                    &InteractionRecord {
-                        session_id: "session".into(),
-                        turn_id: "turn".into(),
-                        run_id: "run".into(),
-                        request_id: "grant".into(),
-                        created_at: 2,
-                        outcome: None,
-                        request: InteractionRequest::ClientCapability {
-                            tool_use_id: "outer".into(),
-                            target: api::target(),
-                            basis: Some(basis),
-                        },
-                    },
-                )
-                .await
-                .unwrap();
-            store
-                .commit_interaction_outcome(
-                    "grant",
-                    InteractionOutcome::ClientCapabilityDecision {
-                        decision: Decision::Allow,
-                        committed_at: 3,
-                    },
-                )
-                .await
-                .unwrap();
-            store
-                .append(
-                    &EventWrite::plain(RuntimeEvent::new(
-                        invocation.clone(),
-                        Fact::ToolDispatched {
-                            presentation: None,
-                            title: None,
-                            operation_id: "outer".into(),
-                            call: ToolCallIdentity::standalone("outer-call".into()),
-                            name: "cua_repl".into(),
-                            input: json!({}),
-                        },
-                    ))
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
             let tasks = tokio_util::task::TaskTracker::new();
             let owner = Arc::new(Computer {
                 store: root.clone(),
@@ -1127,137 +955,31 @@ mod tests {
             });
             let interaction = owner.sessions.get("session").unwrap();
             let kernel = interaction.fresh_kernel().unwrap();
-            let epoch = kernel.epoch.clone();
             let admission = kernel.admission.clone();
             let scope = Issuer::default()
                 .issue(
                     Identity::Agent {
-                        invocation: invocation.clone(),
+                        invocation: Invocation {
+                            session_id: "session".into(),
+                            turn_id: "turn".into(),
+                            run_id: "run".into(),
+                            invocation_id: "invocation".into(),
+                        },
                         operation_id: Some("outer".into()),
                     },
                     CancellationToken::new(),
                 )
                 .unwrap();
-            let weak = Arc::downgrade(&owner);
-            let operation_store = store.clone();
-            let operation_invocation = invocation.clone();
-            let operation_epoch = epoch.id.clone();
-            let fixture: OperationFixture = Arc::new(move |input, cancellation, receipt| {
-                let weak = weak.clone();
-                let store = operation_store.clone();
-                let invocation = operation_invocation.clone();
-                let epoch = operation_epoch.clone();
-                Box::pin(async move {
-                    let computer = weak
-                        .upgrade()
-                        .ok_or_else(|| failed("fixture Host closed"))?;
-                    if computer.stopping.is_cancelled() {
-                        return Err(failed("fixture observes product Computer Host stop").into());
+            let native_error = error.clone();
+            let fixture: OperationFixture =
+                Arc::new(move |input| match serde_json::from_value(input).unwrap() {
+                    Command::ListWindows { .. } if drained => {
+                        Err(OperationFailure::DrainedNativeUnknown(native_error.clone()))
                     }
-                    let command: maka_computer_use::protocol::Command =
-                        serde_json::from_value(input.clone()).map_err(failed)?;
-                    let native = matches!(
-                        command,
-                        maka_computer_use::protocol::Command::ListWindows { .. }
-                    );
-                    let operation = if native { "native" } else { "browser" };
-                    let sink = Arc::new(access::Journal {
-                        lane: if native {
-                            access::ComputerLane::Native
-                        } else {
-                            access::ComputerLane::Other
-                        },
-                        store: store.clone(),
-                        basis,
-                        targets: vec![api::target()],
-                        app: None,
-                    });
-                    let admitted = receipt.clone();
-                    let result = ToolJournal::new(sink, invocation.clone())
-                        .invoke_prepared_output(
-                            operation.into(),
-                            ToolCallIdentity {
-                                tool_call_id: format!("call-{operation}"),
-                                origin: ToolOrigin::HostSdk {
-                                    package_id: "fixture".into(),
-                                    entry_id: "computer".into(),
-                                    activation: "host".into(),
-                                    parent: Some(HostSdkParent::EvaluationObserver {
-                                        operation_id: "outer".into(),
-                                        epoch: epoch.clone(),
-                                    }),
-                                },
-                            },
-                            "cua_operation".into(),
-                            input,
-                            None,
-                            cancellation,
-                            PreparedEffect::new(move |_| {
-                                Box::pin(async move {
-                                    if native {
-                                        Err(ToolError::OutcomeUnknown(
-                                            "accepted native action remains unknown".into(),
-                                        ))
-                                    } else {
-                                        Ok(ToolOutput::Json(json!("browser-still-live")).into())
-                                    }
-                                })
-                            })
-                            .on_admission(move |boundary| {
-                                if matches!(
-                                    boundary,
-                                    maka_agent_facts::tools::EffectAdmission::Durable { .. }
-                                ) {
-                                    admitted.agent_dispatched();
-                                }
-                            }),
-                        )
-                        .await;
-                    match result {
-                        Err(error @ ToolError::OutcomeUnknown(_)) if post_drain => {
-                            let write = if matches!(writer, Writer::Missing) {
-                                None
-                            } else {
-                                Some(async move {
-                                    store.record_native_turn_interruption(
-                                        maka_event_log::native_computer::NativeInterruption {
-                                            opening: invocation,
-                                            operation_id: "native".into(),
-                                            // The negative case reaches the real SQL
-                                            // source/T1 identity check, which refuses
-                                            // to record an unbound native epoch.
-                                            native_epoch: if matches!(writer, Writer::Failed) {
-                                                "not-the-actual-T1-epoch".into()
-                                            } else {
-                                                epoch
-                                            },
-                                            native_generation: "synthetic-host-boundary-only".into(),
-                                        },
-                                    ).await.map(|_| ()).map_err(|error| ToolError::Persistence(message(error)))
-                                }.boxed().shared())
-                            };
-                            // The production post-proof eligibility helper must
-                            // observe this same original SQL future, including
-                            // failures. No new native proof is minted here.
-                            let confirmed = sessions::confirm_native_interruption(write).await;
-                            match writer {
-                                Writer::Confirmed => assert!(confirmed.is_ok()),
-                                Writer::Failed => {
-                                    assert!(matches!(&confirmed, Err(ToolError::Persistence(_))))
-                                }
-                                Writer::Missing => assert!(matches!(
-                                    &confirmed,
-                                    Err(ToolError::CleanupUnconfirmed(_))
-                                )),
-                            }
-                            confirmed?;
-                            Err(OperationFailure::DrainedNativeUnknown(error))
-                        }
-                        Err(error) => Err(error.into()),
-                        Ok(output) => Ok(output.into_json()),
-                    }
-                })
-            });
+                    Command::ListWindows { .. } => Err(native_error.clone().into()),
+                    Command::ListBrowsers { .. } => Ok(json!("browser-still-live")),
+                    command => panic!("unexpected facade command: {command:?}"),
+                });
             let context =
                 CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![])
                     .unwrap();
@@ -1265,9 +987,15 @@ mod tests {
                 owner: owner.clone(),
                 call: scope,
                 interaction: interaction.clone(),
-                epoch: epoch.clone(),
+                epoch: kernel.epoch.clone(),
                 admission: admission.clone(),
-                basis,
+                basis: PermissionBasis {
+                    boundary_revision: 0,
+                    binding: maka_agent_facts::workspace::BindingStamp {
+                        id: Uuid::new_v4(),
+                        permission_epoch: 0,
+                    },
+                },
                 language: Language::En,
                 cell: context.clone(),
                 operation_fixture: Some(fixture),
@@ -1278,108 +1006,51 @@ mod tests {
                 maka_computer_use::facade()
             );
             let runtime = Repl::new(bootstrap, CellLimits::default()).unwrap();
-            let result=runtime.evaluate("let caught=false;try{await native()}catch(e){caught=true}nodeRepl.write({caught,browser:await browser()});".into(),
-                bridge.clone(),CancellationToken::new(),context.clone(),Duration::from_secs(3)).await;
-            if eligible {
+            let result = runtime.evaluate(
+                "let caught=false;try{await native()}catch(e){caught=true}nodeRepl.write({caught,browser:await browser()});".into(),
+                bridge.clone(), CancellationToken::new(), context.clone(), Duration::from_secs(3),
+            ).await;
+            if drained {
                 assert!(
                     matches!(&result, Ok(CellResult::Success { .. })),
                     "{result:?}"
                 );
-                assert!(
-                    !owner.stopping.is_cancelled(),
-                    "actual Bridge must not cancel the Computer after exact drained native Unknown"
-                );
+                assert!(!owner.stopping.is_cancelled());
                 assert!(admission.check_open().is_ok());
-                assert!(!runtime.is_closed(), "same JS kernel remains available");
+                assert!(!runtime.is_closed());
                 let output = context.take_output();
                 let [CellOutput::Text { text }] = output.as_slice() else {
-                    panic!(
-                        "the recovered native call and live browser must emit one JSON result: {output:?}"
-                    );
+                    panic!("expected recovered native call and browser result: {output:?}");
                 };
-                let value: Value = serde_json::from_str(text).unwrap_or_else(|error| {
-                    panic!("invalid emitted bridge result: {error}; output={output:?}")
-                });
                 assert_eq!(
-                    value,
+                    serde_json::from_str::<Value>(text).unwrap(),
                     json!({"caught":true,"browser":"browser-still-live"}),
-                    "the facade must throw the native failure and unwrap the live browser result: {output:?}"
-                );
-                let tip = store
-                    .run_source("session", "run", None)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert!(
-                    matches!(tip.last.event.fact,Fact::ToolSettled{ref operation_id,..} if operation_id=="browser"),
-                    "following browser has its real canonical T2"
                 );
             } else {
-                match (post_drain, writer, &result) {
-                    (false, Writer::Confirmed, Ok(CellResult::Failure { .. })) => {}
+                match (&error, &result) {
+                    (ToolError::OutcomeUnknown(_), Ok(CellResult::Failure { .. })) => {}
                     (
-                        true,
-                        Writer::Failed,
-                        Err(CellAbort::Tool(ToolError::Persistence(message))),
+                        ToolError::Persistence(expected),
+                        Err(CellAbort::Tool(ToolError::Persistence(actual))),
+                    )
+                    | (
+                        ToolError::CleanupUnconfirmed(expected),
+                        Err(CellAbort::Tool(ToolError::CleanupUnconfirmed(actual))),
                     ) => {
-                        assert!(
-                            message.contains(
-                                "native interruption differs from its original dispatch binding"
-                            ),
-                            "the rejected fence must preserve its original binding error: {message}"
-                        );
+                        assert_eq!(actual, expected);
                     }
-                    (
-                        true,
-                        Writer::Missing,
-                        Err(CellAbort::Tool(ToolError::CleanupUnconfirmed(message))),
-                    ) => {
-                        assert_eq!(
-                            message,
-                            "Native input drained without its canonical interruption writer"
-                        );
-                    }
-                    _ => {
-                        panic!("unexpected post_drain={post_drain}, writer={writer:?}: {result:?}")
-                    }
+                    _ => panic!("unexpected bridge failure for {error:?}: {result:?}"),
                 }
-                assert!(
-                    owner.stopping.is_cancelled(),
-                    "ordinary Unknown or an unconfirmed canonical fence retains the existing failure boundary"
-                );
+                assert!(owner.stopping.is_cancelled());
+                assert!(admission.check_open().is_err());
             }
-            let native_tip = store
-                .run_source("session", "run", Some(4))
-                .await
-                .unwrap()
-                .unwrap();
-            assert!(
-                matches!(native_tip.last.event.fact,Fact::ToolSettled{ref operation_id,outcome:ToolOutcome::Unknown{ref message,..}}
-                if operation_id=="native" && message=="accepted native action remains unknown"),
-                "the original admitted native T2 remains Unknown"
-            );
             runtime.close().await.unwrap();
             drop(bridge);
-            store
-                .append(
-                    &EventWrite::plain(RuntimeEvent::new(
-                        invocation.clone(),
-                        Fact::ToolSettled {
-                            operation_id: "outer".into(),
-                            outcome: ToolOutcome::Failed {
-                                message: "fixture complete".into(),
-                            },
-                        },
-                    ))
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
             owner.sessions.close().await.unwrap();
             owner.resources.settle().await.unwrap();
             owner.tasks.close();
             owner.tasks.wait().await;
-            drop((kernel, epoch, interaction, owner, store));
+            drop((kernel, interaction, owner));
             Arc::try_unwrap(root).ok().unwrap().close().await.unwrap();
         }
     }

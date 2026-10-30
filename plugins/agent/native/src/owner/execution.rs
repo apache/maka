@@ -382,10 +382,9 @@ impl Owner {
             configuration.tool_discovery,
             configuration.editing_tools,
         )?;
+        let basis = Arc::new(basis);
         let run = RunInput {
-            native_activation_basis: Some(
-                serde_json::to_value(&basis).map_err(|_| "agent_message_basis_invalid")?,
-            ),
+            native_activation_basis: Some(basis.clone()),
             invocation: invocation.clone(),
             model_source: Some(Arc::new(source)),
             model_revision: Some(prepared.revision),

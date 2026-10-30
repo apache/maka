@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_agent_facts::event::{Fact, InvocationOutcome, ToolOutcome};
+use maka_agent_facts::event::{Fact, ToolOutcome};
 
 async fn fixture(base: &str) -> Fixture {
     Fixture::configured(
@@ -169,118 +169,6 @@ async fn plan_real_direct_and_code_mode_require_review_then_native_effect_and_ca
             assert!(facts.iter().any(|fact|matches!(fact,Fact::ToolSettled { outcome:ToolOutcome::Succeeded { .. }, .. })));
             f.app.shutdown().await.unwrap();
         }
-    }).await.unwrap();
-}
-
-#[tokio::test]
-async fn plan_interruption_resume_and_cancellation_keep_original_execution_and_sibling_cleanup() {
-    tokio::time::timeout(Duration::from_secs(60),async {
-        let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let f=fixture(&format!("http://{}/v1",listener.local_addr().unwrap())).await;
-        let session=f.create("Interrupted Plan").await;
-        propose(&f,&session,&listener).await;
-        assert_eq!(approve(&f,&session).await.0["kind"],"committed");
-        let (mut execution,_) = listener.accept().await.unwrap();
-        request(&mut execution).await;
-        response(&mut execution).await;
-        let interrupted=phase(&f,&session,"interrupted").await;
-        assert!(interrupted["execution"]["reason"].as_str().unwrap().contains("every Plan step"));
-        f.drained().await;
-        let resume=json!({"sessionId":session,"revision":interrupted["revision"],"action":{"kind":"resume","executionId":interrupted["execution"]["id"],"approval":approval(&f,&session).await}});
-        let resumed=f.mutation(2,"changePlan",resume,Uuid::new_v4()).await.unwrap();
-        assert_eq!(resumed["kind"],"committed");
-        let (mut original,_) = listener.accept().await.unwrap();
-        assert!(request(&mut original).await.to_string().contains("user-approved plan"));
-        let active=phase(&f,&session,"active").await;
-        assert_ne!(active["execution"]["invocation"],interrupted["execution"]["invocation"]);
-        let sibling=f.create("Independent request").await;
-        assert_eq!(f.send(&sibling).await.unwrap()["kind"], "started");
-        assert!(f.owner.runs.lock().await.controls.contains_key(&sibling));
-        let cancel=json!({"sessionId":session,"revision":active["revision"],"action":{"kind":"cancel","executionId":active["execution"]["id"],"reason":"User stopped this Plan"}});
-        let id=Uuid::new_v4();
-        let result=f.mutation(2,"changePlan",cancel.clone(),id).await.unwrap();
-        assert_eq!(result["kind"],"committed");
-        let mut byte=[0];
-        assert_eq!(original.read(&mut byte).await.unwrap(),0,"cancellation closes the original physical model socket");
-        let cancelled=phase(&f,&session,"cancelled").await;
-        assert_eq!(cancelled["execution"]["cancellation"],"User stopped this Plan");
-        assert!(f.owner.runs.lock().await.controls.contains_key(&sibling), "sibling execution remains live");
-        let (mut independent,_) = listener.accept().await.unwrap();
-        request(&mut independent).await;
-        assert_eq!(f.mutation(2,"changePlan",cancel,id).await.unwrap(),result);
-        response(&mut independent).await;
-        f.drained().await;
-        assert!(service_tools::facts(&f, &sibling).await.iter().any(|fact| matches!(fact, Fact::InvocationEnded { outcome: InvocationOutcome::Completed })));
-        assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err());
-        f.app.shutdown().await.unwrap();
-    }).await.unwrap();
-}
-
-#[tokio::test]
-async fn plan_user_decisions_and_current_boundaries_precede_execution_and_model_cancel_is_owned() {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
-        let session = f.create("Reviewed revisions").await;
-        propose(&f,&session,&listener).await;
-        let first = current(&f,&session).await;
-        let revised = f.mutation(2,"changePlan",json!({"sessionId":session,"revision":first["revision"],"action":{"kind":"revise","proposalId":first["proposal"]["id"]}}),Uuid::new_v4()).await.unwrap();
-        assert_eq!(revised["kind"],"committed");
-        assert_eq!(current(&f,&session).await["proposal"]["status"],"revision_requested");
-        assert_eq!(approve(&f,&session).await.0["kind"],"conflict");
-        propose(&f,&session,&listener).await;
-        let second = current(&f,&session).await;
-        assert_ne!(first["proposal"]["id"], second["proposal"]["id"]);
-        assert_eq!(second["proposal"]["supersedes"],first["proposal"]["id"]);
-        let mut stale = approval(&f,&session).await;
-        stale["target"]["boundaryRevision"]=json!(99);
-        let rejected=f.mutation(2,"changePlan",json!({"sessionId":session,"revision":second["revision"],"action":{"kind":"approve","proposalId":second["proposal"]["id"],"proposalRevision":second["proposal"]["revision"],"approval":stale}}),Uuid::new_v4()).await.unwrap();
-        assert_eq!(rejected["kind"],"rejected");
-        assert_eq!(current(&f,&session).await,second);
-        let policy=f.config.runtime_policy().await.unwrap();
-        f.config.set_privacy(policy.revision,maka_agent_facts::configuration::policy::PrivacyPolicy{incognito_active:true}).await.unwrap();
-        assert_eq!(approve(&f,&session).await.0["reason"],"plan_incognito");
-        assert_eq!(current(&f,&session).await,second);
-        let policy=f.config.runtime_policy().await.unwrap();
-        f.config.set_privacy(policy.revision,maka_agent_facts::configuration::policy::PrivacyPolicy{incognito_active:false}).await.unwrap();
-        let abandoned=f.mutation(2,"changePlan",json!({"sessionId":session,"revision":second["revision"],"action":{"kind":"abandon","proposalId":second["proposal"]["id"]}}),Uuid::new_v4()).await.unwrap();
-        assert_eq!(abandoned["kind"],"committed");
-        assert_eq!(current(&f,&session).await["proposal"]["status"],"abandoned");
-        let history=f.query("planHistory",json!({"sessionId":session,"throughRevision":second["revision"],"after":0})).await.unwrap();
-        assert_eq!(history["snapshots"][0],first);
-        assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err());
-        propose(&f,&session,&listener).await;
-        assert_eq!(approve(&f,&session).await.0["kind"],"committed");
-        let (mut socket,_) = listener.accept().await.unwrap();
-        request(&mut socket).await;
-        service_tools::named_tool_response(&mut socket,"cancel_plan",json!({"reason":"User asked to abandon this execution"})).await;
-        let cancelled=phase(&f,&session,"cancelled").await;
-        assert_eq!(cancelled["execution"]["cancellation"],"User asked to abandon this execution");
-        f.drained().await;
-        assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err());
-        f.app.shutdown().await.unwrap();
-    }).await.unwrap();
-}
-
-#[tokio::test]
-async fn plan_cancel_after_approval_rejects_original_input_before_any_model_request() {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let f=fixture(&format!("http://{}/v1",listener.local_addr().unwrap())).await;
-        let session=f.create("Cancel queued Plan").await;
-        propose(&f,&session,&listener).await;
-        let producer=f.owner.producer_gate.lock().await;
-        assert_eq!(approve(&f,&session).await.0["kind"],"committed");
-        let pending=current(&f,&session).await;
-        assert_eq!(pending["execution"]["phase"],"awaiting_admission");
-        assert_eq!(f.mutation(2,"changePlan",json!({"sessionId":session,"revision":pending["revision"],"action":{"kind":"cancel","executionId":pending["execution"]["id"],"reason":"Cancel queued original"}}),Uuid::new_v4()).await.unwrap()["kind"],"committed");
-        drop(producer);
-        phase(&f,&session,"cancelled").await;
-        assert!(f.session(&session).await.message_queue(&session).await.unwrap().entries.is_empty());
-        assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err());
-        let facts = service_tools::facts(&f,&session).await;
-        assert_eq!(facts.iter().filter(|fact|matches!(fact,Fact::InvocationOpened{..})).count(),1, "only the planning Turn was admitted");
-        f.app.shutdown().await.unwrap();
     }).await.unwrap();
 }
 

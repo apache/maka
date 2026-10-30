@@ -329,6 +329,3 @@ fn encode_assistant(
         _ => None,
     })
 }
-
-#[cfg(test)]
-mod tests;

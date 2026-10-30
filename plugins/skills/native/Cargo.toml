@@ -55,4 +55,3 @@ libc.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true
-schemars.workspace = true

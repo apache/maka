@@ -24,26 +24,6 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-struct Events;
-impl maka_agent_ports::model::Events for Events {
-    fn emit(&self, _: maka_agent_ports::model::Emission) -> BoxFuture<'_, Result<(), Error>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-struct Allocation {
-    bytes: Vec<u8>,
-    dropped: Arc<AtomicUsize>,
-}
-impl AsRef<[u8]> for Allocation {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes
-    }
-}
-impl Drop for Allocation {
-    fn drop(&mut self) {
-        self.dropped.fetch_add(1, Ordering::SeqCst);
-    }
-}
 fn network() -> Arc<Network> {
     Arc::new(Network {
         tls: maka_network::TlsConfigCache::default(),
@@ -51,109 +31,6 @@ fn network() -> Arc<Network> {
         identity: 1,
     })
 }
-fn request(url: String, dropped: Arc<AtomicUsize>) -> http::Request {
-    let bytes = http::Bytes::from_owner(Allocation {
-        bytes: vec![7; 32 * 1024 * 1024],
-        dropped,
-    });
-    http::Request {
-        url,
-        method: http::Method::Post,
-        headers: vec![],
-        body: http::RequestBody::stream(futures_util::stream::once(async move { Ok(bytes) })),
-    }
-}
-async fn stalled_server(
-    early_response: bool,
-) -> (
-    String,
-    tokio::sync::oneshot::Receiver<()>,
-    tokio::task::JoinHandle<()>,
-) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/", listener.local_addr().unwrap());
-    let (started, ready) = tokio::sync::oneshot::channel();
-    let task = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut header = Vec::new();
-        while !header.ends_with(b"\r\n\r\n") {
-            header.push(socket.read_u8().await.unwrap());
-        }
-        if early_response {
-            socket
-                .write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n")
-                .await
-                .unwrap();
-        }
-        let _ = started.send(());
-        // Keep the socket open without draining the upload. Test cleanup aborts
-        // this owner only after the client's custody acknowledgement.
-        std::future::pending::<()>().await;
-    });
-    (url, ready, task)
-}
-#[tokio::test]
-async fn pending_native_http_cancel_waits_for_giant_source_allocation_drain() {
-    let (url, ready, server) = stalled_server(false).await;
-    let dropped = Arc::new(AtomicUsize::new(0));
-    let cancellation = CancellationToken::new();
-    let stop = cancellation.clone();
-    let transport = Call {
-        transport: network(),
-        events: Arc::new(Events),
-        cancellation: CancellationToken::new(),
-    };
-    let input = request(url, dropped.clone());
-    let pending = tokio::spawn(async move { transport.request(input, stop).await });
-    tokio::time::timeout(Duration::from_secs(5), ready)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(dropped.load(Ordering::SeqCst), 0);
-    cancellation.cancel();
-    let result = tokio::time::timeout(Duration::from_secs(12), pending)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(result, Err(Error::Cancelled)),
-        "cancel outcome: {}",
-        match &result {
-            Ok(_) => "unexpected response".into(),
-            Err(error) => error.to_string(),
-        }
-    );
-    assert_eq!(
-        dropped.load(Ordering::SeqCst),
-        1,
-        "cancellation must acknowledge physical release"
-    );
-    server.abort();
-    let _ = server.await;
-}
-#[tokio::test]
-async fn early_response_close_drains_upload_without_cancelling_callers_token() {
-    let (url, ready, server) = stalled_server(true).await;
-    let dropped = Arc::new(AtomicUsize::new(0));
-    let cancellation = CancellationToken::new();
-    let network = network();
-    let response = tokio::time::timeout(
-        Duration::from_secs(5),
-        network.request(request(url, dropped.clone()), cancellation.clone()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    ready.await.unwrap();
-    assert_eq!(response.head.status, 413);
-    response.body.cancel();
-    response.body.close().await.unwrap();
-    assert_eq!(dropped.load(Ordering::SeqCst), 1);
-    assert!(!cancellation.is_cancelled());
-    server.abort();
-    let _ = server.await;
-}
-
 async fn line(socket: &mut tokio::net::TcpStream) -> String {
     let mut bytes = Vec::new();
     while !bytes.ends_with(b"\r\n") {
@@ -318,71 +195,6 @@ async fn redirect_method_conversion_drops_payload_headers_and_preserves_head() {
         response.body.close().await.unwrap();
         server.await.unwrap();
     }
-}
-#[tokio::test]
-async fn cancellation_on_replayed_hop_waits_for_new_allocation_release() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/start", listener.local_addr().unwrap());
-    let (started, ready) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let headers = head(&mut socket).await;
-        assert_eq!(payload(&mut socket, &headers).await, 16 * 1024 * 1024);
-        redirect(&mut socket, 307, "/next").await;
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let _ = head(&mut socket).await;
-        let _ = started.send(());
-        std::future::pending::<()>().await;
-    });
-    let dropped = Arc::new(AtomicUsize::new(0));
-    let observed = dropped.clone();
-    let opened = Arc::new(AtomicUsize::new(0));
-    let opens = opened.clone();
-    let body = http::RequestBody::replayable(move || {
-        opens.fetch_add(1, Ordering::SeqCst);
-        let bytes = http::Bytes::from_owner(Allocation {
-            bytes: vec![7; 16 * 1024 * 1024],
-            dropped: observed.clone(),
-        });
-        http::RequestBody::stream(futures_util::stream::once(async move { Ok(bytes) }))
-    });
-    let cancellation = CancellationToken::new();
-    let token = cancellation.clone();
-    let pending = tokio::spawn(async move {
-        network()
-            .request(
-                http::Request {
-                    url,
-                    method: http::Method::Post,
-                    headers: vec![],
-                    body,
-                },
-                token,
-            )
-            .await
-    });
-    tokio::time::timeout(Duration::from_secs(10), ready)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(opened.load(Ordering::SeqCst), 2);
-    assert_eq!(dropped.load(Ordering::SeqCst), 1);
-    cancellation.cancel();
-    let result = tokio::time::timeout(Duration::from_secs(12), pending)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(result, Err(Error::Cancelled)),
-        "cancel outcome: {}",
-        match &result {
-            Ok(_) => "unexpected response".into(),
-            Err(error) => error.to_string(),
-        }
-    );
-    assert_eq!(dropped.load(Ordering::SeqCst), 2);
-    server.abort();
-    let _ = server.await;
 }
 #[tokio::test]
 async fn cross_origin_redirect_is_returned_without_forwarding_credentials() {

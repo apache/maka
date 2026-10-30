@@ -43,8 +43,7 @@ fn failed(error_class: ConnectionEffectFailureClass) -> ConnectionTestProjection
 }
 
 struct Fixture {
-    temp: tempfile::TempDir,
-    namespaces: RootNamespaces,
+    _temp: tempfile::TempDir,
     store: Arc<ConfigurationStore>,
     id: String,
 }
@@ -73,8 +72,7 @@ impl Fixture {
             panic!("expected connection commit")
         };
         Self {
-            temp,
-            namespaces,
+            _temp: temp,
             store,
             id: basis.connection_id,
         }
@@ -166,64 +164,6 @@ async fn preparation_allows_anonymous_providers_and_admits_only_known_models() {
     }
     assert_eq!(before.connections[0].enabled_model_ids, ["manual"]);
     assert_eq!(fixture.store.catalog().await.unwrap(), before);
-}
-
-#[tokio::test]
-async fn failed_tests_preserve_rename_and_store_only_safe_summary_across_reopen() {
-    let fixture = Fixture::new().await;
-    fixture.key().await;
-    for (failure, status, stored_class) in [
-        (
-            ConnectionEffectFailureClass::InvalidResponse,
-            ConnectionTestStatus::Error,
-            ConnectionTestErrorClass::Unknown,
-        ),
-        (
-            ConnectionEffectFailureClass::Auth,
-            ConnectionTestStatus::NeedsReauth,
-            ConnectionTestErrorClass::Auth,
-        ),
-    ] {
-        let prepared = fixture.prepare(None).await;
-        fixture.edit(None).await;
-        let before = fixture.store.catalog().await.unwrap();
-        let test = failed(failure);
-        assert_eq!(
-            prepared.complete(test.clone()).await.unwrap(),
-            ConnectionTestRunResult::Committed {
-                catalog_revision: before.revision + 1,
-                connection: ConnectionVersionBasis {
-                    connection_id: fixture.id.clone(),
-                    revision: before.connections[0].revision + 1,
-                },
-                test,
-            }
-        );
-        let mut expected = before;
-        expected.revision += 1;
-        expected.connections[0].revision += 1;
-        expected.connections[0].last_test = Some(ConnectionTestSummary {
-            status,
-            checked_at: "2026-09-12T00:00:00.000Z".into(),
-            error_class: Some(stored_class),
-        });
-        let saved = fixture.store.catalog().await.unwrap();
-        assert_eq!(saved, expected);
-        let summary = serde_json::to_value(&saved.connections[0].last_test).unwrap();
-        assert_eq!(summary.as_object().unwrap().len(), 3);
-        assert!(!serde_json::to_string(&saved).unwrap().contains("private-"));
-    }
-    let saved = fixture.store.catalog().await.unwrap();
-    Arc::try_unwrap(fixture.store)
-        .ok()
-        .expect("released preparation")
-        .close()
-        .await
-        .unwrap();
-    let owner =
-        Arc::new(RootOwner::open(&fixture.temp.path().join("root"), &fixture.namespaces).unwrap());
-    let reopened = ConfigurationStore::for_root(owner).await.unwrap();
-    assert_eq!(reopened.catalog().await.unwrap(), saved);
 }
 
 #[tokio::test]

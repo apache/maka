@@ -38,6 +38,8 @@ import {
 
 export const workspaceMessages = {
   'Pin conversation': ['Pin conversation', '置顶会话', '置頂對話'],
+  'Collapse {name}': ['Collapse {name}', '收起 {name}', '收合 {name}'],
+  'Expand {name}': ['Expand {name}', '展开 {name}', '展開 {name}'],
   'Unpin conversation': ['Unpin conversation', '取消置顶', '取消置頂'],
   Pinned: ['Pinned', '已置顶', '已置頂'],
   'Actions for {title}': ['Actions for {title}', '{title} 的操作', '{title} 的操作'],

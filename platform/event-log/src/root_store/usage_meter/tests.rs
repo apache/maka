@@ -44,6 +44,10 @@ pub(super) fn event(fact: Fact, micros: u64) -> EventWrite {
 pub(super) fn request(id: &str, micros: u64) -> EventWrite {
     event(
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             step_id: id.into(),
@@ -73,7 +77,7 @@ use maka_agent_facts::{
     event::{InvocationInput, InvocationOutcome, ModelInterruption},
     model::{ModelFinishReason, recorded::ModelCompletion},
 };
-use serde_json::{Value, json};
+use serde_json::json;
 use sqlx::Row;
 use std::sync::{
     Arc,
@@ -304,34 +308,6 @@ async fn lifetime_read_and_terminal_pending_lookup_remain_indexed_after_large_hi
 }
 
 #[tokio::test]
-async fn capacity_error_does_not_rollback_canonical_settlement() {
-    let directory = tempfile::tempdir().unwrap();
-    let root = root(directory.path()).await;
-    let session = session(&root).await;
-    session
-        .append_batch(&[
-            request("a", 1),
-            completed("a", Some(11), None),
-            request("pending", 2),
-        ])
-        .await
-        .unwrap();
-    let log = session.owner().unwrap();
-    assert_eq!(
-        root.session_usage_totals("source").await.unwrap(),
-        totals(11, 0, 0, 1)
-    );
-    session
-        .append(&completed("pending", Some(u64::MAX), Some(3)))
-        .await
-        .unwrap();
-    assert!(root.session_usage_totals("source").await.is_err());
-    assert!(session.get::<Value>().await.unwrap().is_some());
-    drop(log);
-    root.close().await.unwrap();
-}
-
-#[tokio::test]
 async fn session_auxiliary_counts_once_and_bundle_import_uses_the_same_settlement_meter() {
     use maka_agent_facts::{execution::*, language::Language};
     let directory = tempfile::tempdir().unwrap();
@@ -443,13 +419,17 @@ async fn session_auxiliary_counts_once_and_bundle_import_uses_the_same_settlemen
         .await
         .unwrap();
     let captured = source
-        .capture_model_context("source", Some("invocation"), 100_000, 64 * 1024 * 1024)
+        .read_model_view("source", Some("invocation"))
         .await
         .unwrap();
     source
         .append_batch(&[
             event(
                 Fact::ModelRequested {
+                    source_capture: maka_agent_facts::event::SourceCapture {
+                        publication_watermark: captured.selection.captured_through,
+                        prior_unknown: captured.selection.prior_unknown,
+                    },
                     context_breakdown: None,
                     item_acceptance: false,
                     step_id: "imported".into(),

@@ -20,10 +20,7 @@
 #![cfg(feature = "native-desktop")]
 
 mod mutations;
-mod neutral_focus;
-mod prefix_scroll;
 mod readonly_evaluate;
-mod text_events;
 
 use cua_driver_core::browser::cdp_ws::CdpConnection;
 use maka_agent_facts::{
@@ -153,12 +150,7 @@ impl Browser {
                             break;
                         }
                     }
-                    let body = if let Some(body) = neutral_focus::fixture_html(&path) {
-                        body.to_owned()
-                    } else if let Some(case) = path.strip_prefix("/case?case=") {
-                        text_events::fixture_html(case)
-                    } else {
-                        match path.as_str() {
+                    let body = match path.as_str() {
                         "/frame/local"=>r#"<!doctype html><title>Local child</title><button>Local action</button><p>Local child content</p>"#,
                         "/frame/remote"=>r#"<!doctype html><title>Remote child</title><button>Remote action</button><p>Remote child content</p><iframe id="nested" src="http://127.0.0.1:FIXTURE_PORT/frame/nested"></iframe>"#,
                         "/frame/nested"=>r#"<!doctype html><title>Nested child</title><button>Nested action</button>"#,
@@ -176,8 +168,7 @@ impl Browser {
 <div id="shadow-host"></div><script>document.getElementById('shadow-host').attachShadow({mode:'open'}).innerHTML='<button data-testid="shadow">Shadow action</button>';</script>
 <iframe id="local" src="/frame/local"></iframe><iframe id="remote" src="http://localhost:FIXTURE_PORT/frame/remote"></iframe>
 <script>globalThis.mutations=0;new MutationObserver(records=>globalThis.mutations+=records.length).observe(document.body,{subtree:true,attributes:true,childList:true,characterData:true});</script>"#,
-                    }.replace("FIXTURE_PORT",&port.to_string())
-                    };
+                    }.replace("FIXTURE_PORT",&port.to_string());
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()

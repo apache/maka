@@ -196,6 +196,7 @@ impl EventLog {
                     let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await?;
                     let mut sequences = Vec::with_capacity(events.len());
                     let mut last_inserted = None;
+                    let mut activation_changed = false;
                     for (index, event) in events.iter().enumerate() {
                         let admission = capability.as_ref().filter(|_| index + 1 == events.len());
                         if let Some(admission) = admission {
@@ -248,9 +249,11 @@ impl EventLog {
                             )
                             .await?;
                         }
+                        activation_changed |= matches!(result, AppendResult::ActivationChanged(_));
                         let sequence = match result {
                             AppendResult::Existing(sequence) => sequence,
-                            AppendResult::Inserted(sequence) => {
+                            AppendResult::Inserted(sequence)
+                            | AppendResult::ActivationChanged(sequence) => {
                                 last_inserted = Some(sequence);
                                 sequence
                             }
@@ -264,6 +267,9 @@ impl EventLog {
                             .await
                             .map_err(StoreError::CommitUnknown)?;
                         commits.publish(sequence);
+                        if activation_changed {
+                            commits.activations();
+                        }
                     } else {
                         transaction.rollback().await?;
                     }
@@ -341,10 +347,20 @@ impl EventLog {
             crate::interactions::lifecycle::require_closed(transaction, &event.invocation).await?;
             crate::native_approvals::require_terminal(transaction, &event.invocation).await?;
         }
+        let checkpoint_changed: bool = if matches!(
+            event.fact,
+            Fact::ModelRequested { .. } | Fact::InvocationEnded { .. }
+        ) {
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_checkpoints WHERE invocation_id=? AND active=1)")
+                .bind(&event.invocation.invocation_id).fetch_one(&mut *transaction).await?
+        } else {
+            false
+        };
+        crate::native_approvals::append_model_request(transaction, write).await?;
         let sequence =
             ingress::insert(transaction, event, json, ingress::Position::Admitted).await?;
-        crate::native_approvals::append_settlement(transaction, event).await?;
-        crate::native_approvals::append_model_request(transaction, event).await?;
+        let activation_changed =
+            crate::native_approvals::append_settlement(transaction, event).await?;
         if matches!(event.fact, Fact::InvocationEnded { .. }) {
             crate::native_approvals::retire_terminal(transaction, &event.invocation).await?;
         }
@@ -384,7 +400,11 @@ impl EventLog {
             crate::sessions::project_execution(transaction, sequence).await?;
             crate::sessions::advance_revision(transaction, &event.invocation.session_id).await?;
         }
-        Ok(AppendResult::Inserted(sequence))
+        Ok(if activation_changed || checkpoint_changed {
+            AppendResult::ActivationChanged(sequence)
+        } else {
+            AppendResult::Inserted(sequence)
+        })
     }
 }
 
@@ -402,6 +422,7 @@ fn commit_error(error: StoreError) -> CommitError {
 pub(crate) enum AppendResult {
     Existing(u64),
     Inserted(u64),
+    ActivationChanged(u64),
 }
 
 impl EventLog {

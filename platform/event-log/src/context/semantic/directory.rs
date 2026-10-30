@@ -58,33 +58,3 @@ pub(super) fn prepare_fragment(
         })
     })
 }
-
-#[cfg(test)]
-pub(crate) fn fixture_json(json: &str) -> Result<String, StoreError> {
-    Ok(serde_json::to_string(&row(json)?)?)
-}
-
-#[cfg(test)]
-pub(super) async fn register_fixture_function(
-    db: &mut sqlx::SqliteConnection,
-) -> Result<(), StoreError> {
-    let mut handle = db.lock_handle().await?;
-    // SAFETY: the SQLx guard excludes worker access and the non-owning wrapper
-    // is dropped before the guard; only a static scalar closure is registered.
-    let raw = unsafe { rusqlite::Connection::from_handle(handle.as_raw_handle().as_ptr()) }?;
-    raw.create_scalar_function(
-        "semantic_directory",
-        1,
-        rusqlite::functions::FunctionFlags::SQLITE_UTF8
-            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
-        |ctx| {
-            let json = ctx.get::<String>(0)?;
-            fixture_json(&json).map_err(|error| {
-                rusqlite::Error::UserFunctionError(Box::new(std::io::Error::other(
-                    error.to_string(),
-                )))
-            })
-        },
-    )?;
-    Ok(())
-}

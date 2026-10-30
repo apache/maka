@@ -39,6 +39,15 @@ use fixture::{Effect, input, respond};
 use crate::support::http;
 use http::read_request;
 
+struct ObservedNativeBasis(Arc<AtomicUsize>);
+
+impl maka_agent_engine::NativeActivationBasis for ObservedNativeBasis {
+    fn checkpoint_value(&self) -> serde_json::Result<Value> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(json!({"accepted": "native basis"}))
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_duplicate_admission()
 {
@@ -77,6 +86,14 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
                 count: count.clone(),
             });
             let mut first = input(&base, "first", effect.clone());
+            let basis_materializations = Arc::new(AtomicUsize::new(0));
+            first.native_activation_basis = Some(Arc::new(ObservedNativeBasis(
+                basis_materializations.clone(),
+            )));
+            // Execute the clone to exercise the settings ownership boundary as well.
+            let cloned = first.clone();
+            drop(first);
+            let mut first = cloned;
             let maka_agent_engine::RunWork::Message { message, .. } = &mut first.work else {
                 unreachable!()
             };
@@ -144,6 +161,11 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
             fixture::enqueue(&log, steering_invocation).await;
             release.notify_one();
             running.await.unwrap().unwrap();
+            assert_eq!(
+                basis_materializations.load(Ordering::SeqCst),
+                0,
+                "ordinary model and tool execution must not materialize checkpoint evidence"
+            );
             let prefix = log.prefix(100, 128 * 1024).await.unwrap();
             assert!(log.pending_messages("session").await.unwrap().is_empty());
             assert!(
@@ -252,5 +274,3 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
     .await
     .expect("agent loop must make bounded progress");
 }
-
-mod prepared_retention;

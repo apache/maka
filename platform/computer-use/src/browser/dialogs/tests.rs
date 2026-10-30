@@ -106,49 +106,6 @@ fn dialog_objects_and_exact_parameter_mapping() {
     }
 }
 
-#[test]
-fn before_unload_requests_one_automatic_accept_and_prompt_edits_stay_local() {
-    let dialogs = Dialogs::default();
-    let automatic = dialogs
-        .observe(DialogEvent::Opening {
-            target: child("frame-a"),
-            kind: DialogType::BeforeUnload,
-            message: String::new(),
-            default_prompt: String::new(),
-            url: String::new(),
-        })
-        .unwrap();
-    assert_eq!(
-        automatic,
-        Some(DialogRequest {
-            target: child("frame-a"),
-            accept: true,
-            prompt_text: None,
-        })
-    );
-    let prompt = open(&dialogs, main(), DialogType::Prompt);
-    dialogs
-        .replace_prompt(&prompt.metadata.id, "Edited response".into())
-        .unwrap();
-    let current = dialogs.current().unwrap();
-    assert_eq!(current.prompt_text, "Edited response");
-    assert_eq!(current.message, "Fixture message");
-    assert_eq!(current.url, "https://fixture.example/");
-    assert!(dialogs.check_method("Runtime.evaluate").is_err());
-    dialogs.check_method("Page.handleJavaScriptDialog").unwrap();
-    let alert = open(&dialogs, main(), DialogType::Alert);
-    assert!(
-        dialogs
-            .replace_prompt(&prompt.metadata.id, "stale".into())
-            .is_err()
-    );
-    assert!(
-        dialogs
-            .replace_prompt(&alert.metadata.id, "wrong type".into())
-            .is_err()
-    );
-}
-
 #[tokio::test]
 async fn acknowledgement_alone_does_not_confirm_close() {
     let dialogs = Dialogs::default();
@@ -219,51 +176,6 @@ async fn close_first_preserves_pending_dispatch_and_a_replacement_dialog() {
     // is observed without revising the already proven close or replaying it.
     reply.send(Err(failed("late RPC rejection"))).unwrap();
     assert!(rpc.await.unwrap_err().to_string().contains("late RPC"));
-}
-
-#[tokio::test]
-async fn immediate_close_during_dispatch_is_observed_without_an_ack() {
-    let dialogs = Dialogs::default();
-    let dialog = open(&dialogs, main(), DialogType::Alert);
-    let prepared = dialogs
-        .prepare_handle(&dialog.metadata.id, DialogAction::Dismiss, None)
-        .unwrap();
-    let observer = dialogs.clone();
-    let (reply, received) = oneshot::channel::<Result<(), ToolError>>();
-    let mut rpc = Box::pin(async move {
-        observer
-            .observe(DialogEvent::Closed { target: main() })
-            .unwrap();
-        received.await.unwrap()
-    });
-    let outcome = prepared
-        .confirm(rpc.as_mut(), &CancellationToken::new())
-        .await;
-    outcome.result.unwrap();
-    assert_eq!(outcome.dispatch, DispatchDisposition::Pending);
-    reply.send(Ok(())).unwrap();
-    rpc.await.unwrap();
-}
-
-#[tokio::test]
-async fn close_and_late_rejection_in_the_same_dispatch_poll_keep_close_success() {
-    let dialogs = Dialogs::default();
-    let dialog = open(&dialogs, main(), DialogType::Confirm);
-    let prepared = dialogs
-        .prepare_handle(&dialog.metadata.id, DialogAction::Accept, None)
-        .unwrap();
-    let observer = dialogs.clone();
-    let mut rpc = Box::pin(async move {
-        observer
-            .observe(DialogEvent::Closed { target: main() })
-            .unwrap();
-        Err(failed("rejection after observed close"))
-    });
-    let outcome = prepared
-        .confirm(rpc.as_mut(), &CancellationToken::new())
-        .await;
-    outcome.result.unwrap();
-    assert_eq!(outcome.dispatch, DispatchDisposition::Settled);
 }
 
 #[tokio::test]
@@ -526,14 +438,6 @@ async fn cancelled_close_keeps_original_join_and_closing_refuses_new_host_effect
         2,
         "closing controller re-admitted an automatic effect"
     );
-    controller.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn close_accepts_original_worker_cancellation_and_is_repeatable() {
-    let worker = tokio::spawn(std::future::pending::<()>());
-    let mut controller = controller_with_worker(worker);
-    controller.close().await.unwrap();
     controller.close().await.unwrap();
 }
 

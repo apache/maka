@@ -73,11 +73,40 @@ pub fn attachment(id: &str) -> Value {
         "ref":{"kind":"session_file", "sessionId":"session", "relativePath":id}})
 }
 
-pub async fn artifact(log: &SessionFixture, id: &str, size: usize, valid: bool) {
-    let mut bytes = vec![0; size];
-    if valid {
-        bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
-    }
+pub async fn png(width: u32, height: u32) -> Vec<u8> {
+    tokio::task::spawn_blocking(move || {
+        use image::{
+            ImageEncoder,
+            codecs::png::{CompressionType, FilterType, PngEncoder},
+        };
+        let mut pixels = vec![0; width as usize * height as usize * 4];
+        fastrand::Rng::with_seed(42).fill(&mut pixels);
+        if width >= 64 && height >= 64 {
+            for (x, y, color) in [
+                (0, 0, [255, 0, 0, 255]),
+                (width - 32, 0, [0, 255, 0, 255]),
+                (0, height - 32, [0, 0, 255, 255]),
+                (width - 32, height - 32, [255, 255, 0, 255]),
+            ] {
+                for row in y..y + 32 {
+                    for column in x..x + 32 {
+                        let offset = (row as usize * width as usize + column as usize) * 4;
+                        pixels[offset..offset + 4].copy_from_slice(&color);
+                    }
+                }
+            }
+        }
+        let mut encoded = Vec::new();
+        PngEncoder::new_with_quality(&mut encoded, CompressionType::Fast, FilterType::NoFilter)
+            .write_image(&pixels, width, height, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        encoded
+    })
+    .await
+    .unwrap()
+}
+
+pub async fn artifact(log: &SessionFixture, id: &str, bytes: Vec<u8>) {
     log.commit_artifact(
         Artifact {
             id: id.into(),
@@ -86,7 +115,7 @@ pub async fn artifact(log: &SessionFixture, id: &str, size: usize, valid: bool) 
             created_at: 1,
             name: id.into(),
             kind: ArtifactKind::Image,
-            size_bytes: size as u64,
+            size_bytes: bytes.len() as u64,
             mime_type: Some("image/png".into()),
             source: ArtifactSource::UserUpload,
             summary: Some(content_digest(&bytes)),
@@ -97,12 +126,25 @@ pub async fn artifact(log: &SessionFixture, id: &str, size: usize, valid: bool) 
     .unwrap();
 }
 
-pub async fn request(socket: &mut TcpStream) -> Value {
-    // Two 50 MiB images, three 4 MiB images, and a tiny overflow image
-    // are sent together. Account for base64 and allow 1 MiB of JSON metadata.
-    let fixture_media_bytes: usize = (2 * 50 + 3 * 4) * 1024 * 1024 + 9;
-    let max_body_bytes = fixture_media_bytes.div_ceil(3) * 4 + 1024 * 1024;
-    super::http::read_request_bounded(socket, max_body_bytes).await
+pub async fn assert_stored_png(log: &SessionFixture, id: &str, length: u64, digest: &str) {
+    use sha2::{Digest, Sha256};
+    let mut actual = Sha256::new();
+    let mut offset = 0;
+    loop {
+        let chunk = log
+            .read_artifact_chunk(log.id(), id, offset, 512 * 1024)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(chunk.total_bytes, length);
+        assert!(!chunk.bytes.is_empty());
+        actual.update(&chunk.bytes);
+        offset += chunk.bytes.len() as u64;
+        if offset == length {
+            break;
+        }
+    }
+    assert_eq!(format!("sha256:{}", hex::encode(actual.finalize())), digest);
 }
 
 pub async fn respond(socket: &mut TcpStream) {

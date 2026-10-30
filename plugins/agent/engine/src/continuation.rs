@@ -233,7 +233,7 @@ pub(super) async fn inspect(
 pub(super) async fn replay<W>(
     input: &RunInput<W>,
     mut prompt: crate::prepared_prompt::PreparedPrompt,
-    definitions: Vec<maka_model::ToolDefinition>,
+    definitions: Vec<Arc<maka_model::ToolDefinition>>,
     cancellation: &CancellationToken,
 ) -> Result<ReplayEvidence, RunError> {
     let arena = prompt.arena().cloned();

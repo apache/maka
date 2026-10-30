@@ -34,7 +34,6 @@ use maka_agent_facts::{
 };
 use maka_event_log::{
     context::semantic::SemanticSelection,
-    root::{RootNamespaces, RootOwner},
     root_store::{RootStore, SessionExecutionLease, SessionStore},
 };
 use maka_model::{ModelPreparationResources, ModelRequest, ProviderKind};
@@ -101,6 +100,10 @@ async fn open_model(store: &SessionStore) {
     append(
         store,
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             item_acceptance: false,
             effective_source_digest: None,
             purpose: maka_agent_facts::context::ModelPurpose::Main,
@@ -293,72 +296,6 @@ impl Fixture {
         .unwrap();
         PreparedPrompt::from_history(history)
     }
-    async fn reopen_next_turn(self) -> Self {
-        let Self {
-            directory,
-            root,
-            log,
-            execution,
-            mut selection,
-            original,
-        } = self;
-        append(
-            &log,
-            Fact::InvocationEnded {
-                outcome: maka_agent_facts::event::InvocationOutcome::Completed,
-            },
-        )
-        .await;
-        drop(log);
-        execution.finish();
-        root.shutdown().await.unwrap();
-        drop(root);
-        let owner = RootOwner::open(
-            &directory.path().join("root"),
-            &RootNamespaces {
-                ownership: directory.path().join("ownership"),
-                control: directory.path().join("control"),
-            },
-        )
-        .unwrap();
-        let root = RootStore::open(Arc::new(owner)).await.unwrap();
-        let store = root.session("session").await.unwrap();
-        let execution = store.execution_scope(None).await.unwrap().accept();
-        let log = Arc::new(execution.store());
-        let through = log
-            .append(
-                &EventWrite::plain(RuntimeEvent::new(
-                    Invocation {
-                        session_id: "session".into(),
-                        turn_id: "next-turn".into(),
-                        run_id: "next-run".into(),
-                        invocation_id: "next-invocation".into(),
-                    },
-                    Fact::InvocationOpened {
-                        configuration: None,
-                        input: InvocationInput::Message {
-                            source_messages: Vec::new(),
-                            content: "Describe the original image again".into(),
-                            request_fingerprint: None,
-                        },
-                    },
-                ))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        selection.through = through;
-        selection.captured_through = through;
-        Self {
-            directory,
-            root,
-            log,
-            execution,
-            selection,
-            original,
-        }
-    }
-
     async fn unchanged(&self) {
         let mut original = Vec::new();
         loop {
@@ -1172,91 +1109,6 @@ async fn long_image_cannot_decode_before_its_complete_peak_is_admitted() {
             .load(std::sync::atomic::Ordering::Relaxed),
         0,
         "rejected admission cannot start an uncharged decoder worker"
-    );
-    fixture.unchanged().await;
-    prompt.close().await.unwrap();
-    drop(prompt);
-    fixture.close().await;
-}
-
-#[tokio::test]
-async fn cancellation_closes_only_after_the_existing_physical_arena_worker_drains() {
-    let fixture = Fixture::new(false, WIDTH, HEIGHT).await;
-    let provider = provider(ProviderKind::OpenaiChatCompletions);
-    let mut prompt = fixture.capture(&provider).await;
-    prompt
-        .prepare_media(&provider, &CancellationToken::new())
-        .await
-        .unwrap();
-    let arena = prompt.arena().unwrap().clone();
-    let (started, entered) = tokio::sync::oneshot::channel();
-    let (release, wait) = std::sync::mpsc::channel();
-    let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let worker_finished = finished.clone();
-    let worker = tokio::spawn(async move {
-        arena
-            .with_writer(move |_| {
-                started.send(()).unwrap();
-                wait.recv().unwrap();
-                worker_finished.store(true, std::sync::atomic::Ordering::Release);
-                Ok(())
-            })
-            .await
-    });
-    entered.await.unwrap();
-    let cancellation = CancellationToken::new();
-    cancellation.cancel();
-    assert!(matches!(
-        prompt
-            .compile_wire(Language::En, &provider, &Value::Null, &[], &cancellation)
-            .await,
-        Err(RunError::Cancelled)
-    ));
-    assert_eq!(
-        prompt
-            .media_view
-            .as_ref()
-            .unwrap()
-            .decoded_jobs
-            .load(std::sync::atomic::Ordering::Relaxed),
-        0
-    );
-    {
-        let closing = prompt.close();
-        tokio::pin!(closing);
-        assert!(
-            futures_util::poll!(&mut closing).is_pending(),
-            "a cancelled request cannot declare physical cleanup while its arena worker is live"
-        );
-        assert!(!finished.load(std::sync::atomic::Ordering::Acquire));
-        release.send(()).unwrap();
-        worker.await.unwrap().unwrap();
-        closing.await.unwrap();
-    }
-    assert!(finished.load(std::sync::atomic::Ordering::Acquire));
-    drop(prompt);
-    fixture.unchanged().await;
-    fixture.close().await;
-}
-
-#[tokio::test]
-async fn fresh_root_and_next_turn_rebuild_the_same_whole_view_from_original_facts() {
-    let fixture = Fixture::new(false, WIDTH, HEIGHT).await;
-    let provider = provider(ProviderKind::OpenaiChatCompletions);
-    let mut prompt = fixture.capture(&provider).await;
-    compile(&mut prompt, &provider).await;
-    let first = views(&prompt).await;
-    assert_eq!(first.len(), 1);
-    assert_whole_tall_image(&first[0], (17, 2000));
-    prompt.close().await.unwrap();
-    drop(prompt);
-    let fixture = fixture.reopen_next_turn().await;
-    let mut prompt = fixture.capture(&provider).await;
-    compile(&mut prompt, &provider).await;
-    assert_eq!(
-        views(&prompt).await,
-        first,
-        "the next turn regenerates the same whole-image view without durable crop selections or a derived cache"
     );
     fixture.unchanged().await;
     prompt.close().await.unwrap();

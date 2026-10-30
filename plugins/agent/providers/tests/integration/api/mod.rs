@@ -287,203 +287,51 @@ async fn account_metadata_and_reply_capacity_survive_plugin_policy_resolution() 
 }
 
 #[tokio::test]
-async fn catalog_metadata_and_execution_share_provider_facts_and_explicit_overrides() {
-    use maka_agent_facts::public_catalog::PublicCatalogBody;
-    use maka_providers::catalog::Snapshot;
-    let models = PublicCatalogBody::from_json(json!({
-        "openai":{"id":"openai","models":{
-            "model-alias":{"id":"model-alias","canonical_model_id":"vendor/public-model"}
-        }},
-        "openrouter":{"id":"openrouter","models":{
-            "vendor/public-model":{"id":"vendor/public-model","canonical_model_id":"vendor/public-model"}
-        }}
-    }).to_string()).unwrap();
-    let router = PublicCatalogBody::from_json(
-        json!({"data":[{
-            "id":"vendor/public-model","name":"Public model","context_length":1048576,
-            "top_provider":{"max_completion_tokens":393216},
-            "reasoning":{"mandatory":true,"supported_efforts":["high"],"default_effort":"high"}
-        }]})
-        .to_string(),
-    )
-    .unwrap();
-    let snapshot =
-        std::sync::Arc::new(Snapshot::from_sources(Some(&models), Some(&router)).unwrap());
-    let binding = ApiProviders::definition("openai-compatible", snapshot.clone()).unwrap();
-    let mut input = request(&binding, "model-alias", ModelOverride::default());
-    let metadata = ApiProviders::model_metadata(
-        "openai-compatible",
-        snapshot,
-        input.connection.clone(),
-        input.model.clone(),
-        None,
-    )
-    .unwrap();
-    assert_eq!(metadata.info.display_name.as_deref(), Some("Public model"));
-    assert_eq!(metadata.info.context_window, Some(1048576));
-    assert_eq!(metadata.info.max_output_tokens, Some(393216));
-    assert_eq!(metadata.info.api_protocol, None);
-    assert!(metadata.thinking_levels.is_empty());
-    assert_eq!(metadata.default_thinking_level, None);
-    let model = binding.prepare(input.clone()).await.unwrap();
-    assert_eq!(model.info.id, "model-alias");
-    assert_eq!(model.adapter, "chat-completions");
-    assert_eq!(model.info.context_window, Some(1048576));
-    assert_eq!(model.main_output_limit, Some(393216));
-    input.model.context_window = Some(8192);
-    input.model.max_output_tokens = Some(4096);
-    input.overrides = Some(ModelOverride {
-        context_window: Some(6000),
-        input_limit: Some(4000),
-        max_output_tokens: Some(2048),
-        ..Default::default()
-    });
-    let model = binding.prepare(input).await.unwrap();
-    assert_eq!(model.info.context_window, Some(6000));
-    assert_eq!(model.info.input_limit, Some(4000));
-    assert_eq!(model.info.max_output_tokens, Some(4096));
-    assert_eq!(model.main_output_limit, Some(2048));
-}
+async fn repeated_definitions_keep_each_captured_model_observation() {
+    use maka_providers::{catalog::Snapshot, codex::Codex};
+    use std::sync::Arc;
 
-#[tokio::test]
-async fn selectable_thinking_choices_respect_native_encoder_and_invalid_default() {
-    let binding = binding("anthropic-compatible");
-    let mut input = request(
-        &binding,
-        "future-model",
-        ModelOverride {
-            thinking_levels: Some(vec![High]),
-            ..Default::default()
-        },
-    );
-    let metadata = ApiProviders::model_metadata(
-        "anthropic-compatible",
-        snapshot(),
-        input.connection.clone(),
-        input.model.clone(),
-        input.overrides.clone(),
-    )
-    .unwrap();
-    assert_eq!(metadata.thinking_levels, [High]);
-    assert_eq!(metadata.default_thinking_level, None);
-    assert_eq!(
-        binding
-            .prepare(input.clone())
-            .await
-            .unwrap()
-            .provider_options,
-        json!({"anthropic":{"cacheControl":{"type":"ephemeral"}}})
-    );
-    input.thinking_level = Some(High);
-    assert_eq!(
-        binding
-            .prepare(input.clone())
-            .await
-            .unwrap()
-            .provider_options,
-        json!({"anthropic":{"cacheControl":{"type":"ephemeral"},"effort":"high"}})
-    );
-    input.overrides.as_mut().unwrap().default_thinking_level = Some(High);
-    let metadata = ApiProviders::model_metadata(
-        "anthropic-compatible",
-        snapshot(),
-        input.connection.clone(),
-        input.model.clone(),
-        input.overrides.clone(),
-    )
-    .unwrap();
-    assert_eq!(metadata.thinking_levels, [High]);
-    assert_eq!(metadata.default_thinking_level, Some(High));
-    input.thinking_level = None;
-    assert_eq!(
-        binding
-            .prepare(input.clone())
-            .await
-            .unwrap()
-            .provider_options,
-        json!({"anthropic":{"cacheControl":{"type":"ephemeral"},"effort":"high"}})
-    );
-    input.overrides.as_mut().unwrap().thinking_levels = Some(vec![Low]);
-    assert!(
-        ApiProviders::model_metadata(
-            "anthropic-compatible",
-            snapshot(),
-            input.connection.clone(),
-            input.model.clone(),
-            input.overrides.clone(),
-        )
-        .is_err()
-    );
-    // A default outside the declared choices is invalid on either protocol.
-    assert!(
-        ApiProviders::model_metadata(
-            "openai-compatible",
-            snapshot(),
-            input.connection,
-            input.model,
-            input.overrides
-        )
-        .is_err()
-    );
-}
-
-#[tokio::test]
-async fn manual_catalog_association_preserves_connection_policy_and_explicit_facts() {
-    use maka_agent_facts::configuration::CatalogModelReference;
-    let snapshot = snapshot();
-    let (provider, public) = snapshot
-        .models(None)
-        .find(|(provider, model)| {
-            *provider == "anthropic"
-                && model.context_window.is_some()
-                && model.max_output_tokens.is_some()
-        })
-        .unwrap();
-    let public = public.clone();
-    let reference = CatalogModelReference {
-        provider: provider.into(),
-        model_id: public.id.clone(),
-    };
-    let binding = ApiProviders::definition("openai-compatible", snapshot.clone()).unwrap();
-    let mut input = request(
-        &binding,
-        "private-alias",
-        ModelOverride {
-            catalog_model: Some(reference.clone()),
-            ..Default::default()
-        },
-    );
-    let model = binding.prepare(input.clone()).await.unwrap();
-    assert_eq!(model.info.id, "private-alias");
-    assert_eq!(model.base_url, "https://relay.test/v1");
-    assert_eq!(model.adapter, "chat-completions");
-    assert_eq!(model.info.context_window, public.context_window);
-    assert_eq!(model.main_output_limit, public.max_output_tokens);
-    assert!(model.thinking_levels.is_empty());
-    input.model.context_window = Some(8192);
-    input.overrides.as_mut().unwrap().context_window = Some(6000);
-    let model = binding.prepare(input).await.unwrap();
-    assert_eq!(model.info.context_window, Some(6000));
-    let subscription = maka_providers::codex::Codex::new(snapshot)
-        .definition()
-        .unwrap();
-    let model = subscription
-        .prepare(Resolve {
-            connection: Connection {
-                id: "subscription".into(),
-                revision: 1,
-                configuration: json!({"baseUrl":"https://chatgpt.com/backend-api/codex"}),
-            },
-            model: ModelInfo::new("private-alias"),
-            overrides: Some(ModelOverride {
-                catalog_model: Some(reference),
-                ..Default::default()
-            }),
-            thinking_level: None,
-        })
-        .await
-        .unwrap();
-    assert_eq!(model.info.id, "private-alias");
-    assert_eq!(model.info.context_window, public.context_window);
-    assert_eq!(model.adapter, maka_providers::codex::ADAPTER);
+    for provider in ["openai", "chatgpt"] {
+        let bindings: Vec<_> = [Some(400_000), Some(600_000), None]
+            .into_iter()
+            .map(|context_window| {
+                let record = context_window.map(|context_window| ModelInfo {
+                    context_window: Some(context_window),
+                    max_output_tokens: Some(8_000),
+                    ..ModelInfo::new("gpt-5.4")
+                });
+                let snapshot = Arc::new(Snapshot::for_model(provider, "gpt-5.4", record).unwrap());
+                let binding = if provider == "chatgpt" {
+                    Codex::new(snapshot).definition().unwrap()
+                } else {
+                    ApiProviders::definition(provider, snapshot).unwrap()
+                };
+                (binding, context_window)
+            })
+            .collect();
+        assert!(
+            std::ptr::eq(bindings[0].0.descriptor(), bindings[1].0.descriptor()),
+            "provider {provider} should share its compiled descriptor policy"
+        );
+        for (binding, context_window) in bindings {
+            let configuration = binding.configure(json!({})).unwrap();
+            let model = binding
+                .prepare(Resolve {
+                    connection: Connection {
+                        id: "captured-account".into(),
+                        revision: 1,
+                        configuration,
+                    },
+                    model: ModelInfo::new("gpt-5.4"),
+                    overrides: None,
+                    thinking_level: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                model.info.context_window, context_window,
+                "provider {provider}"
+            );
+        }
+    }
 }

@@ -74,7 +74,7 @@ async fn wire(cleanup_gate: Option<CancellationToken>) -> Wire {
     });
     let socket = Cdp::connect(
         &format!("ws://{address}"),
-        &crate::protocol::BrowserConnection {
+        &maka_capabilities::computer::BrowserConnection {
             id: "fixture".into(),
             endpoint: format!("http://{address}"),
         },

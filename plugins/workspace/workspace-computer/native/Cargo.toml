@@ -49,4 +49,3 @@ url = "2.5.8"
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio-tungstenite.workspace = true

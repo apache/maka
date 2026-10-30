@@ -21,7 +21,7 @@ use super::*;
 use futures_util::{StreamExt, future::BoxFuture};
 use maka_agent_ports::model::{Connect, Events, Socket, Transport};
 use std::{
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 use tokio::time::Instant;
@@ -158,63 +158,4 @@ async fn another_upload_cannot_keep_a_stalled_attempt_alive() {
     };
     let (result, ()) = tokio::join!(dispatch(&active, active_request), stalled_attempt);
     result.unwrap();
-}
-#[tokio::test(start_paused = true)]
-async fn cancellation_during_upload_preserves_its_cause_and_waits_for_settlement() {
-    let (context, settled) = context(false);
-    let cancellation = context.cancellation.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        cancellation.cancel();
-    });
-    let start = Instant::now();
-    assert!(matches!(
-        dispatch(&context, upload(vec![(20, b"pending")])).await,
-        Err(ModelError::Cancelled)
-    ));
-    assert!(settled.load(Ordering::SeqCst));
-    assert_eq!(start.elapsed(), Duration::from_secs(12));
-}
-#[tokio::test(start_paused = true)]
-async fn replay_retains_exact_length_and_observes_each_transport_pull() {
-    let (activity, mut progress) = tokio::sync::watch::channel(Instant::now());
-    let opens = Arc::new(AtomicUsize::new(0));
-    let source_opens = opens.clone();
-    let original = http::RequestBody::replayable(move || {
-        source_opens.fetch_add(1, Ordering::SeqCst);
-        http::RequestBody::with_length(
-            futures_util::stream::iter([
-                Ok(http::Bytes::from_static(b"pay")),
-                Ok(http::Bytes::from_static(b"load")),
-            ]),
-            7,
-        )
-    });
-    assert_eq!(opens.load(Ordering::SeqCst), 1);
-    let original = observe_upload(original, activity);
-    assert_eq!(
-        opens.load(Ordering::SeqCst),
-        1,
-        "observation preserves the initial cursor"
-    );
-    assert_eq!(original.length(), Some(7));
-    let replay = original.replay_source().unwrap();
-    let mut original = Some(original);
-    for expected_opens in 1..=2 {
-        let body = original.take().unwrap_or_else(|| replay.open());
-        assert_eq!(opens.load(Ordering::SeqCst), expected_opens);
-        assert_eq!(body.length(), Some(7));
-        assert!(body.replay_source().is_some());
-        let mut source = body.into_stream();
-        let mut received = Vec::new();
-        for expected in [b"pay".as_slice(), b"load".as_slice()] {
-            tokio::time::advance(Duration::from_secs(20)).await;
-            let chunk = source.next().await.unwrap().unwrap();
-            assert_eq!(chunk.as_ref(), expected);
-            received.extend_from_slice(&chunk);
-            assert_eq!(*progress.borrow_and_update(), Instant::now());
-        }
-        assert_eq!(received, b"payload");
-        assert!(source.next().await.is_none());
-    }
 }

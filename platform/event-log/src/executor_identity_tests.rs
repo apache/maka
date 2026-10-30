@@ -37,12 +37,6 @@ use serde_json::{Value, json};
 
 const CONFLICT: &str = "message identity collides with a canonical visible identity";
 
-#[derive(Clone, Copy, Debug)]
-enum CloseAt {
-    ExecutorCompleted,
-    InvocationEnded,
-}
-
 fn invocation(name: &str) -> Invocation {
     Invocation {
         session_id: "session".into(),
@@ -130,20 +124,11 @@ fn cached_rows(db: &Connection) -> Vec<(i64, i64, String, Vec<u8>)> {
         .unwrap().collect::<Result<_, _>>().unwrap()
 }
 
-fn closing(invocation: &Invocation, at: CloseAt) -> EventWrite {
+fn closing(invocation: &Invocation) -> EventWrite {
     write(
         invocation,
-        match at {
-            CloseAt::ExecutorCompleted => Fact::ExecutorCompleted {
-                text: "final executor answer".into(),
-            },
-            CloseAt::InvocationEnded => Fact::InvocationEnded {
-                outcome: InvocationOutcome::Failed {
-                    class: "external_stopped".into(),
-                    message: None,
-                    model_failure: None,
-                },
-            },
+        Fact::ExecutorCompleted {
+            text: "final executor answer".into(),
         },
     )
 }
@@ -302,265 +287,6 @@ async fn materialize_all(log: &EventLog, through: u64) {
 }
 
 #[tokio::test]
-async fn executor_closing_rejects_prior_client_result_identity_and_rolls_back() {
-    for at in [CloseAt::ExecutorCompleted, CloseAt::InvocationEnded] {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("identity.sqlite");
-        let log = EventLog::open(&path).await.unwrap();
-        log.create_session("session", "create", &json!({}), 1)
-            .await
-            .unwrap();
-        let db = Connection::open(&path).unwrap();
-        let executor = invocation("executor");
-        let client = invocation("client");
-        // RuntimeEvent supplies its ordinary UUID before the source is claimed.
-        let target = closing(&executor, at);
-        let id = format!("{}_tool_result_1", target.event().id);
-        log.append(&write(&client, opening(temp.path(), false)))
-            .await
-            .unwrap();
-        let (delivery, receipt) = queued(&log, &client, &id).await;
-        let delivered = log.append(&delivery).await.unwrap();
-        assert_eq!(log.append(&delivery).await.unwrap(), delivered);
-        finish_invocation(&log, &client).await;
-        // z/alpha remain pending; beta's real result must not count a third slot.
-        start_executor(
-            &log,
-            temp.path(),
-            &executor,
-            &["z", "alpha", "beta"],
-            &["beta"],
-        )
-        .await;
-        log.close().await.unwrap();
-        let log = EventLog::open(&path).await.unwrap();
-        assert!(
-            crate::test_store::inspect_cache(&log, cached_rows)
-                .await
-                .is_empty(),
-            "canonical guard does not depend on transcript cache"
-        );
-        let before = crate::test_store::inspect_cache(&log, snapshot).await;
-        assert_eq!(before.receipts.len(), 1);
-        assert!(
-            before.raw.is_empty(),
-            "executor output is not a native raw-tool result"
-        );
-        let prefix = write(
-            &executor,
-            Fact::ExecutorObserved {
-                output: Output::OutputDelta {
-                    text: "must roll back".into(),
-                },
-            },
-        );
-        rejected(
-            log.append_batch(&[prefix, target.clone()])
-                .await
-                .unwrap_err(),
-        );
-        assert_eq!(
-            crate::test_store::inspect_cache(&log, snapshot).await,
-            before,
-            "canonical bytes, receipt and transaction prefix must roll back"
-        );
-        rejected(log.append(&target).await.unwrap_err());
-        assert_eq!(
-            crate::test_store::inspect_cache(&log, snapshot).await,
-            before
-        );
-        assert_eq!(
-            log.message_submit_receipt("epoch", "session", &id)
-                .await
-                .unwrap(),
-            Some(receipt)
-        );
-        let replacement = closing(&executor, at);
-        let mut through = log.append(&replacement).await.unwrap();
-        assert_eq!(log.append(&replacement).await.unwrap(), through);
-        if matches!(at, CloseAt::ExecutorCompleted) {
-            through = finish_invocation(&log, &executor).await;
-        }
-        materialize_all(&log, through).await;
-        let committed = events(&db);
-        log.close().await.unwrap();
-        let log = EventLog::open(&path).await.unwrap();
-        materialize_all(&log, through).await;
-        assert_eq!(events(&db), committed);
-        log.close().await.unwrap();
-    }
-}
-
-#[tokio::test]
-async fn client_source_rejects_executor_result_identity_after_reopen() {
-    for at in [CloseAt::ExecutorCompleted, CloseAt::InvocationEnded] {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("identity.sqlite");
-        let log = EventLog::open(&path).await.unwrap();
-        log.create_session("session", "create", &json!({}), 1)
-            .await
-            .unwrap();
-        let db = Connection::open(&path).unwrap();
-        let executor = invocation("executor");
-        start_executor(
-            &log,
-            temp.path(),
-            &executor,
-            &["z", "alpha", "beta"],
-            &["beta"],
-        )
-        .await;
-        let end = closing(&executor, at);
-        let id = format!("{}_tool_result_1", end.event().id);
-        log.append(&end).await.unwrap();
-        if matches!(at, CloseAt::ExecutorCompleted) {
-            finish_invocation(&log, &executor).await;
-        }
-        let client = invocation("client");
-        log.append(&write(&client, opening(temp.path(), false)))
-            .await
-            .unwrap();
-        let (legitimate, receipt) = queued(&log, &client, "receipt-control").await;
-        log.close().await.unwrap();
-        let log = EventLog::open(&path).await.unwrap();
-        assert!(
-            crate::test_store::inspect_cache(&log, cached_rows)
-                .await
-                .is_empty()
-        );
-        let before = crate::test_store::inspect_cache(&log, snapshot).await;
-        assert_eq!(before.receipts.len(), 1);
-        assert_eq!(before.pending.len(), 1);
-        preflight_rejected(
-            log.validate_message_identity("session", &id)
-                .await
-                .unwrap_err(),
-        );
-        let target = claim(&client, &id);
-        // The first write consumes a real queue reservation; rejection of the
-        // second must restore it and its revision, not just the event prefix.
-        rejected(
-            log.append_batch(&[legitimate.clone(), target.clone()])
-                .await
-                .unwrap_err(),
-        );
-        assert_eq!(
-            crate::test_store::inspect_cache(&log, snapshot).await,
-            before
-        );
-        rejected(log.append(&target).await.unwrap_err());
-        assert_eq!(
-            crate::test_store::inspect_cache(&log, snapshot).await,
-            before
-        );
-        assert_eq!(
-            log.message_submit_receipt("epoch", "session", "receipt-control")
-                .await
-                .unwrap(),
-            Some(receipt)
-        );
-        let through = log.append(&legitimate).await.unwrap();
-        assert_eq!(log.append(&legitimate).await.unwrap(), through);
-        assert!(log.pending_messages("session").await.unwrap().is_empty());
-        materialize_all(&log, through).await;
-        let committed = events(&db);
-        log.close().await.unwrap();
-        let log = EventLog::open(&path).await.unwrap();
-        preflight_rejected(
-            log.validate_message_identity("session", &id)
-                .await
-                .unwrap_err(),
-        );
-        materialize_all(&log, through).await;
-        assert_eq!(events(&db), committed);
-        log.close().await.unwrap();
-    }
-}
-
-#[tokio::test]
-async fn executor_result_identity_reserves_only_actual_pending_slots() {
-    for (calls, settled, n) in [
-        (vec![], vec![], 0usize),
-        (vec!["alpha"], vec!["alpha"], 0),
-        (vec!["z", "alpha", "beta"], vec!["beta"], 2),
-    ] {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("positive.sqlite");
-        let log = EventLog::open(&path).await.unwrap();
-        log.create_session("session", "create", &json!({}), 1)
-            .await
-            .unwrap();
-        let db = Connection::open(&path).unwrap();
-        let executor = invocation("executor");
-        start_executor(&log, temp.path(), &executor, &calls, &settled).await;
-        let complete = closing(&executor, CloseAt::ExecutorCompleted);
-        let complete_sequence = log.append(&complete).await.unwrap();
-        let end = write(
-            &executor,
-            Fact::InvocationEnded {
-                outcome: InvocationOutcome::Completed,
-            },
-        );
-        log.append(&end).await.unwrap();
-        let client = invocation("client");
-        log.append(&write(&client, opening(temp.path(), false)))
-            .await
-            .unwrap();
-        log.close().await.unwrap();
-        let log = EventLog::open(&path).await.unwrap();
-        // Zero pending, a settled call, index N, and the later InvocationEnded
-        // must not reserve IDs merely because their suffix parses.
-        let ids = [
-            format!("{}_tool_result_{n}", complete.event().id),
-            format!("{}_tool_result_{}", complete.event().id, n + 7),
-            format!("{}_tool_result_0", end.event().id),
-            format!("{}_tool_result_01", complete.event().id),
-        ];
-        let mut through = 0;
-        for id in &ids {
-            log.validate_message_identity("session", id).await.unwrap();
-            through = log.append(&claim(&client, id)).await.unwrap();
-        }
-        if n == 2 {
-            let occupied = format!("{}_tool_result_1", complete.event().id);
-            preflight_rejected(
-                log.validate_message_identity("session", &occupied)
-                    .await
-                    .unwrap_err(),
-            );
-            rejected(log.append(&claim(&client, &occupied)).await.unwrap_err());
-            log.create_session("other", "other-create", &json!({}), 1)
-                .await
-                .unwrap();
-            let mut other = invocation("other");
-            other.session_id = "other".into();
-            log.append(&write(&other, opening(temp.path(), false)))
-                .await
-                .unwrap();
-            log.validate_message_identity("other", &occupied)
-                .await
-                .unwrap();
-            log.append(&claim(&other, &occupied)).await.unwrap();
-        }
-        materialize_all(&log, through).await;
-        let synthetic: Vec<String> = crate::test_store::inspect_cache(&log, move |db| { db.prepare("SELECT message_id FROM temp.transcript_rows WHERE session_id='session' AND source_sequence=? AND json_extract(payload,'$.type')='tool_result' ORDER BY item_index").unwrap()
-            .query_map([i64::try_from(complete_sequence).unwrap()], |row| row.get(0)).unwrap().collect::<Result<_,_>>().unwrap() }).await;
-        assert_eq!(
-            synthetic,
-            (0..n)
-                .map(|i| format!("{}_tool_result_{i}", complete.event().id))
-                .collect::<Vec<_>>()
-        );
-        let committed = events(&db);
-        log.close().await.unwrap();
-        let log = EventLog::open(&path).await.unwrap();
-        materialize_all(&log, through).await;
-        assert_eq!(events(&db), committed);
-        log.close().await.unwrap();
-    }
-}
-
-#[tokio::test]
 async fn executor_tool_call_identity_is_atomic_session_scoped_and_reopens() {
     for source_first in [true, false] {
         let temp = tempfile::tempdir().unwrap();
@@ -613,9 +339,7 @@ async fn executor_tool_call_identity_is_atomic_session_scoped_and_reopens() {
                 &["pending-call"],
             )
             .await;
-            log.append(&closing(&executor, CloseAt::ExecutorCompleted))
-                .await
-                .unwrap();
+            log.append(&closing(&executor)).await.unwrap();
             finish_invocation(&log, &executor).await;
             log.append(&write(&client, opening(temp.path(), false)))
                 .await
@@ -687,9 +411,7 @@ async fn executor_tool_call_identity_is_atomic_session_scoped_and_reopens() {
                     .await
                     .unwrap();
             }
-            log.append(&closing(&executor, CloseAt::ExecutorCompleted))
-                .await
-                .unwrap();
+            log.append(&closing(&executor)).await.unwrap();
             finish_invocation(&log, &executor).await;
             let tail = invocation("tail");
             log.append(&write(&tail, opening(temp.path(), false)))

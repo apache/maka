@@ -378,6 +378,10 @@ mod tests {
             Some(12 + text_units("draft now admitted"))
         );
         let request = Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             step_id: "next".into(),

@@ -731,6 +731,3 @@ async fn error_result(
         literal(b"\"}"),
     ])
 }
-
-#[cfg(test)]
-mod tests;

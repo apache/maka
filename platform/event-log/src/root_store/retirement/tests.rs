@@ -239,6 +239,102 @@ async fn promoted_draft_rejects_stale_plan_and_retries_with_its_binding_pin() {
 }
 
 #[tokio::test]
+async fn removal_retry_keeps_a_restored_child_and_its_new_work_unchanged() {
+    use crate::sessions::PluginSession;
+    use maka_capabilities::storage::Namespace;
+    use maka_plugin_core::scope::Scope;
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = open(directory.path()).await;
+    let parent = root
+        .create_session("parent", "create", &json!({}), 1)
+        .await
+        .unwrap();
+    let owner = parent.owner().unwrap();
+    root.create_plugin_session(
+        &PluginSession {
+            session_id: "child".into(),
+            creator: Namespace::new("example", Scope::Profile).unwrap(),
+            fingerprint: "child".into(),
+            managed: false,
+            authority_session_id: Some("parent".into()),
+        },
+        &json!({}),
+        2,
+    )
+    .await
+    .unwrap();
+    let expected = parent.get::<Value>().await.unwrap().unwrap().revision;
+    let RemoveFamilyResult::Accepted(plan) = root
+        .remove_session_family("parent", expected, RemovalAuthority::Unmanaged)
+        .await
+        .unwrap()
+    else {
+        panic!("current removal plan")
+    };
+    assert_eq!(plan.remove, ["parent"]);
+    assert_eq!(plan.archive, ["child"]);
+    assert_eq!(
+        root.finish_session_retirement("parent").await.unwrap(),
+        SessionRetirement::Removed
+    );
+    assert_eq!(
+        root.finish_session_retirement("child").await.unwrap(),
+        SessionRetirement::Archived
+    );
+    root.set_session_archived::<Value>("child", false, 3)
+        .await
+        .unwrap();
+    let child = root.session("child").await.unwrap();
+    let new_work = RuntimeEvent::new(
+        Invocation {
+            session_id: "child".into(),
+            turn_id: "new-turn".into(),
+            run_id: "new-run".into(),
+            invocation_id: "new-invocation".into(),
+        },
+        Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::Message {
+                source_messages: vec![],
+                content: "continue after restore".into(),
+                request_fingerprint: None,
+            },
+        },
+    );
+    child
+        .append(&EventWrite::plain(new_work.clone()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        owner
+            .remove_session_family("parent", expected, RemovalAuthority::Unmanaged)
+            .await
+            .unwrap(),
+        RemoveFamilyResult::Accepted(plan)
+    );
+    assert!(!child.get::<Value>().await.unwrap().unwrap().archived);
+    let events = child
+        .scoped_prefix(
+            maka_agent_facts::event::LogScope::Session { id: "child".into() },
+            1,
+            16384,
+        )
+        .await
+        .unwrap()
+        .events;
+    assert_eq!(
+        events
+            .into_iter()
+            .map(|stored| stored.event)
+            .collect::<Vec<_>>(),
+        [new_work]
+    );
+    drop(owner);
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn archive_and_retirement_wait_for_cross_partition_sql_after_observer_cancels() {
     let directory = tempfile::tempdir().unwrap();
     let root = open(directory.path()).await;

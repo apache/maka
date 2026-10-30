@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use maka_agent_facts::model::ModelPart;
 use maka_agent_facts::model::ModelStep;
@@ -250,6 +250,59 @@ async fn usage_retreat_is_exact_once_and_shared_only_with_executor_clones() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn redirect_replay_and_usage_retry_preserve_encoded_header_bytes() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (_, original) = crate::http_request(&mut socket).await;
+            assert!(original.len() > 16 * 1024);
+            socket.write_all(b"HTTP/1.1 307 Redirect\r\nLocation: /v1/redirected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            drop(socket);
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (head, replay) = crate::http_request(&mut socket).await;
+            assert!(head.starts_with("POST /v1/redirected "));
+            assert_eq!(replay, original, "redirect must replay exact header and history bytes");
+            response(&mut socket, 400, "unsupported stream_options").await;
+            drop(socket);
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (_, retried) = crate::http_request(&mut socket).await;
+            let mut expected: Value = serde_json::from_slice(&original).unwrap();
+            let fields = expected.as_object_mut().unwrap();
+            let messages = fields.remove("messages").unwrap();
+            fields.remove("stream_options");
+            fields.insert("messages".into(), messages);
+            assert_eq!(retried, serde_json::to_vec(&expected).unwrap(), "usage negotiation must preserve existing swap_remove field order");
+            response(&mut socket, 200, &completion(&[json!({"content":"ok"})])).await;
+        });
+        let mut input = request(&url);
+        input.tools.push(Arc::new(maka_model::ToolDefinition {
+            provider: None,
+            name: "inspect".into(),
+            description: "inspect fixture".into(),
+            input_schema: json!({"type":"object","properties":{"text":{"type":"string"}}}),
+            freeform: None,
+            output_schema: None,
+        }));
+        input.provider.body_overlay = Some(serde_json::Map::from_iter([
+            ("routing".into(), json!("中文\n\"".repeat(4096))),
+            ("last_overlay".into(), json!({"number":-0.0})),
+        ]));
+        let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
+        let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
+        let mut builder = StepBuilder::default();
+        while let Some(event) = stream.next().await {
+            builder.push(event.unwrap().event).unwrap();
+        }
+        stream.cancel_and_wait().await.expect("actual stream cleanup");
+        let step = builder.finish().unwrap();
+        assert!(matches!(step.parts.as_slice(), [ModelPart::Text { text, text_kind: TextKind::Text, .. }] if text.chunks().flat_map(str::bytes).eq(b"ok".iter().copied())));
+        server.await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_drains_failure_body_and_retry_without_poisoning_capacity() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -349,14 +402,14 @@ async fn full_request_byte_count_matches_upload_and_stops_oversized_headers() {
         "fixture".into(),
         json!("quoted \" and Unicode 图片"),
     )]));
-    input.tools.push(maka_model::ToolDefinition {
+    input.tools.push(Arc::new(maka_model::ToolDefinition {
         provider: None,
         name: "read_fixture".into(),
         description: "read an image region".into(),
         input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
         freeform: None,
         output_schema: None,
-    });
+    }));
     let bytes = input.encoded_request_bytes().await.unwrap();
     input.provider.image_input = Some(maka_agent_facts::configuration::ImageInput {
         request_bytes: Some(bytes - 1),

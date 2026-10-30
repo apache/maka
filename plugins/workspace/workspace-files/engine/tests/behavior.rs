@@ -17,14 +17,12 @@
  * under the License.
  */
 
-mod directory_authorization;
 mod edit;
 mod glob;
 mod grep;
 mod grep_scope;
 mod patch;
 mod policy;
-mod published_directory;
 mod read;
 mod windows_read;
 mod workspace_identity;

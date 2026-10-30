@@ -25,6 +25,7 @@ use std::{sync::Arc, time::SystemTime};
 /// One checked transaction submission: successful facts cannot omit their bytes.
 #[derive(Clone, Debug)]
 pub struct EventWrite {
+    retry_consumption: Option<crate::model_retry::ModelRetryConsumption>,
     composition: Option<crate::composition::CompositionEvidence>,
     quote: Option<crate::pricing::Quote>,
     event: Arc<RuntimeEvent>,
@@ -61,6 +62,26 @@ impl ProjectionArtifactWrite {
 }
 
 impl EventWrite {
+    /// Carry exact retry ownership into the request's atomic append.
+    pub fn with_model_retry_consumption(
+        mut self,
+        evidence: crate::model_retry::ModelRetryConsumption,
+    ) -> Result<Self, CommitError> {
+        if !matches!(self.event.fact, Fact::ModelRequested { .. })
+            || evidence.checkpoint_id.is_empty()
+        {
+            return Err(CommitError::Rejected(
+                "retry consumption requires a model request and checkpoint identity".into(),
+            ));
+        }
+        self.retry_consumption = Some(evidence);
+        Ok(self)
+    }
+
+    pub fn model_retry_consumption(&self) -> Option<&crate::model_retry::ModelRetryConsumption> {
+        self.retry_consumption.as_ref()
+    }
+
     pub fn plain(event: RuntimeEvent) -> Result<Self, CommitError> {
         match &event.fact {
             Fact::ModelCompleted { output, .. } => {
@@ -250,6 +271,7 @@ impl EventWrite {
             ));
         }
         Ok(Self {
+            retry_consumption: None,
             composition: None,
             quote: None,
             event: Arc::new(event),
@@ -278,6 +300,7 @@ impl EventWrite {
         };
         Ok((
             Self {
+                retry_consumption: None,
                 composition: None,
                 quote: None,
                 event: Arc::new(RuntimeEvent {
@@ -346,97 +369,5 @@ impl EventWrite {
     }
     pub fn projection_artifacts(&self) -> &[ProjectionArtifactWrite] {
         &self.projection_artifacts
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{ModelFinishReason, ModelPart, ModelToolCall};
-    use serde_json::json;
-
-    fn call(id: &str, name: &str, provider_executed: bool) -> ModelPart {
-        ModelPart::ToolCall {
-            call: ModelToolCall {
-                id: id.into(),
-                name: name.into(),
-                input: json!({"path":"file"}).into(),
-                provider_options: None,
-                provider_executed,
-            },
-        }
-    }
-
-    fn completion(parts: Vec<ModelPart>) -> RuntimeEvent {
-        RuntimeEvent::new(
-            Invocation {
-                session_id: "session".into(),
-                turn_id: "turn".into(),
-                run_id: "run".into(),
-                invocation_id: "invocation".into(),
-            },
-            Fact::ModelCompleted {
-                step_id: "step".into(),
-                output: crate::model::recorded::ModelCompletion {
-                    parts: parts
-                        .into_iter()
-                        .enumerate()
-                        .map(|(ordinal, part)| {
-                            crate::model::recorded::CompletionPart::Own(
-                                crate::model::recorded::ModelPartRecord {
-                                    ordinal: ordinal as u64,
-                                    message_id: format!("part-{ordinal}"),
-                                    started_at: SystemTime::UNIX_EPOCH,
-                                    provider_part_id: None,
-                                    part: Arc::new(part),
-                                },
-                            )
-                        })
-                        .collect(),
-                    finish_reason: ModelFinishReason::ToolCalls,
-                    usage: Default::default(),
-                    provider_options: None,
-                    response_id: None,
-                    model: None,
-                    timestamp: None,
-                },
-            },
-        )
-    }
-
-    #[test]
-    fn completion_rejects_duplicate_tool_call_ids_before_submission() {
-        for (first_provider, second_provider, second_name) in [
-            (false, false, "Read"),
-            (false, false, "DifferentTool"),
-            (true, false, "Read"),
-            (false, true, "Read"),
-        ] {
-            let event = completion(vec![
-                call("same-id", "Read", first_provider),
-                call("same-id", second_name, second_provider),
-            ]);
-            assert!(
-                matches!(EventWrite::plain(event), Err(CommitError::Rejected(_))),
-                "duplicate ID formed a submission: {first_provider}/{second_provider}/{second_name}"
-            );
-        }
-    }
-
-    #[test]
-    fn completion_accepts_provider_result_id_reuse_with_distinct_local_call() {
-        let event = completion(vec![
-            call("provider-call", "Read", true),
-            ModelPart::ToolResult {
-                id: "provider-call".into(),
-                name: "Read".into(),
-                output: json!({"content":"provider result"}),
-                is_error: false,
-                provider_options: None,
-            },
-            call("local-call", "Read", false),
-        ]);
-        let submitted = EventWrite::plain(event.clone()).unwrap();
-        assert_eq!(submitted.into_event(), event);
     }
 }

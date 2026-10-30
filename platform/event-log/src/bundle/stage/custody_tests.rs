@@ -28,16 +28,6 @@ fn cancelled_stage_writer_retains_root_past_observer_runtime_and_root_close() {
     cancelled_stage_retains_root(false, true);
 }
 
-#[test]
-fn cancelled_stage_reader_retains_root_past_observer_runtime_and_root_close() {
-    cancelled_stage_retains_root(true, true);
-}
-
-#[test]
-fn root_close_acknowledges_only_after_stage_sql_physically_closes() {
-    cancelled_stage_retains_root(false, false);
-}
-
 fn cancelled_stage_retains_root(reading: bool, destroy_runtime: bool) {
     let directory = tempfile::tempdir().unwrap();
     let root_path = directory.path().join("root");

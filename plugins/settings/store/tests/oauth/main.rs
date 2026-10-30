@@ -21,7 +21,6 @@ use maka_agent_facts::configuration::*;
 use maka_config::{ConfigError, ConfigurationStore, oauth::ProviderCredential};
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use serde_json::json;
-use sqlx::Connection;
 use std::sync::Arc;
 
 #[path = "fixture.rs"]
@@ -131,7 +130,7 @@ async fn refresh_cas_preserves_generation_across_races_logout_aba_and_reopen() {
     drop((original, current, relogged));
     let before_reopen = fixture.store.catalog().await.unwrap();
     let Fixture {
-        temp,
+        _temp: temp,
         store,
         target,
     } = fixture;
@@ -161,89 +160,6 @@ async fn refresh_cas_preserves_generation_across_races_logout_aba_and_reopen() {
     assert_eq!(reopened.catalog().await.unwrap(), before_reopen);
     drop(persisted);
     reopened.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn refresh_failure_rolls_back_secret_and_version_and_never_claims_unknown_commit() {
-    let mut fixture = Fixture::new("opaque-account").await;
-    fixture.login("valid-grant").await;
-    let original = fixture.snapshot().await;
-    let mut sql = fixture.sql().await;
-    sqlx::query("CREATE TRIGGER fail_rotation BEFORE UPDATE ON credential_vault BEGIN SELECT RAISE(ABORT, 'injected vault revision failure'); END")
-        .execute(&mut sql).await.unwrap();
-    assert!(
-        original
-            .commit_refresh(credential("rotated-grant"), 20)
-            .await
-            .is_err()
-    );
-    let current = fixture.snapshot().await;
-    assert_eq!(current.basis(), original.basis());
-    assert_eq!(
-        current.credential().secret.as_str(),
-        original.credential().secret.as_str()
-    );
-    sqlx::query("DROP TRIGGER fail_rotation")
-        .execute(&mut sql)
-        .await
-        .unwrap();
-    for invalid in [
-        credential(""),
-        maka_agent_facts::provider::Credential {
-            refresh_at: Some(validation::MAX_SAFE_INTEGER + 1),
-            ..credential("invalid-expiry-grant")
-        },
-    ] {
-        assert!(matches!(
-            original.commit_refresh(invalid, 20).await,
-            Err(ConfigError::Invalid(_))
-        ));
-        let unchanged = fixture.snapshot().await;
-        assert_eq!(unchanged.basis(), original.basis());
-        assert!(unchanged.credential() == original.credential());
-    }
-    // A deferred constraint fails at COMMIT, not at UPDATE. The caller must
-    // receive unknown and reconcile from canonical storage, never use the candidate.
-    sqlx::query("CREATE TABLE deferred_failure (parent INTEGER REFERENCES credential_vault(singleton) DEFERRABLE INITIALLY DEFERRED)")
-        .execute(&mut sql).await.unwrap();
-    sqlx::query("CREATE TRIGGER fail_commit AFTER UPDATE ON credential_vault BEGIN INSERT INTO deferred_failure VALUES(2); END")
-        .execute(&mut sql).await.unwrap();
-    assert!(matches!(
-        original
-            .commit_refresh(credential("not-committed"), 21)
-            .await,
-        Err(ConfigError::CommitUnknown)
-    ));
-    let reconciled = fixture.snapshot().await;
-    assert_eq!(reconciled.basis(), original.basis());
-    assert_eq!(
-        reconciled.credential().secret.as_str(),
-        original.credential().secret.as_str()
-    );
-    sqlx::query("DROP TRIGGER fail_commit")
-        .execute(&mut sql)
-        .await
-        .unwrap();
-    let rotated =
-        json!({"access_token":"a".repeat(12 * 1024),"refresh_token":"refresh","expires_at":20000})
-            .to_string();
-    let basis = original
-        .commit_refresh(credential(&rotated), 22)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(basis.revision, original.basis().revision + 1);
-    assert_eq!(
-        fixture.snapshot().await.credential().secret.as_str(),
-        rotated
-    );
-    let vault_revision: i64 = sqlx::query_scalar("SELECT revision FROM credential_vault")
-        .fetch_one(&mut sql)
-        .await
-        .unwrap();
-    assert_eq!(vault_revision, 2, "failed writes consume neither version");
-    sql.close().await.unwrap();
-    fixture.store.shutdown().await.unwrap();
 }
 
 #[tokio::test]

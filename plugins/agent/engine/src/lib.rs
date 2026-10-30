@@ -26,6 +26,7 @@ mod executor;
 pub use executor::ExecutorInput;
 mod handoff;
 pub use handoff::{HandoffGate, HandoffReservation, HeldHandoff, PendingSeal};
+mod frozen_request;
 mod history;
 mod interactions;
 mod model_attempt;
@@ -37,6 +38,10 @@ pub mod pricing;
 mod request_composition;
 pub use history::project as project_model_history;
 mod prune;
+#[cfg(any(test, feature = "test-support"))]
+pub mod retry_fixture;
+mod retry_resume;
+pub use retry_resume::RetryResumeInput;
 mod resume;
 pub use resume::{NativeApprovalExecutor, ResumeContinuation, ResumeInput};
 mod runner;
@@ -102,6 +107,8 @@ pub enum RunError {
     CleanupUnconfirmed,
     #[error("execution worker failed: {0}")]
     Internal(String),
+    #[error("activation checkpoint serialization failed: {0}")]
+    Checkpoint(#[source] serde_json::Error),
     #[error("model input preparation failed: {0}")]
     Preparation(#[from] std::io::Error),
     #[error("model input cleanup was not confirmed: {0}")]
@@ -166,6 +173,16 @@ impl From<ToolError> for RunError {
     }
 }
 
+/// Immutable native activation evidence, materialized only when execution parks.
+/// This evidence carries no execution authority.
+pub trait NativeActivationBasis: Send + Sync {
+    /// Serialize the accepted basis for a persistent activation checkpoint.
+    ///
+    /// # Errors
+    /// Returns the original serialization error if the accepted basis cannot be encoded.
+    fn checkpoint_value(&self) -> serde_json::Result<Value>;
+}
+
 #[derive(Clone)]
 pub struct RunInput<W = RunWork> {
     /// Optional for standalone adapters; Host executions supply a public provider source.
@@ -181,7 +198,7 @@ pub struct RunInput<W = RunWork> {
     pub provider: ProviderConfig,
     pub provider_options: Value,
     /// Accepted native activation evidence; it carries no execution authority.
-    pub native_activation_basis: Option<Value>,
+    pub native_activation_basis: Option<Arc<dyn NativeActivationBasis>>,
     /// Resolved SDK reply budget; summaries additionally cap their text at 8K.
     pub main_output_limit: Option<u64>,
     /// Current selected-model capability; image bytes are projected per request.
@@ -344,9 +361,10 @@ impl RunContext {
             let effects = Arc::new(effects);
             let result = cleanup
                 .scope(async {
-                    let result = std::panic::AssertUnwindSafe(async {
+                    // Keep the worker future out of the tracking and cleanup wrapper frames.
+                    let result = std::panic::AssertUnwindSafe(Box::pin(async {
                         run(worker_cancellation.clone(), admitted, effects.clone()).await
-                    })
+                    }))
                     .catch_unwind()
                     .await
                     .unwrap_or_else(|_| {

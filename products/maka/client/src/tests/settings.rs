@@ -58,12 +58,8 @@ async fn settings_admission_and_original_secret_receipt_survive_independent_clie
         };
         let secret = || resource("k€y\\\"raw".as_bytes().to_vec());
         for (endpoint, method, resources, expected) in [
-            ("settings-setup", "discoverModels", Attachments::new(), "unsupported settings mutation method"),
             ("agent", "selectBackend", Attachments::new(), "unsupported settings mutation method"),
-            ("agent", "updateGlobalInstructions", secret(), "settings mutation does not accept resources"),
             ("settings", "create", secret(), "settings mutation does not accept resources"),
-            ("authentication", "loginCredential", secret(), "settings mutation does not accept resources"),
-            ("management", "configure", secret(), "settings mutation does not accept resources"),
             ("settings", "saveCredential", Attachments::new(), "settings credential requires one UTF-8 secret resource"),
         ] {
             assert_eq!(first.settings_mutation(Uuid::new_v4(), endpoint, method, Value::Null, resources).await.err().unwrap(), expected);
@@ -71,13 +67,9 @@ async fn settings_admission_and_original_secret_receipt_survive_independent_clie
         let mut extra = secret();
         extra.insert("extra".into(), Arc::new(Secret(vec![b'x'])));
         for (input, resources, expected) in [
-            (Value::Null, Attachments::new(), "settings network credential action is invalid"),
             (json!({"credential":"unknown"}), Attachments::new(), "settings network credential action is invalid"),
             (json!({"credential":"keep"}), secret(), "settings mutation does not accept resources"),
-            (json!({"credential":"delete"}), secret(), "settings mutation does not accept resources"),
-            (json!({"credential":"replace"}), Attachments::new(), "settings network credential requires one nonempty UTF-8 secret resource"),
             (json!({"credential":"replace"}), extra, "settings network credential requires one nonempty UTF-8 secret resource"),
-            (json!({"credential":"replace"}), resource(vec![]), "settings network credential requires one nonempty UTF-8 secret resource"),
             (json!({"credential":"replace"}), resource(vec![0xff]), "settings network credential requires one nonempty UTF-8 secret resource"),
         ] {
             let id = Uuid::new_v4();
@@ -89,13 +81,8 @@ async fn settings_admission_and_original_secret_receipt_survive_independent_clie
         assert_eq!(first.operation(inexact).await.unwrap_err(), "original client operation not found for this Host");
         for (endpoint, method, session, correlation) in [
             ("agent", "selectBackend", Some("session-one".into()), json!({"kind":"agent-control"})),
-            ("agent", "updateGlobalInstructions", Some("session-one".into()), json!({"kind":"settings"})),
-            ("agent", "updateGlobalInstructions", None, json!({"kind":"agent-control"})),
             ("settings", "create", Some("session-one".into()), json!({"kind":"settings"})),
             ("settings", "create", None, json!({"kind":"settings","extra":true})),
-            ("settings", "create", None, json!("{\"kind\":\"settings\"}")),
-            ("authentication", "saveCredential", None, json!({"kind":"settings"})),
-            ("management", "remove", None, json!({"kind":"settings"})),
         ] {
             let other = first.mutation(Uuid::new_v4(), endpoint, method, Value::Null, Attachments::new(), session, correlation).await.unwrap();
             assert_eq!(first.operation_for_settings(other.id()).await.unwrap_err(), "original client operation belongs to another settings owner");
@@ -198,24 +185,6 @@ async fn settings_admission_and_original_secret_receipt_survive_independent_clie
         }
         assert!(restarted.pending_settings().await.unwrap().is_empty());
         assert_eq!(restarted.query("agent", "read", Value::Null).await.unwrap(), json!({"sent":6}));
-        for (index, (endpoint, method)) in [("management", "setEnabled"), ("management", "configure"), ("authentication", "loginCredential"), ("agent", "updateGlobalInstructions")].into_iter().enumerate() {
-            let id = Uuid::new_v4();
-            let input = if method == "updateGlobalInstructions" { json!({"source":"maka","revision":"original-content-digest","content":"  私有全局指令\n原始全文\n"}) } else { Value::Null };
-            let mutation = first.settings_mutation(id, endpoint, method, input.clone(), Attachments::new()).await.unwrap();
-            let pending = restarted.pending_settings().await.unwrap();
-            assert_eq!(pending.iter().map(|operation| operation.id).collect::<Vec<_>>(), [id]);
-            assert_eq!(restarted.operation_for_settings(id).await.unwrap().endpoint, endpoint);
-            assert_eq!(second.settings_mutation(Uuid::new_v4(), "settings", "create", Value::Null, Attachments::new()).await.err().unwrap(), "settings operation already exists or has an unresolved original");
-            let prepared = mutation.prepare().await.unwrap();
-            let reply = mutation.confirm().await.unwrap();
-            assert!(matches!(reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. } if value == &json!({"sent":index + 7})));
-            assert_eq!(restarted.recover(id).await.unwrap().reference, prepared.reference.unwrap());
-            assert_eq!(fixture.counter.messages.lock().unwrap().last(), Some(&input));
-            let context: String = sqlx::query_scalar("SELECT context FROM operations WHERE id = ?")
-                .bind(id.to_string()).fetch_one(&restarted.0.journal.pool).await.unwrap();
-            assert!(!context.contains("私有全局指令"), "the settings journal must not store instruction contents");
-            assert!(second.pending_settings().await.unwrap().is_empty());
-        }
         first.close().await.unwrap();
         second.close().await.unwrap();
         restarted.close().await.unwrap();

@@ -836,3 +836,57 @@ async fn mcp_edits_do_not_rebind_a_tool_waiting_for_approval() {
         f.config.shutdown().await.unwrap();
     }).await.unwrap();
 }
+
+#[tokio::test]
+async fn mcp_connection_survives_model_retry_park_and_resumed_execution() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let home = tempfile::tempdir().unwrap();
+        let original = home.path().join("retry-original");
+        let replacement = home.path().join("retry-replacement");
+        let latest = home.path().join("retry-latest");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None, None, None,
+            |configuration| {
+                configuration.assistant = Some(crate::contract::AssistantConfiguration {
+                    home: Some(home.path().to_str().unwrap().into()),
+                });
+            },
+        ).await;
+        let file = home.path().join(".agents/mcp.json");
+        write_config(&file, &portable(&original));
+        let session = f.create("Model retry retains its MCP connection").await;
+        f.send(&session).await.unwrap();
+        let store = f.session(&session).await;
+        let mut commits = store.subscribe_commits().unwrap();
+        let (mut first, _) = listener.accept().await.unwrap();
+        request(&mut first).await;
+        let body = r#"{"error":{"type":"rate_limit_error","message":"retry later"}}"#;
+        first.write_all(format!("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 60\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        drop(first);
+        loop {
+            if let Some(checkpoint) = store.activation_checkpoint(&session).await.unwrap() {
+                assert!(matches!(checkpoint.checkpoint.suspension,
+                    maka_agent_facts::native_approval::ActivationSuspension::ModelRetry { .. }));
+                break;
+            }
+            commits.changed().await.unwrap();
+        }
+        f.drained().await;
+        write_config(&file, &portable(&replacement));
+        f.query("tools", json!({})).await.unwrap();
+        let (mut resumed, _) = listener.accept().await.unwrap();
+        request(&mut resumed).await;
+        assert!(store.activation_checkpoint(&session).await.unwrap().is_none());
+        write_config(&file, &portable(&latest));
+        f.query("tools", json!({})).await.unwrap();
+        echo_turn(&listener, resumed, "RETRIED_ORIGINAL", false).await;
+        f.drained().await;
+        assert_eq!(calls(&original), 1);
+        assert_eq!(calls(&replacement), 0);
+        assert_eq!(calls(&latest), 0);
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}

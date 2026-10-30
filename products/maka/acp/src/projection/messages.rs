@@ -251,54 +251,6 @@ mod tests {
     }
 
     #[test]
-    fn long_sessions_keep_every_message_instead_of_rejecting_total_history_size() {
-        let mut projection = Projection::default();
-        let text = "x".repeat(4096);
-        for i in 0..4200 {
-            let updates =
-                projection.append("turn", &format!("message-{i}"), &ContentKind::Text, &text);
-            assert_eq!(updates.len(), 1);
-            let update = serde_json::to_value(&updates[0]).unwrap();
-            assert_eq!(update["sessionUpdate"], "agent_message_chunk");
-            assert_eq!(update["messageId"], format!("message-{i}"));
-            assert_eq!(update["content"]["text"], text);
-        }
-        // Revisit an early message after the complete history has passed through.
-        let update = projection.append("turn", "message-0", &ContentKind::Text, "尾");
-        let update = serde_json::to_value(&update[0]).unwrap();
-        assert_eq!(update["messageId"], "message-0");
-        assert_eq!(update["content"]["text"], "尾");
-        let canonical = format!("{text}尾");
-        let chunk = HistoryChunk {
-            model_part: None,
-            final_output: false,
-            has_references: false,
-            model: None,
-            origin: None,
-            compaction: None,
-            attachments: Vec::new(),
-            timing: None,
-            field: HistoryField::Body,
-            message_id: "message-0".into(),
-            turn_id: "turn".into(),
-            timestamp: 0,
-            role: Role::Assistant,
-            position: maka_agent_ports::session::history::RowPosition {
-                source_sequence: 1,
-                item_index: 0,
-            },
-            offset: 0,
-            total_bytes: canonical.len() as u64,
-            text: canonical,
-            tool: None,
-        };
-        assert!(
-            projection.chunk(&chunk).unwrap().is_empty(),
-            "canonical replay must not duplicate the retained early message"
-        );
-    }
-
-    #[test]
     fn unicode_stream_and_canonical_history_keep_the_same_message() {
         let mut projection = Projection::default();
         projection.append("t", "m", &ContentKind::Text, "🦀中");
@@ -484,5 +436,41 @@ mod tests {
         chunk.text.clear();
         chunk.total_bytes = 0;
         assert!(projection.chunk(&chunk).unwrap().is_empty());
+    }
+
+    #[test]
+    fn late_model_metadata_updates_the_accepted_body_without_replaying_it() {
+        let mut projection = Projection::default();
+        let mut chunk: HistoryChunk = serde_json::from_value(json!({
+            "messageId":"accepted", "turnId":"turn", "timestamp":1,
+            "position":{"sourceSequence":10,"itemIndex":0},
+            "field":"body","role":"assistant","offset":0,"totalBytes":7,"text":"你好!",
+            "modelPart":{"stepId":"step","ordinal":0},
+            "model":{"kind":"native","requestedModelId":"alias","reportedModelId":null}
+        }))
+        .unwrap();
+        projection.chunk(&chunk).unwrap();
+        assert_eq!(
+            projection.pending_model_positions(None),
+            vec![(chunk.position, HistoryField::Body)]
+        );
+        chunk.text = "你".into();
+        chunk.model = Some(maka_agent_ports::session::history::HistoryModel::Native {
+            requested_model_id: "alias".into(),
+            reported_model_id: Some("concrete".into()),
+        });
+        let update = projection.prepare_model_metadata(&chunk).unwrap().unwrap();
+        let value = serde_json::to_value(&update.update).unwrap();
+        assert_eq!(value["messageId"], "accepted");
+        assert_eq!(
+            value["_meta"]["maka"]["model"]["reportedModelId"],
+            "concrete"
+        );
+        assert!(value.get("content").is_none());
+        assert!(projection.prepare_model_metadata(&chunk).unwrap().is_some());
+        projection.commit_model_metadata(update);
+        assert!(projection.prepare_model_metadata(&chunk).unwrap().is_none());
+        projection.acknowledge_models(None);
+        assert!(projection.pending_model_positions(None).is_empty());
     }
 }

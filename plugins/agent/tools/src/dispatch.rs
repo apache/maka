@@ -138,6 +138,75 @@ impl RunTools {
         self.request(current)
     }
 
+    /// Bind fresh custody while retaining the original request's advertised schemas.
+    /// The full bound catalog is checked before Direct selects its explicit names.
+    pub async fn capture_frozen(
+        &self,
+        cwd: &str,
+        composition: &maka_agent_facts::composition::RequestComposition,
+        cancellation: CancellationToken,
+    ) -> Result<RequestTools<'_>, ToolError> {
+        self.code.check()?;
+        let current = self
+            .availability
+            .capture(
+                self.model.clone(),
+                self.journal.invocation().clone(),
+                self.journal.execution_custody(),
+                cwd.into(),
+                cancellation,
+            )
+            .await?;
+        if current.digest() != composition.tool_catalog_digest {
+            return Err(ToolError::Failed(
+                "frozen request tool catalog changed".into(),
+            ));
+        }
+        let mut request = self.request_selected(current, &std::collections::BTreeSet::new());
+        let definitions = if self.mode == ToolMode::Direct {
+            let names: std::collections::BTreeSet<_> = composition
+                .tools
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect();
+            let full = request.availability.all();
+            let all = full.names();
+            let excluded: Vec<_> = all
+                .iter()
+                .filter(|name| !names.contains(name.as_str()))
+                .map(String::as_str)
+                .collect();
+            request.catalog = full.excluding(&excluded);
+            let mut expected: Vec<_> = request.catalog.shared_definitions().collect();
+            expected.extend(request.availability.definition().map(Arc::new));
+            if expected != composition.tools {
+                return Err(ToolError::Failed(
+                    "frozen request tool schemas changed".into(),
+                ));
+            }
+            expected
+        } else {
+            let mut exec = cell::definition(self.cells.language());
+            let Some(original) = composition.tools.first() else {
+                return Err(ToolError::Failed(
+                    "frozen Code Mode schemas are missing".into(),
+                ));
+            };
+            // The old loaded selection is already rendered in this description.
+            exec.description = original.description.clone();
+            let expected: Vec<_> = std::iter::once(Arc::new(exec))
+                .chain(std::iter::once(Arc::new(cell::wait_definition())))
+                .chain(request.direct.shared_definitions())
+                .collect();
+            if expected != composition.tools {
+                return Err(ToolError::Failed("frozen Code Mode schemas changed".into()));
+            }
+            expected
+        };
+        request.frozen_definitions = Some(definitions.into());
+        Ok(request)
+    }
+
     fn request(&self, current: Availability) -> Result<RequestTools<'_>, ToolError> {
         let active = current.checkpoint()?.loaded;
         Ok(self.request_selected(current, &active))
@@ -146,7 +215,7 @@ impl RunTools {
     pub fn replay_selected(
         &self,
         active: &std::collections::BTreeSet<String>,
-    ) -> Vec<ToolDefinition> {
+    ) -> Vec<Arc<ToolDefinition>> {
         self.request_selected(self.availability.clone(), active)
             .definitions()
     }
@@ -169,6 +238,7 @@ impl RunTools {
         };
         let described = availability.select(active);
         RequestTools {
+            frozen_definitions: None,
             finished: Arc::new(AtomicBool::new(false)),
             digest,
             direct,
@@ -188,6 +258,7 @@ impl RunTools {
 /// Search settlement affects future captures, never this request or its retries.
 #[derive(Clone)]
 pub struct RequestTools<'a> {
+    frozen_definitions: Option<Arc<[Arc<ToolDefinition>]>>,
     finished: Arc<AtomicBool>,
     digest: String,
     direct: ToolCatalog,
@@ -207,20 +278,24 @@ impl<'a> RequestTools<'a> {
         &self.digest
     }
 
-    pub fn definitions(&self) -> Vec<ToolDefinition> {
+    pub fn definitions(&self) -> Vec<Arc<ToolDefinition>> {
+        if let Some(definitions) = &self.frozen_definitions {
+            return definitions.to_vec();
+        }
         if self.run.mode == ToolMode::CodeMode {
             let mut exec = cell::definition(self.run.cells.language());
-            let definitions: Vec<_> = self.described.definitions().cloned().collect();
             exec.description.push('\n');
-            exec.description
-                .push_str(&cell::declarations(&definitions, self.run.cells.language()));
-            std::iter::once(exec)
-                .chain(std::iter::once(cell::wait_definition()))
-                .chain(self.direct.definitions().cloned())
+            exec.description.push_str(&cell::declarations(
+                self.described.definitions(),
+                self.run.cells.language(),
+            ));
+            std::iter::once(Arc::new(exec))
+                .chain(std::iter::once(Arc::new(cell::wait_definition())))
+                .chain(self.direct.shared_definitions())
                 .collect()
         } else {
-            let mut definitions: Vec<_> = self.catalog.definitions().cloned().collect();
-            definitions.extend(self.availability.definition());
+            let mut definitions: Vec<_> = self.catalog.shared_definitions().collect();
+            definitions.extend(self.availability.definition().map(Arc::new));
             definitions
         }
     }

@@ -69,6 +69,10 @@ async fn request(log: &EventLog, step: &str, items: bool) -> EventWrite {
         .unwrap(),
     );
     let write = event(Fact::ModelRequested {
+        source_capture: maka_agent_facts::event::SourceCapture {
+            publication_watermark: 0,
+            prior_unknown: false,
+        },
         context_breakdown: None,
         item_acceptance: items,
         step_id: step.into(),

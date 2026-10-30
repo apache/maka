@@ -40,11 +40,7 @@ fn skill(source: &std::path::Path, name: &str, body: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn configuration_pages_manage_real_host_skills_and_mcp_without_creating_conversations() {
     tokio::time::timeout(Duration::from_secs(120), async {
-        let fixture = Fixture::configured(support::Options {
-            skills: true,
-            ..Default::default()
-        })
-        .await;
+        let fixture = Fixture::configured(Default::default()).await;
         let client = fixture.client().await;
         let home = fixture.directory.path().join("assistant-home");
         let source = fixture.directory.path().join("skill-source");
@@ -87,7 +83,7 @@ async fn configuration_pages_manage_real_host_skills_and_mcp_without_creating_co
         click(&mut view, home.join(".maka/skills").to_str().unwrap()).await;
         activate(&mut view, "alpha-guide").await;
         activate(&mut view, "beta-guide").await;
-        evidence("skills-source-selection", &view.snapshot());
+        support::evidence("skills-source-selection", &view.snapshot());
         support::evidence_cells("skills-source-selection", &view);
         click(&mut view, "Install selected skills").await;
         wait_view(&mut view, |screen| {
@@ -100,7 +96,7 @@ async fn configuration_pages_manage_real_host_skills_and_mcp_without_creating_co
         let beta = home.join(".maka/skills/beta-guide");
         assert!(alpha.join("SKILL.md").exists() && beta.join("SKILL.md").exists());
         let screen = view.snapshot();
-        evidence("skills-managed-cards", &screen);
+        support::evidence("skills-managed-cards", &screen);
         support::evidence_cells("skills-managed-cards", &view);
         std::fs::remove_file(source.join("alpha-guide/removed.txt")).unwrap();
         skill(&source, "alpha-guide", "Alpha instructions after update");
@@ -138,7 +134,7 @@ async fn configuration_pages_manage_real_host_skills_and_mcp_without_creating_co
         fill(&mut view, "Server name", "docs").await;
         click(&mut view, "Streamable HTTP").await;
         fill(&mut view, "Server URL", "https://example.invalid/mcp").await;
-        evidence("mcp-project-editor", &view.snapshot());
+        support::evidence("mcp-project-editor", &view.snapshot());
         support::evidence_cells("mcp-project-editor", &view);
         activate(&mut view, "Save MCP server").await;
         wait_view(&mut view, |screen| screen.contains("MCP server saved.")).await;
@@ -178,7 +174,7 @@ async fn configuration_pages_manage_real_host_skills_and_mcp_without_creating_co
             .await
             .unwrap();
         assert_eq!(status["trusted"], false);
-        evidence("mcp-project-cards", &view.snapshot());
+        support::evidence("mcp-project-cards", &view.snapshot());
         support::evidence_cells("mcp-project-cards", &view);
         click(
             &mut view,

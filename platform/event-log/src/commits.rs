@@ -29,6 +29,7 @@ use tokio::sync::watch;
 pub(crate) struct CommitHub(Arc<Hub>);
 struct Hub {
     all: watch::Sender<u64>,
+    activations: watch::Sender<()>,
     sessions: Mutex<HashMap<String, Weak<Registration>>>,
 }
 struct Registration {
@@ -95,11 +96,15 @@ impl CommitHub {
     pub(crate) fn new(through: u64) -> Self {
         Self(Arc::new(Hub {
             all: watch::channel(through).0,
+            activations: watch::channel(()).0,
             sessions: Mutex::new(HashMap::new()),
         }))
     }
     pub(crate) fn subscribe(&self) -> watch::Receiver<u64> {
         self.0.all.subscribe()
+    }
+    pub(crate) fn subscribe_activations(&self) -> watch::Receiver<()> {
+        self.0.activations.subscribe()
     }
     pub(crate) fn subscribe_session(&self, session: &str) -> SessionSubscription {
         let mut sessions = self.0.sessions.lock().unwrap();
@@ -151,6 +156,9 @@ impl CommitNotice {
     /// Called only after a confirmed commit, on its independent SQL owner.
     pub(crate) fn publish(&self, sequence: u64) {
         self.notify(Some(sequence));
+    }
+    pub(crate) fn activations(&self) {
+        self.hub.0.activations.send_replace(());
     }
     pub(crate) fn metadata(&self) {
         self.notify(None);

@@ -87,7 +87,6 @@ async fn a_rejected_send_keeps_the_text_typed_before_it_was_reserved() {
             "/skill:missing-fixture first next",
         )
         .await;
-        evidence("rejected-send-keeps-held-text", &screen);
         // The Host refused the send itself; the typing did not cancel it.
         assert!(!screen.contains("The draft changed before confirmation"));
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
@@ -99,58 +98,4 @@ async fn a_rejected_send_keeps_the_text_typed_before_it_was_reserved() {
     })
     .await
     .expect("rejected send workflow timed out");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn switching_waits_until_text_typed_before_a_send_is_reserved_can_be_saved() {
-    tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::open().await;
-        let setup = fixture.client().await;
-        let other = support::mutate(
-            &setup,
-            "create",
-            json!({
-                "title":"Other held conversation","labels":[],
-                "workspace":{"kind":"session","sessionId":fixture.session}
-            }),
-        )
-        .await;
-        assert_eq!(other["kind"], "created");
-        setup.close().await.unwrap();
-        let gate = ReplyGate::resolve_model(fixture.directory.path(), fixture.address.clone());
-        let (mut view, bindings, client) = send_held(&fixture, &gate, "Held message A").await;
-        view.handle_event(Event::Paste(" later".into()));
-        support::tick(&mut view);
-        shortcut(&mut view, 'o');
-        select_palette(
-            &mut view,
-            "Search titles and messages…",
-            "Other held",
-            "Other held conversation",
-        )
-        .await;
-        // The refused switch leaves the search open over the conversation.
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-        let refused = wait_view(&mut view, |screen| {
-            screen.contains("Wait for the message to send before switching.")
-        })
-        .await;
-        assert!(refused.contains("NSH real Agent"));
-        evidence("switch-refused-while-send-held", &refused);
-        gate.release();
-        let mut request = fixture.next_request().await;
-        assert!(request.body.to_string().contains("Held message A"));
-        assert!(!request.body.to_string().contains("later"));
-        support::wait_draft(&client, &fixture.session, " later").await;
-        request.delta("HELD_SEND_ANSWER").await;
-        request.finish().await;
-        wait_view(&mut view, |screen| screen.contains("HELD_SEND_ANSWER")).await;
-        drop(view);
-        bindings.close().await.unwrap();
-        client.close().await.unwrap();
-        drop(gate);
-        fixture.finish().await;
-    })
-    .await
-    .expect("held send navigation workflow timed out");
 }

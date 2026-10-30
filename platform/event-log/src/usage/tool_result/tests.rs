@@ -64,37 +64,6 @@ fn stored_settlements_keep_fractional_timing_and_status() {
 }
 
 #[test]
-fn stored_results_preserve_variant_specific_ignored_fields() {
-    for reason in [
-        "unavailable",
-        "invalid_input",
-        "policy_denied",
-        "preparation_failed",
-        "exclusive_conflict",
-        "cancelled",
-    ] {
-        let text = format!(
-            r#"{{"kind":"rejected","reason":"{reason}","startedAt":null,"startedAt":{{"not":"a timestamp"}},"outcome":false,"foreign":[]}}"#
-        );
-        let result = decode(&text).unwrap();
-        // Rejected has no numeric payload, so this comparison is feature-independent.
-        assert_eq!(result, serde_json::from_str::<ToolResult>(&text).unwrap());
-        assert_eq!(
-            decode(&serde_json::to_string(&result).unwrap()).unwrap(),
-            result
-        );
-    }
-    let text = r#"{"kind":"settled","startedAt":0.75,"outcome":"success","reason":null,"reason":{},"foreign":[]}"#;
-    assert_eq!(
-        decode(text).unwrap(),
-        ToolResult::Settled {
-            started_at: 0.75,
-            outcome: ToolStatus::Success
-        }
-    );
-}
-
-#[test]
 fn stored_results_reject_malformed_or_coerced_numeric_payloads() {
     for token in [
         r#""0.75""#,

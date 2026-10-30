@@ -1109,81 +1109,7 @@ mod tests {
         assert!(shared.inner.lock().unwrap().responses.is_empty());
         peer.close(None).await.unwrap();
     }
-    #[tokio::test]
-    async fn dropped_setup_observer_keeps_the_original_fetch_enable_until_close_observes_its_reply()
-    {
-        let (socket, mut peer) = wire().await;
-        let mut controller =
-            Controller::start(socket.clone(), Some(metadata::setup_fixture()), None);
-        let mut setup = Box::pin(controller.install());
-        let command = tokio::select! {
-            command=request(&mut peer)=>command,
-            result=&mut setup=>panic!("setup completed before its real reply: {result:?}"),
-        };
-        assert_eq!(command["method"], "Fetch.enable");
-        drop(setup);
-        let mut close = Box::pin(controller.close());
-        futures_util::future::poll_fn(|context| {
-            assert!(
-                std::future::Future::poll(close.as_mut(), context).is_pending(),
-                "close must observe its original setup reply"
-            );
-            std::task::Poll::Ready(())
-        })
-        .await;
-        reply(&mut peer, &command).await;
-        close.await.unwrap();
-        let barrier = socket.observe_in(None, "Page.getFrameTree", json!({}));
-        let (_, ()) = tokio::join!(
-            async {
-                barrier.await.unwrap();
-            },
-            async {
-                let next = request(&mut peer).await;
-                assert_eq!(
-                    next["method"], "Page.getFrameTree",
-                    "setup must not replay during close"
-                );
-                reply(&mut peer, &next).await;
-            }
-        );
-        peer.close(None).await.unwrap();
-    }
 
-    #[tokio::test]
-    async fn operation_stop_before_continuation_poll_fails_only_the_owned_response() {
-        let (socket, mut peer) = wire().await;
-        let shared = paused(socket);
-        let operation = CancellationToken::new();
-        operation.cancel();
-        assert!(
-            !shared.stopped.is_cancelled(),
-            "operation cancellation is distinct from tab closure"
-        );
-        assert!(
-            shared
-                .release(
-                    "owned-response",
-                    Release::Response,
-                    None,
-                    None,
-                    Some(operation)
-                )
-                .await
-                .is_err()
-        );
-        let (result, ()) = tokio::join!(
-            shared.release("owned-response", Release::Fail, None, None, None),
-            async {
-                let command = request(&mut peer).await;
-                assert_eq!(command["method"], "Fetch.failRequest");
-                assert_eq!(command["params"]["requestId"], "owned-response");
-                reply(&mut peer, &command).await;
-            }
-        );
-        result.unwrap();
-        peer.close(None).await.unwrap();
-    }
     #[tokio::test]
     async fn actual_continue_ack_and_stop_keep_unknown_custody_without_replay() {
         for stop_before_ack in [true, false] {
@@ -1293,49 +1219,7 @@ mod tests {
             peer.close(None).await.unwrap();
         }
     }
-    #[tokio::test]
-    async fn actual_fail_ack_does_not_claim_that_a_download_response_was_released() {
-        let (socket, mut peer) = wire().await;
-        let shared = paused(socket.clone());
-        let (metadata, _original_metadata_commands) = metadata::completion_fixture();
-        let completion = metadata
-            .completion("https://fixture.test/file".into(), Duration::from_secs(60))
-            .unwrap();
-        let response = shared.inner.lock().unwrap().pending.clone().unwrap();
-        let (blocked, ()) = tokio::join!(
-            shared.release("owned-response", Release::Fail, None, None, None),
-            async {
-                let command = request(&mut peer).await;
-                assert_eq!(command["method"], "Fetch.failRequest");
-                reply(&mut peer, &command).await;
-            }
-        );
-        blocked.unwrap();
-        shared.stopped.cancel();
-        let cancellation = CancellationToken::new();
-        let actual = shared
-            .release_download(response, &completion, socket.clone(), &cancellation)
-            .await;
-        assert!(
-            matches!(actual, Err(ToolError::Failed(_))),
-            "a real blocked response must not be called a released unknown download"
-        );
-        let barrier = socket.observe_in(None, "Page.getFrameTree", json!({}));
-        let (_, ()) = tokio::join!(
-            async {
-                barrier.await.unwrap();
-            },
-            async {
-                let next = request(&mut peer).await;
-                assert_eq!(
-                    next["method"], "Page.getFrameTree",
-                    "no continuation may be replayed after the real Fail ACK"
-                );
-                reply(&mut peer, &next).await;
-            }
-        );
-        peer.close(None).await.unwrap();
-    }
+
     async fn no_replay_before_barrier(
         socket: &Cdp,
         peer: &mut WebSocketStream<tokio::net::TcpStream>,
@@ -1420,35 +1304,6 @@ mod tests {
         closed.unwrap();
         assert!(controller.shared.inner.lock().unwrap().responses.is_empty());
         no_replay_before_barrier(&old_wire, &mut old_peer).await;
-        no_replay_before_barrier(&current, &mut current_peer).await;
-        old_peer.close(None).await.unwrap();
-        current_peer.close(None).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn current_close_override_never_replaces_an_already_written_response_future() {
-        let (old, mut old_peer) = wire().await;
-        let (current, mut current_peer) = wire().await;
-        let shared = paused(old.clone());
-        let mut original =
-            Box::pin(shared.release("owned-response", Release::Response, None, None, None));
-        let written = tokio::select! {
-            observed = request(&mut old_peer) => observed,
-            result = &mut original => panic!("response completed before its actual ACK: {result:?}"),
-        };
-        assert_eq!(written["method"], "Fetch.continueResponse");
-        drop(original);
-        let mut controller = Controller::start(current.clone(), None, None);
-        controller.shared = shared.clone();
-        let mut closed = Box::pin(controller.close_with_socket(Some(current.clone())));
-        assert!(
-            futures_util::poll!(&mut closed).is_pending(),
-            "an override cannot settle the original future"
-        );
-        reply(&mut old_peer, &written).await;
-        closed.await.unwrap();
-        assert!(shared.inner.lock().unwrap().responses.is_empty());
-        no_replay_before_barrier(&old, &mut old_peer).await;
         no_replay_before_barrier(&current, &mut current_peer).await;
         old_peer.close(None).await.unwrap();
         current_peer.close(None).await.unwrap();

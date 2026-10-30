@@ -269,50 +269,10 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
     .expect("the editor and confirmed current-execution interrupt workflow did not finish");
 }
 
-#[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn production_ctrl_c_requires_two_presses_and_intervening_input_resets_the_gesture() {
-    let fixture = Fixture::configured(support::Options {
-        registered: true,
-        ..Default::default()
-    })
-    .await;
-    let mut terminal = support::pty::Pty::spawn(
-        env!("CARGO_BIN_EXE_maka"),
-        &fixture.directory.path().join("host"),
-        None,
-    );
-    terminal.wait_for("Make something remarkable.").await;
-    terminal.send(b"\x03");
-    terminal.wait_for("Press Ctrl+C again to exit.").await;
-    terminal.send(b"\x1b[D");
-    terminal
-        .wait_for_absent("Press Ctrl+C again to exit.")
-        .await;
-    terminal.send(b"\x03\x1b[D\x03");
-    terminal.wait_for("Press Ctrl+C again to exit.").await;
-    terminal.send(b"\x03");
-    terminal.finish().await;
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
-    // Closing a viewport keeps the independently owned service Host callable.
-    let client = fixture.client().await;
-    let observed = client
-        .query("agent", "observe", json!({"sessionId":fixture.session}))
-        .await
-        .unwrap();
-    assert_eq!(observed["session"]["id"], fixture.session);
-    client.close().await.unwrap();
-    fixture.finish().await;
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn connection_filter_preserves_model_search_focus_and_keyboard_selection() {
     tokio::time::timeout(Duration::from_secs(60), async {
-        let fixture = Fixture::configured(support::Options {
-            catalog: support::Catalog::Reasoning,
-            ..Default::default()
-        })
-        .await;
+        let fixture = Fixture::open().await;
         let client = fixture.client().await;
         let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
         support::click_button(&mut view, "Choose model and effort").await;

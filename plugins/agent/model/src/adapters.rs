@@ -25,6 +25,7 @@ mod codex;
 mod error;
 mod events;
 mod http;
+mod http_header;
 mod media;
 mod prompt;
 mod request;

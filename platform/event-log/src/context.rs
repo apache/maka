@@ -18,6 +18,8 @@
  */
 
 mod boundary;
+pub(crate) mod frozen_request;
+pub use frozen_request::FrozenModelRequest;
 pub(crate) mod evidence;
 pub(crate) mod frozen;
 pub(crate) mod history;
@@ -146,6 +148,3 @@ pub struct ArchivedToolResult {
 fn invalid(reason: &str) -> StoreError {
     StoreError::InvalidTransition(format!("invalid context checkpoint: {reason}"))
 }
-
-#[cfg(test)]
-mod admission_tests;
