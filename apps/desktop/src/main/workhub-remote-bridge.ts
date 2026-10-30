@@ -22,7 +22,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { WORKHUB_COORDINATION_SESSION_ID, type StoredMessage } from '@maka/core/session';
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
-import { formatBotMessageForSession } from '@maka/core/bot-events';
+import { botReplyTargetId, formatBotMessageForSession } from '@maka/core/bot-events';
 import type { BotMessageHandling } from '@maka/core/bot-chat-settings';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
@@ -32,7 +32,7 @@ import type { DesktopRuntimeHostClient, DesktopRuntimeHostSession } from './runt
 import { readWorkHubTopicAssociation, workHubAssociationTarget } from '../shared/desktop-session-projection.js';
 import { formatRemoteChoices, parseRemoteChoices } from './workhub-remote-choices.js';
 
-type Source = Pick<BotIncomingMessage, 'platform' | 'chatId' | 'userId' | 'sourceMessageId'> & { targetSessionId?: string; associationTargetSessionId?: string | null; associationTurnId?: string };
+type Source = Pick<BotIncomingMessage, 'platform' | 'chatId' | 'userId' | 'sourceMessageId' | 'replyTargetId'> & { targetSessionId?: string; associationTargetSessionId?: string | null; associationTurnId?: string };
 interface State {
   version: 1 | 2;
   through: number | null;
@@ -104,8 +104,12 @@ export function createWorkHubRemoteBridge(deps: Deps): WorkHubRemoteBridge {
       } catch (error) { deps.onError(error); }
     }
     const heading = name?.replace(/[\r\n]+/g, ' ').replace(/\[/g, '［').replace(/\]/g, '］');
+    // #6322: route via the platform reply target (Slack thread root), not the
+    // per-message id. Sources persisted before the field existed keep working
+    // through the fallback to sourceMessageId, which then held the thread root.
+    const replyTarget = botReplyTargetId(source);
     const sent = await deps.botRegistry.sendMessage(source.platform, source.chatId, heading ? `[${heading}]\n${text}` : text,
-      source.sourceMessageId ? { replyToMessageId: source.sourceMessageId } : undefined);
+      replyTarget ? { replyToMessageId: replyTarget } : undefined);
     if (!sent) throw new Error('WorkHub remote reply delivery failed');
   }
   async function deliver(key: string, source: Source, text: string) {
@@ -290,7 +294,7 @@ export function createWorkHubRemoteBridge(deps: Deps): WorkHubRemoteBridge {
         ? `whr_${createHash('sha256').update(JSON.stringify([message.platform, message.chatId, message.sourceMessageId])).digest('hex').slice(0, 48)}`
         : randomUUID();
       if (state.turns[turnId]) return true;
-      state.turns[turnId] = { platform: message.platform, chatId: message.chatId, userId: message.userId, sourceMessageId: message.sourceMessageId };
+      state.turns[turnId] = { platform: message.platform, chatId: message.chatId, userId: message.userId, sourceMessageId: message.sourceMessageId, replyTargetId: message.replyTargetId };
       state.inputs[turnId] = formatBotMessageForSession(message);
       await save();
       await dispatch();
