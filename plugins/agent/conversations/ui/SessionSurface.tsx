@@ -1080,11 +1080,8 @@ export function createConversationUi(
           await switchSession(existing, { sessionId, instance: null });
           return;
         }
-        if (sessionId === null)
-          throw new UiError('Open a conversation first; the Bot starts in its workspace.');
-        const result = await control('openBot', {
-          workspace: { kind: 'session', sessionId },
-        });
+        // The Host picks the workspace of the Bot's first open itself.
+        const result = await control('openBot', {});
         if (!alive) return;
         if (result.kind !== 'opened')
           throw new UiError('Bot could not be opened: {reason}', {

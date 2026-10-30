@@ -34,7 +34,10 @@ export type AgentCompactOutput_AgentCompactRejection =
   | 'archived'
   | 'backend_unavailable'
   | 'workspace_changed';
-export type AgentOpenBotOutput_AgentBotRejection = 'disabled' | 'creation_rejected';
+export type AgentOpenBotOutput_AgentBotRejection =
+  | 'disabled'
+  | 'creation_rejected'
+  | 'no_workspace';
 /**
  * All parts are subscription items; only End admits a complete preview.
  * Offsets and byte counts refer to original bytes, not Base64 or UTF-16 lengths.
@@ -557,7 +560,11 @@ export interface ServiceMethods {
        * Open this installation's Bot Session, creating it on first use.
        */
       input: {
-        workspace: Runtime.AgentWorkspaceSelection;
+        /**
+         * Where the Bot Session is created on first use. Absent: the Host's first
+         * configured workspace root, so opening the Bot never needs another conversation.
+         */
+        workspace?: Runtime.AgentWorkspaceSelection | null;
         title?: string | null;
       };
       output:

@@ -646,3 +646,43 @@ async fn a_live_slow_creator_keeps_its_claim() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn the_bot_opens_without_naming_a_workspace() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        // No other conversation exists and no workspace is given.
+        let opened = f
+            .mutation(2, "openBot", json!({}), Uuid::new_v4())
+            .await
+            .unwrap();
+        assert_eq!(opened["kind"], "opened", "{opened}");
+        assert_eq!(opened["created"], true);
+        let bot = opened["sessionId"].as_str().unwrap().to_owned();
+        let roots = f
+            .query("directories", json!({"kind":"roots"}))
+            .await
+            .unwrap();
+        let workspace = f.owner.session(&bot).await.unwrap().configuration.workspace;
+        assert_eq!(
+            workspace.path,
+            roots["roots"][0]["path"].as_str().unwrap(),
+            "the Bot starts in the Host's first workspace root"
+        );
+        // A second open, also without a workspace, returns the same Bot.
+        let again = f
+            .mutation(2, "openBot", json!({}), Uuid::new_v4())
+            .await
+            .unwrap();
+        assert_eq!(
+            again,
+            json!({"kind":"opened","sessionId":bot,"created":false})
+        );
+        assert!(sees_send_user(&f, &listener, &bot).await);
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
