@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { mount, signal, Text, View, type JSX } from 'nsh';
+import { mount, platform, signal, Text, View, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import { Composer } from '../../../../../plugins/agent/composer/ui/Composer';
 import type { ComposerSession } from '../../../../../packages/plugin-sdk/src/composer-view.js';
@@ -25,6 +25,8 @@ import { host as nativeHost } from 'maka/host';
 import { SessionPermissionsSelect } from '../../../workbench/app/SessionPermissionsSelect';
 import { InteractionComposer } from '../../../workbench/app/InteractionComposer';
 import { CompactionDivider } from '../../../workbench/app/CompactionDivider';
+import { WorkspaceBrowser } from '../../../workbench/app/WorkspaceBrowser';
+import type { Browsing, BrowserSession } from '../../../workbench/app/browsing';
 import { HostProvider, type Host } from '../../../workbench/app/host';
 import type {
   AgentSession,
@@ -335,9 +337,117 @@ function Compaction() {
   );
 }
 
+function WorkspacePages(props: { busy: boolean }) {
+  const session = (workspace: string, index: number): BrowserSession => ({
+    id: `${workspace}-${index}`,
+    title: `${workspace} conversation ${index}`,
+    revision: 1,
+    labels: [],
+    archived: false,
+    pinned: false,
+    hasUnread: false,
+    tailMessageId: null,
+    branch: null,
+    activity: 'idle',
+    updatedAt: index,
+    permissions: { access: 'workspace_write', requestPermissions: true },
+    boundaryRevision: 1,
+    binding: { id: '47a24946-26e1-4451-9584-19e5120dfab8', permissionEpoch: 1 },
+    dataSource: {
+      stateDomain: '0'.repeat(64),
+      deployment: '47a24946-26e1-4451-9584-19e5120dfab8',
+      namespace: [],
+    },
+    workspace: {
+      path: `/workspace/${workspace}`,
+      directoryIdentity: workspace,
+      identity: workspace,
+    },
+  });
+  const scope = { kind: 'all' } as const;
+  const sessions = signal(Array.from({ length: 32 }, (_, index) => session('A', index)));
+  const loading = signal(false);
+  const calls = signal(0);
+  const release = signal<(() => void) | null>(null);
+  let page = 1;
+  const browsing: Browsing = {
+    scope: () => scope,
+    filter: () => 'all',
+    sessions,
+    loading,
+    projects: () =>
+      props.busy
+        ? Array.from({ length: 12 }, (_, index) => ({
+            reference: { id: `empty-${index}`, revision: 'original' },
+            name: `Empty ${index}`,
+            archived: false,
+            available: false,
+            selection: null,
+            path: null,
+          }))
+        : [],
+    error: () => '',
+    projectError: () => '',
+    setScope() {},
+    setFilter() {},
+    async refresh() {},
+    async loadMore() {
+      if (loading()) return 'waiting';
+      if (page === 3) return 'complete';
+      loading.set(true);
+      calls.set(calls() + 1);
+      await new Promise<void>((resolve) => release.set(resolve));
+      release.set(null);
+      page += 1;
+      sessions.set([
+        ...sessions(),
+        ...(page === 2
+          ? Array.from({ length: 32 }, (_, index) => session('A', index + 32))
+          : [session('B', 0)]),
+      ]);
+      loading.set(false);
+      return 'advanced';
+    },
+  };
+  if (props.busy) void browsing.loadMore();
+  return (
+    <View style={{ flex: 1 }}>
+      <Text>
+        {platform.isTerminal ? 'TERMINAL_BRANCH' : 'DESKTOP_BRANCH'} requests:{calls()}
+      </Text>
+      <Button
+        accessibilityLabel="Publish requested page"
+        disabled={release() === null}
+        style={{ height: 32, flexShrink: 0 }}
+        onPress={() => release()?.()}
+      >
+        <Text>Publish requested page</Text>
+      </Button>
+      <WorkspaceBrowser
+        browsing={browsing}
+        docked={() => false}
+        selected={() => null}
+        switching={() => false}
+        focusRequest={() => false}
+        focusHandled={() => {}}
+        attach={() => {}}
+        close={() => {}}
+        selectSession={async () => {}}
+        create={async () => {}}
+        newConversation={() => {}}
+        settings={() => {}}
+        search={() => {}}
+        changeSession={async () => {}}
+      />
+    </View>
+  );
+}
+
 const scenario = (nativeHost as unknown as { scenario: string }).scenario;
 mount(() =>
-  scenario === 'compaction' ? (
+  scenario.startsWith('workspace-pages') ? (
+    <WorkspacePages busy={scenario === 'workspace-pages-busy'} />
+  ) : scenario === 'compaction' ? (
     <Compaction />
   ) : scenario === 'sandbox' ? (
     <Sandbox />

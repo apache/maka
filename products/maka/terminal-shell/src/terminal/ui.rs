@@ -560,6 +560,100 @@ mod tests {
     }
 
     #[test]
+    fn collapsed_workspace_pages_fill_the_visible_rows() {
+        collapsed_workspace_pages("workspace-pages");
+    }
+
+    #[test]
+    fn a_collapsed_workspace_keeps_a_busy_list_end_until_other_groups_arrive() {
+        collapsed_workspace_pages("workspace-pages-busy");
+    }
+
+    fn collapsed_workspace_pages(scenario: &'static str) {
+        use nsh_core::platform::{Idiom, Renderer};
+        use nsh_core::prelude::{Instance, Registry, class};
+
+        #[class]
+        struct Presentation {
+            scenario: String,
+        }
+        #[class]
+        impl Presentation {
+            #[getter]
+            pub fn system_locale(&self) -> String {
+                "en".into()
+            }
+            #[getter]
+            pub fn ui_scale_factor(&self) -> f32 {
+                1.0
+            }
+            #[getter]
+            pub fn scenario(&self) -> String {
+                self.scenario.clone()
+            }
+        }
+        let wait = |session: &mut Session, expected: &str| {
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                session.advance(command([])).unwrap();
+                let screen = session.surface.snapshot();
+                if screen.contains(expected) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "expected {expected:?}:\n{screen}"
+                );
+                thread::yield_now();
+            }
+        };
+        let mut registry = Registry::ui_set("maka/host");
+        registry.value("host", move || {
+            Instance::new(Presentation {
+                scenario: scenario.into(),
+            })
+        });
+        let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+            entry: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/components.tsx"),
+            minify: false,
+            split: false,
+            ui_sets: vec![nsh_base::registry().into(), (&registry).into()],
+        })
+        .unwrap();
+        let mut options = config(&bundle.code);
+        options.viewport = CellMetrics::default().viewport(120, 36);
+        options.environment.window = options.viewport;
+        options.environment.renderer = Renderer::Native;
+        options.environment.idiom = Idiom::Desktop;
+        options.environment.native_focus_scopes = true;
+        options.ui_sets.push(registry);
+        let mut session = Session::new(options).unwrap();
+        session.initial_frame().unwrap();
+        wait(&mut session, "DESKTOP_BRANCH");
+        let events = click(&session.surface, "Collapse A");
+        session.advance(command(events)).unwrap();
+        wait(&mut session, "requests:1");
+        let events = click(&session.surface, "Publish requested page");
+        session.advance(command(events)).unwrap();
+        wait(&mut session, "requests:2");
+        let events = click(&session.surface, "Publish requested page");
+        session.advance(command(events)).unwrap();
+        wait(&mut session, "B conversation 0");
+        let labels = session.surface.accessibility_snapshot();
+        assert!(
+            labels.iter().any(|node| node.label == "Expand A"),
+            "{scenario}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|node| node.label == "Open conversation B conversation 0"),
+            "{scenario}"
+        );
+    }
+
+    #[test]
     fn reload_pauses_input_and_replaces_the_old_vm_and_host_listeners() {
         use maka_workbench::reload::Request;
         use serde_json::json;

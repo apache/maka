@@ -270,15 +270,38 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   effect(() => {
     if (props.focusRequest()) untracked(focusBrowser);
   });
+  // Hidden rows can extend a page without making the List emit its end edge again.
+  const endRequest = signal<{
+    rows: number;
+    scope: BrowserScope;
+    filter: ReturnType<Browsing['filter']>;
+  } | null>(null);
+  const loadMore = () => {
+    if (!choosingWorkspace())
+      endRequest.set({ rows: rowIds().length, scope: browser.scope(), filter: browser.filter() });
+  };
   effect(() => {
-    const rows = browser.sessions().length;
+    const rows = rowIds().length;
+    const requested = endRequest();
     if (
-      !choosingWorkspace() &&
-      !browser.loading() &&
-      !browser.error() &&
-      rows < Math.ceil(viewportHeight() / rowHeight())
-    )
-      void browser.loadMore();
+      requested &&
+      (browser.scope() !== requested.scope ||
+        browser.filter() !== requested.filter ||
+        rows > requested.rows)
+    ) {
+      endRequest.set(null);
+      return;
+    }
+    if (requested && rows < requested.rows) {
+      endRequest.set({ ...requested, rows });
+      return;
+    }
+    if (choosingWorkspace() || browser.loading() || browser.error()) return;
+    if (requested || rows < Math.ceil(viewportHeight() / rowHeight())) {
+      void browser.loadMore().then((result) => {
+        if (alive && endRequest() === requested && result === 'complete') endRequest.set(null);
+      });
+    }
   });
   const createWorkspace = ({
     workspace,
@@ -476,9 +499,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           </View>
         )}
         onLayout={({ bounds: frame }) => viewportHeight.set(frame.size.height)}
-        onLoadMore={() => {
-          if (!choosingWorkspace()) void browser.loadMore();
-        }}
+        onLoadMore={loadMore}
         style={{ flex: 1, minHeight: 32 }}
         accessibilityLabel={choosingWorkspace() ? tr('Workspace scopes') : tr('Conversations')}
       >

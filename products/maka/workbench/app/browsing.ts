@@ -48,7 +48,7 @@ export type Browsing = {
   projectError(): string;
   setScope(scope: BrowserScope): void;
   setFilter(filter: AgentSessionFilter): void;
-  loadMore(): Promise<void>;
+  loadMore(): Promise<'advanced' | 'waiting' | 'complete'>;
   refresh(): Promise<void>;
 };
 
@@ -224,35 +224,37 @@ export function createBrowsing(host: Host): Browsing {
     return firstPage;
   };
 
-  const loadMore = async () => {
+  const loadMore = async (): Promise<'advanced' | 'waiting' | 'complete'> => {
     const read = current;
     const original = page;
-    if (!read || !owns(read) || error()) return;
+    if (!read || !owns(read) || error()) return 'complete';
     if (!original) {
       if (read.extent !== null) read.extend = true;
-      return;
+      return 'waiting';
     }
-    if (!original.after) return;
+    if (!original.after) return 'complete';
     read.extend = true;
-    if (continuation || loading()) return;
+    if (continuation || loading()) return 'waiting';
     continuation = original;
     loading.set(true);
     let waitForCatalog = false;
     try {
       const next = await after(read, original);
-      if (!owns(read) || continuation !== original) return;
+      if (!owns(read) || continuation !== original) return 'waiting';
       const snapshot = uniqueSessions([...sessions(), ...next.sessions]);
       page = next;
       read.extent = snapshot.at(-1)?.id ?? null;
       read.extend = false;
       sessions.set(snapshot);
+      return 'advanced';
     } catch (reason) {
-      if (!owns(read) || continuation !== original) return;
+      if (!owns(read) || continuation !== original) return 'waiting';
       if (errorText(reason) === 'agent_catalog_changed') {
         waitForCatalog = true;
-        return;
+        return 'waiting';
       }
       error.set(errorText(reason));
+      return 'complete';
     } finally {
       if (owns(read) && continuation === original) {
         if (!waitForCatalog) continuation = null;
