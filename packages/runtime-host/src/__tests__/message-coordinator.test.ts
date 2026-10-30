@@ -1361,6 +1361,47 @@ test('recovery starts one explicit follow-up and keeps later messages queued', a
   });
 });
 
+test('an unavailable session keeps its durable admissions and recovery continues', async () => {
+  const fixture = createFixture();
+  const content = { text: 'queued before the connection went away' };
+  await fixture.admissions.commitMessageAdmission({
+    sessionId: ROOT.sessionId,
+    turnId: ROOT.turnId,
+    runId: ROOT.runId,
+    messageId: 'unavailable-followup',
+    content,
+    submittedContentDigest: messageContentDigest(content),
+    submittedPlacement: 'next_turn',
+    placement: 'next_turn',
+    disposition: 'followup',
+    skillInvocation: EMPTY_SKILL_INVOCATION,
+    admittedAt: 1,
+  });
+  fixture.setRootState({ kind: 'idle' });
+  // The session became unavailable after the message was queued (for example
+  // the provider connection was removed), so recovery answers with an
+  // availability reason instead of a Turn.
+  const startRecovered = fixture.root.startRecoveredMessages;
+  fixture.root.startRecoveredMessages = async () => ({
+    error: 'Session execution is unavailable',
+  });
+
+  // One unavailable session must not fail boot recovery, and its admission
+  // must stay durable -- recover() keeps disabled-feature admissions durable
+  // without replaying them for the same reason.
+  await fixture.coordinator.recoverPendingAfterHostRestart([ROOT.sessionId]);
+  assert.equal(fixture.recoveredBatches.length, 0, 'the unavailable session was skipped');
+  assert.ok(fixture.readMessageAdmission('unavailable-followup'), 'admission kept durable');
+
+  // A later, healthier restart recovers the very same admission.
+  fixture.root.startRecoveredMessages = startRecovered;
+  await fixture.coordinator.recoverPendingAfterHostRestart([ROOT.sessionId]);
+  assert.deepEqual(
+    fixture.recoveredBatches.map((batch) => batch.sources.map((source) => source.messageId)),
+    [['unavailable-followup']],
+  );
+});
+
 test('recovery folds later steering ahead of an earlier explicit follow-up', async () => {
   const fixture = createFixture();
   for (const admission of [
