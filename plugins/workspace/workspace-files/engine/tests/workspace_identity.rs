@@ -272,7 +272,7 @@ async fn linked_worktree_marker_uses_git_owned_exclusion_without_overwriting_it(
     let child = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "linked_worktree_marker_uses_git_owned_exclusion_without_overwriting_it",
+            "workspace_identity::linked_worktree_marker_uses_git_owned_exclusion_without_overwriting_it",
             "--nocapture",
         ])
         .env("MAKA_TEST_GIT_FREE_ROOT", temp.path())

@@ -41,9 +41,28 @@ pub enum ModelModality {
     Video,
 }
 
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CatalogModelReference {
+    #[schemars(length(min = 1))]
+    pub provider: String,
+    #[schemars(length(min = 1))]
+    pub model_id: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelOverride {
+    /// Catalog defaults for this connection's model; the request model ID is unchanged.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    #[schemars(with = "CatalogModelReference")]
+    pub catalog_model: Option<CatalogModelReference>,
     /// Public adapter contribution name; omitted selects the wire's default.
     #[serde(
         default,
@@ -97,6 +116,13 @@ pub struct ModelOverride {
     )]
     #[schemars(with = "bool")]
     pub vision: Option<bool>,
+    /// Explicit route image declarations; replaces catalog image constraints.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub image_input: Option<super::ImageInput>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -254,6 +280,7 @@ impl ModelOverride {
         result.description = self.description.clone().or(result.description);
         result.knowledge_cutoff = self.knowledge_cutoff.clone().or(result.knowledge_cutoff);
         result.modalities = self.modalities.clone().or(result.modalities);
+        result.image_input = self.image_input.clone().or(result.image_input);
         if let Some(declared) = &self.capabilities {
             let capabilities = result.capabilities.get_or_insert_default();
             capabilities.chat = declared.chat.or(capabilities.chat);

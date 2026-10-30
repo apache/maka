@@ -142,19 +142,16 @@ impl Fixture {
             },
         );
         provider_entry.exports.get_mut("echo").unwrap().contract = declared.clone();
-        let mut consumer_entry = attached_entry(
-            false,
-            Implementation::JavaScript {
-                module: "host.mjs".into(),
-                realm: Realm::Shared,
-            },
-        );
-        consumer_entry.imports.get_mut("echo").unwrap().contract = declared.clone();
         let provider = package("ingress.provider", provider_entry, None);
-        let consumer = package(
+        let consumer = observer(
             "ingress.consumer",
-            consumer_entry,
-            Some("export function activate() { return {}; }".into()),
+            BTreeMap::from([(
+                "echo".into(),
+                Import {
+                    contract: declared.clone(),
+                    cardinality: Cardinality::One,
+                },
+            )]),
         );
         let issuer = Issuer::default();
         let calls = Arc::new(AtomicUsize::new(0));

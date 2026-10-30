@@ -433,8 +433,7 @@ impl PreparedEncoder {
                     // inspect already records diagnostics; actual encode helpers can
                     // repeat a warning, so retain only the metadata pass diagnostics.
                     let warnings = builder.prompt.warnings.len();
-                    let block =
-                        encode_assistant(&mut builder, part, placeholder, false, &self.mcp_ids)?;
+                    let block = encode_assistant(&mut builder, part, placeholder, &self.mcp_ids)?;
                     builder.prompt.warnings.truncate(warnings);
                     block
                 } else {
@@ -700,34 +699,33 @@ pub struct MetadataPrepass {
     diagnostics: bool,
     collect_sources: bool,
 }
-impl MetadataPrepass {
-    pub fn new(options: StreamOptions) -> Self {
+impl Default for MetadataPrepass {
+    fn default() -> Self {
         Self {
-            inner: Prepass::new(options),
+            inner: Prepass::default(),
             diagnostics: true,
             collect_sources: true,
         }
     }
+}
+impl MetadataPrepass {
     /// Compute body/header decisions for adapters that do not consume diagnostics.
-    pub fn for_replay(options: StreamOptions) -> Self {
-        let mut inner = Prepass::new(options);
-        inner.cache = CacheBudget::replay();
+    pub fn for_replay() -> Self {
         Self {
-            inner,
+            inner: Prepass {
+                cache: CacheBudget::replay(),
+                ..Prepass::default()
+            },
             diagnostics: false,
             collect_sources: true,
         }
     }
     /// Indexed source membership belongs to the prepaid wire backing.
     pub fn for_indexed_replay() -> Self {
-        let mut pass = Self::for_replay(StreamOptions {
-            send_reasoning: true,
-            cache_namespace: String::new(),
-            tool_names: BTreeMap::new(),
-            toolsets: BTreeMap::new(),
-        });
-        pass.collect_sources = false;
-        pass
+        Self {
+            collect_sources: false,
+            ..Self::for_replay()
+        }
     }
     pub fn push<J: CacheCandidate>(
         &mut self,

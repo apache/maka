@@ -2550,6 +2550,12 @@ export const contracts = {
                     type: 'string',
                     const: 'browser_history',
                   },
+                  {
+                    description:
+                      'File upload consent for a browser origin, independent of reads and downloads.',
+                    type: 'string',
+                    const: 'browser_upload',
+                  },
                 ],
               },
               GrantScope: {
@@ -3792,6 +3798,11 @@ export const contracts = {
                       reason: {
                         $ref: '#/$defs/ProviderFailureReason',
                       },
+                      retry_at_unix_ms: {
+                        type: ['integer', 'null'],
+                        format: 'uint64',
+                        minimum: 0,
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'reason'],
@@ -3815,6 +3826,7 @@ export const contracts = {
                   'network',
                   'timed_out',
                   'rate_limit',
+                  'quota_exhausted',
                   'provider_unavailable',
                   'stream_truncated',
                 ],
@@ -10223,6 +10235,12 @@ export const contracts = {
                       "Read the browser profile's browsing history, independent of page access.",
                     type: 'string',
                     const: 'browser_history',
+                  },
+                  {
+                    description:
+                      'File upload consent for a browser origin, independent of reads and downloads.',
+                    type: 'string',
+                    const: 'browser_upload',
                   },
                 ],
               },
@@ -16893,6 +16911,12 @@ export const contracts = {
                     type: 'string',
                     const: 'browser_history',
                   },
+                  {
+                    description:
+                      'File upload consent for a browser origin, independent of reads and downloads.',
+                    type: 'string',
+                    const: 'browser_upload',
+                  },
                 ],
               },
               GrantScope: {
@@ -22699,6 +22723,12 @@ export const contracts = {
                       "Read the browser profile's browsing history, independent of page access.",
                     type: 'string',
                     const: 'browser_history',
+                  },
+                  {
+                    description:
+                      'File upload consent for a browser origin, independent of reads and downloads.',
+                    type: 'string',
+                    const: 'browser_upload',
                   },
                 ],
               },
@@ -38028,6 +38058,104 @@ export const contracts = {
           },
           resources: {},
         },
+        catalogModels: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'SettingsCatalogModelsRead',
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                default: '',
+              },
+              after: {
+                $ref: '#/$defs/CatalogModelReference',
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            $defs: {
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'SettingsCatalogModelsPage',
+            type: 'object',
+            properties: {
+              models: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/SettingsCatalogModel',
+                },
+                maxItems: 16,
+              },
+              after: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            required: ['models', 'after'],
+            $defs: {
+              SettingsCatalogModel: {
+                type: 'object',
+                properties: {
+                  reference: {
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
+                  label: {
+                    type: 'string',
+                  },
+                  contextWindow: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['reference', 'label', 'contextWindow'],
+              },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
+            },
+          },
+          resources: {},
+        },
         connection: {
           mode: 'query',
           input: {
@@ -38194,6 +38322,11 @@ export const contracts = {
               ModelOverride: {
                 type: 'object',
                 properties: {
+                  catalogModel: {
+                    description:
+                      "Catalog defaults for this connection's model; the request model ID is unchanged.",
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
                   adapter: {
                     description:
                       "Public adapter contribution name; omitted selects the wire's default.",
@@ -38224,6 +38357,18 @@ export const contracts = {
                   },
                   vision: {
                     type: 'boolean',
+                  },
+                  imageInput: {
+                    description:
+                      'Explicit route image declarations; replaces catalog image constraints.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ImageInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                   contextWindow: {
                     description:
@@ -38277,6 +38422,21 @@ export const contracts = {
                 },
                 additionalProperties: false,
               },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
               CodeLanguage: {
                 description: 'Interpreter used only for model-facing Code Mode cells.',
                 type: 'string',
@@ -38285,6 +38445,61 @@ export const contracts = {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              ImageInput: {
+                description: 'Route declarations for image input; absent fields remain unknown.',
+                type: 'object',
+                properties: {
+                  mimeTypes: {
+                    description:
+                      'Exact MIME declarations. A generic image modality leaves this unknown.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  maxPerMessage: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxPerRequest: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  minWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  minHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  requestBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               ApiProtocol: {
                 type: 'string',
@@ -38626,6 +38841,11 @@ export const contracts = {
               ModelOverride: {
                 type: 'object',
                 properties: {
+                  catalogModel: {
+                    description:
+                      "Catalog defaults for this connection's model; the request model ID is unchanged.",
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
                   adapter: {
                     description:
                       "Public adapter contribution name; omitted selects the wire's default.",
@@ -38656,6 +38876,18 @@ export const contracts = {
                   },
                   vision: {
                     type: 'boolean',
+                  },
+                  imageInput: {
+                    description:
+                      'Explicit route image declarations; replaces catalog image constraints.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ImageInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                   contextWindow: {
                     description:
@@ -38709,6 +38941,21 @@ export const contracts = {
                 },
                 additionalProperties: false,
               },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
               CodeLanguage: {
                 description: 'Interpreter used only for model-facing Code Mode cells.',
                 type: 'string',
@@ -38717,6 +38964,61 @@ export const contracts = {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              ImageInput: {
+                description: 'Route declarations for image input; absent fields remain unknown.',
+                type: 'object',
+                properties: {
+                  mimeTypes: {
+                    description:
+                      'Exact MIME declarations. A generic image modality leaves this unknown.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  maxPerMessage: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxPerRequest: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  minWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  minHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  requestBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               ApiProtocol: {
                 type: 'string',
@@ -39811,6 +40113,9 @@ export const contracts = {
               SettingsModelDefaults: {
                 type: 'object',
                 properties: {
+                  catalogMatched: {
+                    type: 'boolean',
+                  },
                   label: {
                     type: 'string',
                   },
@@ -39863,6 +40168,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'catalogMatched',
                   'label',
                   'contextWindow',
                   'inputLimit',
@@ -40535,6 +40841,11 @@ export const contracts = {
               ModelOverride: {
                 type: 'object',
                 properties: {
+                  catalogModel: {
+                    description:
+                      "Catalog defaults for this connection's model; the request model ID is unchanged.",
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
                   adapter: {
                     description:
                       "Public adapter contribution name; omitted selects the wire's default.",
@@ -40565,6 +40876,18 @@ export const contracts = {
                   },
                   vision: {
                     type: 'boolean',
+                  },
+                  imageInput: {
+                    description:
+                      'Explicit route image declarations; replaces catalog image constraints.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ImageInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                   contextWindow: {
                     description:
@@ -40618,6 +40941,21 @@ export const contracts = {
                 },
                 additionalProperties: false,
               },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
               CodeLanguage: {
                 description: 'Interpreter used only for model-facing Code Mode cells.',
                 type: 'string',
@@ -40626,6 +40964,61 @@ export const contracts = {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              ImageInput: {
+                description: 'Route declarations for image input; absent fields remain unknown.',
+                type: 'object',
+                properties: {
+                  mimeTypes: {
+                    description:
+                      'Exact MIME declarations. A generic image modality leaves this unknown.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  maxPerMessage: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxPerRequest: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  minWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  minHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  requestBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               ApiProtocol: {
                 type: 'string',
@@ -40922,6 +41315,9 @@ export const contracts = {
               SettingsModelDefaults: {
                 type: 'object',
                 properties: {
+                  catalogMatched: {
+                    type: 'boolean',
+                  },
                   label: {
                     type: 'string',
                   },
@@ -40974,6 +41370,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'catalogMatched',
                   'label',
                   'contextWindow',
                   'inputLimit',
@@ -41486,6 +41883,11 @@ export const contracts = {
               ModelOverride: {
                 type: 'object',
                 properties: {
+                  catalogModel: {
+                    description:
+                      "Catalog defaults for this connection's model; the request model ID is unchanged.",
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
                   adapter: {
                     description:
                       "Public adapter contribution name; omitted selects the wire's default.",
@@ -41516,6 +41918,18 @@ export const contracts = {
                   },
                   vision: {
                     type: 'boolean',
+                  },
+                  imageInput: {
+                    description:
+                      'Explicit route image declarations; replaces catalog image constraints.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ImageInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                   contextWindow: {
                     description:
@@ -41569,6 +41983,21 @@ export const contracts = {
                 },
                 additionalProperties: false,
               },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
               CodeLanguage: {
                 description: 'Interpreter used only for model-facing Code Mode cells.',
                 type: 'string',
@@ -41577,6 +42006,61 @@ export const contracts = {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              ImageInput: {
+                description: 'Route declarations for image input; absent fields remain unknown.',
+                type: 'object',
+                properties: {
+                  mimeTypes: {
+                    description:
+                      'Exact MIME declarations. A generic image modality leaves this unknown.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  maxPerMessage: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxPerRequest: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  minWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  minHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  requestBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               ApiProtocol: {
                 type: 'string',

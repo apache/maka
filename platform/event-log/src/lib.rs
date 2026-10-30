@@ -55,6 +55,7 @@ pub mod recovery;
 pub mod root;
 pub mod root_store;
 pub use root_store::{RootStore, SessionStore};
+pub mod native_approvals;
 pub mod native_computer;
 pub mod recall;
 pub mod run_source;
@@ -498,6 +499,7 @@ mod session_copy_tests;
 #[cfg(test)]
 mod test_store;
 #[cfg(test)]
+#[path = "../tests/support/transcript.rs"]
 mod transcript_cache;
 #[cfg(test)]
 mod transcript_index_tests;

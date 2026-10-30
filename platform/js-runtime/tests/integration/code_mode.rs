@@ -332,7 +332,7 @@ async fn javascript_failure_cancels_and_drains_dispatched_tools() {
         let result = task.await.unwrap().unwrap();
         if fail {
             assert!(
-                matches!(result, CellResult::Failure { error: CellDiagnostic { kind: CellDiagnosticKind::ExecutionError, message }, tool_calls } if message.contains("cell-failure") && tool_calls.len() == 2)
+                matches!(result, CellResult::Failure { error: CellDiagnostic { kind: CellDiagnosticKind::ExecutionError, message, .. }, tool_calls } if message.contains("cell-failure") && tool_calls.len() == 2)
             );
         } else {
             assert!(

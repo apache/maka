@@ -28,7 +28,10 @@ mod http;
 mod media;
 mod prompt;
 mod request;
+mod request_bytes;
+pub(crate) use request_bytes::encoded_request_bytes;
 mod responses;
+mod retry;
 pub(crate) mod wire;
 
 use crate::ProviderKind;

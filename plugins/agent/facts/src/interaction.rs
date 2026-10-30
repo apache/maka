@@ -37,6 +37,8 @@ pub enum GrantCapability {
     BrowserDownload,
     /// Read the browser profile's browsing history, independent of page access.
     BrowserHistory,
+    /// File upload consent for a browser origin, independent of reads and downloads.
+    BrowserUpload,
     ComputerUse,
     ComputerAudio,
     DesktopMcp,

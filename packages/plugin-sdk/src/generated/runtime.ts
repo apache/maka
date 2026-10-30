@@ -3439,7 +3439,8 @@ export type FormFormat = 'email' | 'uri' | 'date' | 'date-time';
 export type GrantCapability =
   | ('browser' | 'computer_use' | 'computer_audio' | 'desktop_mcp' | 'mcp')
   | 'browser_download'
-  | 'browser_history';
+  | 'browser_history'
+  | 'browser_upload';
 export type GrantScope =
   | {
       kind: 'browser_origin';
@@ -3952,6 +3953,7 @@ export type ModelFailureCause =
   | {
       kind: 'provider';
       reason: ProviderFailureReason;
+      retry_at_unix_ms?: number | null;
     }
   | {
       kind: 'adapter';
@@ -3960,6 +3962,7 @@ export type ProviderFailureReason =
   | 'network'
   | 'timed_out'
   | 'rate_limit'
+  | 'quota_exhausted'
   | 'provider_unavailable'
   | 'stream_truncated';
 export type ModelInterruption = ('cancelled' | 'timed_out' | 'failed') | 'retryable_failure';
@@ -6609,6 +6612,7 @@ export interface SettingsModelLimits {
   compactionThreshold: number | null;
 }
 export interface SettingsModelDefaults {
+  catalogMatched: boolean;
   label: string;
   contextWindow: number | null;
   inputLimit: number | null;
@@ -6700,6 +6704,10 @@ export interface SettingsConnectionEditingFacts {
 }
 export interface ModelOverride {
   /**
+   * Catalog defaults for this connection's model; the request model ID is unchanged.
+   */
+  catalogModel?: CatalogModelReference;
+  /**
    * Public adapter contribution name; omitted selects the wire's default.
    */
   adapter?: string;
@@ -6718,6 +6726,10 @@ export interface ModelOverride {
   thinkingLevels?: ThinkingLevel[];
   defaultThinkingLevel?: ThinkingLevel;
   vision?: boolean;
+  /**
+   * Explicit route image declarations; replaces catalog image constraints.
+   */
+  imageInput?: ImageInput | null;
   /**
    * Override total input-plus-output capacity, without subtracting a reply budget.
    */
@@ -6742,6 +6754,27 @@ export interface ModelOverride {
   capabilities?: ModelOverrideCapabilities;
   modalities?: ModelModalities;
   serviceTier?: RelayServiceTier;
+}
+export interface CatalogModelReference {
+  provider: string;
+  modelId: string;
+}
+/**
+ * Route declarations for image input; absent fields remain unknown.
+ */
+export interface ImageInput {
+  /**
+   * Exact MIME declarations. A generic image modality leaves this unknown.
+   */
+  mimeTypes?: string[] | null;
+  maxPerMessage?: number | null;
+  maxPerRequest?: number | null;
+  maxBytes?: number | null;
+  minWidth?: number | null;
+  minHeight?: number | null;
+  maxWidth?: number | null;
+  maxHeight?: number | null;
+  requestBytes?: number | null;
 }
 /**
  * Vision has one declaration owner: ModelOverride::vision.

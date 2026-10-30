@@ -212,6 +212,11 @@ export const workspaceMessages = {
     '在 {name} 中新建对话',
     '在 {name} 中新增對話',
   ],
+  'No archived conversations.': [
+    'No archived conversations.',
+    '没有已归档的对话。',
+    '沒有已封存的對話。',
+  ],
   'No commits yet': ['No commits yet', '尚无提交', '尚無提交'],
   'No conversations yet.': ['No conversations yet.', '还没有对话。', '尚無對話。'],
   'No current changes in this area.': [

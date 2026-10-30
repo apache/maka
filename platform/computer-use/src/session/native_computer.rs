@@ -178,8 +178,12 @@ impl MacApplicationKey {
 struct WindowsObservation {
     binding: crate::ComputerAppBinding,
     generation: crate::desktop::worker::native_owner::NativeGeneration,
-    state: WindowStateOutput,
+    state: Option<WindowStateOutput>,
+    frame: cua_driver_sdk::NativeWindowFrame,
+    logical_size: Option<[u32; 2]>,
     capture: Option<String>,
+    image_bounds: Option<[i32; 4]>,
+    target_observed: bool,
 }
 
 impl Session {

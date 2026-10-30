@@ -301,15 +301,19 @@ export function projectProcessGroups(input: {
     );
   let nextActivity = 0;
   for (const position of positions) {
-    while (
-      nextActivity < activities.length &&
-      (position.sequence === undefined ||
-        (activities[nextActivity].startSequence ?? Infinity) <= position.sequence)
-    ) {
-      const activity = activities[nextActivity++];
+    const row = rowsById.get(position.rowId)!;
+    while (nextActivity < activities.length) {
+      const activity = activities[nextActivity];
+      // A preview cut publishes its text parts before pending tool inputs.
+      const before =
+        activity.previewOrder === undefined
+          ? position.sequence === undefined ||
+            (activity.startSequence ?? Infinity) <= position.sequence
+          : row.preview !== undefined && activity.previewOrder < row.preview.stepOrder;
+      if (!before) break;
+      nextActivity += 1;
       append(activity.turnId, { kind: 'activity', toolUseId: activity.toolUseId });
     }
-    const row = rowsById.get(position.rowId)!;
     if (input.gapsBefore?.has(position.rowId)) flush(true);
     if (current && current.turnId !== row.turnId) flush(true);
     const body = row.role === 'assistant' && row.field === 'body';

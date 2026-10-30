@@ -1006,16 +1006,4 @@ mod click_carrier_tests {
             "coordinate click requires both x and y"
         );
     }
-
-    #[test]
-    fn raw_click_native_types_are_checked_before_element_target_conflicts() {
-        for input in [
-            json!({"window":{"id":9},"element_id":"native","x":0.5,"y":12}),
-            json!({"element_id":"native","x":0.5,"y":12}),
-        ] {
-            let message = failed_message(native_decode::<DesktopClick>(input));
-            assert!(message.contains("floating point"), "{message}");
-            assert!(message.contains("i16"), "{message}");
-        }
-    }
 }

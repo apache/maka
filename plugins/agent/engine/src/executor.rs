@@ -135,7 +135,9 @@ impl Engine {
                     drop(settlement); // the terminal fact owns the lease through its commit
                     committed?;
                     match outcome {
-                        InvocationOutcome::Completed => Ok(invocation),
+                        InvocationOutcome::Completed => {
+                            Ok(crate::ActivationExit::Terminal(invocation))
+                        }
                         InvocationOutcome::Cancelled { .. } => Err(RunError::Cancelled),
                         InvocationOutcome::Failed { message, .. } => Err(RunError::Internal(
                             message.unwrap_or_else(|| "external executor failed".into()),

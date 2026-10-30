@@ -1258,3 +1258,5 @@ impl SessionStore {
             .await
     }
 }
+
+mod native_approvals;

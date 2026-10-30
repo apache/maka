@@ -125,6 +125,7 @@ impl Owner {
                     || maka_workspace_api::computer::is_browser_target(target)
                     || maka_workspace_api::computer::is_browser_download_target(target)
                     || maka_workspace_api::computer::is_browser_history_target(target)
+                    || maka_workspace_api::computer::is_browser_upload_target(target)
             }
             InteractionRequest::ComputerApp { target, .. } => {
                 let mut expected = maka_workspace_api::computer::target();

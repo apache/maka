@@ -402,11 +402,15 @@ impl Session {
                 | Command::TabPageAssetsBundle { handle, .. }
                 | Command::BrowserCua { handle, .. }
                 | Command::BrowserWait { handle, .. }
+                | Command::BrowserFileChooserWait { handle, .. }
+                | Command::BrowserFileChooserSetFiles { handle, .. }
                 | Command::BrowserMutation { handle, .. }
                 | Command::ClipboardRead { handle }
                 | Command::ClipboardReadText { handle }
                 | Command::ClipboardWrite { handle, .. }
                 | Command::ClipboardWriteText { handle, .. }
+                | Command::BrowserMarkTab { handle, .. }
+                | Command::BrowserScreenshot { handle, .. }
                 | Command::GetJsDialog { handle, .. }
                 | Command::HandleJsDialog { handle, .. },
             ) => local.target_label(handle),
@@ -609,7 +613,9 @@ impl Session {
     ) -> Result<crate::InvocationCompletion, ToolError> {
         if !matches!(
             &command,
-            Command::BrowserDownloadWait { .. } | Command::BrowserWait { .. }
+            Command::BrowserDownloadWait { .. }
+                | Command::BrowserWait { .. }
+                | Command::BrowserFileChooserWait { .. }
         ) {
             return self
                 .invoke_immediate(command, invocation, cancellation, language)

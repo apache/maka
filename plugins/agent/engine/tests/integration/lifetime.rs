@@ -19,7 +19,6 @@
 
 use crate::support::invocation;
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -27,18 +26,16 @@ use std::time::Duration;
 use crate::support::store::SessionFixture;
 use maka_agent_engine::{Engine, RunError, RunInput};
 use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::ToolOutcome;
 use maka_agent_facts::tool_call::ToolOrigin;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
 use maka_code_runtime::CellLimits;
-use maka_model::{ModelExecutor, ProviderConfig, ProviderKind};
+use maka_model::ModelExecutor;
 use maka_tools::CodeExecutor;
 use maka_tools::{
-    ToolCatalog, ToolDefinition, ToolHandler, ToolMode, ToolNesting, ToolRegistration,
-    ToolSemantics,
+    ToolCatalog, ToolDefinition, ToolHandler, ToolNesting, ToolRegistration, ToolSemantics,
 };
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
@@ -85,34 +82,10 @@ impl ToolExecutor for Effect {
 }
 
 fn input(base: &str, suffix: &str, effect: Arc<Effect>) -> RunInput {
-    RunInput {
-        model_source: None,
-        model_revision: None,
-        provider_id: "fixture".into(),
-        main_output_limit: None,
-        context: None,
-        invocation: Invocation {
-            session_id: "session".into(),
-            turn_id: format!("turn-{suffix}"),
-            run_id: format!("run-{suffix}"),
-            invocation_id: format!("invocation-{suffix}"),
-        },
-        request_fingerprint: None,
-        provider: ProviderConfig {
-            adapter: None,
-            capabilities: Default::default(),
-            kind: ProviderKind::OpenaiChatCompletions,
-            model: "test".into(),
-            base_url: base.into(),
-            auth: maka_model::ProviderAuth::ApiKey("test-key".into()),
-            headers: BTreeMap::new(),
-            network: Default::default(),
-            body_overlay: None,
-        },
-        provider_options: json!({}),
-        supports_vision: false,
-        configuration: invocation::configuration(ToolMode::Direct),
-        work: maka_agent_engine::RunWork::Message {
+    let mut input = invocation::input(
+        base,
+        suffix,
+        maka_agent_engine::RunWork::Message {
             allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: format!("question {suffix}").into(),
@@ -131,7 +104,9 @@ fn input(base: &str, suffix: &str, effect: Arc<Effect>) -> RunInput {
             }])
             .unwrap(),
         },
-    }
+    );
+    input.provider.auth = maka_model::ProviderAuth::ApiKey("test-key".into());
+    input
 }
 
 use crate::support::http;

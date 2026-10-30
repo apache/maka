@@ -1447,13 +1447,15 @@ impl Cx {
                 view().flex_row().items_center().gap(px(4.0)),
                 Part::CodeBlockHeader,
             )
-            .child(self.part(
-                text(move || SharedString::from(language.get()))
-                    .select_none()
-                    .flex_1()
-                    .min_w(px(0.0)),
-                Part::CodeBlockLanguage,
-            ))
+            .child(
+                self.part(
+                    text(move || SharedString::from(language.get()))
+                        .select_none()
+                        .flex_1()
+                        .min_w(px(0.0)),
+                    Part::CodeBlockLanguage,
+                ),
+            )
             .child(each(
                 actions,
                 |action: &TextViewCodeAction| action.id.clone(),

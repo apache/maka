@@ -1174,6 +1174,7 @@ mod tests {
             last_turn: "turn".into(),
             dialogs: None,
             downloads: None,
+            filechoosers: None,
             dialog_host: None,
             clipboard: None,
             clipboard_store: Arc::default(),

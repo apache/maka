@@ -911,7 +911,9 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     },
     close: closeSidebar,
     selectSession: selectBrowsed,
-    changeSession: changeBrowsedSession,
+    changeSession: async (action, origin) => {
+      await changeBrowsedSession(action, origin);
+    },
     create,
     newConversation: (sessionId) => invokeCommand({ id: 'new', sessionId }),
     openBot: (sessionId) => invokeCommand({ id: 'bot', sessionId }),
@@ -1119,7 +1121,9 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                   }
                   foreground={foreground}
                   control={control}
-                  fork={(action) => changeBrowsedSession(action, id())}
+                  fork={async (action) => {
+                    await changeBrowsedSession(action, id());
+                  }}
                   edit={(action, text, send) => changeBrowsedSession(action, id(), { text, send })}
                   takePrefill={() => {
                     const prefill = prefills.get(id()) ?? null;

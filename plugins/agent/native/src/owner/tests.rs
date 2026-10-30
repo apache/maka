@@ -215,8 +215,8 @@ fn scope(issuer: &Issuer, grant: bool) -> Scope {
 fn id(value: u128) -> InstanceId {
     InstanceId(vec![Uuid::from_u128(value)])
 }
-fn package(provider: bool) -> Package {
-    let entry = EntryDeclaration {
+fn entry(provider: bool) -> EntryDeclaration {
+    EntryDeclaration {
         implementation: if provider {
             Implementation::Native {
                 implementation: IMPLEMENTATION.into(),
@@ -235,13 +235,29 @@ fn package(provider: bool) -> Package {
         imports: if provider {
             BTreeMap::new()
         } else {
-            BTreeMap::from([(
-                EXPORT.into(),
-                Import {
-                    contract: contract(),
-                    cardinality: Cardinality::One,
-                },
-            )])
+            BTreeMap::from([
+                (
+                    EXPORT.into(),
+                    Import {
+                        contract: contract(),
+                        cardinality: Cardinality::One,
+                    },
+                ),
+                (
+                    "receipts".into(),
+                    Import {
+                        contract: maka_plugin_core::operation::receipt_reader_contract(),
+                        cardinality: Cardinality::One,
+                    },
+                ),
+                (
+                    "settings".into(),
+                    Import {
+                        contract: maka_settings_native::contract::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                ),
+            ])
         },
         exports: if provider {
             BTreeMap::from([(
@@ -254,14 +270,26 @@ fn package(provider: bool) -> Package {
         } else {
             BTreeMap::new()
         },
-    };
+    }
+}
+
+fn package(provider: bool) -> Package {
+    application_package(if provider { "agent" } else { "consumer" }, entry(provider))
+}
+
+fn application_package(name: &str, entry: EntryDeclaration) -> Package {
+    let javascript = matches!(entry.implementation, Implementation::JavaScript { .. });
     let declaration = Declaration {
         host: Some(entry),
         ui: None,
         composition: None,
     };
-    let mut files = BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({"schemaVersion":1,"id":if provider {"agent"} else {"consumer"},"application":declaration})).unwrap())]);
-    if !provider {
+    let mut files = BTreeMap::from([(
+        MANIFEST_FILE.into(),
+        serde_json::to_vec(&json!({"schemaVersion":1,"id":name,"application":declaration}))
+            .unwrap(),
+    )]);
+    if javascript {
         files.insert(
             "host.mjs".into(),
             b"export function activate() { return {}; }".to_vec(),
@@ -270,173 +298,79 @@ fn package(provider: bool) -> Package {
     Package::new(files).unwrap()
 }
 fn input(settings: &Configuration) -> (Input, Vec<Package>) {
-    let provider = package(true);
-    let consumer = package(false);
-    let node = |key: u128, provider_node: bool| Node {
-        key: Uuid::from_u128(key),
-        package: if provider_node {
-            provider.application_ref()
-        } else {
-            consumer.application_ref()
-        }
-        .into(),
-        use_package: PackageUse::Host,
-        configuration: if provider_node {
-            NodeConfiguration {
-                values: serde_json::to_value(settings)
-                    .unwrap()
-                    .as_object()
-                    .unwrap()
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
-                parameters: BTreeMap::new(),
-            }
-        } else {
-            NodeConfiguration::default()
-        },
-        parameters: NodeConfiguration::default(),
-        disabled: false,
-        overrides: vec![],
-        bindings: if provider_node {
-            BTreeMap::new()
-        } else {
-            BTreeMap::from([(
-                EXPORT.into(),
-                vec![Target::Instance {
-                    path: vec!["provider".into()],
-                    export: EXPORT.into(),
-                }],
-            )])
-        },
-    };
-    let receipt_contract = maka_plugin_core::operation::receipt_reader_contract();
+    application_input(settings, package(true), package(false))
+}
+fn application_input(
+    settings: &Configuration,
+    provider: Package,
+    consumer: Package,
+) -> (Input, Vec<Package>) {
     let receipts = Package::new(BTreeMap::from([(
         MANIFEST_FILE.into(),
-        serde_json::to_vec(&json!({
-            "schemaVersion":1,"id":"receipts","application":{"host":{
-                "implementation":{"kind":"native","implementation":"maka.operations.receipts"},
-                "configuration":{"type":"object","additionalProperties":false},"imports":{},
-                "exports":{"Receipts":{"contract":receipt_contract,"availability":"required"}}
-            }}
-        }))
-        .unwrap(),
-    )]))
-    .unwrap();
-    let receipt_node = Node {
-        key: Uuid::from_u128(4),
-        package: receipts.application_ref().into(),
+        serde_json::to_vec(&json!({"schemaVersion":1,"id":"receipts","application":{"host":{
+            "implementation":{"kind":"native","implementation":"maka.operations.receipts"},
+            "configuration":{"type":"object","additionalProperties":false},"imports":{},
+            "exports":{"Receipts":{"contract":maka_plugin_core::operation::receipt_reader_contract(),"availability":"required"}}
+        }}})).unwrap(),
+    )])).unwrap();
+    let settings_package = Package::new(BTreeMap::from([(
+        MANIFEST_FILE.into(),
+        serde_json::to_vec(&json!({"schemaVersion":1,"id":"settings","application":{"host":{
+            "implementation":{"kind":"native","implementation":maka_settings_native::IMPLEMENTATION},
+            "configuration":{"type":"object","properties":{},"additionalProperties":false},"imports":{},
+            "exports":{(maka_settings_native::EXPORT):{"contract":maka_settings_native::contract::contract(),"availability":"required"}}
+        }}})).unwrap(),
+    )])).unwrap();
+    let node = |key, package: &Package| Node {
+        key: Uuid::from_u128(key),
+        package: package.application_ref().into(),
         use_package: PackageUse::Host,
         configuration: Default::default(),
         parameters: Default::default(),
-        bindings: BTreeMap::new(),
         disabled: false,
         overrides: vec![],
+        bindings: Default::default(),
     };
-    let mut input = Input {
+    let caller = |key| Node {
+        bindings: [
+            (EXPORT, "provider", EXPORT),
+            ("receipts", "receipts", "Receipts"),
+            ("settings", "settings", maka_settings_native::EXPORT),
+        ]
+        .into_iter()
+        .map(|(import, path, export)| {
+            (
+                import.into(),
+                vec![Target::Instance {
+                    path: vec![path.into()],
+                    export: export.into(),
+                }],
+            )
+        })
+        .collect(),
+        ..node(key, &consumer)
+    };
+    let input = Input {
         ui: None,
         instances: BTreeMap::from([
-            ("provider".into(), node(1, true)),
-            ("a".into(), node(2, false)),
-            ("b".into(), node(3, false)),
+            (
+                "provider".into(),
+                Node {
+                    configuration: NodeConfiguration {
+                        values: serde_json::from_value(serde_json::to_value(settings).unwrap())
+                            .unwrap(),
+                        parameters: Default::default(),
+                    },
+                    ..node(1, &provider)
+                },
+            ),
+            ("a".into(), caller(2)),
+            ("b".into(), caller(3)),
+            ("receipts".into(), node(4, &receipts)),
+            ("settings".into(), node(5, &settings_package)),
         ]),
     };
-    input.instances.insert("receipts".into(), receipt_node);
-    for name in ["a", "b"] {
-        input.instances.get_mut(name).unwrap().bindings.insert(
-            "receipts".into(),
-            vec![Target::Instance {
-                path: vec!["receipts".into()],
-                export: "Receipts".into(),
-            }],
-        );
-    }
-    // Both consumers declare recovery independently of their execution import.
-    let mut files = consumer.files().clone();
-    let mut manifest = consumer.manifest().clone();
-    let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-    manifest_application.host.as_mut().unwrap().imports.insert(
-        "receipts".into(),
-        Import {
-            contract: receipt_contract,
-            cardinality: Cardinality::One,
-        },
-    );
-    files.insert(MANIFEST_FILE.into(), {
-        manifest.application =
-            Some(maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap());
-        serde_json::to_vec(&manifest).unwrap()
-    });
-    let consumer = Package::new(files).unwrap();
-    for name in ["a", "b"] {
-        input.instances.get_mut(name).unwrap().package = consumer.application_ref().into();
-    }
-    let settings = {
-        let mut manifest = provider.manifest().clone();
-        let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-        manifest.id = "settings".into();
-        let entry = manifest_application.host.as_mut().unwrap();
-        entry.implementation = Implementation::Native {
-            implementation: maka_settings_native::IMPLEMENTATION.into(),
-        };
-        entry.configuration =
-            json!({"type":"object","properties":{},"additionalProperties":false}).into();
-        entry.exports = BTreeMap::from([(
-            maka_settings_native::EXPORT.into(),
-            Export {
-                contract: maka_settings_native::contract::contract(),
-                availability: Availability::Required,
-            },
-        )]);
-        Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
-            manifest.application = Some(
-                maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap(),
-            );
-            serde_json::to_vec(&manifest).unwrap()
-        })]))
-        .unwrap()
-    };
-    let mut files = consumer.files().clone();
-    let mut manifest = consumer.manifest().clone();
-    let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-    manifest_application.host.as_mut().unwrap().imports.insert(
-        "settings".into(),
-        Import {
-            contract: maka_settings_native::contract::contract(),
-            cardinality: Cardinality::One,
-        },
-    );
-    files.insert(MANIFEST_FILE.into(), {
-        manifest.application =
-            Some(maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap());
-        serde_json::to_vec(&manifest).unwrap()
-    });
-    let consumer = Package::new(files).unwrap();
-    input.instances.insert(
-        "settings".into(),
-        Node {
-            key: Uuid::from_u128(5),
-            package: settings.application_ref().into(),
-            use_package: PackageUse::Host,
-            configuration: NodeConfiguration::default(),
-            parameters: NodeConfiguration::default(),
-            disabled: false,
-            overrides: vec![],
-            bindings: BTreeMap::new(),
-        },
-    );
-    for name in ["a", "b"] {
-        let node = input.instances.get_mut(name).unwrap();
-        node.package = consumer.application_ref().into();
-        node.bindings.insert(
-            "settings".into(),
-            vec![Target::Instance {
-                path: vec!["settings".into()],
-                export: maka_settings_native::EXPORT.into(),
-            }],
-        );
-    }
-    (input, vec![provider, consumer, receipts, settings])
+    (input, vec![provider, consumer, receipts, settings_package])
 }
 // The default dispatcher is thread-local: hold the guard through current-thread
 // fixture shutdown so actual producer tasks remain inside the capture.
@@ -463,6 +397,14 @@ fn bundled_catalog() -> Arc<maka_providers::catalog::Catalog> {
     Arc::new(maka_providers::catalog::Catalog::new(
         maka_providers::catalog::Snapshot::bundled().unwrap(),
     ))
+}
+
+type FixtureCapture =
+    Arc<StdMutex<Option<(Arc<Owner>, maka_host_runtime::application::NativeServices)>>>;
+
+enum FixtureApplication {
+    Agent,
+    Workhub(workhub::Setup),
 }
 
 struct Fixture {
@@ -600,15 +542,7 @@ impl Fixture {
     }
 
     async fn new(base: &str, model: Option<ModelExecutor>) -> Self {
-        Self::with_peer(base, model, None).await
-    }
-    async fn with_peer(
-        base: &str,
-
-        model: Option<ModelExecutor>,
-        peer: Option<Arc<maka_transport::transport::PeerPolicy>>,
-    ) -> Self {
-        Self::with_services(base, model, peer, None).await
+        Self::configured_provider(base, model, None, None, |_| {}, "openai-compatible").await
     }
     async fn with_services(
         base: &str,
@@ -617,7 +551,7 @@ impl Fixture {
         peer: Option<Arc<maka_transport::transport::PeerPolicy>>,
         tooling: Option<service_tools::Setup>,
     ) -> Self {
-        Self::configured(base, model, peer, tooling, |_| {}).await
+        Self::configured_provider(base, model, peer, tooling, |_| {}, "openai-compatible").await
     }
     async fn configured(
         base: &str,
@@ -636,6 +570,45 @@ impl Fixture {
         tooling: Option<service_tools::Setup>,
         configure: impl FnOnce(&mut Configuration),
         provider_name: &str,
+    ) -> Self {
+        Self::configured_application(
+            base,
+            model,
+            peer,
+            tooling,
+            configure,
+            provider_name,
+            FixtureApplication::Agent,
+        )
+        .await
+    }
+    async fn workhub(base: &str, setup: workhub::Setup) -> Self {
+        Self::workhub_configured(base, setup, |_| {}).await
+    }
+    async fn workhub_configured(
+        base: &str,
+        setup: workhub::Setup,
+        configure: impl FnOnce(&mut Configuration),
+    ) -> Self {
+        Self::configured_application(
+            base,
+            None,
+            None,
+            None,
+            configure,
+            "openai-compatible",
+            FixtureApplication::Workhub(setup),
+        )
+        .await
+    }
+    async fn configured_application(
+        base: &str,
+        model: Option<ModelExecutor>,
+        peer: Option<Arc<maka_transport::transport::PeerPolicy>>,
+        tooling: Option<service_tools::Setup>,
+        configure: impl FnOnce(&mut Configuration),
+        provider_name: &str,
+        application: FixtureApplication,
     ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("root");
@@ -739,7 +712,10 @@ impl Fixture {
         if let Some(tooling) = &tooling {
             settings.tools = tooling.selections();
         }
-        let (mut input, mut packages) = input(&settings);
+        let (mut input, mut packages) = match &application {
+            FixtureApplication::Agent => input(&settings),
+            FixtureApplication::Workhub(setup) => setup.composition(&settings),
+        };
         if let Some(tooling) = &tooling {
             tooling.install(&mut input, &mut packages);
         }
@@ -748,61 +724,76 @@ impl Fixture {
             .commit_application(deployment, 0, input, vec![], packages)
             .await
             .unwrap();
-        let captured = Arc::new(StdMutex::new(None));
-        let capture = captured.clone();
-        let replacement = Arc::new(StdMutex::new(model));
+        let captured: FixtureCapture = Arc::new(StdMutex::new(None));
         let mut native = NativeRegistry::default();
         let catalog = bundled_catalog();
         maka_settings_native::provide(&mut native, catalog.clone()).unwrap();
         if let Some(tooling) = &tooling {
             tooling.provide(&mut native);
         }
-        // Actual Host NativeContext and original NativeOwner; only the model
-        // implementation is controlled in failure tests, never Root/admission.
-        native
-            .insert(
-                IMPLEMENTATION.into(),
-                Arc::new(move |context, configuration| {
-                    let capture = capture.clone();
-                    let catalog = catalog.clone();
-                    let replacement = replacement.lock().unwrap().take();
-                    Box::pin(async move {
-                        let services = context.services();
-                        let mut owner = Owner::open(context, configuration, catalog).await.unwrap();
-                        if let Some(model) = replacement {
-                            Arc::get_mut(&mut owner).unwrap().engine = Engine::new(
-                                model,
-                                maka_tools::CodeExecutor::new(Default::default()).unwrap(),
-                            )
-                            .unwrap();
-                        }
-                        *capture.lock().unwrap() = Some((owner.clone(), services));
-                        let service = Arc::new(Agent(owner));
-                        NativeActivation {
-                            owner: service.clone(),
-                            exports: Ok(BTreeMap::from([(
-                                EXPORT.into(),
-                                maka_plugin_core::runtime::Published {
-                                    contract: contract(),
-                                    value: service
-                                        as Arc<dyn maka_host_runtime::application::Handler>,
-                                },
-                            )])),
-                        }
-                    })
-                }),
-            )
-            .unwrap();
-        let (issuer, policy): (Issuer, Arc<dyn Policy>) = match peer {
-            Some(peer) => (peer.issuer(), peer),
-            None => {
-                let native = tooling.as_ref().map(service_tools::Setup::policy);
-                let issuer = native
-                    .as_ref()
-                    .map(|policy| policy.issuer())
-                    .unwrap_or_default();
-                (issuer.clone(), Arc::new(Grant(issuer, native)))
+        match &application {
+            FixtureApplication::Workhub(setup) => setup.provide(&mut native, captured.clone()),
+            FixtureApplication::Agent => {
+                let capture = captured.clone();
+                let replacement = Arc::new(StdMutex::new(model));
+                // Actual Host NativeContext and original NativeOwner; only the model
+                // implementation is controlled in failure tests, never Root/admission.
+                native
+                    .insert(
+                        IMPLEMENTATION.into(),
+                        Arc::new(move |context, configuration| {
+                            let capture = capture.clone();
+                            let catalog = catalog.clone();
+                            let replacement = replacement.lock().unwrap().take();
+                            Box::pin(async move {
+                                let services = context.services();
+                                let mut owner =
+                                    Owner::open(context, configuration, catalog).await.unwrap();
+                                if let Some(model) = replacement {
+                                    Arc::get_mut(&mut owner).unwrap().engine = Engine::new(
+                                        model,
+                                        maka_tools::CodeExecutor::new(Default::default()).unwrap(),
+                                    )
+                                    .unwrap();
+                                }
+                                *capture.lock().unwrap() = Some((owner.clone(), services));
+                                let service = Arc::new(Agent(owner));
+                                NativeActivation {
+                                    owner: service.clone(),
+                                    exports: Ok(BTreeMap::from([(
+                                        EXPORT.into(),
+                                        maka_plugin_core::runtime::Published {
+                                            contract: contract(),
+                                            value: service
+                                                as Arc<dyn maka_host_runtime::application::Handler>,
+                                        },
+                                    )])),
+                                }
+                            })
+                        }),
+                    )
+                    .unwrap();
             }
+        }
+        let (issuer, policy): (Issuer, Arc<dyn Policy>) = match &application {
+            FixtureApplication::Workhub(setup) => {
+                let issuer = Issuer::default();
+                (
+                    issuer.clone(),
+                    Arc::new(Grant(issuer, Some(setup.policy()))),
+                )
+            }
+            FixtureApplication::Agent => match peer {
+                Some(peer) => (peer.issuer(), peer),
+                None => {
+                    let native = tooling.as_ref().map(service_tools::Setup::policy);
+                    let issuer = native
+                        .as_ref()
+                        .map(|policy| policy.issuer())
+                        .unwrap_or_default();
+                    (issuer.clone(), Arc::new(Grant(issuer, native)))
+                }
+            },
         };
         let app = Application::start_from_store(
             store.clone(),
@@ -947,8 +938,10 @@ impl Fixture {
         completion.result
     }
     async fn drained(&self) {
-        while !self.owner.workers.is_empty() {
-            tokio::task::yield_now().await;
+        let closed = self.owner.workers.close();
+        self.owner.workers.wait().await;
+        if closed && !self.owner.stop.is_cancelled() {
+            self.owner.workers.reopen();
         }
     }
 }

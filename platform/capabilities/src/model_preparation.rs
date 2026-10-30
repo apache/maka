@@ -104,6 +104,8 @@ impl ModelPreparationResources {
                     claimed: 0,
                 }),
             }),
+            staging: self.staging.clone(),
+            staging_capacity: self.policy.staging_bytes,
             full: self.resident.clone(),
             full_capacity: self.policy.resident_bytes,
         })
@@ -154,6 +156,8 @@ impl ModelPreparationResources {
 #[derive(Debug)]
 pub struct StagedPreparation {
     account: Arc<Account>,
+    staging: Arc<Semaphore>,
+    staging_capacity: usize,
     full: Arc<Semaphore>,
     full_capacity: usize,
 }
@@ -161,6 +165,41 @@ pub struct StagedPreparation {
 impl StagedPreparation {
     pub fn directory(&self, bytes: usize) -> io::Result<DirectoryLease> {
         self.account.directory(bytes)
+    }
+
+    /// Reserve additional planning metadata before allocating it. An owner that
+    /// already holds staged memory must not wait for another staged owner to free it.
+    pub fn plan_directory(&self, bytes: usize) -> io::Result<DirectoryLease> {
+        let mut state = self
+            .account
+            .state
+            .lock()
+            .expect("preparation account poisoned");
+        let required = state
+            .claimed
+            .checked_add(bytes)
+            .ok_or_else(|| io::Error::other("staging plan size overflows"))?;
+        check_envelope(required, self.staging_capacity)?;
+        if required > state.capacity {
+            let extra = required - state.capacity;
+            let charge = self
+                .staging
+                .clone()
+                .try_acquire_many_owned(extra as u32)
+                .map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        format!("staging planning capacity unavailable: {error}"),
+                    )
+                })?;
+            state.charge.merge(charge);
+            state.capacity = required;
+        }
+        state.claimed = required;
+        Ok(DirectoryLease {
+            account: self.account.clone(),
+            capacity: bytes,
+        })
     }
 
     /// Transfer every existing directory owner to one complete active charge.

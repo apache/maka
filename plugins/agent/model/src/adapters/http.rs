@@ -19,6 +19,8 @@
 
 use super::{anthropic, anthropic_documents, body, error, events, request};
 #[cfg(test)]
+mod quota_tests;
+#[cfg(test)]
 mod upload_tests;
 use crate::{ModelError, ProviderFailureReason};
 use maka_agent_facts::model::budget;
@@ -208,17 +210,20 @@ async fn run_inner(
                 .next()
                 .is_some_and(|v| v.trim().eq_ignore_ascii_case("text/event-stream"))
         });
+        let retry_after = super::retry::at(&response.head);
+        events.evidence.retry_at_unix_ms = retry_after;
         if !(200..300).contains(&status) || !sse {
-            let retry_after = retry_after(&response.head);
             let read = read_body(&body.0, &response.head, context).await;
             let bytes = match read {
                 Ok(bytes) => bytes,
-                Err(ModelError::Provider(failure))
-                    if failure.reason() == ProviderFailureReason::Network
-                        && !(200..300).contains(&status) =>
+                Err(error)
+                    if !(200..300).contains(&status)
+                        && (matches!(error, ModelError::TimedOut)
+                            || matches!(&error, ModelError::Provider(failure)
+                                if failure.reason() == ProviderFailureReason::Network)) =>
                 {
                     return Err(events.evidence.provider(
-                        error::http_error(status, &[]),
+                        error::http_body_error(status, error),
                         prepared.anthropic,
                         retry_after,
                     ));
@@ -263,7 +268,12 @@ async fn run_inner(
         loop {
             let chunk = tokio::time::timeout(context.idle_timeout, body.0.next())
                 .await
-                .map_err(|_| ModelError::TimedOut)?
+                .map_err(|_| {
+                    events.evidence.interrupted(
+                        ProviderFailureReason::TimedOut,
+                        ModelError::TimedOut.to_string(),
+                    )
+                })?
                 .map_err(|error| match error {
                     http::Error::Denied => ModelError::Cancelled,
                     http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
@@ -426,9 +436,9 @@ async fn read_body(
         .map_err(|error| match error {
             http::Error::Denied => ModelError::Cancelled,
             http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
-            http::Error::Failed(_) => ModelError::Provider(crate::ProviderFailure::new(
+            http::Error::Failed(message) => ModelError::Provider(crate::ProviderFailure::new(
                 ProviderFailureReason::Network,
-                "error body interrupted",
+                message,
                 true,
                 None,
             )),
@@ -442,19 +452,4 @@ async fn read_body(
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
-}
-fn retry_after(head: &http::Head) -> Option<u64> {
-    let delay = if let Some(ms) = header(head, "retry-after-ms") {
-        ms.parse::<f64>().ok()?
-    } else {
-        let seconds = header(head, "retry-after")?;
-        if let Ok(seconds) = seconds.parse::<f64>() {
-            seconds * 1000.0
-        } else {
-            let date = jiff::fmt::rfc2822::parse(seconds).ok()?;
-            let now = jiff::Timestamp::now().as_millisecond();
-            (date.timestamp().as_millisecond() - now) as f64
-        }
-    };
-    (delay.is_finite() && delay > 0.0 && delay <= 2_147_483_647.0).then_some(delay.ceil() as u64)
 }

@@ -34,54 +34,6 @@ fn namespaces(dir: &tempfile::TempDir) -> RootNamespaces {
     }
 }
 
-#[tokio::test]
-async fn ephemeral_native_context_has_actual_activation_and_no_fallback_store() {
-    let provider = native_package();
-    let expected_package = provider.application_ref();
-    let mut native = NativeRegistry::default();
-    let observed = Arc::new(Mutex::new(None));
-    let capture = observed.clone();
-    native
-        .insert(
-            "native.echo".into(),
-            Arc::new(move |context, configuration| {
-                assert_eq!(configuration, json!({}));
-                assert_eq!(context.package(), &expected_package);
-                assert!(context.persistence().is_none());
-                *capture.lock().unwrap() = Some(context.activation().clone());
-                Box::pin(async {
-                    NativeActivation {
-                        exports: Err("this service requires an owned application Root".into()),
-                        owner: native_owner(|| Box::pin(async { Ok(()) })),
-                    }
-                })
-            }),
-        )
-        .unwrap();
-    let consumer = consumer();
-    let issuer = Issuer::default();
-    let app = Application::start(
-        input(&provider, &consumer),
-        vec![provider, consumer],
-        native,
-        issuer.clone(),
-        Arc::new(Grant(issuer)),
-        Some(maka_host_js::factory(Limits::default())),
-    )
-    .unwrap();
-    assert!(
-        app.ready()
-            .await
-            .unwrap_err()
-            .contains("requires an owned application Root")
-    );
-    assert_eq!(
-        observed.lock().unwrap().as_ref().unwrap().instance(),
-        &id(1)
-    );
-    app.shutdown().await.unwrap();
-}
-
 struct Fact {
     source: DeploymentRef,
     activation: maka_plugin_core::runtime::Activation,

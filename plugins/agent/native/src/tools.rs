@@ -65,6 +65,48 @@ pub(crate) struct SelectedTool {
     binding: String,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeApprovalData {
+    selected: SelectedTool,
+    capture: NativeApprovalCapture,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum NativeApprovalCapture {
+    Ordinary,
+    Web {
+        basis: maka_web_api::contract::Basis,
+    },
+    Skill {
+        tool_names: Vec<(String, Option<EditingTools>)>,
+    },
+}
+
+impl NativeApprovalData {
+    fn decode(value: Value) -> Result<Self, ToolError> {
+        let data: Self = serde_json::from_value(value).map_err(|error| {
+            ToolError::Failed(format!("native approval descriptor invalid: {error}"))
+        })?;
+        if data.selected.selection.confirmation != ToolConfirmation::Required
+            || !matches!(
+                (data.selected.selection.input, &data.capture),
+                (
+                    ToolInput::Json | ToolInput::Shell,
+                    NativeApprovalCapture::Ordinary
+                ) | (ToolInput::Web, NativeApprovalCapture::Web { .. })
+                    | (ToolInput::Skill, NativeApprovalCapture::Skill { .. })
+            )
+        {
+            return Err(ToolError::Failed(
+                "native approval capture differs from selection".into(),
+            ));
+        }
+        Ok(data)
+    }
+}
+
 pub(crate) struct Catalog {
     pub tools: ToolCatalog,
     pub basis: Vec<SelectedTool>,
@@ -72,6 +114,7 @@ pub(crate) struct Catalog {
     pub editing: Vec<(String, EditingTools)>,
     /// Planning eligibility follows the actual service contract and method.
     pub planning: Vec<String>,
+    pub executor: Arc<dyn maka_agent_engine::NativeApprovalExecutor>,
 }
 
 pub(crate) fn catalog(
@@ -126,6 +169,7 @@ pub(crate) fn catalog(
             })
             .collect(),
     );
+    let mut native_services = Vec::new();
     let registrations = selected
         .iter()
         .map(|selection| {
@@ -299,6 +343,7 @@ pub(crate) fn catalog(
                     .or_default()
                     .push(service.clone());
             }
+            native_services.push(service.clone());
             let mut description = selection.description.clone();
             if binding.contract() == &file_contract && selection.method == "readText" {
                 description.push_str("\n\nReads Session attachment and archived tool-result resources. Pass page.next unchanged to this tool to continue.");
@@ -376,8 +421,144 @@ pub(crate) fn catalog(
         basis,
         editing,
         planning,
+        executor: Arc::new(ApprovalExecutor {
+            services: native_services,
+        }),
     })
 }
+struct ApprovalExecutor {
+    services: Vec<Service>,
+}
+
+impl maka_agent_engine::NativeApprovalExecutor for ApprovalExecutor {
+    fn prepare(
+        &self,
+        pending: maka_agent_facts::native_approval::NativeApprovalPending,
+        context: ToolCallContext,
+        cancellation: CancellationToken,
+    ) -> futures_util::future::BoxFuture<'_, Result<PreparedEffect, ToolError>> {
+        Box::pin(async move {
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Failed(
+                    "native approval reconstruction cancelled".into(),
+                ));
+            }
+            let data = NativeApprovalData::decode(pending.native.clone())?;
+            if pending.invocation != context.invocation
+                || pending.operation_id != context.operation_id
+            {
+                return Err(ToolError::Persistence(
+                    "native approval identity differs".into(),
+                ));
+            }
+            let mut service = self
+                .services
+                .iter()
+                .find(|service| {
+                    service.selection == data.selected.selection
+                        && service.binding == data.selected.binding
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    ToolError::Failed("native approval binding is stale or unavailable".into())
+                })?;
+            match data.capture {
+                NativeApprovalCapture::Web { basis } => service.web_basis = Some(basis),
+                NativeApprovalCapture::Skill { tool_names } => {
+                    service.tool_names = Arc::new(tool_names)
+                }
+                NativeApprovalCapture::Ordinary => {}
+            }
+            let store = Arc::new(maka_agent_authority::permissions::execution(
+                &service.store,
+                &context.invocation,
+                context.execution.as_deref(),
+            )?);
+            let configuration =
+                maka_agent_authority::permissions::live(&store, &context.invocation).await?;
+            let original_configuration = store
+                .invocation_configuration(&context.invocation)
+                .await
+                .map_err(|error| ToolError::Persistence(error.to_string()))?
+                .ok_or_else(|| {
+                    ToolError::Persistence(
+                        "native approval invocation configuration unavailable".into(),
+                    )
+                })?;
+            if original_configuration.cwd != configuration.workspace.path
+                || original_configuration.workspace_identity.as_ref()
+                    != Some(&configuration.workspace.identity)
+                || original_configuration
+                    .workspace_binding
+                    .map(|binding| binding.id)
+                    != Some(configuration.binding.id)
+            {
+                return Err(ToolError::Failed(
+                    "native approval workspace binding changed".into(),
+                ));
+            }
+            if configuration
+                .tools
+                .as_ref()
+                .is_some_and(|names| !names.contains(&service.selection.name))
+            {
+                return Err(ToolError::Failed(
+                    "native approval tool permission withdrawn".into(),
+                ));
+            }
+            if let Some(basis) = &service.web_basis {
+                let capture = web::capture(&service, &context, &cancellation).await?;
+                if !capture.available
+                    || capture.basis != *basis
+                    || (service.selection.method == "search"
+                        && (capture.source != maka_web_api::settings::Source::Tavily
+                            || !capture.credential_configured))
+                {
+                    return Err(ToolError::Failed(
+                        "native approval Web capture is stale or unavailable".into(),
+                    ));
+                }
+            }
+            let original = store
+                .native_approval_dispatch(&pending)
+                .await
+                .map_err(|error| ToolError::Persistence(error.to_string()))?;
+            let maka_agent_facts::event::Fact::ToolDispatched {
+                operation_id,
+                name,
+                input,
+                call,
+                ..
+            } = original.event.fact
+            else {
+                return Err(ToolError::Persistence(
+                    "native approval dispatch invalid".into(),
+                ));
+            };
+            if original.sequence != pending.dispatch.sequence
+                || original.event.id != pending.dispatch.event_id
+                || original.event.invocation != context.invocation
+                || operation_id != context.operation_id
+                || name != service.selection.name
+                || !matches!(
+                    call.origin,
+                    maka_agent_facts::tool_call::ToolOrigin::Provider { .. }
+                )
+            {
+                return Err(ToolError::Persistence(
+                    "native approval original dispatch differs".into(),
+                ));
+            }
+            let input = service.input_projection.decode(input).map_err(|error| {
+                ToolError::Failed(format!("native approval original input invalid: {error:?}"))
+            })?;
+            Ok(PreparedEffect::new(move |cancellation| {
+                service.execute(input, context, store, cancellation)
+            }))
+        })
+    }
+}
+
 #[derive(Clone)]
 struct Service {
     web_basis: Option<maka_web_api::contract::Basis>,
@@ -402,6 +583,9 @@ impl ToolPreparer for Service {
         context: ToolCallContext,
         cancellation: CancellationToken,
     ) -> PreparationFuture {
+        let self_store = self.store.clone();
+        let service_capture = self.web_basis.clone();
+        let captured_names = self.tool_names.as_ref().clone();
         let tool_names = self.tool_names.clone();
         let web_basis = self.web_basis.clone();
         let services = self.services.clone();
@@ -413,6 +597,11 @@ impl ToolPreparer for Service {
         let default_title = self.title_kind;
         let mode = self.mode;
         Box::pin(async move {
+            #[cfg(test)]
+            eprintln!(
+                "native approval stage=prepare_enter operation={}",
+                context.operation_id
+            );
             let store = Arc::new(
                 store
                     .session_for_execution(
@@ -432,10 +621,8 @@ impl ToolPreparer for Service {
             if cancellation.is_cancelled() {
                 return Err(ToolRejection::Cancelled);
             }
-            // Confirmation fences compare the original model arguments with durable dispatch.
-            let confirmation_input = (selection.confirmation == ToolConfirmation::Required
-                && matches!(input_projection, Projection::RequestEnvelope))
-            .then(|| input.clone());
+            // T1 records the exact model arguments, before native projection.
+            let confirmation_input = input.clone();
             let input = input_projection.decode(input)?;
             // No request or effect is admitted until the existing ToolJournal T1.
             let title = selection
@@ -453,209 +640,79 @@ impl ToolPreparer for Service {
                 })
                 .or_else(|| default_title.and_then(|kind| kind.render(&input)));
             let presentation = selection.presentation.clone();
-            let prepared = PreparedEffect::new(move |cancellation| {
-                Box::pin(async move {
-                    if selection.confirmation == ToolConfirmation::Required {
-                        approval::confirm(
-                            &store,
-                            &context,
-                            approval::Selection {
-                                name: &selection.name,
-                                method: &selection.method,
-                                binding: &binding,
-                                service: &target,
-                            },
-                            confirmation_input.as_ref().unwrap_or(&input),
-                            &cancellation,
-                        )
-                        .await?;
-                    }
-                    if cancellation.is_cancelled() {
-                        return Err(ToolError::Failed(
-                            "service call cancelled before admission".into(),
-                        ));
-                    }
-                    let input = match selection.input {
-                        ToolInput::Json => input,
-                        ToolInput::Shell => {
-                            let mut input = input;
-                            if let Some(fields) = input.as_object_mut() {
-                                fields.remove("title");
-                            }
-                            input
-                        }
-                        ToolInput::Web => {
-                            let basis = web_basis.ok_or_else(|| {
-                                ToolError::Failed("Web tool has no request capture".into())
-                            })?;
-                            serde_json::json!({"input":input,"basis":basis})
-                        }
-                        ToolInput::Skill => {
-                            let configuration = maka_agent_authority::permissions::live(
-                                &store,
-                                &context.invocation,
-                            )
-                            .await?;
-                            let editing = store
-                                .invocation_configuration(&context.invocation)
-                                .await
-                                .map_err(|error| ToolError::Failed(error.to_string()))?
-                                .ok_or_else(|| {
-                                    ToolError::Failed(
-                                        "Skill call has no invocation configuration".into(),
-                                    )
-                                })?
-                                .editing_tools;
-                            let names: Vec<_> = tool_names
-                                .iter()
-                                .filter(|(name, style)| {
-                                    (editing.is_none() || style.is_none() || editing == *style)
-                                        && configuration
-                                            .tools
-                                            .as_ref()
-                                            .is_none_or(|allowed| allowed.contains(name))
-                                })
-                                .map(|(name, _)| name)
-                                .collect();
-                            serde_json::json!({"input": input, "tools": names, "workspace":configuration.workspace})
-                        }
-                    };
-                    let invocation = context.invocation.clone();
-                    let operation = operation_id(&context);
-                    let execution = context.execution.clone().ok_or_else(|| {
-                        ToolError::Persistence("Execution custody unavailable".into())
-                    })?;
-                    let request = services
-                        .request_with_execution(
-                            Identity::Agent {
-                                invocation: context.invocation,
-                                operation_id: Some(context.operation_id),
-                            },
-                            cancellation.clone(),
-                            execution,
-                        )
-                        .map_err(ToolError::Failed)?;
-                    // Keep original request custody even if a native descriptor panics.
-                    let mut observation = None;
-                    let result = {
-                        let mut business = Box::pin(
-                            AssertUnwindSafe(async {
-                                match mode {
-                                    MethodMode::Query => {
-                                        let result = request
-                                            .call(
-                                                &selection.import,
-                                                0,
-                                                selection.method,
-                                                input,
-                                                Attachments::default(),
-                                            )
-                                            .map_err(ToolError::Failed)?
-                                            .await
-                                            .map_err(ToolError::Failed)?;
-                                        Ok(ToolSuccess::from(result))
-                                    }
-                                    MethodMode::Mutation => {
-                                        let language = store
-                                            .invocation_configuration(&invocation)
-                                            .await
-                                            .map_err(|error| ToolError::Failed(error.to_string()))?
-                                            .ok_or_else(|| {
-                                                ToolError::Failed(
-                                                    "Service call has no invocation configuration"
-                                                        .into(),
-                                                )
-                                            })?
-                                            .language;
-                                        let observer = request
-                                            .mutate(
-                                                &selection.import,
-                                                0,
-                                                selection.method,
-                                                input,
-                                                operation,
-                                                Attachments::default(),
-                                            )
-                                            .map_err(ToolError::Failed)?;
-                                        // This outer error is admission refusal, not an accepted
-                                        // effect result. Scope.finish still must confirm cleanup;
-                                        // every accepted mutation returns its original typed receipt.
-                                        let reply = observer.await.map_err(ToolError::Failed)?;
-                                        observation = Some(Box::new(reply.clone()));
-                                        if selection.result == ToolResult::Computer {
-                                            computer::project(&store, &invocation, reply, language)
-                                                .await
-                                        } else {
-                                            mutation_result(reply, language)
-                                        }
-                                    }
-                                    MethodMode::Subscription => {
-                                        image::read(
-                                            &request,
-                                            &selection.import,
-                                            selection.method.clone(),
-                                            input,
-                                            &cancellation,
-                                        )
-                                        .await
-                                    }
+            let service = Service {
+                web_basis,
+                tool_names,
+                services,
+                store: self_store,
+                binding: binding.clone(),
+                target: target.clone(),
+                selection: selection.clone(),
+                input_projection,
+                title_kind: default_title,
+                mode,
+            };
+            #[cfg(test)]
+            let diagnostic_operation = context.operation_id.clone();
+            let execute_context = context.clone();
+            let execute_store = store.clone();
+            let approved = move |cancellation| {
+                service.execute(input, execute_context, execute_store, cancellation)
+            };
+            let prepared = if selection.confirmation == ToolConfirmation::Required {
+                let native = NativeApprovalData {
+                    selected: SelectedTool {
+                        selection: selection.clone(),
+                        binding: binding.clone(),
+                    },
+                    capture: match selection.input {
+                        ToolInput::Web => NativeApprovalCapture::Web {
+                            basis: service_capture.ok_or_else(|| {
+                                ToolRejection::PreparationFailed {
+                                    message: "Web tool has no request capture".into(),
                                 }
-                            })
-                            .catch_unwind(),
-                        );
-                        tokio::select! {
-                            biased;
-                            result = &mut business => result,
-                            _ = request.scope().cancellation.cancelled() => {
-                                // Reach the original cleanup budget even when the native
-                                // callback has not returned. Dropping this observer never
-                                // drops the Host's actual admitted job or its fence.
-                                request.finish().await.map_err(ToolError::CleanupUnconfirmed)?;
-                                // A completed parent Ticket precedes the original Host
-                                // reply in the same owner turn. Keep that exact observer.
-                                business.await
-                            }
-                        }
-                    }
-                    .unwrap_or_else(|_| {
-                        Err(ToolError::OutcomeUnknown(
-                            "native tool observation panicked".into(),
-                        ))
-                    });
-                    if let Err(message) = request.finish().await {
-                        return Err(match observation {
-                            Some(observation) => ToolError::OperationCleanupUnconfirmed {
-                                message,
-                                observation,
-                            },
-                            None => ToolError::CleanupUnconfirmed(message),
-                        });
-                    }
-                    // finish() cancels the request itself; only the original
-                    // Tool token can distinguish a stopped run at publication.
-                    if selection.result == ToolResult::Image
-                        && result.is_ok()
-                        && cancellation.is_cancelled()
-                    {
-                        return Err(ToolError::Failed(
-                            "Image tool cancelled before publication".into(),
-                        ));
-                    }
-                    match (result, observation) {
-                        (Err(ToolError::CleanupUnconfirmed(message)), Some(observation)) => {
-                            Err(ToolError::OperationCleanupUnconfirmed {
-                                message,
-                                observation,
-                            })
-                        }
-                        (result, _) => result,
-                    }
-                })
-            });
+                            })?,
+                        },
+                        ToolInput::Skill => NativeApprovalCapture::Skill {
+                            tool_names: captured_names,
+                        },
+                        ToolInput::Json | ToolInput::Shell => NativeApprovalCapture::Ordinary,
+                    },
+                };
+                PreparedEffect::native_approval(
+                    move |cancellation| {
+                        Box::pin(async move {
+                            approval::establish(
+                                store,
+                                context,
+                                approval::Selection {
+                                    name: &selection.name,
+                                    method: &selection.method,
+                                    binding: &binding,
+                                    service: &target,
+                                },
+                                &confirmation_input,
+                                serde_json::to_value(native)
+                                    .map_err(|error| ToolError::Persistence(error.to_string()))?,
+                                cancellation,
+                            )
+                            .await
+                        })
+                    },
+                    approved,
+                )
+            } else {
+                PreparedEffect::new(approved)
+            };
             let prepared = match presentation {
                 Some(key) => prepared.presented(key),
                 None => prepared,
             };
+            #[cfg(test)]
+            eprintln!(
+                "native approval stage=prepare_return operation={}",
+                diagnostic_operation
+            );
             Ok(match title {
                 Some(title) => prepared.titled(title),
                 None => prepared,
@@ -663,6 +720,202 @@ impl ToolPreparer for Service {
         })
     }
 }
+impl Service {
+    fn execute(
+        self,
+        input: Value,
+        context: ToolCallContext,
+        store: Arc<SessionStore>,
+        cancellation: CancellationToken,
+    ) -> maka_agent_facts::tools::ToolFuture<ToolSuccess> {
+        let Self {
+            web_basis,
+            tool_names,
+            services,
+            selection,
+            mode,
+            ..
+        } = self;
+        Box::pin(async move {
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Failed(
+                    "service call cancelled before admission".into(),
+                ));
+            }
+            let input = match selection.input {
+                ToolInput::Json => input,
+                ToolInput::Shell => {
+                    let mut input = input;
+                    if let Some(fields) = input.as_object_mut() {
+                        fields.remove("title");
+                    }
+                    input
+                }
+                ToolInput::Web => {
+                    let basis = web_basis.ok_or_else(|| {
+                        ToolError::Failed("Web tool has no request capture".into())
+                    })?;
+                    serde_json::json!({"input":input,"basis":basis})
+                }
+                ToolInput::Skill => {
+                    let configuration =
+                        maka_agent_authority::permissions::live(&store, &context.invocation)
+                            .await?;
+                    let editing = store
+                        .invocation_configuration(&context.invocation)
+                        .await
+                        .map_err(|error| ToolError::Failed(error.to_string()))?
+                        .ok_or_else(|| {
+                            ToolError::Failed("Skill call has no invocation configuration".into())
+                        })?
+                        .editing_tools;
+                    let names: Vec<_> = tool_names
+                        .iter()
+                        .filter(|(name, style)| {
+                            (editing.is_none() || style.is_none() || editing == *style)
+                                && configuration
+                                    .tools
+                                    .as_ref()
+                                    .is_none_or(|allowed| allowed.contains(name))
+                        })
+                        .map(|(name, _)| name)
+                        .collect();
+                    serde_json::json!({"input": input, "tools": names, "workspace":configuration.workspace})
+                }
+            };
+            let invocation = context.invocation.clone();
+            let operation = operation_id(&context);
+            let execution = context
+                .execution
+                .clone()
+                .ok_or_else(|| ToolError::Persistence("Execution custody unavailable".into()))?;
+            let request = services
+                .request_with_execution(
+                    Identity::Agent {
+                        invocation: context.invocation,
+                        operation_id: Some(context.operation_id),
+                    },
+                    cancellation.clone(),
+                    execution,
+                )
+                .map_err(ToolError::Failed)?;
+            // Keep original request custody even if a native descriptor panics.
+            let mut observation = None;
+            let result = {
+                let mut business = Box::pin(
+                    AssertUnwindSafe(async {
+                        match mode {
+                            MethodMode::Query => {
+                                let result = request
+                                    .call(
+                                        &selection.import,
+                                        0,
+                                        selection.method,
+                                        input,
+                                        Attachments::default(),
+                                    )
+                                    .map_err(ToolError::Failed)?
+                                    .await
+                                    .map_err(ToolError::Failed)?;
+                                Ok(ToolSuccess::from(result))
+                            }
+                            MethodMode::Mutation => {
+                                let language = store
+                                    .invocation_configuration(&invocation)
+                                    .await
+                                    .map_err(|error| ToolError::Failed(error.to_string()))?
+                                    .ok_or_else(|| {
+                                        ToolError::Failed(
+                                            "Service call has no invocation configuration".into(),
+                                        )
+                                    })?
+                                    .language;
+                                let observer = request
+                                    .mutate(
+                                        &selection.import,
+                                        0,
+                                        selection.method,
+                                        input,
+                                        operation,
+                                        Attachments::default(),
+                                    )
+                                    .map_err(ToolError::Failed)?;
+                                // This outer error is admission refusal, not an accepted
+                                // effect result. Scope.finish still must confirm cleanup;
+                                // every accepted mutation returns its original typed receipt.
+                                let reply = observer.await.map_err(ToolError::Failed)?;
+                                observation = Some(Box::new(reply.clone()));
+                                if selection.result == ToolResult::Computer {
+                                    computer::project(&store, &invocation, reply, language).await
+                                } else {
+                                    mutation_result(reply, language)
+                                }
+                            }
+                            MethodMode::Subscription => {
+                                image::read(
+                                    &request,
+                                    &selection.import,
+                                    selection.method.clone(),
+                                    input,
+                                    &cancellation,
+                                )
+                                .await
+                            }
+                        }
+                    })
+                    .catch_unwind(),
+                );
+                tokio::select! {
+                    biased;
+                    result = &mut business => result,
+                    _ = request.scope().cancellation.cancelled() => {
+                        // Reach the original cleanup budget even when the native
+                        // callback has not returned. Dropping this observer never
+                        // drops the Host's actual admitted job or its fence.
+                        request.finish().await.map_err(ToolError::CleanupUnconfirmed)?;
+                        // A completed parent Ticket precedes the original Host
+                        // reply in the same owner turn. Keep that exact observer.
+                        business.await
+                    }
+                }
+            }
+            .unwrap_or_else(|_| {
+                Err(ToolError::OutcomeUnknown(
+                    "native tool observation panicked".into(),
+                ))
+            });
+            if let Err(message) = request.finish().await {
+                return Err(match observation {
+                    Some(observation) => ToolError::OperationCleanupUnconfirmed {
+                        message,
+                        observation,
+                    },
+                    None => ToolError::CleanupUnconfirmed(message),
+                });
+            }
+            // finish() cancels the request itself; only the original
+            // Tool token can distinguish a stopped run at publication.
+            if selection.result == ToolResult::Image
+                && result.is_ok()
+                && cancellation.is_cancelled()
+            {
+                return Err(ToolError::Failed(
+                    "Image tool cancelled before publication".into(),
+                ));
+            }
+            match (result, observation) {
+                (Err(ToolError::CleanupUnconfirmed(message)), Some(observation)) => {
+                    Err(ToolError::OperationCleanupUnconfirmed {
+                        message,
+                        observation,
+                    })
+                }
+                (result, _) => result,
+            }
+        })
+    }
+}
+
 fn operation_id(context: &ToolCallContext) -> Uuid {
     let bytes = serde_json::to_vec(&(&context.invocation, &context.operation_id))
         .expect("Host tool identity");
@@ -744,6 +997,30 @@ mod tests {
     use maka_plugin_core::contract::Transport;
     use maka_plugin_core::deployment::DeploymentRef;
     use maka_plugin_core::operation::{RecoveryContract, RecoveryProtocol, RecoveryRef};
+
+    #[test]
+    fn approval_descriptor_rejects_extra_authority_and_mismatched_capture() {
+        let descriptor = serde_json::json!({
+            "selected": { "selection": {
+                "input": "json", "result": "json", "confirmation": "required",
+                "name": "Read", "description": "Read file", "import": "Files", "method": "readText"
+            }, "binding": "original" },
+            "capture": { "kind": "ordinary" }
+        });
+        assert!(NativeApprovalData::decode(descriptor.clone()).is_ok());
+        let mut extra = descriptor.clone();
+        extra["execute"] = serde_json::json!({"method": "write"});
+        assert!(NativeApprovalData::decode(extra).is_err());
+        let mut extra = descriptor.clone();
+        extra["capture"]["input"] = serde_json::json!({"path": "replacement"});
+        assert!(NativeApprovalData::decode(extra).is_err());
+        let mut mismatched = descriptor.clone();
+        mismatched["selected"]["selection"]["input"] = "web".into();
+        assert!(NativeApprovalData::decode(mismatched).is_err());
+        let mut unapproved = descriptor;
+        unapproved["selected"]["selection"]["confirmation"] = "preapproved".into();
+        assert!(NativeApprovalData::decode(unapproved).is_err());
+    }
 
     #[test]
     fn uncertain_service_projection_localizes_recovery_and_preserves_original_receipt() {

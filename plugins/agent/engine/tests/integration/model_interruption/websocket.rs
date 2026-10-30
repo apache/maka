@@ -25,12 +25,14 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-// A 1 ms retry-after keeps the real Agent/journal budget test fast, independent
-// of network timers. Real socket reconstruction is covered below.
+// A paused clock exercises the full production backoff without real waiting.
+// Real socket reconstruction is covered below.
 #[derive(Clone)]
 struct Unavailable {
     attempts: Arc<std::sync::Mutex<(bool, Vec<bool>)>>,
     replay_safe: bool,
+    usage_limit: bool,
+    retry_at_unix_ms: Option<u64>,
 }
 impl maka_agent_ports::model::ProviderAdapter for Unavailable {
     fn open(
@@ -69,100 +71,188 @@ impl maka_agent_ports::model::Session for Unavailable {
         let fallback = state.0;
         state.1.push(fallback);
         let error = maka_agent_facts::model::error::ProviderFailure::new(
-            maka_agent_facts::model::error::ProviderFailureReason::Network,
-            "transport unavailable",
+            if self.usage_limit {
+                maka_agent_facts::model::error::ProviderFailureReason::QuotaExhausted
+            } else {
+                maka_agent_facts::model::error::ProviderFailureReason::Network
+            },
+            if self.usage_limit {
+                "Usage limit reached for 5 hour. Your limit will reset at 2026-10-29 15:00:00"
+            } else {
+                "transport unavailable"
+            },
             self.replay_safe,
-            Some(1),
+            self.retry_at_unix_ms,
         );
         Box::pin(async move { Err(ModelError::Provider(error)) })
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn fallback_waits_for_retry_budget_and_gets_one_bounded_budget_of_its_own() {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        for replay_safe in [true, false] {
-            let directory = tempfile::tempdir().unwrap();
-            let log = Arc::new(
-                SessionFixture::open(&directory.path().join("events.sqlite"))
-                    .await
-                    .unwrap(),
-            );
-            let attempts = Arc::new(std::sync::Mutex::new((false, Vec::new())));
-            let binding = maka_agent_ports::model::Binding::new(
-                Arc::new(Unavailable {
-                    attempts: attempts.clone(),
-                    replay_safe,
-                }),
-                maka_agent_facts::composition::SourceRevision {
-                    kind: maka_agent_facts::composition::SourceKind::ModelAdapter,
-                    name: "chat-completions".into(),
-                    package_id: "fixture.adapter".into(),
-                    entry_id: "fixture.adapter".into(),
-                    activation: "fixture.activation".into(),
-                    revision: "1".into(),
-                },
-            );
-            let worker = Engine::new(
-                ModelExecutor::new(Duration::from_secs(5))
-                    .unwrap()
-                    .with_adapters(std::collections::BTreeMap::from([(
-                        "chat-completions".into(),
-                        binding,
-                    )])),
-                CodeExecutor::new(CellLimits::default()).unwrap(),
+    let quota_at = maka_model::ProviderFailure::now_unix_ms() + 18_000_000;
+    for (replay_safe, usage_limit, advice) in [
+        (true, false, None),
+        (false, false, None),
+        (true, true, Some(quota_at)),
+        (true, true, None),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let log = Arc::new(
+            SessionFixture::open(&directory.path().join("events.sqlite"))
+                .await
+                .unwrap(),
+        );
+        let attempts = Arc::new(std::sync::Mutex::new((false, Vec::new())));
+        let binding = maka_agent_ports::model::Binding::new(
+            Arc::new(Unavailable {
+                attempts: attempts.clone(),
+                replay_safe,
+                usage_limit,
+                retry_at_unix_ms: advice,
+            }),
+            maka_agent_facts::composition::SourceRevision {
+                kind: maka_agent_facts::composition::SourceKind::ModelAdapter,
+                name: "chat-completions".into(),
+                package_id: "fixture.adapter".into(),
+                entry_id: "fixture.adapter".into(),
+                activation: "fixture.activation".into(),
+                revision: "1".into(),
+            },
+        );
+        let worker = Engine::new(
+            ModelExecutor::new(Duration::from_secs(5))
+                .unwrap()
+                .with_adapters(std::collections::BTreeMap::from([(
+                    "chat-completions".into(),
+                    binding,
+                )])),
+            CodeExecutor::new(CellLimits::default()).unwrap(),
+        )
+        .unwrap();
+        let result = worker
+            .run(
+                log.store(),
+                input("http://unused.invalid/v1", "budget"),
+                CancellationToken::new(),
             )
-            .unwrap();
-            let result = worker
-                .run(
-                    log.store(),
-                    input("http://unused.invalid/v1", "budget"),
-                    CancellationToken::new(),
-                )
-                .await;
-            assert!(matches!(
-                result,
-                Err(RunError::Model(ModelError::Provider(_)))
-            ));
-            worker.drain().await;
-            let attempts = attempts.lock().unwrap().1.clone();
-            let expected: Vec<_> = if replay_safe {
-                [false; 10].into_iter().chain([true; 10]).collect()
-            } else {
-                vec![false]
-            };
-            assert_eq!(attempts, expected);
+            .await;
+        assert!(matches!(
+            result,
+            Err(RunError::Model(ModelError::Provider(_)))
+        ));
+        worker.drain().await;
+        let attempts = attempts.lock().unwrap().1.clone();
+        let expected: Vec<_> = if replay_safe && !usage_limit {
+            [false; 10].into_iter().chain([true; 10]).collect()
+        } else {
+            vec![false]
+        };
+        assert_eq!(attempts, expected);
+        if usage_limit {
             let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-            let requests: Vec<_> = prefix
-                .events
-                .iter()
-                .filter_map(|event| match &event.event.fact {
-                    Fact::ModelRequested {
-                        input_digest,
-                        source_high_water,
+            let Fact::InvocationEnded {
+                outcome:
+                    InvocationOutcome::Failed {
+                        model_failure: Some(cause),
+                        message: Some(message),
                         ..
-                    } => Some((input_digest, source_high_water)),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(requests.len(), expected.len());
-            assert!(requests.iter().all(|request| request == &requests[0]));
+                    },
+            } = &prefix.events.last().unwrap().event.fact
+            else {
+                panic!("quota must settle as a terminal provider failure")
+            };
+            assert_eq!(
+                cause,
+                &ModelFailureCause::Provider {
+                    reason: maka_agent_facts::model::error::ProviderFailureReason::QuotaExhausted,
+                    retry_at_unix_ms: advice,
+                }
+            );
+            assert!(message.contains("2026-10-29 15:00:00"));
         }
-    })
-    .await
-    .expect("both budgets must exhaust without an unbounded fallback loop");
+        let prefix = log.prefix(100, 128 * 1024).await.unwrap();
+        let requests: Vec<_> = prefix
+            .events
+            .iter()
+            .filter_map(|event| match &event.event.fact {
+                Fact::ModelRequested {
+                    input_digest,
+                    source_high_water,
+                    ..
+                } => Some((input_digest, source_high_water)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requests.len(), expected.len());
+        assert!(requests.iter().all(|request| request == &requests[0]));
+        let mut frozen = None;
+        for event in &prefix.events {
+            if matches!(event.event.fact, Fact::ModelRequested { .. }) {
+                let composition = log
+                    .request_composition("session", &event.event.id)
+                    .await
+                    .unwrap()
+                    .expect("each retry retains canonical composition");
+                if let Some(original) = &frozen {
+                    assert_eq!(
+                        &composition, original,
+                        "retry must preserve the entire surface"
+                    );
+                } else {
+                    frozen = Some(composition);
+                }
+            }
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn websocket_retry_uses_frozen_full_input_and_never_reexecutes_settled_tools() {
     use crate::support::agent_loop::{self, Effect};
+    use maka_agent_facts::tools::{ToolExecutor, ToolFuture};
+    struct TrackedEffect {
+        inner: Effect,
+        progress: Arc<std::sync::Mutex<Vec<(bool, &'static str)>>>,
+        cancel_case: bool,
+    }
+    impl ToolExecutor for TrackedEffect {
+        fn names(&self) -> Vec<String> {
+            self.inner.names()
+        }
+        fn invoke(
+            &self,
+            name: String,
+            input: Value,
+            cancellation: CancellationToken,
+        ) -> ToolFuture {
+            let future = self.inner.invoke(name, input, cancellation);
+            let progress = self.progress.clone();
+            let cancel_case = self.cancel_case;
+            Box::pin(async move {
+                progress
+                    .lock()
+                    .unwrap()
+                    .push((cancel_case, "effect-invoked"));
+                let result = future.await;
+                progress
+                    .lock()
+                    .unwrap()
+                    .push((cancel_case, "effect-returned"));
+                result
+            })
+        }
+    }
+    let progress = Arc::new(std::sync::Mutex::new(Vec::new()));
     tokio::time::timeout(Duration::from_secs(20), async {
         for cancel in [false, true] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/v1", listener.local_addr().unwrap());
+            let server_progress = progress.clone();
             let server = tokio::spawn(async move {
                 let (socket, _) = listener.accept().await.unwrap();
                 let mut socket = accept_async(socket).await.unwrap();
+                server_progress.lock().unwrap().push((cancel, "primary-connected"));
                 let initial: Value = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
                 let item = json!({"type":"function_call","id":"function-1","call_id":"call-1","name":"echo","arguments":"{\"value\":42}"});
                 for event in [
@@ -170,7 +260,9 @@ async fn websocket_retry_uses_frozen_full_input_and_never_reexecutes_settled_too
                     json!({"type":"response.output_item.done","output_index":0,"item":item}),
                     json!({"type":"response.completed","response":{"id":"first","output":[item]}}),
                 ] { socket.send(Message::Text(event.to_string().into())).await.unwrap(); }
+                server_progress.lock().unwrap().push((cancel, "primary-completed"));
                 let delta: Value = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+                server_progress.lock().unwrap().push((cancel, "tool-result-received"));
                 assert_eq!(delta["previous_response_id"], "first");
                 assert_eq!(delta["input"][0]["type"], "function_call_output");
                 // A partial local tool intent is unaccepted. It must not be
@@ -182,12 +274,14 @@ async fn websocket_retry_uses_frozen_full_input_and_never_reexecutes_settled_too
                 ] { socket.send(Message::Text(event.to_string().into())).await.unwrap(); }
                 socket.close(None).await.unwrap();
                 drop(socket);
+                server_progress.lock().unwrap().push((cancel, "interrupted-socket-closed"));
                 if cancel {
                     assert!(tokio::time::timeout(Duration::from_millis(1300), listener.accept()).await.is_err());
                     return;
                 }
                 let (socket, _) = listener.accept().await.unwrap();
                 let mut socket = accept_async(socket).await.unwrap(); // Recovery must stay on WS.
+                server_progress.lock().unwrap().push((cancel, "recovery-connected"));
                 let retry: Value = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
                 assert!(retry.get("previous_response_id").is_none());
                 let mut expected = initial["input"].as_array().unwrap().clone();
@@ -201,11 +295,13 @@ async fn websocket_retry_uses_frozen_full_input_and_never_reexecutes_settled_too
                 assert!(!retry.to_string().contains("never-execute"));
                 let complete = json!({"type":"response.completed","response":{"id":"final","output":[{"type":"message","id":"answer","content":[{"type":"output_text","text":"done"}]}]}});
                 socket.send(Message::Text(complete.to_string().into())).await.unwrap();
+                server_progress.lock().unwrap().push((cancel, "recovery-completed"));
             });
             let directory = tempfile::tempdir().unwrap();
             let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
+            progress.lock().unwrap().push((cancel, "fixture-ready"));
             let count = Arc::new(AtomicUsize::new(0));
-            let effect = Arc::new(Effect { log:log.clone(), count:count.clone() });
+            let effect = Arc::new(TrackedEffect { inner: Effect { log:log.clone(), count:count.clone() }, progress: progress.clone(), cancel_case: cancel });
             let mut input = agent_loop::input(&base, "websocket", effect);
             input.provider.kind = ProviderKind::OpenaiResponses;
             input.provider_options = json!({"openai":{"store":false}});
@@ -214,18 +310,40 @@ async fn websocket_retry_uses_frozen_full_input_and_never_reexecutes_settled_too
             let mut commits = log.subscribe_commits();
             let stop = async {
                 if cancel {
+                    let mut observed = std::collections::BTreeSet::new();
                     loop {
+                        progress.lock().unwrap().push((cancel, "observer-prefix-started"));
                         let prefix = log.prefix(100, 128*1024).await.unwrap();
+                        progress.lock().unwrap().push((cancel, "observer-prefix-returned"));
+                        for event in &prefix.events {
+                            let phase = match &event.event.fact {
+                                Fact::ModelRequested { .. } => Some("model-request-committed"),
+                                Fact::ModelCompleted { .. } => Some("model-completed-committed"),
+                                Fact::ModelObserved { event: maka_agent_facts::model::recorded::ModelObservation::Part(record), .. }
+                                    if matches!(record.part.as_ref(), ModelPart::ToolCall { .. }) => Some("tool-item-committed"),
+                                Fact::ToolDispatched { .. } => Some("tool-T1-committed"),
+                                Fact::ToolSettled { .. } => Some("tool-T2-committed"),
+                                _ => None,
+                            };
+                            if let Some(phase) = phase && observed.insert(phase) {
+                                progress.lock().unwrap().push((cancel, phase));
+                            }
+                        }
                         if prefix.events.iter().any(|event| matches!(event.event.fact, Fact::ModelInterrupted {status:ModelInterruption::RetryableFailure,..})) { break; }
                         commits.changed().await.unwrap();
                     }
+                    progress.lock().unwrap().push((cancel, "interruption-committed"));
                     cancellation.cancel();
                 }
             };
+            progress.lock().unwrap().push((cancel, "run-started"));
             let (result, ()) = tokio::join!(worker.run(log.store(), input, cancellation.clone()), stop);
+            progress.lock().unwrap().push((cancel, "run-returned"));
             if cancel { assert!(matches!(result,Err(RunError::Cancelled))); } else {result.unwrap();}
             worker.drain().await;
+            progress.lock().unwrap().push((cancel, "worker-drained"));
             server.await.unwrap();
+            progress.lock().unwrap().push((cancel, "server-returned"));
             assert_eq!(count.load(Ordering::SeqCst),1,"the previously settled tool must never run again");
             let prefix=log.prefix(100,128*1024).await.unwrap();
             let requests:Vec<_>=prefix.events.iter().filter_map(|event| match &event.event.fact {Fact::ModelRequested {input_digest,source_high_water,..}=>Some((input_digest,source_high_water)),_=>None}).collect();
@@ -234,7 +352,7 @@ async fn websocket_retry_uses_frozen_full_input_and_never_reexecutes_settled_too
             assert_eq!(prefix.events.iter().filter(|event|matches!(event.event.fact,Fact::ModelInterrupted {status:ModelInterruption::RetryableFailure,..})).count(),1);
             assert_eq!(prefix.events.iter().filter(|event|matches!(event.event.fact,Fact::ToolDispatched {..})).count(),1);
         }
-    }).await.expect("WS recovery and cancellation must settle");
+    }).await.unwrap_or_else(|error| panic!("WS recovery and cancellation must settle: {error}; progress: {:?}", progress.lock().unwrap()));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

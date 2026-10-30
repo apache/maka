@@ -31,8 +31,15 @@ pub const ID: &str = "maka.codex";
 pub const ADAPTER: &str = "codex-responses";
 
 /// ChatGPT subscription definition, authentication, and account model policy.
-#[derive(Default)]
-pub struct Codex;
+#[derive(Clone)]
+pub struct Codex {
+    snapshot: std::sync::Arc<crate::catalog::Snapshot>,
+}
+impl Codex {
+    pub fn new(snapshot: std::sync::Arc<crate::catalog::Snapshot>) -> Self {
+        Self { snapshot }
+    }
+}
 
 /// Invocation-only credentials, never provider metadata or a composition source.
 pub fn request_headers(

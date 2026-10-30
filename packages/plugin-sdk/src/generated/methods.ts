@@ -100,6 +100,7 @@ export type AgentSkillCandidatesInput_ThinkingLevel =
   | 'xhigh'
   | 'max'
   | 'ultra';
+export type SettingsCatalogModelsInput_CatalogModelReference = Runtime.CatalogModelReference;
 export type SettingsResolveModelInput_ModelOverride = Runtime.ModelOverride;
 export type SettingsUpdateInput_Nullable_MapOf_ModelOverride = {
   [k: string]: SettingsUpdateInput_ModelOverride | undefined;
@@ -867,6 +868,187 @@ export interface ServiceMethods {
         shellTitles: boolean;
       };
     };
+    catalogModels: {
+      mode: 'query';
+      input: {
+        query?: string;
+        after?: SettingsCatalogModelsInput_CatalogModelReference;
+      };
+      output: {
+        /**
+         * @maxItems 16
+         */
+        models:
+          | []
+          | [SettingsCatalogModelsOutput_SettingsCatalogModel]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ];
+        after: SettingsCatalogModelsOutput_CatalogModelReference | null;
+      };
+    };
     connection: {
       mode: 'query';
       input: {
@@ -1382,6 +1564,15 @@ export interface AgentWatchBotOutboxOutput_AgentBotMessage {
    */
   turnId?: string | null;
 }
+export interface SettingsCatalogModelsOutput_SettingsCatalogModel {
+  reference: SettingsCatalogModelsOutput_CatalogModelReference;
+  label: string;
+  contextWindow: number | null;
+}
+export interface SettingsCatalogModelsOutput_CatalogModelReference {
+  provider: string;
+  modelId: string;
+}
 export interface SettingsUpdateInput_ConnectionVersionBasis {
   connectionId: string;
   revision: number;
@@ -1399,6 +1590,10 @@ export interface SettingsUpdateInput_ConnectionCatalogEntryUpdate {
   } | null;
 }
 export interface SettingsUpdateInput_ModelOverride {
+  /**
+   * Catalog defaults for this connection's model; the request model ID is unchanged.
+   */
+  catalogModel?: SettingsUpdateInput_CatalogModelReference;
   /**
    * Public adapter contribution name; omitted selects the wire's default.
    */
@@ -1418,6 +1613,10 @@ export interface SettingsUpdateInput_ModelOverride {
   thinkingLevels?: SettingsUpdateInput_ThinkingLevel[];
   defaultThinkingLevel?: SettingsUpdateInput_ThinkingLevel;
   vision?: boolean;
+  /**
+   * Explicit route image declarations; replaces catalog image constraints.
+   */
+  imageInput?: SettingsUpdateInput_ImageInput | null;
   /**
    * Override total input-plus-output capacity, without subtracting a reply budget.
    */
@@ -1442,6 +1641,27 @@ export interface SettingsUpdateInput_ModelOverride {
   capabilities?: SettingsUpdateInput_ModelOverrideCapabilities;
   modalities?: SettingsUpdateInput_ModelModalities;
   serviceTier?: SettingsUpdateInput_RelayServiceTier;
+}
+export interface SettingsUpdateInput_CatalogModelReference {
+  provider: string;
+  modelId: string;
+}
+/**
+ * Route declarations for image input; absent fields remain unknown.
+ */
+export interface SettingsUpdateInput_ImageInput {
+  /**
+   * Exact MIME declarations. A generic image modality leaves this unknown.
+   */
+  mimeTypes?: string[] | null;
+  maxPerMessage?: number | null;
+  maxPerRequest?: number | null;
+  maxBytes?: number | null;
+  minWidth?: number | null;
+  minHeight?: number | null;
+  maxWidth?: number | null;
+  maxHeight?: number | null;
+  requestBytes?: number | null;
 }
 /**
  * Vision has one declaration owner: ModelOverride::vision.

@@ -36,6 +36,11 @@ pub(crate) enum ComputerLane {
     Other,
 }
 
+pub(crate) struct ComputerAppDispatch<'a> {
+    pub(crate) target: &'a maka_agent_facts::interaction::GrantTarget,
+    pub(crate) display: &'a maka_agent_facts::interaction::ComputerAppDisplay,
+}
+
 struct CapabilityAdmission {
     lane: ComputerLane,
     targets: Vec<maka_agent_facts::interaction::GrantTarget>,
@@ -96,8 +101,7 @@ impl EventLog {
         prefix: &[EventWrite],
         event: &EventWrite,
         targets: &[maka_agent_facts::interaction::GrantTarget],
-        app: &maka_agent_facts::interaction::GrantTarget,
-        display: &maka_agent_facts::interaction::ComputerAppDisplay,
+        app: ComputerAppDispatch<'_>,
         basis: &maka_agent_facts::workspace::PermissionBasis,
         lane: ComputerLane,
     ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
@@ -106,7 +110,7 @@ impl EventLog {
             event,
             targets,
             basis,
-            Some((app.clone(), display.clone())),
+            Some((app.target.clone(), app.display.clone())),
             lane,
         )
         .await
@@ -335,9 +339,15 @@ impl EventLog {
         crate::message_admissions::consume(transaction, event).await?;
         if matches!(event.fact, Fact::InvocationEnded { .. }) {
             crate::interactions::lifecycle::require_closed(transaction, &event.invocation).await?;
+            crate::native_approvals::require_terminal(transaction, &event.invocation).await?;
         }
         let sequence =
             ingress::insert(transaction, event, json, ingress::Position::Admitted).await?;
+        crate::native_approvals::append_settlement(transaction, event).await?;
+        crate::native_approvals::append_model_request(transaction, event).await?;
+        if matches!(event.fact, Fact::InvocationEnded { .. }) {
+            crate::native_approvals::retire_terminal(transaction, &event.invocation).await?;
+        }
         crate::message_sources::insert(transaction, event).await?;
         crate::tool_payloads::insert(transaction, write).await?;
         crate::artifacts::freeze_tool_media(transaction, event, sequence).await?;

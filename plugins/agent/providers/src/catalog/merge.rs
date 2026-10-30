@@ -104,7 +104,8 @@ pub(super) fn reported(mut reported: ModelInfo, public: &ModelInfo) -> ModelInfo
         knowledge_cutoff,
         structured_output,
         last_updated,
-        modalities
+        modalities,
+        image_input
     );
     if !own_efforts && !reasoning_disabled {
         fill!(thinking_levels, default_thinking_level);

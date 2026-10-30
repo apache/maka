@@ -28,7 +28,9 @@
 
 pub(crate) mod clickable_point;
 pub(crate) mod dispatch;
+pub(crate) mod element_click;
 pub(crate) mod metadata;
+pub(crate) mod reveal;
 pub(crate) mod target;
 pub(crate) mod windows;
 

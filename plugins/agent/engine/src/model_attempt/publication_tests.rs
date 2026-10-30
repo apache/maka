@@ -17,6 +17,7 @@
  * under the License.
  */
 
+mod approval;
 mod retirement;
 mod stream;
 
@@ -56,6 +57,7 @@ struct Sink {
     log: Arc<maka_event_log::root_store::SessionStore>,
     fault: Fault,
     batches: Mutex<Vec<Vec<EventWrite>>>,
+    competition: Mutex<Option<Arc<PublicationCompetition>>>,
 }
 impl EventSink for Sink {
     fn commit(self: Arc<Self>, write: EventWrite) -> CommitFuture {
@@ -72,8 +74,20 @@ impl EventSink for Sink {
     ) -> PrefixCommitFuture {
         let mut writes = prefix.to_vec();
         let dispatch = matches!(last.event().fact, Fact::ToolDispatched { .. });
+        let competition = self.competition.lock().unwrap().clone();
+        let second = matches!(&last.event().fact,
+            Fact::ToolDispatched { input, .. } if input["n"] == 1);
         writes.push(last);
         Box::pin(async move {
+            if second && let Some(competition) = competition {
+                let permit = competition.permit.acquire();
+                tokio::pin!(permit);
+                assert!(futures_util::poll!(&mut permit).is_pending());
+                // The original first completion is ahead in this fair queue.
+                // Granting it requires that same future to be polled again.
+                competition.permit.add_permits(1);
+                drop(permit.await.unwrap());
+            }
             self.batches.lock().unwrap().push(writes.clone());
             if dispatch && matches!(self.fault, Fault::UncommittedUnknown) {
                 return Err(CommitError::OutcomeUnknown(
@@ -98,6 +112,26 @@ struct Gates {
     release: Semaphore,
     effects: AtomicUsize,
     effect: Semaphore,
+    competition: Mutex<Option<Arc<PublicationCompetition>>>,
+}
+struct PublicationCompetition {
+    permit: Semaphore,
+    first_waiting: Semaphore,
+    phase: CompetitionPhase,
+}
+#[derive(Clone, Copy)]
+enum CompetitionPhase {
+    Execution,
+    Preparation,
+}
+impl PublicationCompetition {
+    async fn wait_first(&self) {
+        let permit = self.permit.acquire();
+        tokio::pin!(permit);
+        assert!(futures_util::poll!(&mut permit).is_pending());
+        self.first_waiting.add_permits(1);
+        drop(permit.await.unwrap());
+    }
 }
 struct Preparer(Arc<Gates>);
 impl ToolPreparer for Preparer {
@@ -113,12 +147,30 @@ impl ToolPreparer for Preparer {
     ) -> PreparationFuture {
         let gates = self.0.clone();
         Box::pin(async move {
+            let competition = gates.competition.lock().unwrap().clone();
+            if input["n"] == 0
+                && let Some(competition) = &competition
+                && matches!(competition.phase, CompetitionPhase::Preparation)
+            {
+                competition.wait_first().await;
+            }
+            if input["n"] == 1
+                && let Some(competition) = &competition
+            {
+                competition.first_waiting.acquire().await.unwrap().forget();
+            }
             if gates.all_pending || (gates.slow_first && input["n"] == 0) {
                 gates.entered.add_permits(1);
                 gates.release.acquire().await.unwrap().forget();
             }
             Ok(PreparedEffect::new(move |_| {
                 Box::pin(async move {
+                    if input["n"] == 0
+                        && let Some(competition) = competition
+                        && matches!(competition.phase, CompetitionPhase::Execution)
+                    {
+                        competition.wait_first().await;
+                    }
                     gates.effects.fetch_add(1, Ordering::SeqCst);
                     gates.effect.add_permits(1);
                     Ok(input.into())
@@ -200,6 +252,7 @@ impl Fixture {
             log: inner.log.clone(),
             fault,
             batches: Mutex::default(),
+            competition: Mutex::default(),
         });
         let gates = Arc::new(Gates {
             slow_first,
@@ -208,6 +261,7 @@ impl Fixture {
             release: Semaphore::new(0),
             effects: AtomicUsize::new(0),
             effect: Semaphore::new(0),
+            competition: Mutex::default(),
         });
         let catalog = ToolCatalog::new([ToolRegistration {
             definition: ToolDefinition {
@@ -322,6 +376,46 @@ fn dispatches(sink: &Sink) -> usize {
             )
         })
         .count()
+}
+
+#[tokio::test]
+async fn sibling_publication_keeps_original_fair_waiter_polled() {
+    publication_keeps_waiter_polled(CompetitionPhase::Execution).await;
+}
+
+#[tokio::test]
+async fn sibling_publication_keeps_original_preparation_waiter_polled() {
+    publication_keeps_waiter_polled(CompetitionPhase::Preparation).await;
+}
+
+async fn publication_keeps_waiter_polled(phase: CompetitionPhase) {
+    let mut fixture = Fixture::new(Fault::None, false, false).await;
+    let competition = Arc::new(PublicationCompetition {
+        permit: Semaphore::new(0),
+        first_waiting: Semaphore::new(0),
+        phase,
+    });
+    *fixture.sink.competition.lock().unwrap() = Some(competition.clone());
+    *fixture.gates.competition.lock().unwrap() = Some(competition);
+    tokio::time::timeout(Duration::from_secs(30), fixture.receive(events(false)))
+        .await
+        .expect("sibling publication must keep polling the original granted waiter")
+        .unwrap();
+    assert_eq!(dispatches(&fixture.sink), 2);
+    assert_eq!(fixture.gates.effects.load(Ordering::SeqCst), 2);
+    let after = prefix(&fixture.inner.log).await;
+    let settled = after
+        .events
+        .iter()
+        .filter(|event| matches!(event.event.fact, Fact::ToolSettled { .. }))
+        .count();
+    assert_eq!(
+        settled, 2,
+        "both original one-shot effects have durable outcomes"
+    );
+    assert!(fixture.finalizer.terminal_confirmed());
+    fixture.tools.shutdown().await.unwrap();
+    fixture._root.shutdown().await.unwrap();
 }
 
 #[tokio::test]

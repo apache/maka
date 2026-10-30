@@ -75,7 +75,7 @@ impl Owner {
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
-        if runs.busy(&source.session_id) {
+        if runs.busy(&source.session_id) || self.has_parked_invocation(&source.session_id).await? {
             return Ok(None);
         }
         let session = match self.session(&source.session_id).await {
@@ -114,6 +114,7 @@ impl Owner {
         }
         let current = self.session(&source.session_id).await?;
         if runs.busy(&source.session_id)
+            || self.has_parked_invocation(&source.session_id).await?
             || current.configuration != session.configuration
             || current.archived
         {
@@ -243,7 +244,7 @@ impl Owner {
                     Err("agent_closed".into())
                 };
             }
-            if runs.busy(session) {
+            if runs.busy(session) || self.has_parked_invocation(session).await? {
                 return Ok(original.is_some());
             }
             runs.preparing.insert(session.clone(), cancellation.clone());

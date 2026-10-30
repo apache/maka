@@ -85,9 +85,75 @@ pub(super) struct Creator {
     pub(super) generation: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TabMark {
+    Handoff,
+    Deliverable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct MarkAttempt {
+    turn: String,
+    operation: String,
+    epoch: crate::desktop::NativeEpochId,
+    requested: TabMark,
+    previous: Option<TabMark>,
+}
+
+pub(super) enum MarkFailure {
+    NotDispatched,
+    Unknown(String),
+}
+
+impl MarkAttempt {
+    pub(super) fn status(&self) -> TabMark {
+        self.requested
+    }
+    pub(super) fn matches(
+        &self,
+        operation: &cua_driver_core::browser::ExtensionHostOperation,
+        epoch: crate::desktop::NativeEpochId,
+    ) -> bool {
+        self.operation == operation.operation_id
+            && self.turn == operation.turn_id
+            && self.epoch == epoch
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) enum Retention {
+    #[default]
+    Unmarked,
+    Marked(TabMark),
+    Pending(MarkAttempt),
+    Unknown {
+        attempt: MarkAttempt,
+        reason: String,
+    },
+    Handoff,
+}
+
+impl Retention {
+    pub(super) fn mark(&self) -> Result<Option<TabMark>, ToolError> {
+        match self {
+            Self::Unmarked => Ok(None),
+            Self::Marked(mark) => Ok(Some(*mark)),
+            Self::Handoff => Err(failed("handoff must resume under an actual new turn first")),
+            Self::Pending(_) => Err(ToolError::CleanupUnconfirmed(
+                "tab mark is still pending; the effect was not replayed".into(),
+            )),
+            Self::Unknown { reason, .. } => Err(ToolError::CleanupUnconfirmed(format!(
+                "tab mark remains unknown; the effect was not replayed: {reason}"
+            ))),
+        }
+    }
+}
+
 pub(super) enum Disposition {
     Live,
     Closing,
+    /// Physical resources and grants retired; logical origin/mark remain metadata.
+    Parked,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -110,6 +176,9 @@ pub(super) struct Lease {
     pub(super) extension: Option<super::extension::ClaimState>,
     pub(super) creator: Creator,
     pub(super) disposition: Disposition,
+    pub(super) retention: Retention,
+    pub(super) handoff_transfer: Option<Box<super::extension::HandoffTransfer>>,
+    pub(super) logical_lease: Option<cua_driver_core::browser::ExtensionLogicalLease>,
 }
 
 #[derive(Default)]
@@ -138,9 +207,10 @@ impl Host {
     }
 
     pub(super) fn visible(&self, tab: &TabIdentity, owner: uuid::Uuid) -> bool {
-        self.tabs
-            .get(tab)
-            .is_none_or(|lease| lease.creator.owner == owner)
+        self.tabs.get(tab).is_none_or(|lease| {
+            lease.handoff_transfer.is_none()
+                && (lease.creator.owner == owner || matches!(lease.retention, Retention::Handoff))
+        })
     }
 
     pub(super) fn use_tab(
@@ -151,10 +221,15 @@ impl Host {
     ) -> Result<(), ToolError> {
         self.known(&tab.browser)?;
         if let Some(lease) = self.tabs.get_mut(tab) {
+            if lease.handoff_transfer.is_some() {
+                return Err(ToolError::CleanupUnconfirmed(
+                    "explicit handoff claim remains unsettled; it was not replayed".into(),
+                ));
+            }
             if lease.creator.owner != owner {
                 return Err(failed("tab_owned_by_another_session"));
             }
-            if matches!(lease.disposition, Disposition::Closing) {
+            if !matches!(lease.disposition, Disposition::Live) {
                 return Err(ToolError::CleanupUnconfirmed(
                     "the tab's previous close has not settled".into(),
                 ));
@@ -216,6 +291,9 @@ impl Host {
                         generation,
                     },
                     disposition: Disposition::Live,
+                    retention: Retention::Unmarked,
+                    handoff_transfer: None,
+                    logical_lease: None,
                 });
             }
         }
@@ -266,6 +344,9 @@ impl Host {
                         generation,
                     },
                     disposition: Disposition::Live,
+                    retention: Retention::Unmarked,
+                    handoff_transfer: None,
+                    logical_lease: None,
                 });
                 Ok(())
             }
@@ -273,6 +354,99 @@ impl Host {
                 "the browser returned an already-owned target ID for a new tab".into(),
             )),
         }
+    }
+
+    fn mark_lease(
+        &mut self,
+        identity: &TabIdentity,
+        owner: uuid::Uuid,
+        turn: &str,
+    ) -> Result<&mut Lease, ToolError> {
+        self.known(&identity.browser)?;
+        let lease = self
+            .tabs
+            .get_mut(identity)
+            .ok_or_else(|| failed("tab mark requires an acquired session tab"))?;
+        if lease.creator.owner != owner {
+            return Err(failed("tab_owned_by_another_session"));
+        }
+        if lease.creator.turn != turn {
+            return Err(failed("tab mark belongs to a different active turn"));
+        }
+        if !matches!(lease.disposition, Disposition::Live) {
+            return Err(ToolError::CleanupUnconfirmed(
+                "tab cleanup has begun; its keep policy cannot be changed".into(),
+            ));
+        }
+        Ok(lease)
+    }
+
+    pub(super) fn begin_mark(
+        &mut self,
+        identity: &TabIdentity,
+        owner: uuid::Uuid,
+        operation: &cua_driver_core::browser::ExtensionHostOperation,
+        epoch: crate::desktop::NativeEpochId,
+        requested: TabMark,
+    ) -> Result<MarkAttempt, ToolError> {
+        if operation.operation_id.is_empty() || operation.turn_id.is_empty() {
+            return Err(failed("tab mark requires the exact current Host operation"));
+        }
+        let lease = self.mark_lease(identity, owner, &operation.turn_id)?;
+        let previous = lease.retention.mark()?;
+        let attempt = MarkAttempt {
+            turn: operation.turn_id.clone(),
+            operation: operation.operation_id.clone(),
+            epoch,
+            requested,
+            previous,
+        };
+        lease.retention = Retention::Pending(attempt.clone());
+        Ok(attempt)
+    }
+
+    pub(super) fn mark_attempt_pending(
+        &self,
+        identity: &TabIdentity,
+        owner: uuid::Uuid,
+        issued: &MarkAttempt,
+    ) -> bool {
+        self.tabs.get(identity).is_some_and(|lease| {
+            lease.creator.owner == owner
+                && matches!(&lease.retention, Retention::Pending(current) if current == issued)
+        })
+    }
+
+    pub(super) fn mark_result(
+        &mut self,
+        identity: &TabIdentity,
+        owner: uuid::Uuid,
+        attempt: &MarkAttempt,
+        outcome: Result<(), MarkFailure>,
+    ) -> Result<(), ToolError> {
+        let lease = self.mark_lease(identity, owner, &attempt.turn)?;
+        let current = match &lease.retention {
+            Retention::Pending(current)
+            | Retention::Unknown {
+                attempt: current, ..
+            } => current,
+            _ => return Err(failed("tab mark reply has no retained issued attempt")),
+        };
+        if current != attempt {
+            return Err(failed("tab mark reply changed its exact issued attempt"));
+        }
+        lease.retention = match outcome {
+            Ok(()) => Retention::Marked(attempt.requested),
+            Err(MarkFailure::NotDispatched) => attempt
+                .previous
+                .map(Retention::Marked)
+                .unwrap_or(Retention::Unmarked),
+            Err(MarkFailure::Unknown(reason)) => Retention::Unknown {
+                attempt: attempt.clone(),
+                reason,
+            },
+        };
+        Ok(())
     }
 
     pub(super) fn begin_close(
@@ -311,12 +485,30 @@ impl Host {
         );
     }
 
+    pub(super) fn check_mark_settlement(
+        &self,
+        owner: uuid::Uuid,
+        turn: Option<&str>,
+    ) -> Result<(), ToolError> {
+        for lease in self.tabs.values().filter(|lease| {
+            lease.creator.owner == owner && turn.is_none_or(|turn| lease.creator.turn == turn)
+        }) {
+            if !matches!(lease.retention, Retention::Handoff) {
+                lease.retention.mark()?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn finish(
         &mut self,
         owner: uuid::Uuid,
         turn: Option<&str>,
     ) -> Result<Vec<TabIdentity>, ToolError> {
         self.check_owned_inputs(owner, turn, None)?;
+        if turn.is_some() {
+            self.check_mark_settlement(owner, turn)?;
+        }
         let extension_finished = self.finish_extension(owner, turn).await?;
         let belongs = |creator: &Creator| {
             creator.owner == owner && turn.is_none_or(|turn| creator.turn == turn)

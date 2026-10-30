@@ -32,7 +32,7 @@ const catalog = JSON.parse(
     cwd: root,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],
-    maxBuffer: 4 * 1024 * 1024,
+    maxBuffer: Infinity,
   }),
 );
 const header = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8').split(

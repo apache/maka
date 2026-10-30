@@ -348,6 +348,7 @@ async fn unknown_dispatch_stays_unknown_and_blocks_next_admission_after_reopen()
         .run(
             log.store(),
             RunInput {
+                native_activation_basis: None,
                 model_source: None,
                 model_revision: None,
                 provider_id: "fixture".into(),
@@ -361,6 +362,7 @@ async fn unknown_dispatch_stays_unknown_and_blocks_next_admission_after_reopen()
                 },
                 request_fingerprint: None,
                 provider: ProviderConfig {
+                    image_input: None,
                     adapter: None,
                     capabilities: Default::default(),
                     kind: ProviderKind::OpenaiChatCompletions,
@@ -438,6 +440,7 @@ async fn explicit_new_message_after_unknown_dispatch_informs_model_without_repla
         });
         let engine = Engine::new(ModelExecutor::new(Duration::from_secs(5)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
         let run = RunInput {
+            native_activation_basis: None,
             model_source: None,
             model_revision: None,
             provider_id: "fixture".into(),
@@ -445,7 +448,7 @@ async fn explicit_new_message_after_unknown_dispatch_informs_model_without_repla
             context: None,
             invocation: Invocation { session_id: "session".into(), turn_id: "new-turn".into(), run_id: "new-run".into(), invocation_id: "new-invocation".into() },
             request_fingerprint: None,
-            provider: ProviderConfig { adapter: None, capabilities: Default::default(), kind: ProviderKind::OpenaiChatCompletions,
+            provider: ProviderConfig { image_input: None, adapter: None, capabilities: Default::default(), kind: ProviderKind::OpenaiChatCompletions,
                 model: "test".into(), base_url, auth: maka_model::ProviderAuth::ApiKey("unused".into()),
                 headers: BTreeMap::new(), network: Default::default(), body_overlay: None },
             provider_options: json!({}),

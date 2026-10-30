@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "query", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Query {
     WindowOrder,
+    KeyboardLayout,
     Process { pid: i32 },
     GlobalWindow { point: [f64; 2] },
     FirstBundleProcess { bundle: String },
@@ -35,6 +36,9 @@ pub(crate) enum Query {
 pub(crate) enum Observation {
     WindowOrder {
         ids: Vec<u32>,
+    },
+    KeyboardLayout {
+        layout: Option<platform_macos::input::native_keyboard::NativeKeyboardLayout>,
     },
     Process {
         application: Option<platform_macos::geometry::event_target::RunningProcess>,
@@ -56,6 +60,9 @@ pub(crate) fn read(
         Query::WindowOrder => native::ordered_window_ids_on_main_thread(main)
             .map(|ids| Observation::WindowOrder { ids })
             .map_err(|error| error.to_string()),
+        Query::KeyboardLayout => Ok(Observation::KeyboardLayout {
+            layout: platform_macos::input::native_keyboard::capture_layout(main).ok(),
+        }),
         Query::Process { pid } => Ok(Observation::Process {
             application: native::running_process_on_main_thread(main, pid),
         }),

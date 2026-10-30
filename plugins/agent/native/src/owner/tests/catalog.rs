@@ -87,17 +87,26 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
         .await
         .unwrap();
     assert_eq!(next(&mut bootstrap).await["sessions"], json!([]));
-    let mut ids = Vec::new();
-    for title in ["First", "Second", "Third"] {
-        ids.push(fixture.create(title).await);
-        assert!(
-            !next(&mut bootstrap).await["sessions"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-    }
+    let first_id = fixture.create("First").await;
+    let published = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let page = next(&mut bootstrap).await;
+            // A partition commit can precede publication of its Root route.
+            if !page["sessions"].as_array().unwrap().is_empty() {
+                break page;
+            }
+        }
+    })
+    .await
+    .expect("created Session must be published to the catalog");
+    assert_eq!(published["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(published["sessions"][0]["id"], first_id);
+    assert_eq!(published["sessions"][0]["title"], "First");
     bootstrap.completion().await;
+    let mut ids = vec![first_id];
+    for title in ["Second", "Third"] {
+        ids.push(fixture.create(title).await);
+    }
     ids.sort();
     let owned_scope = json!({"kind":"workspace","sessionId":ids[0]});
     let first_title = fixture

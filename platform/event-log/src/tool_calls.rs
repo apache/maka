@@ -38,6 +38,24 @@ fn identity(value: &str) -> Result<(), StoreError> {
 impl crate::EventLog {
     /// The immutable T1 whose input the original prepared effect will execute.
     /// This is evidence for a confirmation, not effect admission or authorization.
+    pub async fn tool_dispatch_receipt(
+        &self,
+        context: &maka_agent_facts::tools::ToolCallContext,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Result<maka_agent_facts::native_approval::DispatchReceipt, StoreError> {
+        self.validate_root()?;
+        self.check_bound_session(&context.invocation.session_id)?;
+        let context = context.clone();
+        let name = name.to_owned();
+        let input = input.clone();
+        self.connection.read(move |db|Box::pin(async move {
+            let (sequence,json):(i64,String)=sqlx::query_as("SELECT sequence,event_json FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='tool_dispatched'").bind(&context.invocation.invocation_id).bind(&context.operation_id).fetch_optional(db).await?.ok_or_else(||invalid("service confirmation requires durable dispatch"))?;
+            let event:RuntimeEvent=serde_json::from_str(&json)?;
+            if event.invocation!=context.invocation || !matches!(&event.fact,Fact::ToolDispatched{name:original,input:original_input,..} if *original==name && *original_input==input) {return Err(invalid("service confirmation differs from durable dispatch"))}
+            Ok(maka_agent_facts::native_approval::DispatchReceipt{event_id:event.id,sequence:crate::sequence_number(sequence)?})
+        })).await
+    }
     pub async fn tool_dispatch_fence(
         &self,
         context: &maka_agent_facts::tools::ToolCallContext,

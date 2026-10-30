@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::{ReadOutput, ReadScope, failed};
+use crate::{BinaryFileMetadata, ReadOutput, ReadScope, failed};
 #[cfg(unix)]
 use cap_std::fs::OpenOptionsExt;
 use cap_std::{
@@ -29,7 +29,7 @@ use maka_agent_facts::tools::ToolError;
 use maka_sandbox::filesystem::Compiled;
 use std::sync::Arc;
 use std::{
-    io::Read,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
 };
 use tokio_util::sync::CancellationToken;
@@ -320,6 +320,92 @@ impl Authority {
             }
         }
         Err(error)
+    }
+
+    pub(crate) fn binary_metadata(
+        &self,
+        path: String,
+        cancellation: CancellationToken,
+    ) -> Result<BinaryFileMetadata, ToolError> {
+        check_cancelled(&cancellation)?;
+        let absolute = path::resolve(&self.cwd, Path::new(&path))?;
+        let file = self.open(&absolute)?;
+        let metadata = file.metadata().map_err(io_error)?;
+        if !metadata.is_file() {
+            return Err(failed("Read supports only regular files"));
+        }
+        let name = absolute
+            .file_name()
+            .ok_or_else(|| failed("Binary Read requires a file name"))?
+            .to_string_lossy()
+            .into_owned();
+        check_cancelled(&cancellation)?;
+        Ok(BinaryFileMetadata {
+            name,
+            bytes: metadata.len(),
+            modified: metadata
+                .modified()
+                .ok()
+                .map(cap_std::time::SystemTime::into_std),
+        })
+    }
+
+    pub(crate) fn copy_binary<W, F>(
+        &self,
+        path: String,
+        create: F,
+        cancellation: CancellationToken,
+    ) -> Result<W, ToolError>
+    where
+        W: Write,
+        F: FnOnce(BinaryFileMetadata) -> Result<W, ToolError>,
+    {
+        check_cancelled(&cancellation)?;
+        let absolute = path::resolve(&self.cwd, Path::new(&path))?;
+        let mut file = self.open(&absolute)?;
+        let before = file.metadata().map_err(io_error)?;
+        if !before.is_file() {
+            return Err(failed("Read supports only regular files"));
+        }
+        let name = absolute
+            .file_name()
+            .ok_or_else(|| failed("Binary Read requires a file name"))?
+            .to_string_lossy()
+            .into_owned();
+        check_cancelled(&cancellation)?;
+        let mut writer = create(BinaryFileMetadata {
+            name,
+            bytes: before.len(),
+            modified: before
+                .modified()
+                .ok()
+                .map(cap_std::time::SystemTime::into_std),
+        })?;
+        let mut copied = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            check_cancelled(&cancellation)?;
+            let count = file.read(&mut buffer).map_err(io_error)?;
+            if count == 0 {
+                break;
+            }
+            copied = copied
+                .checked_add(count as u64)
+                .filter(|&length| length <= before.len())
+                .ok_or_else(|| failed("Read file changed during binary copy"))?;
+            check_cancelled(&cancellation)?;
+            writer.write_all(&buffer[..count]).map_err(io_error)?;
+        }
+        check_cancelled(&cancellation)?;
+        let after = file.metadata().map_err(io_error)?;
+        if copied != before.len()
+            || after.len() != before.len()
+            || after.modified().ok() != before.modified().ok()
+        {
+            return Err(failed("Read file changed during binary copy"));
+        }
+        check_cancelled(&cancellation)?;
+        Ok(writer)
     }
 
     pub(crate) fn read(

@@ -268,6 +268,16 @@ pub(super) async fn replay<W>(
                 cancellation,
             )
             .await?;
+        prompt
+            .fit_image_request(
+                input.configuration.language,
+                &input.provider,
+                &input.provider_options,
+                &definitions,
+                input.main_output_limit,
+                cancellation,
+            )
+            .await?;
         let request = model_attempt::prepare_request(
             input,
             prompt,

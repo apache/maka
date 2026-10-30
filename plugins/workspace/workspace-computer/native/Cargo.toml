@@ -36,6 +36,7 @@ maka-host-runtime.workspace = true
 maka-js-runtime.workspace = true
 maka-plugin-core.workspace = true
 maka-sandbox.workspace = true
+maka-workspace-support.workspace = true
 maka-workspace-api.workspace = true
 futures-util.workspace = true
 jsonschema.workspace = true

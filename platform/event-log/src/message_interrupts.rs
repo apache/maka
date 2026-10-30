@@ -134,6 +134,9 @@ impl EventLog {
             sqlx::query("INSERT INTO message_interrupt_receipts(host_epoch, session_id, interrupt_id, turn_id, run_id, fence_json) VALUES (?, ?, ?, ?, ?, ?)")
                 .bind(&command.host_epoch).bind(&command.session_id).bind(&command.interrupt_id)
                 .bind(&command.turn_id).bind(&command.run_id).bind(encoded).execute(&mut *tx).await?;
+            if fence.is_some() {
+                changed|=crate::native_approvals::revoke_for_session(&mut tx,&command.session_id,crate::native_approvals::now_millis()?).await?;
+            }
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
             if changed { commits.metadata(); }
             Ok(fence.map_or(InterruptReceipt::Conflict, InterruptReceipt::Fenced))

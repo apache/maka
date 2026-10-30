@@ -27,8 +27,27 @@ use serde_json::Value;
 use std::{future::Future, pin::Pin, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
-type Execute = Box<dyn FnOnce(CancellationToken) -> ToolFuture<ToolSuccess> + Send>;
+pub type Execute = Box<dyn FnOnce(CancellationToken) -> ToolFuture<ToolSuccess> + Send>;
 type Admission = Box<dyn FnOnce() -> Result<Box<dyn Send>, ToolError> + Send>;
+
+pub type ApprovalAnswerFuture = ToolFuture<crate::interaction::InteractionOutcome>;
+pub type EstablishNativeApproval =
+    Box<dyn FnOnce(CancellationToken) -> ToolFuture<EstablishedApproval> + Send>;
+
+pub struct EstablishedApproval {
+    pub pending: crate::native_approval::NativeApprovalPending,
+    pub answer: ApprovalAnswerFuture,
+}
+
+pub enum PreparedExecution {
+    Inline(Execute),
+    NativeApproval(PreparedNativeApproval),
+}
+
+pub struct PreparedNativeApproval {
+    pub establish: EstablishNativeApproval,
+    pub execute: Execute,
+}
 
 /// In-process acknowledgment of the durable dispatch boundary. `NotStarted`
 /// means the one-shot effect never began; it does not assert that a failed
@@ -57,7 +76,7 @@ impl Drop for AdmissionObserver {
 /// The journal owns admission leases until the durable outcome is settled,
 /// including failures. Preparation itself does not begin a plugin call.
 pub struct PreparedEffect {
-    execute: Option<Execute>,
+    execution: Option<PreparedExecution>,
     pub(super) title: Option<crate::display::Text>,
     pub(super) presentation: Option<String>,
     admissions: Vec<Admission>,
@@ -70,13 +89,38 @@ impl PreparedEffect {
         execute: impl FnOnce(CancellationToken) -> ToolFuture<ToolSuccess> + Send + 'static,
     ) -> Self {
         Self {
-            execute: Some(Box::new(execute)),
+            execution: Some(PreparedExecution::Inline(Box::new(execute))),
             title: None,
             presentation: None,
             admissions: Vec::new(),
             leases: Vec::new(),
             admission_observers: Vec::new(),
         }
+    }
+
+    pub fn native_approval(
+        establish: impl FnOnce(CancellationToken) -> ToolFuture<EstablishedApproval> + Send + 'static,
+        execute: impl FnOnce(CancellationToken) -> ToolFuture<ToolSuccess> + Send + 'static,
+    ) -> Self {
+        let mut effect = Self::new(execute);
+        let PreparedExecution::Inline(execute) = effect.take_execution() else {
+            unreachable!("new effects have inline execution")
+        };
+        effect.execution = Some(PreparedExecution::NativeApproval(PreparedNativeApproval {
+            establish: Box::new(establish),
+            execute,
+        }));
+        effect
+    }
+
+    pub(super) fn take_execution(&mut self) -> PreparedExecution {
+        self.execution
+            .take()
+            .expect("prepared effect is consumed once")
+    }
+
+    pub(super) fn set_execution(&mut self, execute: Execute) {
+        self.execution = Some(PreparedExecution::Inline(execute));
     }
 
     /// The owning tool supplies its presentation before journal admission.
@@ -116,14 +160,23 @@ impl PreparedEffect {
         }
     }
 
-    pub(super) fn start(&mut self, cancellation: CancellationToken) -> ToolFuture<ToolSuccess> {
+    pub(super) fn admit(&mut self) -> Result<(), ToolError> {
         for admit in self.admissions.drain(..) {
-            match admit() {
-                Ok(guard) => self.leases.push(guard),
-                Err(error) => return Box::pin(async { Err(error) }),
+            self.leases.push(admit()?);
+        }
+        Ok(())
+    }
+
+    pub(super) fn start(&mut self, cancellation: CancellationToken) -> ToolFuture<ToolSuccess> {
+        if let Err(error) = self.admit() {
+            return Box::pin(async { Err(error) });
+        }
+        match self.take_execution() {
+            PreparedExecution::Inline(execute) => execute(cancellation),
+            PreparedExecution::NativeApproval(_) => {
+                unreachable!("journal establishes native approvals before execution")
             }
         }
-        self.execute.take().expect("prepared effect starts once")(cancellation)
     }
 }
 pub type PreparationFuture =

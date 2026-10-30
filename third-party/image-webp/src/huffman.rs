@@ -38,6 +38,16 @@ impl Default for HuffmanTree {
 }
 
 impl HuffmanTree {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        match &self.0 {
+            HuffmanTreeInner::Single(_) => 0,
+            HuffmanTreeInner::Tree { tree, table, .. } => {
+                tree.capacity() * std::mem::size_of::<HuffmanTreeNode>()
+                    + table.capacity() * std::mem::size_of::<u32>()
+            }
+        }
+    }
+
     /// Builds a tree implicitly, just from code lengths
     pub(crate) fn build_implicit(code_lengths: Vec<u16>) -> Result<Self, DecodingError> {
         // Count symbols and build histogram

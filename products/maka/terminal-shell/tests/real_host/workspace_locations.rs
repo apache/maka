@@ -21,19 +21,6 @@ use super::*;
 use maka_app_client::Client;
 use maka_capabilities::call::Attachments;
 
-async fn fill(view: &mut AppView, label: &str, value: &str) {
-    tab_to_label(view, label).await;
-    shortcut(view, 'a');
-    view.handle_event(Event::Paste(value.into()));
-    let (done, committed) = tokio::sync::oneshot::channel();
-    view.control()
-        .unwrap()
-        .advance_clock(Duration::ZERO, move || {
-            let _ = done.send(());
-        });
-    committed.await.unwrap();
-}
-
 async fn update(client: &Client, source: &Value, roots: Value) -> Value {
     let operation = client
         .settings_mutation(

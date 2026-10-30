@@ -31,6 +31,21 @@ const CHUNK: usize = 64 * 1024;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Request {
     Begin,
+    UploadPrepare {
+        request: crate::BrowserUploadRequest,
+    },
+    UploadCheck {
+        request: crate::BrowserUploadRequest,
+    },
+    UploadRead {
+        input: u64,
+        index: usize,
+        offset: usize,
+        end: usize,
+    },
+    UploadRelease {
+        input: u64,
+    },
     WriteStart {
         directory: u64,
         name: String,
@@ -54,16 +69,39 @@ pub(crate) enum Request {
 }
 impl Request {
     fn cleanup(&self) -> bool {
-        matches!(self, Self::Abort { .. })
+        matches!(self, Self::Abort { .. } | Self::UploadRelease { .. })
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Reply {
-    Directory { id: u64, path: String },
-    Upload { id: u64 },
-    Path { path: String },
+    Directory {
+        id: u64,
+        path: String,
+    },
+    Upload {
+        id: u64,
+    },
+    Path {
+        path: String,
+    },
     Done,
+    Inputs {
+        id: u64,
+        files: Vec<InputDescriptor>,
+    },
+    Bytes {
+        bytes: Vec<u8>,
+    },
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct InputDescriptor {
+    name: String,
+    bytes: usize,
+    digest: String,
+    #[serde(default)]
+    modified: Option<serde_json::Value>,
 }
 struct Upload {
     directory: u64,
@@ -77,6 +115,7 @@ pub(super) struct Custody {
     next: u64,
     directories: HashMap<u64, Box<dyn BrowserAssetDirectory>>,
     uploads: HashMap<u64, Upload>,
+    inputs: HashMap<u64, Vec<crate::BrowserUploadFile>>,
 }
 impl Custody {
     fn id(&mut self) -> Result<u64, ToolError> {
@@ -90,9 +129,69 @@ impl Custody {
         &mut self,
         files: Option<Arc<dyn BrowserAssetFiles>>,
         request: Request,
+        authorization: Option<Arc<dyn BrowserAuthorization>>,
         cancellation: CancellationToken,
     ) -> Result<Reply, ToolError> {
         match request {
+            Request::UploadPrepare { request } => {
+                let captured = authorization
+                    .ok_or_else(|| failed("Upload snapshot lost its original Host authorization"))?
+                    .prepare_upload(request, cancellation)
+                    .await?;
+                let descriptors = captured
+                    .iter()
+                    .map(|file| {
+                        let metadata = file.resource.metadata();
+                        let digest = metadata["digest"]
+                            .as_str()
+                            .ok_or_else(|| failed("Upload resource has no immutable digest"))?
+                            .to_owned();
+                        Ok(InputDescriptor {
+                            name: file.name.clone(),
+                            bytes: file.resource.bytes(),
+                            digest,
+                            modified: metadata.get("modified").cloned(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ToolError>>()?;
+                let id = self.id()?;
+                self.inputs.insert(id, captured);
+                Ok(Reply::Inputs {
+                    id,
+                    files: descriptors,
+                })
+            }
+            Request::UploadCheck { request } => {
+                authorization
+                    .ok_or_else(|| failed("Upload check lost its original Host authorization"))?
+                    .check_upload(request, cancellation)
+                    .await?;
+                Ok(Reply::Done)
+            }
+            Request::UploadRead {
+                input,
+                index,
+                offset,
+                end,
+            } => {
+                if end.checked_sub(offset).is_none_or(|count| count > CHUNK) {
+                    return Err(failed("Invalid upload resource range"));
+                }
+                let file = self
+                    .inputs
+                    .get(&input)
+                    .and_then(|files| files.get(index))
+                    .ok_or_else(|| failed("Upload resource does not belong to this operation"))?;
+                let bytes = file.resource.read(offset..end).map_err(failed)?;
+                if bytes.len() != end - offset {
+                    return Err(failed("Upload resource snapshot changed"));
+                }
+                Ok(Reply::Bytes { bytes })
+            }
+            Request::UploadRelease { input } => {
+                self.inputs.remove(&input);
+                Ok(Reply::Done)
+            }
             Request::Begin => {
                 let directory = files
                     .as_ref()
@@ -208,6 +307,11 @@ impl ParentCallbacks {
         id: u64,
         request: Request,
     ) -> Result<(), ToolError> {
+        if let Request::UploadPrepare { request } | Request::UploadCheck { request } = &request
+            && request.document != *token.key.access.document()
+        {
+            return Err(failed("Upload snapshot changed its bound document"));
+        }
         let prepared = {
             let mut state = self.0.state.lock().unwrap();
             let scope = checked_scope(&state, &token, request.cleanup())?;
@@ -253,7 +357,7 @@ impl ParentCallbacks {
                 custody
                     .lock()
                     .await
-                    .execute(files, request, cancellation)
+                    .execute(files, request, authorization, cancellation)
                     .await
             })
             .catch_unwind()
@@ -454,5 +558,311 @@ impl BrowserAssetFiles for RemoteFiles {
             }
             Ok(directory)
         })
+    }
+}
+
+/// Preserve only the approved file metadata on the locally verified byte snapshot.
+#[cfg(feature = "native-desktop")]
+struct InputResource {
+    resource: Arc<dyn ReadResource>,
+    modified: Option<serde_json::Value>,
+}
+#[cfg(feature = "native-desktop")]
+impl ReadResource for InputResource {
+    fn encoding(&self) -> maka_capabilities::call::ResourceEncoding {
+        self.resource.encoding()
+    }
+    fn resource_type(&self) -> maka_plugin_core::contract::ResourceType {
+        self.resource.resource_type()
+    }
+    fn bytes(&self) -> usize {
+        self.resource.bytes()
+    }
+    fn metadata(&self) -> serde_json::Value {
+        let mut metadata = self.resource.metadata();
+        if let Some(modified) = &self.modified {
+            metadata["modified"] = modified.clone();
+        }
+        metadata
+    }
+    fn read(&self, range: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+        self.resource.read(range)
+    }
+}
+
+#[cfg(feature = "native-desktop")]
+impl WorkerCallbacks {
+    pub(in crate::desktop::worker) fn prepare_upload(
+        &self,
+        identity: ScopeIdentity,
+        invocation_id: u64,
+        request: crate::BrowserUploadRequest,
+        cancellation: CancellationToken,
+    ) -> crate::BrowserUploadFuture {
+        let worker = self.clone();
+        Box::pin(async move {
+            let key = ScopeKey {
+                identity,
+                access: BrowserAccess::Metadata {
+                    document: request.document.clone(),
+                },
+            };
+            let PreparedServices { scope, .. } = worker
+                .prepare_binding(invocation_id, key, cancellation.clone())
+                .await?;
+            let Reply::Inputs { id, files } = scope
+                .clone()
+                .file_call(Request::UploadPrepare { request }, cancellation.clone())
+                .await?
+            else {
+                return Err(uncertain("Upload snapshot response changed kind"));
+            };
+            let result = async {
+                let mut snapshots = Vec::new();
+                for (index, descriptor) in files.into_iter().enumerate() {
+                    let mut bytes = Vec::new();
+                    let mut offset = 0;
+                    while offset < descriptor.bytes {
+                        let end = offset.saturating_add(CHUNK).min(descriptor.bytes);
+                        let Reply::Bytes { bytes: chunk } = scope
+                            .clone()
+                            .file_call(
+                                Request::UploadRead {
+                                    input: id,
+                                    index,
+                                    offset,
+                                    end,
+                                },
+                                cancellation.clone(),
+                            )
+                            .await?
+                        else {
+                            return Err(uncertain("Upload resource response changed kind"));
+                        };
+                        if chunk.len() != end - offset {
+                            return Err(failed("Upload resource range changed"));
+                        }
+                        bytes.extend_from_slice(&chunk);
+                        offset = end;
+                    }
+                    let resource =
+                        maka_capabilities::call::immutable_bytes(descriptor.name.clone(), bytes);
+                    if resource.bytes() != descriptor.bytes
+                        || resource.metadata()["digest"].as_str()
+                            != Some(descriptor.digest.as_str())
+                    {
+                        return Err(failed("Upload snapshot digest changed"));
+                    }
+                    snapshots.push(crate::BrowserUploadFile {
+                        name: descriptor.name,
+                        resource: Arc::new(InputResource {
+                            resource,
+                            modified: descriptor.modified,
+                        }),
+                    });
+                }
+                Ok(snapshots)
+            }
+            .await;
+            // Release is metadata-only cleanup and remains valid after sealing.
+            let release = scope
+                .file_call(
+                    Request::UploadRelease { input: id },
+                    CancellationToken::new(),
+                )
+                .await;
+            match (result, release) {
+                (Ok(files), Ok(Reply::Done)) => Ok(files),
+                (Err(error), Ok(Reply::Done)) => Err(error),
+                (_, Err(error)) => Err(error),
+                _ => Err(uncertain("Upload release response changed kind")),
+            }
+        })
+    }
+    pub(in crate::desktop::worker) fn check_upload(
+        &self,
+        identity: ScopeIdentity,
+        invocation_id: u64,
+        request: crate::BrowserUploadRequest,
+        cancellation: CancellationToken,
+    ) -> AuthorizationFuture {
+        let worker = self.clone();
+        Box::pin(async move {
+            let key = ScopeKey {
+                identity,
+                access: BrowserAccess::Metadata {
+                    document: request.document.clone(),
+                },
+            };
+            let PreparedServices { scope, .. } = worker
+                .prepare_binding(invocation_id, key, cancellation.clone())
+                .await?;
+            match scope
+                .file_call(Request::UploadCheck { request }, cancellation)
+                .await?
+            {
+                Reply::Done => Ok(()),
+                _ => Err(uncertain("Upload check response changed kind")),
+            }
+        })
+    }
+}
+
+#[cfg(all(test, feature = "native-desktop"))]
+mod modified_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    struct Authority {
+        resource: Arc<dyn ReadResource>,
+        checks: Arc<AtomicUsize>,
+    }
+    impl BrowserAuthorization for Authority {
+        fn authorize(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
+            panic!("metadata transport cannot request a new grant");
+        }
+        fn check(&self, _: BrowserAccess, cancellation: CancellationToken) -> AuthorizationFuture {
+            self.checks.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if cancellation.is_cancelled() {
+                    Err(failed("fixture scope cancelled"))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+        fn prepare_upload(
+            &self,
+            _: crate::BrowserUploadRequest,
+            _: CancellationToken,
+        ) -> crate::BrowserUploadFuture {
+            let resource = self.resource.clone();
+            Box::pin(async move {
+                Ok(vec![crate::BrowserUploadFile {
+                    name: "source.bin".into(),
+                    resource,
+                }])
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_callback_roundtrip_preserves_actual_modified_metadata() {
+        for modified in [
+            Some(serde_json::json!({"seconds":-1_i64,"nanos":500_000_000_u32})),
+            Some(serde_json::json!({"seconds":1_700_000_000_i64,"nanos":123_456_789_u32})),
+            None,
+        ] {
+            let bytes: Vec<u8> = (0u8..=255).cycle().take(CHUNK + 17).collect();
+            let original =
+                maka_capabilities::call::immutable_bytes("source.bin".into(), bytes.clone());
+            let expected_digest = original.metadata()["digest"].clone();
+            let checks = Arc::new(AtomicUsize::new(0));
+            let authority = Arc::new(Authority {
+                resource: Arc::new(InputResource {
+                    resource: original,
+                    modified: modified.clone(),
+                }),
+                checks: checks.clone(),
+            });
+            let (parent_send, mut parent_messages) = mpsc::unbounded_channel();
+            let (worker_send, mut worker_messages) = mpsc::unbounded_channel();
+            let (fault, mut faults) = mpsc::unbounded_channel();
+            let parent = ParentCallbacks::new(
+                Arc::new(move |message| {
+                    parent_send
+                        .send(message)
+                        .map_err(|_| failed("fixture parent closed"))
+                }),
+                fault,
+            );
+            let worker = WorkerCallbacks::new(Arc::new(move |message| {
+                worker_send
+                    .send(message)
+                    .map_err(|_| failed("fixture worker closed"))
+            }));
+            let identity = ScopeIdentity {
+                owner: "modified-owner".into(),
+                epoch: "modified-epoch".into(),
+                session: "modified-session".into(),
+                turn: "modified-turn".into(),
+                operation_id: "modified-operation".into(),
+            };
+            let request = crate::BrowserUploadRequest {
+                document: crate::BrowserDocument {
+                    browser_id: "fixture-browser".into(),
+                    generation: "fixture-generation".into(),
+                    tab_id: "fixture-tab".into(),
+                    url: "https://fixture.test/".into(),
+                },
+                source_origin: BrowserAttachmentOrigin::Site("https://fixture.test".into()),
+                files: vec!["source.bin".into()],
+            };
+            let mut transferring =
+                worker.prepare_upload(identity.clone(), 17, request, CancellationToken::new());
+            let mut reads = 0;
+            let mut releases = 0;
+            let files = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    tokio::select! {
+                        result = &mut transferring => break result.unwrap(),
+                        message = worker_messages.recv() => {
+                            let message: WorkerMessage = serde_json::from_slice(
+                                &serde_json::to_vec(&message.unwrap()).unwrap()
+                            ).unwrap();
+                            match message {
+                                WorkerMessage::Prepare { invocation_id, request_id, key } => {
+                                    assert_eq!(key.identity, identity);
+                                    assert_eq!(invocation_id, 17);
+                                    parent.prepare(
+                                        invocation_id, request_id, key, &identity,
+                                        ParentCapabilities { authorization: Some(authority.clone()), ..Default::default() },
+                                        CancellationToken::new(),
+                                    ).await.unwrap();
+                                }
+                                message => {
+                                    if let WorkerMessage::FileRequest { request, .. } = &message {
+                                        reads += usize::from(matches!(request, Request::UploadRead { .. }));
+                                        releases += usize::from(matches!(request, Request::UploadRelease { .. }));
+                                    }
+                                    parent.handle(message).unwrap();
+                                }
+                            }
+                        }
+                        message = parent_messages.recv() => {
+                            let message: ParentMessage = serde_json::from_slice(
+                                &serde_json::to_vec(&message.unwrap()).unwrap()
+                            ).unwrap();
+                            worker.handle(message).unwrap();
+                        }
+                    }
+                }
+            }).await.unwrap();
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].name, "source.bin");
+            assert_eq!(files[0].resource.bytes(), bytes.len());
+            let mut copied = files[0].resource.read(0..CHUNK).unwrap();
+            copied.extend(files[0].resource.read(CHUNK..bytes.len()).unwrap());
+            assert_eq!(copied, bytes);
+            assert_eq!(files[0].resource.metadata()["digest"], expected_digest);
+            assert_eq!(
+                files[0].resource.metadata().get("modified"),
+                modified.as_ref()
+            );
+            assert_eq!(reads, 2);
+            assert_eq!(releases, 1);
+            assert!(checks.load(Ordering::SeqCst) >= 2);
+            assert!(faults.try_recv().is_err());
+            assert!(
+                parent
+                    .0
+                    .state
+                    .lock()
+                    .unwrap()
+                    .scopes
+                    .values()
+                    .all(|scope| { scope.files.try_lock().unwrap().inputs.is_empty() })
+            );
+        }
     }
 }

@@ -25,7 +25,7 @@ use std::{sync::Arc, time::SystemTime};
 /// One checked transaction submission: successful facts cannot omit their bytes.
 #[derive(Clone, Debug)]
 pub struct EventWrite {
-    composition: Option<Arc<crate::composition::FrozenComposition>>,
+    composition: Option<crate::composition::CompositionEvidence>,
     quote: Option<crate::pricing::Quote>,
     event: Arc<RuntimeEvent>,
     raw_payload: Option<Arc<[u8]>>,
@@ -313,18 +313,18 @@ impl EventWrite {
     }
     pub fn with_composition(
         mut self,
-        composition: Arc<crate::composition::FrozenComposition>,
+        composition: impl Into<crate::composition::CompositionEvidence>,
     ) -> Result<Self, CommitError> {
         if !matches!(self.event.fact, Fact::ModelRequested { .. }) {
             return Err(CommitError::Rejected(
                 "request composition requires a model request".into(),
             ));
         }
-        self.composition = Some(composition);
+        self.composition = Some(composition.into());
         Ok(self)
     }
-    pub fn composition(&self) -> Option<&crate::composition::FrozenComposition> {
-        self.composition.as_deref()
+    pub fn composition(&self) -> Option<&crate::composition::CompositionEvidence> {
+        self.composition.as_ref()
     }
     pub fn with_quote(mut self, quote: crate::pricing::Quote) -> Result<Self, CommitError> {
         let Fact::ModelRequested { model_id, .. } = &self.event.fact else {

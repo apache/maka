@@ -62,6 +62,7 @@ pub(super) enum AttemptOutput {
 pub(super) struct MainResponse {
     pub local_call_ids: Vec<String>,
     pub response_id: Option<String>,
+    pub approvals: futures_util::stream::FuturesUnordered<maka_tools::PendingCall>,
 }
 
 pub(super) enum Outcome {
@@ -108,7 +109,7 @@ pub(super) async fn prompt<W>(
         &inner.log,
         selection,
         input.configuration.language,
-        input.supports_vision,
+        true,
         &input.provider.kind,
         cancellation,
         inner.shared.preparation_resources.clone(),
@@ -136,6 +137,13 @@ pub(super) async fn prompt<W>(
         )
         .await
     {
+        prompt
+            .close()
+            .await
+            .map_err(crate::cleanup::preparation_failed)?;
+        return Err(error);
+    }
+    if let Err(error) = prompt.prepare_media(&input.provider, cancellation).await {
         prompt
             .close()
             .await
@@ -298,6 +306,9 @@ pub(super) async fn execute_main(
                     if tools.finished() {
                         return Ok(Outcome::FinishedByTool);
                     }
+                    if !failure.retryable() {
+                        return result.map(Outcome::from);
+                    }
                     if failures >= 9 {
                         if !lane.try_switch_fallback_transport() {
                             return result.map(Outcome::from);
@@ -309,11 +320,10 @@ pub(super) async fn execute_main(
                         // +/-10% jitter. The bounded attempt count caps this delay.
                         let base_ms = 200u64 << failures;
                         failures += 1;
-                        failure.retry_after().unwrap_or_else(|| {
-                            std::time::Duration::from_millis(fastrand::u64(
-                                base_ms * 9 / 10..=base_ms * 11 / 10,
-                            ))
-                        })
+                        let backoff = std::time::Duration::from_millis(fastrand::u64(
+                            base_ms * 9 / 10..=base_ms * 11 / 10,
+                        ));
+                        retry_delay(failure, backoff, maka_model::ProviderFailure::now_unix_ms())
                     }
                 }
                 _ => return result.map(Outcome::from),
@@ -345,7 +355,7 @@ pub(super) async fn execute_main(
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(RunError::Cancelled),
-                _ = tokio::time::sleep(delay) => {}
+                _ = wait_retry(delay) => {}
             }
         }
     }
@@ -359,6 +369,22 @@ pub(super) async fn execute_main(
         }
     };
     (high_water, result)
+}
+
+async fn wait_retry(delay: std::time::Duration) {
+    match tokio::time::Instant::now().checked_add(delay) {
+        Some(at) => tokio::time::sleep_until(at).await,
+        // An unrepresentable deadline cannot authorize an earlier replay.
+        None => std::future::pending::<()>().await,
+    }
+}
+
+fn retry_delay(
+    failure: &maka_model::ProviderFailure,
+    backoff: std::time::Duration,
+    now_unix_ms: u64,
+) -> std::time::Duration {
+    backoff.max(failure.retry_delay_at(now_unix_ms).unwrap_or_default())
 }
 
 async fn close_retry(retry: &mut Option<PreparedPrompt>) -> Result<(), RunError> {
@@ -404,6 +430,16 @@ pub(super) async fn execute_once(
             cancellation,
         )
         .await?;
+    prompt
+        .fit_image_request(
+            input.configuration.language,
+            &input.provider,
+            &input.provider_options,
+            &definitions,
+            surface.max_output_tokens,
+            cancellation,
+        )
+        .await?;
     if purpose == ModelPurpose::Main && retry.is_some() {
         *retry = Some(prompt.clone());
     }
@@ -415,38 +451,43 @@ pub(super) async fn execute_once(
         purpose,
     )?;
     let binding = surface.adapter.clone();
-    let composition = surface.evidence.clone();
     let item_acceptance = purpose == ModelPurpose::Main && binding.supports_item_acceptance();
     let step_id = Uuid::new_v4().to_string();
-    let event = maka_agent_facts::event::RuntimeEvent::new(
-        input.invocation.clone(),
-        Fact::ModelRequested {
-            item_acceptance,
-            effective_source_digest: Some(source.effective_digest.clone()),
-            purpose,
-            context: input.context.clone(),
-            context_breakdown: Some(prepared.context_breakdown),
-            step_id: step_id.clone(),
-            model_id: input.provider.model.clone(),
-            source_scope: source.evidence.scope.clone(),
-            source_high_water: source.evidence.high_water,
-            source_digest: source.evidence.digest.clone(),
-            input_digest: prepared.input_digest,
-            route_identity: prepared.route_identity,
-            checkpoint_event_id: source.checkpoint.clone(),
-        },
-    );
-    let mut write =
-        maka_agent_facts::event::EventWrite::plain(event)?.with_composition(composition)?;
-    if let Some(pricing) = &inner.shared.pricing {
-        write = write.with_quote(
-            pricing
-                .quote(&input.provider_id, &input.provider.model)
-                .await?,
-        )?;
-    }
-    use maka_agent_facts::event::EventSink;
-    let sequence = inner.log.clone().commit(write).await?;
+    let sequence = {
+        let composition = surface.evidence();
+        let event = maka_agent_facts::event::RuntimeEvent::new(
+            input.invocation.clone(),
+            Fact::ModelRequested {
+                item_acceptance,
+                effective_source_digest: Some(source.effective_digest.clone()),
+                purpose,
+                context: input.context.clone(),
+                context_breakdown: Some(prepared.context_breakdown),
+                step_id: step_id.clone(),
+                model_id: input.provider.model.clone(),
+                source_scope: source.evidence.scope.clone(),
+                source_high_water: source.evidence.high_water,
+                source_digest: source.evidence.digest.clone(),
+                input_digest: prepared.input_digest,
+                route_identity: prepared.route_identity,
+                checkpoint_event_id: source.checkpoint.clone(),
+            },
+        );
+        let event_id = event.id.clone();
+        let mut write =
+            maka_agent_facts::event::EventWrite::plain(event)?.with_composition(composition)?;
+        if let Some(pricing) = &inner.shared.pricing {
+            write = write.with_quote(
+                pricing
+                    .quote(&input.provider_id, &input.provider.model)
+                    .await?,
+            )?;
+        }
+        use maka_agent_facts::event::EventSink;
+        let sequence = inner.log.clone().commit(write).await?;
+        surface.committed(event_id);
+        sequence
+    };
     let mut writer = AttemptWriter::new(
         AttemptBinding {
             invocation: input.invocation.clone(),
@@ -639,6 +680,7 @@ where
     use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
     let tool_cancellation = cancellation.child_token();
     let mut running = FuturesUnordered::new();
+    let mut approvals = FuturesUnordered::new();
     let mut preparing = FuturesUnordered::new();
     let mut retired_prompt = None;
     let binding = finalizer.snapshot().binding.clone();
@@ -647,10 +689,14 @@ where
             tokio::select! {
                 biased;
                 result = running.next(), if !running.is_empty() => { tool_result(result.unwrap())?; }
+                execution = approvals.next(), if !approvals.is_empty() => {
+                    running.push(catch_tool(execution.expect("nonempty approval set")).boxed());
+                }
                 prepared = preparing.next(), if !preparing.is_empty() => {
                     let prepared: maka_tools::PreparedCall<'_> = prepared.expect("nonempty preparation set")?;
-                    let published = catch_tool(prepared.publish(&[])).await?;
-                    running.push(catch_tool(published.completion).boxed());
+                    let (published, execution) = publish_while_executing(prepared, &[], &mut running, &mut preparing, &mut approvals, &tool_cancellation).await?;
+                    install_call(published, &mut running, &mut approvals);
+                    execution?;
                 }
                 event = stream.next() => {
                     let Some(event) = event else { break; };
@@ -687,19 +733,25 @@ where
                     };
                     if let Some(prepared) = prepared {
                         let prepared = prepared?;
-                        let published = catch_tool(prepared.publish(&writes)).await?;
+                        let (published, execution) = publish_while_executing(prepared, &writes, &mut running, &mut preparing, &mut approvals, &tool_cancellation).await?;
                         record_prefix(&mut writer, &writes, &published.prefix_sequences);
                         if !writes.is_empty() {
                             finalizer.receipt_prefix(&writes, writer.snapshot());
                         }
                         inner.attempts.publish(finalizer, writer.snapshot());
                         // The receipt authorizes completion even when the ready model tail failed.
-                        running.push(catch_tool(published.completion).boxed());
+                        install_call(published, &mut running, &mut approvals);
+                        execution?;
                     } else if !writes.is_empty() {
-                        let sequences = inner.log.append_batch(&writes).await?;
+                        let (sequences, execution) = wait_while_executing(inner.log.append_batch(&writes), &mut running, &mut preparing, &mut approvals, &tool_cancellation).await;
+                        let sequences = match sequences {
+                            Ok(sequences) => sequences,
+                            Err(error) => return merge_execution(Err(error.into()), execution),
+                        };
                         record_prefix(&mut writer, &writes, &sequences);
                         finalizer.receipt_prefix(&writes, writer.snapshot());
                         inner.attempts.publish(finalizer, writer.snapshot());
+                        execution?;
                     }
                     drop(observations.reservations);
                     let accepted_item = observations.events.iter().any(|event| matches!(event, ModelObservation::Part(_)));
@@ -717,11 +769,20 @@ where
         }
         Ok(())
     }.await;
-    let stream_cleanup = stream.cancel_and_wait().await;
-    if matches!(result, Err(ref error) if !matches!(error, RunError::Model(_)) || error.is_cleanup_unconfirmed())
+    let mut result = result;
+    if matches!(&result, Err(error) if !matches!(error, RunError::Model(_)) || error.is_cleanup_unconfirmed())
     {
         tool_cancellation.cancel();
     }
+    let (stream_cleanup, execution) = wait_while_executing(
+        stream.cancel_and_wait(),
+        &mut running,
+        &mut preparing,
+        &mut approvals,
+        &tool_cancellation,
+    )
+    .await;
+    result = merge_execution(result, execution);
     if finalizer.prefix().is_some()
         || matches!(&result, Err(error) if !matches!(error, RunError::Model(_)) || error.is_cleanup_unconfirmed())
     {
@@ -743,7 +804,15 @@ where
     } else {
         result
     };
-    let confirmation = match confirm_prefix(finalizer, confirm).await {
+    let (confirmed, execution) = wait_while_executing(
+        confirm_prefix(finalizer, confirm),
+        &mut running,
+        &mut preparing,
+        &mut approvals,
+        &tool_cancellation,
+    )
+    .await;
+    let confirmation = match confirmed {
         Ok(Some(cut)) => {
             inner.attempts.publish(finalizer, cut);
             Ok(())
@@ -756,18 +825,35 @@ where
             .into(),
         ),
     };
+    if execution.is_err() {
+        preparing.clear();
+    }
+    let result = merge_execution(result, execution);
     let mut result = match confirmation {
         Ok(()) => {
-            finish(
-                inner,
-                writer,
-                finalizer,
-                result,
-                cancellation,
-                completion_tools,
-                retry,
+            let (mut finished, execution) = wait_while_executing(
+                finish(
+                    inner,
+                    writer,
+                    finalizer,
+                    result,
+                    cancellation,
+                    completion_tools,
+                    retry,
+                ),
+                &mut running,
+                &mut preparing,
+                &mut approvals,
+                &tool_cancellation,
             )
-            .await
+            .await;
+            if let Ok(AttemptOutput::Main(response)) = &mut finished {
+                approvals.extend(std::mem::take(&mut response.approvals));
+            }
+            if execution.is_err() {
+                preparing.clear();
+            }
+            merge_execution(finished, execution)
         }
         Err(error) => {
             drop(writer);
@@ -779,24 +865,50 @@ where
     };
     if finalizer.terminal_confirmed() {
         inner.attempts.remove(&binding.step_id);
-        if let Err(error) = close_retry(&mut retired_prompt).await {
+        let (closed, execution) = wait_while_executing(
+            close_retry(&mut retired_prompt),
+            &mut running,
+            &mut preparing,
+            &mut approvals,
+            &tool_cancellation,
+        )
+        .await;
+        if execution.is_err() {
+            preparing.clear();
+        }
+        if let Err(error) = merge_execution(closed, execution) {
             result = additional_failure(result, error);
         }
     }
     let mut cleanup = Ok(());
-    while !preparing.is_empty() || !running.is_empty() {
+    if matches!(&result, Err(error) if !matches!(error, RunError::Model(_)) || error.is_cleanup_unconfirmed())
+    {
+        tool_cancellation.cancel();
+    }
+    while !preparing.is_empty() || !running.is_empty() || (result.is_err() && !approvals.is_empty())
+    {
         tokio::select! {
+            execution = approvals.next(), if !approvals.is_empty() => {
+                running.push(catch_tool(execution.expect("nonempty approval set")).boxed());
+            }
             prepared = preparing.next(), if !preparing.is_empty() => {
                 let published = match prepared.expect("nonempty preparation set") {
-                    Ok(prepared) => catch_tool(prepared.publish(&[])).await,
-                    Err(error) => Err(error),
+                    Ok(prepared) => publish_while_executing(prepared, &[], &mut running, &mut preparing, &mut approvals, &tool_cancellation).await,
+                    Err(error) => Err(error.into()),
                 };
                 match published {
-                    Ok(published) => running.push(catch_tool(published.completion).boxed()),
+                    Ok((published, execution)) => {
+                        install_call(published, &mut running, &mut approvals);
+                        if let Err(error) = execution {
+                            tool_cancellation.cancel();
+                            preparing.clear();
+                            cleanup = additional_failure(cleanup, error);
+                        }
+                    },
                     Err(error) => {
                         tool_cancellation.cancel();
                         preparing.clear();
-                        if cleanup.is_ok() { cleanup = Err(error.into()); }
+                        if cleanup.is_ok() { cleanup = Err(error); }
                     }
                 }
             }
@@ -809,16 +921,146 @@ where
             }
         }
     }
-    if let Err(error) = close_retry(&mut retired_prompt).await {
+    let (closed, execution) = wait_while_executing(
+        close_retry(&mut retired_prompt),
+        &mut running,
+        &mut preparing,
+        &mut approvals,
+        &tool_cancellation,
+    )
+    .await;
+    if execution.is_err() {
+        preparing.clear();
+    }
+    if let Err(error) = merge_execution(closed, execution) {
         result = additional_failure(result, error);
     }
     if let Err(error) = cleanup {
         result = additional_failure(result, error);
     }
+    if matches!(&result, Err(error) if !matches!(error, RunError::Model(_)) || error.is_cleanup_unconfirmed())
+    {
+        tool_cancellation.cancel();
+    }
+    while !running.is_empty() || (result.is_err() && !approvals.is_empty()) {
+        tokio::select! {
+            ready = approvals.next(), if !approvals.is_empty() => {
+                running.push(catch_tool(ready.expect("nonempty approval set")).boxed());
+            }
+            settled = running.next(), if !running.is_empty() => {
+                if let Err(error) = tool_result(settled.expect("nonempty completion set")) {
+                    tool_cancellation.cancel();
+                    result = additional_failure(result, error);
+                }
+            }
+        }
+    }
+    if let Ok(AttemptOutput::Main(response)) = &mut result {
+        response.approvals.extend(approvals);
+    }
     result
 }
 
-async fn catch_tool<T>(
+type RunningCalls<'a> = futures_util::stream::FuturesUnordered<
+    futures_util::future::BoxFuture<
+        'a,
+        Result<serde_json::Value, maka_agent_facts::tools::ToolError>,
+    >,
+>;
+type PreparingCalls<'a> = futures_util::stream::FuturesUnordered<
+    futures_util::future::BoxFuture<
+        'a,
+        Result<maka_tools::PreparedCall<'a>, maka_agent_facts::tools::ToolError>,
+    >,
+>;
+
+async fn wait_while_executing<'a, F: std::future::Future>(
+    future: F,
+    running: &mut RunningCalls<'a>,
+    preparing: &mut PreparingCalls<'a>,
+    approvals: &mut futures_util::stream::FuturesUnordered<maka_tools::PendingCall>,
+    cancellation: &CancellationToken,
+) -> (F::Output, Result<(), RunError>) {
+    use futures_util::{FutureExt, StreamExt};
+    // A suspended sibling can already own a granted fair permit. Keep its
+    // original future polled without abandoning the operation being awaited.
+    tokio::pin!(future);
+    let mut execution = Ok(());
+    let mut ready = Vec::new();
+    loop {
+        tokio::select! {
+            output = &mut future => {
+                // Preparation may finish, but only the writer publishes it
+                // after the original operation and its receipt have settled.
+                preparing.extend(ready.into_iter().map(|prepared| futures_util::future::ready(prepared).boxed()));
+                return (output, execution);
+            },
+            prepared = preparing.next(), if !preparing.is_empty() => {
+                ready.push(prepared.expect("nonempty preparation set"));
+            }
+            ready = approvals.next(), if !approvals.is_empty() => {
+                running.push(catch_tool(ready.expect("nonempty approval set")).boxed());
+            }
+            result = running.next(), if !running.is_empty() => {
+                if let Err(error) = tool_result(result.expect("nonempty completion set")) {
+                    cancellation.cancel();
+                    execution = additional_failure(execution, error);
+                }
+            }
+        }
+    }
+}
+
+fn merge_execution<T>(
+    result: Result<T, RunError>,
+    execution: Result<(), RunError>,
+) -> Result<T, RunError> {
+    match execution {
+        Ok(()) => result,
+        Err(error) => additional_failure(result, error),
+    }
+}
+
+async fn publish_while_executing<'a>(
+    prepared: maka_tools::PreparedCall<'a>,
+    prefix: &[maka_agent_facts::event::EventWrite],
+    running: &mut RunningCalls<'a>,
+    preparing: &mut PreparingCalls<'a>,
+    approvals: &mut futures_util::stream::FuturesUnordered<maka_tools::PendingCall>,
+    cancellation: &CancellationToken,
+) -> Result<(maka_tools::PublishedCall, Result<(), RunError>), RunError> {
+    let (published, execution) = wait_while_executing(
+        catch_tool(prepared.publish(prefix)),
+        running,
+        preparing,
+        approvals,
+        cancellation,
+    )
+    .await;
+    match published {
+        Ok(published) => Ok((published, execution)),
+        Err(error) => match execution {
+            Ok(()) => Err(error.into()),
+            Err(original) => additional_failure(Err(original), error.into()),
+        },
+    }
+}
+
+fn install_call<'a>(
+    published: maka_tools::PublishedCall,
+    running: &mut RunningCalls<'a>,
+    approvals: &mut futures_util::stream::FuturesUnordered<maka_tools::PendingCall>,
+) {
+    use futures_util::FutureExt;
+    match published.completion {
+        maka_tools::CallContinuation::Executing(execution) => {
+            running.push(catch_tool(execution).boxed())
+        }
+        maka_tools::CallContinuation::Approval(approval) => approvals.push(approval),
+    }
+}
+
+pub(super) async fn catch_tool<T>(
     future: impl std::future::Future<Output = Result<T, maka_agent_facts::tools::ToolError>>,
 ) -> Result<T, maka_agent_facts::tools::ToolError> {
     use futures_util::FutureExt;
@@ -910,7 +1152,7 @@ fn ready_observations(
     observations
 }
 
-fn tool_result(
+pub(super) fn tool_result(
     result: Result<serde_json::Value, maka_agent_facts::tools::ToolError>,
 ) -> Result<(), RunError> {
     use maka_agent_facts::tools::ToolError;
@@ -918,6 +1160,7 @@ fn tool_result(
         Ok(_)
         | Err(
             ToolError::Failed(_)
+            | ToolError::Native(_)
             | ToolError::Io { .. }
             | ToolError::OutcomeUnknown(_)
             | ToolError::OperationUnknown { .. },
@@ -1056,9 +1299,10 @@ async fn finish(
             summary: Ok(summary),
         });
     }
-    let response = MainResponse {
+    let mut response = MainResponse {
         local_call_ids: output.local_call_ids(),
         response_id: output.response_id.clone(),
+        approvals: futures_util::stream::FuturesUnordered::new(),
     };
     if let Some(tools) = completion_tools {
         use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
@@ -1066,6 +1310,7 @@ async fn finish(
         let tool_cancellation = cancellation.child_token();
         let mut preparing = FuturesUnordered::new();
         let mut running = FuturesUnordered::new();
+        let mut approvals = FuturesUnordered::new();
         // Admit every call in arrival order before polling any preparation.
         for record in output.parts() {
             if let ModelPart::ToolCall { call } = record.part.as_ref()
@@ -1083,9 +1328,18 @@ async fn finish(
             let prepared = preparing.next().now_or_never().flatten();
             let sequence = match prepared {
                 Some(Ok(prepared)) => {
-                    let published = catch_tool(prepared.publish(&writes)).await?;
+                    let (published, execution) = publish_while_executing(
+                        prepared,
+                        &writes,
+                        &mut running,
+                        &mut preparing,
+                        &mut approvals,
+                        &tool_cancellation,
+                    )
+                    .await?;
                     let sequence = published.prefix_sequences[0];
-                    running.push(catch_tool(published.completion).boxed());
+                    install_call(published, &mut running, &mut approvals);
+                    cleanup = merge_execution(cleanup, execution);
                     sequence
                 }
                 Some(Err(error)) => {
@@ -1105,24 +1359,45 @@ async fn finish(
         }
         drop(writes);
         drop(completion);
-        if let Err(error) = close_retry(retry).await {
+        let (closed, execution) = wait_while_executing(
+            close_retry(retry),
+            &mut running,
+            &mut preparing,
+            &mut approvals,
+            &tool_cancellation,
+        )
+        .await;
+        if let Err(error) = merge_execution(closed, execution) {
             tool_cancellation.cancel();
             preparing.clear();
             cleanup = additional_failure(cleanup, error);
         }
-        while !preparing.is_empty() || !running.is_empty() {
+        while !preparing.is_empty()
+            || !running.is_empty()
+            || (cleanup.is_err() && !approvals.is_empty())
+        {
             tokio::select! {
+                execution = approvals.next(), if !approvals.is_empty() => {
+                    running.push(catch_tool(execution.expect("nonempty approval set")).boxed());
+                }
                 prepared = preparing.next(), if !preparing.is_empty() => {
                     let published = match prepared.expect("nonempty preparation set") {
-                        Ok(prepared) => catch_tool(prepared.publish(&[])).await,
-                        Err(error) => Err(error),
+                        Ok(prepared) => publish_while_executing(prepared, &[], &mut running, &mut preparing, &mut approvals, &tool_cancellation).await,
+                        Err(error) => Err(error.into()),
                     };
                     match published {
-                        Ok(published) => running.push(catch_tool(published.completion).boxed()),
+                        Ok((published, execution)) => {
+                            install_call(published, &mut running, &mut approvals);
+                            if let Err(error) = execution {
+                                tool_cancellation.cancel();
+                                preparing.clear();
+                                cleanup = additional_failure(cleanup, error);
+                            }
+                        },
                         Err(error) => {
                             tool_cancellation.cancel();
                             preparing.clear();
-                            if cleanup.is_ok() { cleanup = Err(error.into()); }
+                            if cleanup.is_ok() { cleanup = Err(error); }
                         }
                     }
                 }
@@ -1136,6 +1411,7 @@ async fn finish(
             }
         }
         cleanup?;
+        response.approvals = approvals;
     } else {
         drop(output);
         drop(writes);
@@ -1155,7 +1431,9 @@ fn interruption(
         }
         RunError::Model(ModelError::TimedOut) => ModelInterruption::TimedOut,
         RunError::Model(ModelError::Provider(failure))
-            if failure.replay_safe() || (item_acceptance && failure.retained_output_safe()) =>
+            if failure.retryable()
+                && (failure.replay_safe()
+                    || (item_acceptance && failure.retained_output_safe())) =>
         {
             ModelInterruption::RetryableFailure
         }
@@ -1488,3 +1766,36 @@ mod tests {
 
 #[cfg(test)]
 mod publication_tests;
+
+#[cfg(test)]
+mod retry_timing_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn provider_deadline_is_a_lower_bound_and_never_reduces_backoff() {
+        let failure = maka_model::ProviderFailure::new(
+            maka_model::ProviderFailureReason::RateLimit,
+            "temporary throttle",
+            true,
+            Some(18_001_000),
+        );
+        let delay = retry_delay(&failure, Duration::from_millis(200), 1000);
+        assert_eq!(delay, Duration::from_secs(18_000));
+        let sleep = wait_retry(delay);
+        tokio::pin!(sleep);
+        assert!(futures_util::poll!(&mut sleep).is_pending());
+        tokio::time::advance(Duration::from_secs(17_999)).await;
+        assert!(futures_util::poll!(&mut sleep).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        sleep.await;
+        assert_eq!(
+            retry_delay(&failure, Duration::from_millis(200), 18_000_999),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            retry_delay(&failure, Duration::from_millis(200), 18_001_001),
+            Duration::from_millis(200)
+        );
+    }
+}

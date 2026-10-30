@@ -41,7 +41,7 @@ async fn stored_draft(client: &Client, session: &str, expected: impl Fn(&Draft) 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn attachments_survive_restart_and_send_original_images_without_message_text() {
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::images().await;
+        let mut fixture = Fixture::configured(support::Options { images: true, ..Default::default() }).await;
         let client = fixture.client().await;
         let encoded = ORIGINAL_PNG;
         let bytes = STANDARD.decode(encoded).unwrap();
@@ -210,7 +210,11 @@ async fn attachments_survive_restart_and_send_original_images_without_message_te
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires the controlled ORIGINAL_PNG fixture on the system clipboard"]
 async fn native_clipboard_paste_sends_the_original_image() {
-    let mut fixture = Fixture::images().await;
+    let mut fixture = Fixture::configured(support::Options {
+        images: true,
+        ..Default::default()
+    })
+    .await;
     let client = fixture.client().await;
     let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
     support::click_button(&mut view, "Choose model and effort").await;

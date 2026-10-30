@@ -48,7 +48,11 @@ CREATE TABLE session_control (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     archived INTEGER NOT NULL CHECK(archived IN (0, 1)),
-    configuration TEXT NOT NULL
+    configuration TEXT NOT NULL,
+    catalog_unpinned INTEGER
+    GENERATED ALWAYS AS (
+        CASE WHEN json_extract(configuration, '$.pinned') = 1 THEN 0 ELSE 1 END
+    ) VIRTUAL
 );
 
 CREATE TABLE session_catalog_revision (
@@ -143,9 +147,9 @@ CREATE TABLE message_interrupt_receipts (
     PRIMARY KEY(host_epoch, session_id, interrupt_id)
 );
 
-CREATE TABLE "tool_result_payloads" (
+CREATE TABLE tool_result_payloads (
     event_id TEXT PRIMARY KEY NOT NULL REFERENCES event_log(event_id),
-    payload BLOB NOT NULL CHECK(length(payload) <= 67108864)
+    payload BLOB NOT NULL
 );
 
 CREATE TABLE session_history_copies (
@@ -218,7 +222,7 @@ CREATE TABLE plugin_data (
 
 CREATE TABLE request_compositions (
     digest TEXT PRIMARY KEY NOT NULL,
-    surface BLOB NOT NULL CHECK(length(surface) <= 4194304)
+    surface BLOB NOT NULL
 );
 
 CREATE TABLE model_request_compositions (
@@ -589,30 +593,6 @@ CREATE TABLE context_semantic_cuts (
     cut_index INTEGER NOT NULL,
     PRIMARY KEY(owner_session_id,invocation_id,revision)
 ) WITHOUT ROWID;
-
-CREATE TABLE context_semantic_checkpoints (
-    session_id TEXT NOT NULL,
-    sequence INTEGER NOT NULL,
-    event_id TEXT NOT NULL,
-    invocation_id TEXT NOT NULL,
-    checkpoint_json TEXT NOT NULL,
-    PRIMARY KEY(session_id,sequence)
-) WITHOUT ROWID;
-
-CREATE TABLE context_semantic_changes (
-    change_id INTEGER PRIMARY KEY,
-    owner_session_id TEXT NOT NULL,
-    revision INTEGER NOT NULL,
-    source_sequence INTEGER NOT NULL,
-    source_index INTEGER NOT NULL,
-    order_sequence INTEGER NOT NULL,
-    order_index INTEGER NOT NULL,
-    invocation_id TEXT NOT NULL,
-    revision_invocation TEXT NOT NULL,
-    archived INTEGER NOT NULL,
-    inherited INTEGER NOT NULL,
-    deleted INTEGER NOT NULL
-);
 
 CREATE TABLE context_obligations (
     session_id TEXT NOT NULL,
@@ -997,8 +977,6 @@ CREATE INDEX context_semantic_notifications ON context_semantic_rows(owner_sessi
 
 CREATE INDEX context_semantic_cut_revision ON context_semantic_cuts(owner_session_id,revision);
 
-CREATE INDEX context_semantic_change_revision ON context_semantic_changes(owner_session_id,revision,change_id);
-
 CREATE INDEX context_obligations_session ON context_obligations(session_id, kind, invocation_id);
 
 CREATE INDEX context_obligations_openings ON context_obligations(opened_at) WHERE kind='invocation';
@@ -1284,6 +1262,15 @@ INSERT INTO plugin_composition VALUES(1,'{"generation":0,"packageLayers":[],"ove
 
 PRAGMA user_version = 1;
 
+CREATE INDEX session_history_artifacts_locator
+    ON session_history_artifacts(session_id, source_artifact_id, artifact_id);
+
+CREATE UNIQUE INDEX native_turn_interruption_lookup ON event_log(
+    json_extract(event_json,'$.opening.session_id'),
+    json_extract(event_json,'$.opening.turn_id')
+) WHERE kind='native_turn_interrupted';
 CREATE INDEX artifacts_lookup_digest ON artifacts(lookup_digest);
 CREATE INDEX history_artifacts_lookup_digest ON session_history_artifacts(lookup_digest);
 CREATE INDEX history_artifacts_target_digest ON session_history_artifacts(target_digest);
+
+CREATE INDEX session_catalog_pin_order ON session_control(catalog_unpinned, id);

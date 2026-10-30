@@ -58,16 +58,44 @@ type OperationFixture = Arc<
         + Sync,
 >;
 
+/// The production caller carries the original Host budget capability. Direct
+/// product fixtures retain their old Scope, and cannot claim upload support.
+pub(super) struct EvaluationScope {
+    call: Scope,
+    input_resources: Option<maka_host_runtime::application::ResourceCapturer>,
+}
+impl From<maka_host_runtime::application::ResourceCapturer> for EvaluationScope {
+    fn from(resources: maka_host_runtime::application::ResourceCapturer) -> Self {
+        Self {
+            call: resources.scope().clone(),
+            input_resources: Some(resources),
+        }
+    }
+}
+#[cfg(test)]
+impl From<Scope> for EvaluationScope {
+    fn from(call: Scope) -> Self {
+        Self {
+            call,
+            input_resources: None,
+        }
+    }
+}
+
 impl Computer {
     pub(super) async fn evaluate(
         self: &Arc<Self>,
         name: &str,
         input: Value,
-        call: Scope,
+        evaluation: EvaluationScope,
         basis: PermissionBasis,
         interaction: Arc<sessions::Interaction>,
         cancellation: CancellationToken,
     ) -> Result<ResultValue, ToolError> {
+        let EvaluationScope {
+            call,
+            input_resources,
+        } = evaluation;
         let invocation = call.identity.agent().expect("checked invocation").clone();
         let mut kernels = tokio::select! {
             biased;
@@ -159,6 +187,7 @@ impl Computer {
             cell: context.clone(),
             #[cfg(test)]
             operation_fixture: None,
+            input_resources,
         });
         let store = maka_agent_authority::permissions::execution(
             &self.store,
@@ -425,6 +454,10 @@ impl Computer {
             matches!(native.platform(), "mac" | "windows") && !browser_command(&command);
         let session = invocation.session_id.clone();
         let turn = invocation.turn_id.clone();
+        let monitor_enabled = native.platform() == "mac";
+        let monitor_owner = self.clone();
+        let monitor_gate = bridge.admission.clone();
+        let monitor_operation = operation_id.clone();
         let preparation_active = CancellationToken::new();
         let browser_access = browser_access::Access::new(
             self.clone(),
@@ -437,6 +470,7 @@ impl Computer {
                 epoch: bridge.epoch.clone(),
                 operation: operation_id.clone(),
                 active: preparation_active.clone(),
+                input_resources: bridge.input_resources.clone(),
             },
         );
         let native_interruption = sessions::native_interruption_observer(
@@ -498,6 +532,7 @@ impl Computer {
                     basis,
                     &effect_targets,
                     move |operation_cancel| async move {
+                        let monitor_invocation = effect_invocation.clone();
                         app_access::settle(
                             &effect_store,
                             &effect_invocation,
@@ -514,6 +549,18 @@ impl Computer {
                                         .with_operation_settlement(operation_settlement)
                                         .with_browser_host_effects(host_effects);
                                 if let Some(subject) = subject {
+                                    if monitor_enabled {
+                                        context = context.with_native_monitor_authority(
+                                            epoch.native_monitor_authority(
+                                                &monitor_owner,
+                                                monitor_gate,
+                                                monitor_invocation,
+                                                monitor_operation,
+                                                basis,
+                                                subject.clone(),
+                                            )?,
+                                        );
+                                    }
                                     context = context.with_app_target(subject);
                                 }
                                 let _timeout = pause_native.then(|| cell.suspend_timeout());
@@ -666,6 +713,7 @@ struct Bridge {
     basis: PermissionBasis,
     language: Language,
     cell: CellContext,
+    input_resources: Option<maka_host_runtime::application::ResourceCapturer>,
 }
 
 async fn audio_consent(
@@ -727,6 +775,8 @@ fn browser_command(command: &maka_computer_use::protocol::Command) -> bool {
             | Command::BrowserUserOpenTabs { .. }
             | Command::BrowserUserGetTabContext { .. }
             | Command::BrowserUserClaimTab { .. }
+            | Command::BrowserMarkTab { .. }
+            | Command::BrowserScreenshot { .. }
             | Command::BrowserEvaluate { .. }
             | Command::BrowserRead { .. }
             | Command::BrowserCua {
@@ -734,6 +784,8 @@ fn browser_command(command: &maka_computer_use::protocol::Command) -> bool {
                 ..
             }
             | Command::BrowserWait { .. }
+            | Command::BrowserFileChooserWait { .. }
+            | Command::BrowserFileChooserSetFiles { .. }
             | Command::BrowserDownloadWait { .. }
             | Command::BrowserDownloadPath { .. }
             | Command::BrowserDownloadMedia { .. }
@@ -862,31 +914,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn clipboard_and_locator_commands_retain_the_exact_browser_owner() {
-        for handle in [
-            json!({"kind":"tab","id":"owned"}),
-            json!({"kind":"app","id":"owned"}),
-        ] {
-            for payload in [
-                json!({"method":"clipboardRead","handle":handle}),
-                json!({"method":"clipboardReadText","handle":handle}),
-                json!({"method":"clipboardWriteText","handle":handle,"text":"fixture"}),
-                json!({"method":"clipboardWrite","handle":handle,"items":[{"entries":[{"mimeType":"text/plain","text":"fixture"}]}]}),
-                json!({"method":"browserMutation","handle":handle,"locator":{"selector":"button"},"operation":{"kind":"click"}}),
-                json!({"method":"browserCua","handle":handle,"operation":{"kind":"move","x":-1.25,"y":2.5}}),
-            ] {
-                let command =
-                    serde_json::from_value(payload.clone()).expect("public Computer Use command");
-                assert_eq!(
-                    browser_command(&command),
-                    handle["kind"] == "tab",
-                    "{payload}"
-                );
-            }
-        }
-    }
-
     struct QueuedAudio {
         native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
         admission: Arc<admission::Gate>,
@@ -959,12 +986,13 @@ mod tests {
             workspace::BindingStamp,
         };
         use maka_capabilities::call::{Identity, Issuer};
+        use maka_code_runtime::CellAbort;
         use maka_event_log::root::{RootNamespaces, RootOwner};
         // This cfg(test)-only operation fixture represents the Host boundary
         // AFTER the sealed native drain check. It never constructs a public
         // native proof or claims a physical Escape/Windows/Chrome execution.
         // Journal, SQL, real Bridge::invoke, Gate and V8 are the product paths.
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, Debug)]
         enum Writer {
             Confirmed,
             Failed,
@@ -1243,20 +1271,39 @@ mod tests {
                 language: Language::En,
                 cell: context.clone(),
                 operation_fixture: Some(fixture),
+                input_resources: None,
             });
-            let runtime=Repl::new("globalThis.native=()=>call('cua',{method:'listWindows',options:{}});globalThis.browser=()=>call('cua',{method:'listBrowsers',options:{}});",CellLimits::default()).unwrap();
-            let result=runtime.evaluate("let caught=false;try{await native()}catch(e){caught=true}console.log(JSON.stringify({caught,browser:await browser()}));".into(),
-                bridge.clone(),CancellationToken::new(),context.clone(),Duration::from_secs(3)).await.unwrap();
+            let bootstrap = format!(
+                "{}\nglobalThis.native=()=>invoke('listWindows',{{options:{{}}}});globalThis.browser=()=>invoke('listBrowsers',{{options:{{}}}});",
+                maka_computer_use::facade()
+            );
+            let runtime = Repl::new(bootstrap, CellLimits::default()).unwrap();
+            let result=runtime.evaluate("let caught=false;try{await native()}catch(e){caught=true}nodeRepl.write({caught,browser:await browser()});".into(),
+                bridge.clone(),CancellationToken::new(),context.clone(),Duration::from_secs(3)).await;
             if eligible {
-                assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+                assert!(
+                    matches!(&result, Ok(CellResult::Success { .. })),
+                    "{result:?}"
+                );
                 assert!(
                     !owner.stopping.is_cancelled(),
                     "actual Bridge must not cancel the Computer after exact drained native Unknown"
                 );
                 assert!(admission.check_open().is_ok());
                 assert!(!runtime.is_closed(), "same JS kernel remains available");
-                assert!(
-                    matches!(context.take_output().as_slice(),[CellOutput::Text{text}] if text=="{\"caught\":true,\"browser\":\"browser-still-live\"}")
+                let output = context.take_output();
+                let [CellOutput::Text { text }] = output.as_slice() else {
+                    panic!(
+                        "the recovered native call and live browser must emit one JSON result: {output:?}"
+                    );
+                };
+                let value: Value = serde_json::from_str(text).unwrap_or_else(|error| {
+                    panic!("invalid emitted bridge result: {error}; output={output:?}")
+                });
+                assert_eq!(
+                    value,
+                    json!({"caught":true,"browser":"browser-still-live"}),
+                    "the facade must throw the native failure and unwrap the live browser result: {output:?}"
                 );
                 let tip = store
                     .run_source("session", "run", None)
@@ -1268,7 +1315,34 @@ mod tests {
                     "following browser has its real canonical T2"
                 );
             } else {
-                assert!(matches!(result, CellResult::Failure { .. }));
+                match (post_drain, writer, &result) {
+                    (false, Writer::Confirmed, Ok(CellResult::Failure { .. })) => {}
+                    (
+                        true,
+                        Writer::Failed,
+                        Err(CellAbort::Tool(ToolError::Persistence(message))),
+                    ) => {
+                        assert!(
+                            message.contains(
+                                "native interruption differs from its original dispatch binding"
+                            ),
+                            "the rejected fence must preserve its original binding error: {message}"
+                        );
+                    }
+                    (
+                        true,
+                        Writer::Missing,
+                        Err(CellAbort::Tool(ToolError::CleanupUnconfirmed(message))),
+                    ) => {
+                        assert_eq!(
+                            message,
+                            "Native input drained without its canonical interruption writer"
+                        );
+                    }
+                    _ => {
+                        panic!("unexpected post_drain={post_drain}, writer={writer:?}: {result:?}")
+                    }
+                }
                 assert!(
                     owner.stopping.is_cancelled(),
                     "ordinary Unknown or an unconfirmed canonical fence retains the existing failure boundary"

@@ -398,6 +398,7 @@ async fn anthropic_blocks(history: Arc<FrozenHistory>) -> Vec<Vec<u8>> {
     use crate::prepared_prompt::PreparedPrompt;
     use maka_agent_facts::model::prompt_source::WireFormat;
     let provider = maka_model::ProviderConfig {
+        image_input: None,
         adapter: None,
         capabilities: Default::default(),
         network: Default::default(),

@@ -410,7 +410,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             style={{ height: viewportHeight(), alignItems: 'center', justifyContent: 'center' }}
           >
             <If when={!browser.loading() && !browser.error() && !browser.projectError()}>
-              <Text style={{ color: C.muted }}>{tr('No conversations yet.')}</Text>
+              <Text style={{ color: C.muted }}>
+                {browser.filter() === 'archived'
+                  ? tr('No archived conversations.')
+                  : tr('No conversations yet.')}
+              </Text>
             </If>
           </View>
         )}

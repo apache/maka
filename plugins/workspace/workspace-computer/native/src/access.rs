@@ -257,6 +257,7 @@ pub(super) async fn approve_target(
         target.capability,
         maka_agent_facts::interaction::GrantCapability::Browser
             | maka_agent_facts::interaction::GrantCapability::BrowserDownload
+            | maka_agent_facts::interaction::GrantCapability::BrowserUpload
     );
     if browser {
         match browser_decision(owner, call, configuration.permission_basis(), &target).await? {
@@ -380,6 +381,7 @@ fn capability_name(target: &maka_agent_facts::interaction::GrantTarget) -> &'sta
         maka_agent_facts::interaction::GrantCapability::ComputerAudio => "Computer audio recording",
         maka_agent_facts::interaction::GrantCapability::Browser => "Browser site",
         maka_agent_facts::interaction::GrantCapability::BrowserDownload => "Browser file download",
+        maka_agent_facts::interaction::GrantCapability::BrowserUpload => "Browser file upload",
         maka_agent_facts::interaction::GrantCapability::BrowserHistory => "Browser history",
         _ => "Computer Use",
     }

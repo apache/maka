@@ -56,7 +56,7 @@ async fn settle(engine: &Engine, root: &maka_event_log::root_store::RootStore, s
             CancellationToken::new(),
             move |_, admitted, _| async move {
                 admitted.send(()).unwrap();
-                Ok(invocation)
+                Ok(ActivationExit::Terminal(invocation))
             },
         )
         .await
@@ -255,7 +255,7 @@ async fn selected_stores_keep_one_active_admission_after_observer_drop() {
             move |_, admitted, _| async move {
                 admitted.send(()).unwrap();
                 wait.await.unwrap();
-                Ok(invocation("a", "first"))
+                Ok(ActivationExit::Terminal(invocation("a", "first")))
             },
         )
         .await
@@ -297,7 +297,7 @@ async fn selected_stores_keep_one_active_admission_after_observer_drop() {
             CancellationToken::new(),
             |_, admitted, _| async move {
                 admitted.send(()).unwrap();
-                Ok(invocation("b", "parallel"))
+                Ok(ActivationExit::Terminal(invocation("b", "parallel")))
             },
         )
         .await
@@ -305,7 +305,10 @@ async fn selected_stores_keep_one_active_admission_after_observer_drop() {
         .completion()
         .await;
     assert!(other.cleanup.is_ok());
-    assert_eq!(other.result.unwrap().session_id, "b");
+    let ActivationExit::Terminal(completed) = other.result.unwrap() else {
+        panic!("the independent worker must complete its invocation");
+    };
+    assert_eq!(completed.session_id, "b");
     assert!(engine.0.active.lock().unwrap().contains("a"));
     release.send(()).unwrap();
     engine.drain().await;
@@ -417,7 +420,7 @@ async fn worker_completion_retains_admission_until_invocation_effect_settles() {
                             .send(effect)
                             .unwrap_or_else(|_| panic!("effect observer disappeared"));
                         admitted.send(()).unwrap();
-                        Ok(invocation)
+                        Ok(ActivationExit::Terminal(invocation))
                     },
                 )
                 .await
@@ -463,7 +466,10 @@ async fn worker_completion_retains_admission_until_invocation_effect_settles() {
                 assert!(root.shutdown().await.is_err());
             } else {
                 assert!(completed.cleanup.is_ok());
-                assert_eq!(completed.result.unwrap().invocation_id, "run");
+                let ActivationExit::Terminal(invocation) = completed.result.unwrap() else {
+                    panic!("settling the worker effect must complete its invocation");
+                };
+                assert_eq!(invocation.invocation_id, "run");
                 root.shutdown().await.unwrap();
             }
             engine.drain().await;

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use crate::support::root;
 use maka_agent_facts::execution::SandboxMode;
 use maka_agent_facts::execution::WorkspaceIdentity;
 use maka_capabilities::authorization::Capability;
@@ -28,24 +29,13 @@ use maka_config::{
     ConfigurationStore,
     plugin_authorization::{Approval, Boundary, Principal},
 };
-use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_plugin_core::scope::Scope;
-use std::sync::Arc;
 use uuid::Uuid;
 
 #[tokio::test]
 async fn consent_retries_preserve_original_boundary_and_revocation_across_restart() {
     let temp = tempfile::tempdir().unwrap();
-    let owner = Arc::new(
-        RootOwner::create(
-            &temp.path().join("root"),
-            &RootNamespaces {
-                ownership: temp.path().join("owners"),
-                control: temp.path().join("control"),
-            },
-        )
-        .unwrap(),
-    );
+    let owner = root(temp.path());
     let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
     let namespace = Namespace::new("example.background", Scope::Profile).unwrap();
     let title = format!(

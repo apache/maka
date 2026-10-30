@@ -24,6 +24,7 @@ use serde_json::json;
 use sqlx::Connection;
 use std::sync::Arc;
 
+#[path = "fixture.rs"]
 mod fixture;
 use fixture::{Fixture, credential, namespaces};
 

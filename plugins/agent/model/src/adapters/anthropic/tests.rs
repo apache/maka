@@ -110,7 +110,7 @@ async fn source_overlay_keeps_the_original_upload_charge_until_the_last_slice() 
     });
     let part = Part::Source(Arc::new(source));
     let projection = part.projection();
-    let mut prepass = MetadataPrepass::new(opts());
+    let mut prepass = MetadataPrepass::default();
     prepass.push(0, &projection).unwrap();
     let mut replay = Replay::new(prepass.finish().context);
     replay.begin(0, &projection.message);
@@ -148,7 +148,7 @@ async fn source_overlay_keeps_the_original_upload_charge_until_the_last_slice() 
     );
     drop(held);
     assert_eq!(dropped.load(Ordering::SeqCst), 1);
-    let mut prepass = MetadataPrepass::new(opts());
+    let mut prepass = MetadataPrepass::default();
     prepass.push(0, &original).unwrap();
     let mut replay = Replay::new(prepass.finish().context);
     replay.begin(0, &original.message);
@@ -219,6 +219,7 @@ async fn source_request_bytes(messages: &[crate::prompt::Message]) -> Vec<u8> {
     use futures_util::StreamExt;
     use maka_agent_facts::model::prompt_source::source::generated::GeneratedMessages;
     let provider = ProviderConfig {
+        image_input: None,
         adapter: None,
         capabilities: Default::default(),
         network: Default::default(),
@@ -248,7 +249,7 @@ async fn source_request_bytes(messages: &[crate::prompt::Message]) -> Vec<u8> {
         identity: frozen.identity.into(),
         source: frozen.source,
     };
-    let context = metadata(&wire, opts()).await.unwrap().context;
+    let context = metadata(&wire).await.unwrap().context;
     let mut stream = body(json!({"model":"model"}), wire, context)
         .unwrap()
         .into_stream();

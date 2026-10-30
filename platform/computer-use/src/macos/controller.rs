@@ -46,6 +46,7 @@ use core_foundation::{
 };
 use cua_driver_contract::WindowBounds;
 use maka_agent_facts::tools::ToolError;
+use platform_macos::ax::snapshot::RetainedElement;
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
@@ -80,6 +81,8 @@ struct Inner {
     generation: String,
     bundle: Option<String>,
     lifecycle: Mutex<Lifecycle>,
+    focus: Mutex<HashMap<NativeEpochId, Arc<super::focus::Resource>>>,
+    focus_close: Mutex<Option<Completion<()>>>,
 }
 
 enum Lifecycle {
@@ -146,6 +149,14 @@ pub(crate) struct IndexedId(u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ResolveId(u64);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct KeyboardId(u64);
+
+enum KeyboardStep {
+    Finished,
+    NeedLayout(KeyboardId),
+}
+
 #[derive(Debug)]
 pub(crate) struct IndexedPoint {
     pub(crate) point: Option<[f64; 2]>,
@@ -165,6 +176,7 @@ pub(crate) struct TargetData {
     pub(crate) window_id: u32,
     pub(crate) bounds: WindowBounds,
     pub(crate) flipped: bool,
+    pub(crate) is_menu: bool,
 }
 
 #[derive(Debug)]
@@ -176,6 +188,21 @@ pub(crate) enum ResolveStep {
     Ready {
         token: ResolveId,
         target: TargetData,
+    },
+}
+
+#[derive(Debug)]
+pub(crate) enum ElementClickStep {
+    NeedQuery {
+        token: ResolveId,
+        query: Query,
+        mutation_started: bool,
+    },
+    Ready {
+        token: ResolveId,
+        point: Option<[f64; 2]>,
+        window_id: u32,
+        mutation_started: bool,
     },
 }
 
@@ -194,10 +221,58 @@ enum Command {
     ObserveApplication {
         slot: u64,
     },
+    ObserveProjectedApplication {
+        slot: u64,
+    },
     ApplicationAction {
         slot: u64,
         action: Action,
         cancellation: CancellationToken,
+    },
+    NativeApplicationAction {
+        slot: u64,
+        action: Action,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    },
+    CoordinateClick {
+        slot: u64,
+        token: ResolveId,
+        input: super::mouse::CoordinateInput,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    },
+    BeginElementClick {
+        slot: u64,
+        input: super::page_scroll::element_click::ElementInput,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    },
+    AdvanceElementClick {
+        token: ResolveId,
+        observation: Observation,
+    },
+    FinishElementClick {
+        token: ResolveId,
+    },
+    CancelElementClick {
+        token: ResolveId,
+    },
+    BeginKeyboard {
+        slot: u64,
+        input: super::keyboard::Input,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    },
+    FinishKeyboard {
+        token: KeyboardId,
+        layout: Option<platform_macos::input::native_keyboard::NativeKeyboardLayout>,
+    },
+    CancelKeyboard {
+        token: KeyboardId,
+    },
+    CancelResourceInputs {
+        resource: std::sync::Weak<super::focus::Resource>,
     },
     ClearApplication {
         slot: u64,
@@ -283,11 +358,14 @@ enum Response {
     Geometry(WindowBounds),
     Observed(String),
     ApplicationObserved(ApplicationObservation),
+    ProjectedApplicationObserved(Option<ApplicationObservation>),
     Point([f64; 2]),
     Pasted { restored: bool },
     Position([i64; 2]),
     Indexed(IndexedStep),
     Resolved(ResolveStep),
+    Keyboard(KeyboardStep),
+    ElementClick(ElementClickStep),
     Stopped,
 }
 
@@ -310,6 +388,8 @@ impl Controller {
                 generation,
                 bundle,
                 lifecycle: Mutex::new(Lifecycle::Dormant),
+                focus: Mutex::new(HashMap::new()),
+                focus_close: Mutex::new(None),
             }),
         }
     }
@@ -424,7 +504,122 @@ impl Controller {
         }
     }
 
+    pub(crate) async fn attach_focus(
+        &self,
+        epoch: NativeEpochId,
+        authority: Arc<dyn crate::NativeMonitorAuthority>,
+    ) -> Result<Arc<super::focus::Resource>, ToolError> {
+        self.ensure_started().await?;
+        let previous = self
+            .inner
+            .focus
+            .lock()
+            .expect("native focus uses poisoned")
+            .get(&epoch)
+            .cloned();
+        if let Some(previous) = &previous
+            && !previous.same_authority(&authority)
+        {
+            // The retained controller/JS handle does not carry an earlier
+            // turn's authority into a new Host lease.
+            crate::NativeMonitorResource::seal_admission(previous.as_ref());
+            crate::NativeMonitorResource::close(previous.as_ref()).await?;
+        }
+        let retiring = self
+            .inner
+            .focus
+            .lock()
+            .expect("native focus uses poisoned")
+            .values()
+            .filter(|resource| resource.is_sealed())
+            .cloned()
+            .collect::<Vec<_>>();
+        for resource in retiring {
+            crate::NativeMonitorResource::close(resource.as_ref()).await?;
+        }
+        let resource = {
+            // This lock is also the final Controller-close admission fence.
+            let closing = self
+                .inner
+                .focus_close
+                .lock()
+                .expect("native focus close poisoned");
+            if closing.is_some() {
+                return Err(failed("native AX controller is closing"));
+            }
+            let mut uses = self.inner.focus.lock().expect("native focus uses poisoned");
+            match uses.get(&epoch) {
+                Some(resource) if resource.same_authority(&authority) => resource.clone(),
+                Some(resource)
+                    if !previous
+                        .as_ref()
+                        .is_some_and(|previous| Arc::ptr_eq(resource, previous)) =>
+                {
+                    return Err(failed(
+                        "native monitor Host lease changed during attachment",
+                    ));
+                }
+                _ => {
+                    let resource = super::focus::Resource::new(
+                        self.inner.pid,
+                        self.inner.generation.clone(),
+                        &authority,
+                    );
+                    uses.insert(epoch, resource.clone());
+                    resource
+                }
+            }
+        };
+        let weak_owner = Arc::downgrade(&self.inner);
+        let weak_resource = Arc::downgrade(&resource);
+        resource.set_input_retirement(Arc::new(move || {
+            let Some(owner) = weak_owner.upgrade() else {
+                return Ok(());
+            };
+            let transport = {
+                let state = owner
+                    .lifecycle
+                    .lock()
+                    .expect("AX controller lifecycle poisoned");
+                match &*state {
+                    Lifecycle::Running(transport) => Some(transport.clone()),
+                    _ => None,
+                }
+            };
+            if let Some(transport) = transport {
+                transport.cancel_resource_inputs(weak_resource.clone())?;
+            }
+            Ok(())
+        }));
+        authority.attach(resource.clone()).await?;
+        let setup = resource.clone();
+        tokio::task::spawn_blocking(move || objc2::rc::autoreleasepool(|_| setup.start()))
+            .await
+            .map_err(failed)??;
+        Ok(resource)
+    }
+
+    pub(crate) async fn release_focus(&self, epoch: NativeEpochId) -> Result<(), ToolError> {
+        let resource = self
+            .inner
+            .focus
+            .lock()
+            .expect("native focus uses poisoned")
+            .get(&epoch)
+            .cloned();
+        if let Some(resource) = resource {
+            crate::NativeMonitorResource::seal_admission(resource.as_ref());
+            self.retire(Command::CancelResourceInputs {
+                resource: Arc::downgrade(&resource),
+            })
+            .await?;
+            crate::NativeMonitorResource::close(resource.as_ref()).await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn release_epoch(&self, epoch: NativeEpochId) -> Result<(), ToolError> {
+        self.release_focus(epoch).await?;
         self.retire(Command::ReleaseEpoch { epoch }).await
     }
 
@@ -583,6 +778,57 @@ impl Controller {
     /// Admit one close operation; its custodian retains the original Stop ACK
     /// and join even if an observer of the close future disappears.
     pub(crate) async fn close(&self) -> Result<(), ToolError> {
+        let pending = {
+            let mut closing = self
+                .inner
+                .focus_close
+                .lock()
+                .expect("native focus close poisoned");
+            if let Some(pending) = &*closing {
+                pending.clone()
+            } else {
+                let resources = self
+                    .inner
+                    .focus
+                    .lock()
+                    .expect("native focus uses poisoned")
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for resource in &resources {
+                    crate::NativeMonitorResource::seal_admission(resource.as_ref());
+                }
+                let (reply, pending) = watch::channel(None);
+                *closing = Some(pending.clone());
+                let native_close = self.close_ax();
+                tokio::spawn(async move {
+                    let cleanups = resources
+                        .iter()
+                        .map(|resource| crate::NativeMonitorResource::close(resource.as_ref()))
+                        .collect::<Vec<_>>();
+                    let mut failures = Vec::new();
+                    for cleanup in cleanups {
+                        if let Err(error) = cleanup.await {
+                            failures.push(error.to_string());
+                        }
+                    }
+                    if let Err(error) = completed(native_close).await {
+                        failures.push(error.to_string());
+                    }
+                    let result = if failures.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(cleanup_error(failures.join("; ")))
+                    };
+                    let _ = reply.send(Some(result));
+                });
+                pending
+            }
+        };
+        completed(pending).await
+    }
+
+    fn close_ax(&self) -> Completion<()> {
         enum ClosingOwner {
             Starting(Completion<Arc<Transport>, StartFailure>),
             Running(Arc<Transport>),
@@ -607,7 +853,7 @@ impl Controller {
                         result: Ok(()),
                         _owner: None,
                     };
-                    return Ok(());
+                    return watch::channel(Some(Ok(()))).1;
                 }
                 Lifecycle::Starting(pending) => {
                     let owner = ClosingOwner::Starting(pending.clone());
@@ -630,7 +876,9 @@ impl Controller {
                     }
                 }
                 Lifecycle::Closing(pending) => CloseAction::Observe(pending.clone()),
-                Lifecycle::Terminal { result, .. } => return result.clone(),
+                Lifecycle::Terminal { result, .. } => {
+                    return watch::channel(Some(result.clone())).1;
+                }
             }
         };
         let pending = match action {
@@ -666,7 +914,7 @@ impl Controller {
                 pending
             }
         };
-        completed(pending).await
+        pending
     }
 }
 
@@ -764,6 +1012,202 @@ impl Window {
 }
 
 impl Application {
+    pub(crate) async fn element_click(
+        &self,
+        input: super::page_scroll::element_click::ElementInput,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+        cursor: crate::cursor::Spec,
+        native: Arc<tokio::sync::Mutex<crate::driver::Driver>>,
+    ) -> Result<(), ToolError> {
+        let application = self.clone();
+        let task = tokio::spawn(async move {
+            let mut step = match application
+                .controller
+                .request(Command::BeginElementClick {
+                    slot: application.slot,
+                    input,
+                    cancellation: cancellation.clone(),
+                    focus: focus.clone(),
+                })
+                .await?
+            {
+                Response::ElementClick(step) => step,
+                _ => return Err(unexpected()),
+            };
+            let token = match &step {
+                ElementClickStep::NeedQuery { token, .. }
+                | ElementClickStep::Ready { token, .. } => *token,
+            };
+            let mut mutation_started = false;
+            let result: Result<(), ToolError> = async {
+                loop {
+                    match step {
+                        ElementClickStep::NeedQuery { token: current, query, mutation_started: started } => {
+                            if current != token { return Err(unexpected()); }
+                            mutation_started |= started;
+                            super::mouse::check_admission(&focus, &cancellation)?;
+                            let pending = { native.lock().await.cursors.mac_metadata(query) };
+                            let observation = pending.await?;
+                            step = match application.controller.request(Command::AdvanceElementClick { token, observation }).await? {
+                                Response::ElementClick(step) => step,
+                                _ => return Err(unexpected()),
+                            };
+                        }
+                        ElementClickStep::Ready { token: current, point, window_id, mutation_started: started } => {
+                            if current != token { return Err(unexpected()); }
+                            mutation_started |= started;
+                            super::mouse::check_admission(&focus, &cancellation)?;
+                            if cursor.enabled && let Some(point) = point {
+                                let pending = { native.lock().await.cursors.update(
+                                    &cursor, Some(point), cursor_overlay::CursorAction::Click, Some(u64::from(window_id)),
+                                ) };
+                                let state = pending.await?;
+                                if !state.visible || state.renderer_pid.is_none() || state.requested_position != Some(point) {
+                                    return Err(failed("native cursor renderer did not acknowledge the element click position"));
+                                }
+                            }
+                            return application.controller.request(Command::FinishElementClick { token }).await.and_then(unit);
+                        }
+                    }
+                }
+            }.await;
+            let result = result.map_err(|error| {
+                if mutation_started
+                    && !matches!(
+                        error,
+                        ToolError::CleanupUnconfirmed(_) | ToolError::OutcomeUnknown(_)
+                    )
+                {
+                    super::mouse::unknown(error)
+                } else {
+                    error
+                }
+            });
+            match application
+                .controller
+                .retire(Command::CancelElementClick { token })
+                .await
+            {
+                Ok(()) => result,
+                Err(cleanup) => Err(cleanup_error(match result {
+                    Ok(()) => format!("native element click retirement: {cleanup}"),
+                    Err(error) => format!("{error}; native element click retirement: {cleanup}"),
+                })),
+            }
+        });
+        task.await.map_err(|error| {
+            cleanup_error(format!("native element click custodian failed: {error}"))
+        })?
+    }
+
+    pub(crate) async fn coordinate_click(
+        &self,
+        token: ResolveId,
+        input: super::mouse::CoordinateInput,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    ) -> Result<(), ToolError> {
+        self.controller
+            .request(Command::CoordinateClick {
+                slot: self.slot,
+                token,
+                input,
+                cancellation,
+                focus,
+            })
+            .await
+            .and_then(unit)
+    }
+
+    pub(crate) async fn keyboard(
+        &self,
+        input: super::keyboard::Input,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+        native: Arc<tokio::sync::Mutex<crate::driver::Driver>>,
+    ) -> Result<(), ToolError> {
+        let application = self.clone();
+        // Once first polled, this task retains the preparation,
+        // metadata request, and native terminal reply even if its caller drops.
+        let task = tokio::spawn(async move {
+            let step = match application
+                .controller
+                .request(Command::BeginKeyboard {
+                    slot: application.slot,
+                    input,
+                    cancellation,
+                    focus,
+                })
+                .await?
+            {
+                Response::Keyboard(step) => step,
+                _ => return Err(unexpected()),
+            };
+            let KeyboardStep::NeedLayout(token) = step else {
+                return Ok(());
+            };
+            // Wait for source creation on the CF owner before scheduling
+            // the main-queue layout read.
+            let result = match crate::driver::Driver::mac_keyboard_layout(&native).await {
+                Ok(layout) => application
+                    .controller
+                    .request(Command::FinishKeyboard { token, layout })
+                    .await
+                    .and_then(unit),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                // The finish may have been refused before native dispatch (for
+                // example a generation change). Retire the same token; never
+                // recreate its source, replay input, or infer cleanup from it.
+                return match application
+                    .controller
+                    .retire(Command::CancelKeyboard { token })
+                    .await
+                {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => Err(cleanup_error(format!(
+                        "{error}; keyboard preparation: {cleanup}"
+                    ))),
+                };
+            }
+            Ok(())
+        });
+        task.await
+            .map_err(|error| cleanup_error(format!("native keyboard custodian failed: {error}")))?
+    }
+
+    pub(crate) async fn native_action(
+        &self,
+        action: Action,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    ) -> Result<(), ToolError> {
+        self.controller
+            .request(Command::NativeApplicationAction {
+                slot: self.slot,
+                action,
+                cancellation,
+                focus,
+            })
+            .await
+            .and_then(unit)
+    }
+
+    pub(crate) async fn observe_projected(
+        &self,
+    ) -> Result<Option<ApplicationObservation>, ToolError> {
+        match self
+            .controller
+            .request(Command::ObserveProjectedApplication { slot: self.slot })
+            .await?
+        {
+            Response::ProjectedApplicationObserved(observation) => Ok(observation),
+            _ => Err(unexpected()),
+        }
+    }
+
     pub(crate) async fn observe(&self) -> Result<ApplicationObservation, ToolError> {
         match self
             .controller
@@ -805,6 +1249,26 @@ impl Application {
 }
 
 impl Transport {
+    fn cancel_resource_inputs(
+        &self,
+        resource: std::sync::Weak<super::focus::Resource>,
+    ) -> Result<(), ToolError> {
+        let (reply, _completion) = oneshot::channel();
+        {
+            let sender = self.sender.lock().expect("AX controller sender poisoned");
+            let Some(sender) = sender.as_ref() else {
+                return Ok(());
+            };
+            sender
+                .send(Envelope {
+                    command: Command::CancelResourceInputs { resource },
+                    reply,
+                })
+                .map_err(cleanup_error)?;
+        }
+        wake(&self.wake)
+    }
+
     async fn start(
         pid: i32,
         generation: String,
@@ -1142,6 +1606,11 @@ enum PendingResolve {
         epoch: NativeEpochId,
         _target: EventTarget,
     },
+    ElementClick {
+        epoch: NativeEpochId,
+        slot: u64,
+        preparation: Box<super::page_scroll::element_click::PendingClick>,
+    },
 }
 
 impl PendingResolve {
@@ -1149,9 +1618,16 @@ impl PendingResolve {
         match self {
             Self::WindowOrder { epoch, .. }
             | Self::Searching { epoch, .. }
-            | Self::Ready { epoch, .. } => *epoch,
+            | Self::Ready { epoch, .. }
+            | Self::ElementClick { epoch, .. } => *epoch,
         }
     }
+}
+
+struct PendingKeyboard {
+    slot: u64,
+    epoch: NativeEpochId,
+    preparation: super::keyboard::PendingText,
 }
 
 struct WorkerState {
@@ -1162,6 +1638,7 @@ struct WorkerState {
     slots: HashMap<u64, Slot>,
     indexed: HashMap<IndexedId, PendingIndexed>,
     resolving: HashMap<ResolveId, PendingResolve>,
+    keyboards: HashMap<KeyboardId, PendingKeyboard>,
     position: [i64; 2],
     next_token: u64,
 }
@@ -1187,6 +1664,7 @@ impl WorkerState {
             slots: HashMap::new(),
             indexed: HashMap::new(),
             resolving: HashMap::new(),
+            keyboards: HashMap::new(),
             position: [0, 0],
             next_token: 1,
         })
@@ -1222,6 +1700,30 @@ impl WorkerState {
     }
 
     fn observe_application(&mut self, slot: u64) -> Result<ApplicationObservation, ToolError> {
+        self.observe_application_root(slot, None)
+    }
+
+    fn observe_projected_application(
+        &mut self,
+        slot: u64,
+    ) -> Result<Option<ApplicationObservation>, ToolError> {
+        let epoch = self
+            .slots
+            .get(&slot)
+            .ok_or_else(|| failed("native AX application handle has retired"))?
+            .application()?
+            .epoch;
+        let Some(root) = self.windows.projected_menu_root(epoch, slot)? else {
+            return Ok(None);
+        };
+        self.observe_application_root(slot, Some(&root)).map(Some)
+    }
+
+    fn observe_application_root(
+        &mut self,
+        slot: u64,
+        root: Option<&RetainedElement>,
+    ) -> Result<ApplicationObservation, ToolError> {
         // Take before any fallible refresh: a failed observation cannot leave
         // old indices available as the application's newly observed context.
         let previous = self.application_slot_mut(slot)?.observed.take();
@@ -1233,7 +1735,7 @@ impl WorkerState {
             Some(target) if target.window_id == id => target,
             _ => Target::bind(self.pid as u32, u64::from(id))?,
         };
-        let text = target.observe()?;
+        let text = target.observe_root(root)?;
         self.application_slot_mut(slot)?.observed = Some(target);
         Ok(ApplicationObservation { id, text })
     }
@@ -1249,6 +1751,9 @@ impl WorkerState {
                 | Command::Position
                 | Command::SetPosition { .. }
                 | Command::CancelIndexed { .. }
+                | Command::CancelKeyboard { .. }
+                | Command::CancelElementClick { .. }
+                | Command::CancelResourceInputs { .. }
                 | Command::ReleaseResolve { .. }
                 | Command::Stop
         ) {
@@ -1272,6 +1777,9 @@ impl WorkerState {
             Command::ObserveApplication { slot } => Ok(Response::ApplicationObserved(
                 self.observe_application(slot)?,
             )),
+            Command::ObserveProjectedApplication { slot } => Ok(
+                Response::ProjectedApplicationObserved(self.observe_projected_application(slot)?),
+            ),
             Command::ApplicationAction {
                 slot,
                 action,
@@ -1281,16 +1789,161 @@ impl WorkerState {
                     .action(action, &cancellation)?;
                 Ok(Response::Unit)
             }
+            Command::NativeApplicationAction {
+                slot,
+                action,
+                cancellation,
+                focus,
+            } => {
+                let application = self.application_slot_mut(slot)?;
+                let target = application.observed.as_mut().ok_or_else(|| {
+                    failed("stale_element: observe the application before semantic input")
+                })?;
+                target.native_action(action, &cancellation, &focus)?;
+                Ok(Response::Unit)
+            }
+            Command::CoordinateClick {
+                slot,
+                token,
+                input,
+                cancellation,
+                focus,
+            } => {
+                let application = self
+                    .slots
+                    .get(&slot)
+                    .ok_or_else(|| failed("native AX application handle has retired"))?
+                    .application()?;
+                let target = match self.resolving.get(&token) {
+                    Some(PendingResolve::Ready { epoch, _target })
+                        if *epoch == application.epoch =>
+                    {
+                        _target
+                    }
+                    _ => return Err(failed("native click target has retired")),
+                };
+                super::mouse::send_coordinate(
+                    self.pid,
+                    &self.generation,
+                    target,
+                    input,
+                    &focus,
+                    &cancellation,
+                    || application.observed.as_ref().and_then(Target::focus_window),
+                )?;
+                Ok(Response::Unit)
+            }
+            Command::BeginElementClick {
+                slot,
+                input,
+                cancellation,
+                focus,
+            } => self.begin_element_click(slot, input, cancellation, focus),
+            Command::AdvanceElementClick { token, observation } => {
+                self.advance_element_click(token, observation)
+            }
+            Command::FinishElementClick { token } => {
+                let (epoch, slot, preparation) = self.take_element_click(token)?;
+                preparation
+                    .finish(|item, menu| self.windows.select_menu(epoch, slot, item, menu))?;
+                Ok(Response::Unit)
+            }
+            Command::CancelElementClick { token } => {
+                self.cancel_element_click(token);
+                Ok(Response::Unit)
+            }
+            Command::BeginKeyboard {
+                slot,
+                input,
+                cancellation,
+                focus,
+            } => {
+                let application = self
+                    .slots
+                    .get(&slot)
+                    .ok_or_else(|| failed("native AX application handle has retired"))?
+                    .application()?;
+                let epoch = application.epoch;
+                // Allocate before native preparation so token exhaustion cannot
+                // orphan an already accepted source/permit on this owner.
+                let token = KeyboardId(self.token()?);
+                let application = self
+                    .slots
+                    .get(&slot)
+                    .ok_or_else(|| failed("native AX application handle has retired"))?
+                    .application()?;
+                let preparation = super::keyboard::begin(
+                    self.pid,
+                    self.bundle.as_deref(),
+                    input,
+                    focus,
+                    cancellation,
+                    || {
+                        if let Some(target) = &application.observed
+                            && target.verify().is_ok()
+                        {
+                            return target.focus_window();
+                        }
+                        let id = self.windows.primary_window_id().ok().flatten()?;
+                        Target::bind(self.pid as u32, u64::from(id))
+                            .ok()?
+                            .focus_window()
+                    },
+                )?;
+                let step = match preparation {
+                    super::keyboard::Preparation::Finished => KeyboardStep::Finished,
+                    super::keyboard::Preparation::NeedLayout(preparation) => {
+                        self.keyboards.insert(
+                            token,
+                            PendingKeyboard {
+                                slot,
+                                epoch,
+                                preparation,
+                            },
+                        );
+                        KeyboardStep::NeedLayout(token)
+                    }
+                };
+                Ok(Response::Keyboard(step))
+            }
+            Command::FinishKeyboard { token, layout } => {
+                let pending = self
+                    .keyboards
+                    .remove(&token)
+                    .ok_or_else(|| failed("native keyboard preparation has retired"))?;
+                pending.preparation.finish(self.pid, layout)?;
+                Ok(Response::Unit)
+            }
+            Command::CancelResourceInputs { resource } => {
+                if let Some(resource) = resource.upgrade() {
+                    self.cancel_keyboards(|pending| pending.preparation.uses_resource(&resource));
+                    self.cancel_element_clicks(|_, _, preparation| {
+                        preparation.uses_resource(&resource)
+                    });
+                }
+                Ok(Response::Unit)
+            }
+            Command::CancelKeyboard { token } => {
+                if let Some(pending) = self.keyboards.remove(&token) {
+                    pending.preparation.cancel();
+                }
+                Ok(Response::Unit)
+            }
             Command::ClearApplication { slot } => {
+                self.windows.clear_menu_for_slot(slot);
+                self.cancel_element_clicks(|_, current, _| current == slot);
                 if let Some(application) = self.slots.get_mut(&slot) {
                     application.application_mut()?.observed = None;
                 }
                 Ok(Response::Unit)
             }
             Command::ReleaseApplication { slot } => {
+                self.windows.clear_menu_for_slot(slot);
                 if let Some(application) = self.slots.get_mut(&slot) {
                     application.application_mut()?;
                 }
+                self.cancel_keyboards(|pending| pending.slot == slot);
+                self.cancel_element_clicks(|_, current, _| current == slot);
                 self.slots.remove(&slot);
                 self.indexed.retain(|_, pending| pending.slot != slot);
                 Ok(Response::Unit)
@@ -1327,6 +1980,7 @@ impl WorkerState {
                 Ok(Response::Unit)
             }
             Command::ReleaseWindow { slot } => {
+                self.cancel_element_clicks(|_, current, _| current == slot);
                 if let Some(window) = self.slots.get(&slot) {
                     window.window()?;
                 }
@@ -1356,6 +2010,9 @@ impl WorkerState {
                 Ok(Response::Pasted { restored })
             }
             Command::ReleaseEpoch { epoch } => {
+                self.windows.clear_menu_for_epoch(epoch);
+                self.cancel_keyboards(|pending| pending.epoch == epoch);
+                self.cancel_element_clicks(|current, _, _| current == epoch);
                 self.slots.retain(|_, slot| slot.epoch() != epoch);
                 self.indexed.retain(|_, pending| pending.epoch != epoch);
                 self.resolving.retain(|_, pending| pending.epoch() != epoch);
@@ -1427,12 +2084,145 @@ impl WorkerState {
                 self.advance_resolve(token, observation)
             }
             Command::ReleaseResolve { token } => {
+                self.cancel_element_click(token);
                 self.resolving.remove(&token);
                 Ok(Response::Unit)
             }
             Command::Stop => Err(cleanup_error(
                 "native AX stop must retire the run-loop owner",
             )),
+        }
+    }
+
+    fn begin_element_click(
+        &mut self,
+        slot: u64,
+        input: super::page_scroll::element_click::ElementInput,
+        cancellation: CancellationToken,
+        focus: Arc<super::focus::Resource>,
+    ) -> Result<Response, ToolError> {
+        let token = ResolveId(self.token()?);
+        let application = self
+            .slots
+            .get(&slot)
+            .ok_or_else(|| failed("native AX application handle has retired"))?
+            .application()?;
+        let epoch = application.epoch;
+        let target = application
+            .observed
+            .as_ref()
+            .ok_or_else(|| super::server_error("AX tree unexpectedly missing."))?;
+        let mut preparation = super::page_scroll::element_click::PendingClick::new(
+            self.pid,
+            self.generation.clone(),
+            self.bundle.clone(),
+            target,
+            input,
+            focus,
+            cancellation,
+        )?;
+        let progress = match preparation.begin() {
+            Ok(progress) => progress,
+            Err(error) => return Err(preparation.fail(error)),
+        };
+        let response = element_click_response(token, &preparation, progress);
+        self.resolving.insert(
+            token,
+            PendingResolve::ElementClick {
+                epoch,
+                slot,
+                preparation,
+            },
+        );
+        Ok(response)
+    }
+
+    fn take_element_click(
+        &mut self,
+        token: ResolveId,
+    ) -> Result<
+        (
+            NativeEpochId,
+            u64,
+            Box<super::page_scroll::element_click::PendingClick>,
+        ),
+        ToolError,
+    > {
+        let pending = self
+            .resolving
+            .remove(&token)
+            .ok_or_else(|| failed("native element click preparation has retired"))?;
+        match pending {
+            PendingResolve::ElementClick {
+                epoch,
+                slot,
+                preparation,
+            } => {
+                let valid = self.slots.get(&slot).is_some_and(|current| {
+                    current.epoch() == epoch && matches!(current, Slot::Application(_))
+                });
+                if !valid {
+                    return Err(preparation.fail(failed("native element application has retired")));
+                }
+                Ok((epoch, slot, preparation))
+            }
+            pending => {
+                self.resolving.insert(token, pending);
+                Err(failed("native element click token has a different purpose"))
+            }
+        }
+    }
+
+    fn advance_element_click(
+        &mut self,
+        token: ResolveId,
+        observation: Observation,
+    ) -> Result<Response, ToolError> {
+        let (epoch, slot, mut preparation) = self.take_element_click(token)?;
+        let progress = match preparation.advance(observation) {
+            Ok(progress) => progress,
+            Err(error) => return Err(preparation.fail(error)),
+        };
+        let response = element_click_response(token, &preparation, progress);
+        self.resolving.insert(
+            token,
+            PendingResolve::ElementClick {
+                epoch,
+                slot,
+                preparation,
+            },
+        );
+        Ok(response)
+    }
+
+    fn cancel_element_click(&mut self, token: ResolveId) {
+        match self.resolving.remove(&token) {
+            Some(PendingResolve::ElementClick { preparation, .. }) => preparation.cancel(),
+            Some(other) => {
+                self.resolving.insert(token, other);
+            }
+            None => {}
+        }
+    }
+
+    fn cancel_element_clicks(
+        &mut self,
+        matches: impl Fn(NativeEpochId, u64, &super::page_scroll::element_click::PendingClick) -> bool,
+    ) {
+        let tokens = self
+            .resolving
+            .iter()
+            .filter_map(|(token, pending)| match pending {
+                PendingResolve::ElementClick {
+                    epoch,
+                    slot,
+                    preparation,
+                } if matches(*epoch, *slot, preparation) => Some(*token),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for token in tokens {
+            self.cancel_element_click(token);
         }
     }
 
@@ -1631,6 +2421,7 @@ impl WorkerState {
                     window_id: target.window_id,
                     bounds: target.bounds.clone(),
                     flipped: target.flipped,
+                    is_menu: target.is_menu(),
                 };
                 self.resolving.insert(
                     token,
@@ -1647,13 +2438,50 @@ impl WorkerState {
         }
     }
 
+    fn cancel_keyboards(&mut self, matches: impl Fn(&PendingKeyboard) -> bool) {
+        let tokens = self
+            .keyboards
+            .iter()
+            .filter_map(|(token, pending)| matches(pending).then_some(*token))
+            .collect::<Vec<_>>();
+        for token in tokens {
+            if let Some(pending) = self.keyboards.remove(&token) {
+                pending.preparation.cancel();
+            }
+        }
+    }
+
     fn close(&mut self) -> Result<(), ToolError> {
+        self.cancel_keyboards(|_| true);
+        self.cancel_element_clicks(|_, _, _| true);
         let closed = self.windows.close();
         self.indexed.clear();
         self.resolving.clear();
         self.slots.clear();
         closed
     }
+}
+
+fn element_click_response(
+    token: ResolveId,
+    preparation: &super::page_scroll::element_click::PendingClick,
+    progress: super::page_scroll::element_click::Progress,
+) -> Response {
+    use super::page_scroll::element_click::Progress;
+    let mutation_started = preparation.mutation_started();
+    Response::ElementClick(match progress {
+        Progress::NeedQuery(query) => ElementClickStep::NeedQuery {
+            token,
+            query,
+            mutation_started,
+        },
+        Progress::Ready { point, target } => ElementClickStep::Ready {
+            token,
+            point,
+            window_id: target.map_or(preparation.window_id(), |target| target.window_id),
+            mutation_started,
+        },
+    })
 }
 
 fn check_cancelled(cancellation: &CancellationToken) -> Result<(), ToolError> {
@@ -1664,7 +2492,7 @@ fn check_cancelled(cancellation: &CancellationToken) -> Result<(), ToolError> {
     }
 }
 
-fn verify_generation(pid: i32, generation: &str) -> Result<(), ToolError> {
+pub(super) fn verify_generation(pid: i32, generation: &str) -> Result<(), ToolError> {
     let pid = u32::try_from(pid).map_err(failed)?;
     if crate::identity::process(pid)? != generation {
         return Err(failed("stale_target: native application process changed"));

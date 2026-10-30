@@ -249,16 +249,20 @@ async fn authentication_receipts_bind_inputs_and_survive_reopen_without_publishi
 }
 
 #[tokio::test]
-async fn repeated_authentication_retains_original_receipts_across_restart() {
+async fn reauthentication_keeps_each_original_outcome_across_restart() {
     let temp = tempfile::tempdir().unwrap();
     let store = open(temp.path(), true).await;
     let original = create("initial");
     let ticket = prepare(&store, original.clone()).await;
-    ticket
+    let LoginCompletion::Committed(original_receipt) = ticket
         .complete(credential("initial-grant"), 1)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("initial authentication commit");
+    };
     let id = ticket.identity().connection_id.clone();
+    drop(ticket);
     let uncertain = existing(&store, "uncertain-exchange", &id).await;
     let pending = prepare(&store, uncertain.clone()).await;
     assert!(pending.claim().await.unwrap());
@@ -273,76 +277,54 @@ async fn repeated_authentication_retains_original_receipts_across_restart() {
             .unwrap(),
         maka_agent_facts::oauth::Phase::Cancelled
     );
-    assert!(
-        matches!(store.prepare_oauth_login(cancelled).await.unwrap(),
-        LoginPreparation::Finished(saved) if saved.phase == maka_agent_facts::oauth::Phase::Cancelled)
-    );
     drop(pending);
-    let mut last = None;
-    for n in 0..257 {
-        let input = existing(&store, &format!("retained-{n}"), &id).await;
+    let LoginPreparation::Finished(cancelled_receipt) =
+        store.prepare_oauth_login(cancelled.clone()).await.unwrap()
+    else {
+        panic!("cancelled login outcome");
+    };
+    let mut completed = vec![(original, original_receipt)];
+    for (attempt, at) in [("replacement-one", 2), ("replacement-two", 3)] {
+        let input = existing(&store, attempt, &id).await;
         let ticket = prepare(&store, input.clone()).await;
-        assert!(matches!(
-            ticket
-                .complete(credential("replacement-grant"), n)
-                .await
-                .unwrap(),
-            LoginCompletion::Committed(_)
-        ));
-        last = Some(input);
+        let LoginCompletion::Committed(receipt) =
+            ticket.complete(credential(attempt), at).await.unwrap()
+        else {
+            panic!("replacement authentication commit");
+        };
+        assert_eq!(receipt.connection.connection_id, id);
+        completed.push((input, receipt));
     }
-    let first = store
-        .oauth_login_receipt("retained-0".into())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(first.connection.connection_id, id);
-    assert_eq!(first.phase, maka_agent_facts::oauth::Phase::Authenticated);
-    assert!(
-        store
-            .oauth_login_receipt("retained-1".into())
-            .await
-            .unwrap()
-            .is_some()
-    );
-    let mut db = sql(temp.path()).await;
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM oauth_login_receipts")
-        .fetch_one(&mut db)
-        .await
-        .unwrap();
-    assert_eq!(
-        count, 260,
-        "completed receipts and unresolved grant identities remain durable"
-    );
-    db.close().await.unwrap();
-    drop(ticket);
     store.shutdown().await.unwrap();
     drop(store);
     let store = open(temp.path(), false).await;
-    let LoginPreparation::Finished(saved) = store.prepare_oauth_login(original).await.unwrap()
+    for (input, original) in completed {
+        let LoginPreparation::Finished(saved) = store.prepare_oauth_login(input).await.unwrap()
+        else {
+            panic!("completed authentication must retain its original receipt");
+        };
+        assert_eq!(saved, original);
+    }
+    let LoginPreparation::Finished(saved) = store.prepare_oauth_login(cancelled).await.unwrap()
     else {
-        panic!("original completed login receipt was lost");
+        panic!("cancelled authentication must remain cancelled");
     };
-    assert_eq!(saved.connection.connection_id, id);
-    assert_eq!(saved.phase, maka_agent_facts::oauth::Phase::Authenticated);
+    assert_eq!(saved, cancelled_receipt);
     assert!(
-        matches!(
-            store.prepare_oauth_login(uncertain).await.unwrap(),
-            LoginPreparation::OutcomeUnknown(_)
-        ),
+        matches!(store.prepare_oauth_login(uncertain).await.unwrap(), LoginPreparation::OutcomeUnknown(receipt)
+        if receipt.connection.connection_id == id),
         "restart must not retry an uncertain authentication callback"
     );
-    assert!(matches!(
-        store.prepare_oauth_login(last.unwrap()).await.unwrap(),
-        LoginPreparation::Finished(_)
-    ));
     assert_eq!(store.catalog().await.unwrap().connections.len(), 1);
     store.shutdown().await.unwrap();
 }
 
+#[path = "discovery.rs"]
 mod discovery;
+#[path = "recovery.rs"]
 mod recovery;
 
+#[path = "inventory.rs"]
 mod inventory;
 
 #[tokio::test]

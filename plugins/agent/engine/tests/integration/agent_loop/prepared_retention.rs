@@ -18,10 +18,259 @@
  */
 
 use super::*;
+use futures_util::{StreamExt, future::BoxFuture};
 use maka_agent_facts::{
     event::{EventWrite, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent},
     tools::{ToolExecutor, ToolFuture},
 };
+use maka_agent_ports::model::{
+    Binding, Connect, Context, Error, Lifetime, ProviderAdapter, Request, Session, Socket,
+    Transport,
+};
+use maka_capabilities::http as model_http;
+use tokio::sync::{mpsc, oneshot};
+
+struct UploadPull {
+    checkpoint: usize,
+    release: oneshot::Sender<()>,
+}
+
+struct GatedUploads {
+    binding: Binding,
+    pulls: mpsc::UnboundedSender<UploadPull>,
+}
+impl ProviderAdapter for GatedUploads {
+    fn enforces_idle_timeout(&self) -> bool {
+        self.binding.enforces_idle_timeout()
+    }
+    fn supports_item_acceptance(&self) -> bool {
+        self.binding.supports_item_acceptance()
+    }
+    fn open(
+        &self,
+        lifetime: Lifetime,
+        cancellation: CancellationToken,
+    ) -> BoxFuture<'_, Result<Arc<dyn Session>, Error>> {
+        Box::pin(async move {
+            Ok(Arc::new(GatedUploadSession {
+                session: self.binding.open(lifetime, cancellation).await?,
+                pulls: self.pulls.clone(),
+            }) as Arc<dyn Session>)
+        })
+    }
+}
+struct GatedUploadSession {
+    session: Arc<dyn Session>,
+    pulls: mpsc::UnboundedSender<UploadPull>,
+}
+impl Session for GatedUploadSession {
+    fn stream(
+        &self,
+        request: Request,
+        mut context: Context,
+    ) -> BoxFuture<'static, Result<(), Error>> {
+        context.transport = Arc::new(GatedUploadTransport {
+            transport: context.transport,
+            pulls: self.pulls.clone(),
+        });
+        self.session.stream(request, context)
+    }
+}
+struct GatedUploadTransport {
+    transport: Arc<dyn Transport>,
+    pulls: mpsc::UnboundedSender<UploadPull>,
+}
+impl Transport for GatedUploadTransport {
+    fn identity(&self) -> u64 {
+        self.transport.identity()
+    }
+    fn connect(&self, request: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, Error>> {
+        self.transport.connect(request)
+    }
+    fn request(
+        &self,
+        mut request: model_http::Request,
+        cancellation: CancellationToken,
+    ) -> BoxFuture<'_, Result<model_http::Response, Error>> {
+        let pulls = self.pulls.clone();
+        let stop = cancellation.clone();
+        let source = request.body.into_stream();
+        // Gate after real encoded chunks have been pulled, while the original
+        // captured cursor and charged output remain owned by the HTTP upload.
+        request.body = model_http::RequestBody::stream(futures_util::stream::try_unfold(
+            (source, 0usize, 1usize),
+            move |(mut source, mut bytes, mut checkpoint)| {
+                let pulls = pulls.clone();
+                let stop = stop.clone();
+                async move {
+                    let Some(chunk) = source.next().await else {
+                        return Ok(None);
+                    };
+                    let chunk = chunk?;
+                    bytes += chunk.len();
+                    while checkpoint <= 3 && bytes >= checkpoint * 64 * 1024 {
+                        let (release, released) = oneshot::channel();
+                        pulls
+                            .send(UploadPull {
+                                checkpoint,
+                                release,
+                            })
+                            .unwrap();
+                        tokio::select! {
+                            _ = stop.cancelled() => return Err(model_http::Error::Denied),
+                            result = released => result.unwrap(),
+                        }
+                        checkpoint += 1;
+                    }
+                    Ok(Some((chunk, (source, bytes, checkpoint))))
+                }
+            },
+        ));
+        self.transport.request(request, cancellation)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sixteen_captured_http_uploads_allow_history_queries_and_close_original_custody() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        const SESSIONS: usize = 16;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut requests = tokio::task::JoinSet::new();
+            for _ in 0..SESSIONS {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                requests.spawn(async move {
+                    let request = read_request(&mut socket).await;
+                    respond(&mut socket, false).await;
+                    request
+                });
+            }
+            let mut received = Vec::new();
+            while let Some(request) = requests.join_next().await {
+                received.push(request.unwrap());
+            }
+            received
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("events.sqlite");
+        let root = crate::support::store::RootFixture::open(&path)
+            .await
+            .unwrap();
+        let (pulls, mut pulled) = mpsc::unbounded_channel();
+        let model = ModelExecutor::new(Duration::from_secs(10)).unwrap();
+        let probe = crate::support::image_projection::input(&base, json!([]));
+        let binding = model.binding(&probe.provider).unwrap();
+        let source = binding.source().clone();
+        let model = model.with_adapters(std::collections::BTreeMap::from([(
+            "gated-upload".into(),
+            Binding::new(Arc::new(GatedUploads { binding, pulls }), source),
+        )]));
+        let engine = Engine::new(model, CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
+        let mut logs = Vec::new();
+        let mut runs = Vec::new();
+        let mut expected = std::collections::BTreeSet::new();
+        for index in 0..SESSIONS {
+            let id = format!("upload-{index}");
+            root.create_session(&id, "create", &json!({}), 1)
+                .await
+                .unwrap();
+            let log = root.select(&id).await.unwrap();
+            let mut input = crate::support::image_projection::input(&base, json!([]));
+            input.invocation = crate::support::image_projection::identity(&id);
+            input.invocation.session_id = id.clone();
+            input.provider.adapter = Some("gated-upload".into());
+            let text = format!("{id}:{}", "captured🙂\\\"\n".repeat(24 * 1024));
+            let maka_agent_engine::RunWork::Message { message, .. } = &mut input.work else {
+                unreachable!()
+            };
+            *message = text.clone().into();
+            expected.insert(text);
+            let running = engine
+                .start(log.store(), input, CancellationToken::new())
+                .await
+                .unwrap();
+            runs.push(tokio::spawn(running.completion()));
+            logs.push(log);
+        }
+        for checkpoint in 1..=3 {
+            let mut releases = Vec::new();
+            for _ in 0..SESSIONS {
+                let pull = pulled.recv().await.unwrap();
+                assert_eq!(pull.checkpoint, checkpoint);
+                releases.push(pull.release);
+            }
+            let histories = futures_util::future::join_all(
+                logs.iter().map(|log| log.prefix(100, 2 * 1024 * 1024)),
+            );
+            let progress = futures_util::future::join_all(
+                logs.iter()
+                    .map(|log| log.observe_session::<Value>(log.id())),
+            );
+            let (histories, progress) = tokio::join!(histories, progress);
+            assert!(
+                histories
+                    .into_iter()
+                    .all(|history| !history.unwrap().events.is_empty())
+            );
+            for (log, observation) in logs.iter().zip(progress) {
+                let observation = observation.unwrap().unwrap();
+                assert_eq!(observation.session.id, log.id());
+                assert!(observation.through_sequence > 0);
+            }
+            assert!(runs.iter().all(|run| !run.is_finished()));
+            assert!(
+                maka_event_log::root::RootOwner::open(
+                    &path.with_extension("root"),
+                    &maka_event_log::root::RootNamespaces {
+                        ownership: path.with_extension("ownership"),
+                        control: path.with_extension("control"),
+                    },
+                )
+                .is_err()
+            );
+            for release in releases {
+                release.send(()).unwrap();
+            }
+        }
+        for run in runs {
+            let completion = run.await.unwrap();
+            completion.cleanup.unwrap();
+            completion.result.unwrap();
+        }
+        let requests = server.await.unwrap();
+        let actual: std::collections::BTreeSet<_> = requests
+            .iter()
+            .map(|request| {
+                request["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|message| message["role"] == "user")
+                    .unwrap()["content"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(requests.len(), SESSIONS);
+        assert_eq!(actual, expected);
+        engine.drain().await;
+        for log in &logs {
+            engine.release_session_state(log.id()).unwrap();
+        }
+        drop(engine);
+        drop(logs);
+        root.shutdown().await.unwrap();
+        drop(root);
+        let reopened = crate::support::store::RootFixture::open(&path)
+            .await
+            .unwrap();
+        reopened.shutdown().await.unwrap();
+    })
+    .await
+    .expect("captured uploads, ordinary queries and original close must make progress");
+}
 
 struct GapEffect {
     entered: Arc<Notify>,

@@ -84,6 +84,7 @@ type ApprovalSource = Pick<
 >;
 function InteractionAction(props: {
   label: string;
+  accessibilityLabel?: string;
   onPress: () => void;
   disabled?: boolean;
   selected?: boolean;
@@ -95,7 +96,7 @@ function InteractionAction(props: {
 }) {
   return (
     <Button
-      accessibilityLabel={props.label}
+      accessibilityLabel={props.accessibilityLabel ?? props.label}
       disabled={props.disabled}
       selected={props.selected}
       onPress={props.onPress}
@@ -855,7 +856,7 @@ export function InteractionComposer({
                         <Each of={question().options} key="index">
                           {(option) => (
                             <Button
-                              accessibilityLabel={option().label}
+                              accessibilityLabel={`${option().label} · ${index() + 1}. ${question().question}`}
                               disabled={blocked()}
                               selected={answers()[index()]?.value === option().label}
                               onPress={inputAction(chooseRendered, {
@@ -917,6 +918,7 @@ export function InteractionComposer({
                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
                           <InteractionAction
                             label={tr('Other answer')}
+                            accessibilityLabel={`${tr('Other answer {number}', { number: index() + 1 })} · ${question().question}`}
                             kind="radio"
                             disabled={blocked()}
                             selected={answers()[index()]?.other}
@@ -931,6 +933,7 @@ export function InteractionComposer({
                           />
                           <InteractionAction
                             label={tr('Skip')}
+                            accessibilityLabel={`${tr('Skip')} · ${index() + 1}. ${question().question}`}
                             kind="radio"
                             disabled={blocked()}
                             selected={answers()[index()]?.value === null}

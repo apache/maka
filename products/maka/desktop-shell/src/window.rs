@@ -175,7 +175,7 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
         // tells the workbench which conversation to show.
         cx.spawn(async move |cx| {
             while let Some(notice) = notices.recv().await {
-                let _ = cx.update(|cx| cx.show_system_notification(notice));
+                cx.update(|cx| cx.show_system_notification(notice));
             }
         })
         .detach();
