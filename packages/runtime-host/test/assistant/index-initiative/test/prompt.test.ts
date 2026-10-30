@@ -58,3 +58,12 @@ test('every judgement wake asks for autonomous investigation of the whole notebo
     assert.match(input, /基于用户的全局信息和整份记事本自主调查并判断，不只看新内容或本轮增量/);
   }
 });
+
+test('the notebook rules reopen on material change, not on user feedback (#6388)', () => {
+  // The rules reach persistent worker Sessions verbatim; they must match the
+  // wakeInput contract and the README: reopening follows a material change in
+  // the notebook, and user feedback only closes or defers.
+  assert.match(NOTEBOOK_RULES, /只有当用户已关闭或暂缓的主题出现重大变化/);
+  assert.match(NOTEBOOK_RULES, /没有重大变化就保持用户的决定/);
+  assert.doesNotMatch(NOTEBOOK_RULES, /重新开放方向/);
+});
