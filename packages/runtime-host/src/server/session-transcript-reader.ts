@@ -669,11 +669,12 @@ export function createAssistantMessageReader(input: {
       turnId: identity.turnId,
     });
     if (!turn) return undefined;
-    for (
-      let position = turn.firstOrdinal, runs = 0;
-      position <= turn.lastOrdinal && runs < 16;
-      runs++
-    ) {
+    // One iteration per stretch of the Turn's extent that an invocation owns,
+    // the same walk readLatestAssistantForTurn takes: a Turn that hands off —
+    // or waits on a Goal event — resumes in another invocation that owns the
+    // next stretch, so how many there are is the Turn's own history, not a
+    // bound a reader may choose. The walk ends where the extent ends.
+    for (let position = turn.firstOrdinal; position <= turn.lastOrdinal; ) {
       const found = await input.events.readTranscriptRun(
         identity.sessionId,
         {
