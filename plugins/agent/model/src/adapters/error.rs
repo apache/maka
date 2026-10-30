@@ -21,8 +21,28 @@ use crate::{ModelError, ProviderFailure, ProviderFailureReason};
 use maka_provider_protocol::output::ProviderError;
 use serde_json::Value;
 
+#[derive(Clone, Copy, Default)]
+pub(super) enum QuotaScope {
+    #[default]
+    Generic,
+    Zai,
+}
+impl QuotaScope {
+    pub fn endpoint(endpoint: &str) -> Self {
+        match reqwest::Url::parse(endpoint)
+            .ok()
+            .as_ref()
+            .and_then(|url| url.host_str())
+        {
+            Some("api.z.ai" | "open.bigmodel.cn") => Self::Zai,
+            _ => Self::Generic,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Evidence {
+    pub quota_scope: QuotaScope,
     pub observed: bool,
     pub retry_at_unix_ms: Option<u64>,
     pub unsafe_replay: bool,
@@ -93,7 +113,15 @@ impl Evidence {
             "insufficient_quota",
             "insufficient_balance",
             "freeusagelimiterror",
-        ]);
+            "exceeded_current_quota_error",
+        ]) || (matches!(self.quota_scope, QuotaScope::Zai)
+            // Z.ai documents these string codes in its error envelope.
+            // https://docs.z.ai/api-reference/api-code
+            && records
+                .iter()
+                .filter_map(|record| record.get("code").and_then(Value::as_str))
+                .chain(error.code.as_ref().and_then(Value::as_str))
+                .any(|code| matches!(code, "1308" | "1310" | "1316" | "1317" | "1318" | "1319" | "1320" | "1321")));
         let permanent = matches!(error.status, Some(401 | 403))
             || (error.status == Some(402) && !positive_quota)
             || has(&[
@@ -289,6 +317,127 @@ mod tests {
         )
     }
 
+    // Synthetic envelopes based on the official Z.ai code table and Kimi Code's
+    // exceeded_current_quota_error mapping; these are not captured wire fixtures.
+    #[test]
+    fn documented_quota_codes_stop_retries_only_in_their_scope() {
+        for code in [
+            "1308", "1310", "1316", "1317", "1318", "1319", "1320", "1321",
+        ] {
+            let evidence = Evidence {
+                quota_scope: QuotaScope::endpoint("https://api.z.ai/api/coding/paas/v4"),
+                unsafe_replay: true,
+                retry_at_unix_ms: Some(18_000_000),
+                ..Default::default()
+            };
+            let error = evidence.provider(
+                http_error(
+                    429,
+                    &serde_json::to_vec(
+                        &json!({"error":{"code":code,"message":"original quota diagnostic"}}),
+                    )
+                    .unwrap(),
+                ),
+                false,
+                None,
+            );
+            let ModelError::Provider(failure) = error else {
+                panic!("expected quota failure for {code}")
+            };
+            assert_eq!(
+                failure.reason(),
+                ProviderFailureReason::QuotaExhausted,
+                "{code}"
+            );
+            assert!(!failure.retryable(), "{code}");
+            assert!(!failure.replay_safe());
+            assert_eq!(failure.retry_at_unix_ms(), Some(18_000_000));
+            assert_eq!(failure.message(), "original quota diagnostic");
+            assert_eq!(failure.status(), Some(429));
+            assert_eq!(failure.code(), Some(code));
+        }
+        for (endpoint, body) in [
+            (
+                "https://open.bigmodel.cn/api/paas/v4",
+                json!({"error":{"code":"1302"}}),
+            ),
+            (
+                "https://api.z.ai/api/paas/v4",
+                json!({"error":{"code":"1305"}}),
+            ),
+            ("https://other.invalid", json!({"error":{"code":"1308"}})),
+            (
+                "https://api.z.ai.other.invalid",
+                json!({"error":{"code":"1310"}}),
+            ),
+            ("https://api.z.ai", json!({"error":{"type":"1308"}})),
+            ("https://api.z.ai", json!({"error":{"message":"1308"}})),
+        ] {
+            let error = Evidence {
+                quota_scope: QuotaScope::endpoint(endpoint),
+                ..Default::default()
+            }
+            .provider(
+                http_error(429, &serde_json::to_vec(&body).unwrap()),
+                false,
+                None,
+            );
+            let ModelError::Provider(failure) = error else {
+                panic!("expected transient failure: {endpoint} {body}")
+            };
+            assert_eq!(
+                failure.reason(),
+                ProviderFailureReason::RateLimit,
+                "{endpoint} {body}"
+            );
+            assert!(failure.retryable());
+        }
+        let ModelError::Provider(failure) = classify(
+            429,
+            json!({"error":{"type":"exceeded_current_quota_error"}}),
+            false,
+        ) else {
+            panic!("expected Kimi quota failure")
+        };
+        assert_eq!(failure.reason(), ProviderFailureReason::QuotaExhausted);
+        assert!(!failure.retryable());
+    }
+
+    #[test]
+    fn scoped_quota_preserves_overflow_and_permanent_failure_priority() {
+        for (status, body, overflow) in [
+            (
+                400,
+                json!({"error":{"code":"1308", "type":"context_length_exceeded"}}),
+                true,
+            ),
+            (401, json!({"error":{"code":"1308"}}), false),
+            (403, json!({"error":{"code":"1308"}}), false),
+        ] {
+            let error = Evidence {
+                quota_scope: QuotaScope::Zai,
+                ..Default::default()
+            }
+            .provider(
+                http_error(status, &serde_json::to_vec(&body).unwrap()),
+                false,
+                None,
+            );
+            if overflow {
+                assert!(matches!(
+                    error,
+                    ModelError::ContextOverflow {
+                        observed_output: false
+                    }
+                ));
+            } else {
+                assert!(
+                    matches!(error, ModelError::Http { status: actual, .. } if actual == status)
+                );
+            }
+        }
+    }
+
     #[test]
     fn overflow_requires_bounded_structured_provider_evidence() {
         for value in [
@@ -436,6 +585,7 @@ mod image_tests {
                 observed: true,
                 unsafe_replay,
                 retry_at_unix_ms: Some(456_000),
+                ..Default::default()
             }
             .provider(
                 ProviderError {
