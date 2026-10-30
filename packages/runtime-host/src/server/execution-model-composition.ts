@@ -229,6 +229,8 @@ async function buildHostAiSdkBackend(
             connectionId: input.context.header.llmConnectionId,
             providerStateIdentity: target.providerStateIdentity,
             modelId: target.model,
+            models: target.connection.models,
+            codexCompactionMetadataFetchedAt: target.connection.codexCompactionMetadataFetchedAt,
             providerOptions,
           }),
           textHistorySummarizer,

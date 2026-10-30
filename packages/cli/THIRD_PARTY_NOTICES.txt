@@ -6673,7 +6673,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: qs@6.16.0
+Package: qs@6.17.0
 Declared license: BSD-3-Clause
 Selected license: BSD-3-Clause
 Repository: https://github.com/ljharb/qs.git
@@ -7361,7 +7361,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: systeminformation@5.33.13
+Package: systeminformation@5.33.18
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/sebhildebrandt/systeminformation.git

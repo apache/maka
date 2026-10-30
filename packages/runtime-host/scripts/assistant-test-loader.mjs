@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { registerHooks, stripTypeScriptTypes } from 'node:module';
+import { registerHooks } from 'node:module';
+import { transformSync } from 'esbuild';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 // Resolve source-level .js specifiers exactly as TypeScript does in the production build.
@@ -37,10 +38,17 @@ registerHooks({
     if (url.startsWith('file:') && url.endsWith('.ts'))
       return {
         format: 'module',
-        source: stripTypeScriptTypes(readFileSync(fileURLToPath(url), 'utf8'), {
-          mode: 'transform',
-          sourceUrl: url,
-        }),
+        // Not node:module stripTypeScriptTypes: its 'transform' mode (needed for
+        // parameter properties, which the sources use) was removed in Node 26.
+        // Match the production build's ES2022 target and class-field semantics.
+        source: transformSync(readFileSync(fileURLToPath(url), 'utf8'), {
+          loader: 'ts',
+          format: 'esm',
+          target: 'es2022',
+          sourcefile: fileURLToPath(url),
+          sourcemap: 'inline',
+          tsconfigRaw: { compilerOptions: { target: 'ES2022', useDefineForClassFields: true } },
+        }).code,
         shortCircuit: true,
       };
     return next(url, context);

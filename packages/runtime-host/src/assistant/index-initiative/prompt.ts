@@ -61,8 +61,8 @@ export function wakeInput({
 }) {
   if (!['exploration', 'judgement'].includes(role)) throw Error('Unknown role');
   const contract = `${role === 'judgement' ? '基于用户的全局信息和整份记事本自主调查并判断，不只看新内容或本轮增量。' : '基于用户的全局信息探索，用工具读取笔记并按需自主调查，不只看新内容或本轮增量。'}完成后把增量操作写入 ${outputPath}，格式：
-{"notes":[{"topicId":"已有主题ID或新ID","title":"主题名","text":"简短认识","occurredAt":null,"sources":["信息来源"],"tags":["方向标签"],"related":["可选的相关主题ID"]}],"feedbackDecisions":[{"feedbackId":"用户反馈ID","understanding":"对反馈的理解","rules":[{"quote":"反馈原话中的依据","status":"open|deferred|closed","reason":"原因","resumeAt":null,"topicIds":["作用主题"],"tags":["作用方向"]}]}],"messages":[{"text":"完整消息","topicIds":["涉及主题"]}]}。
-occurredAt可写已知的发生时间或范围，不知道就null。无需填满各数组；输出只包含本次增量，不复制整本笔记。主题和方向标签可按内容新增，相关用户反馈仍需考虑。${role === 'exploration' ? '只填写notes，另外两个数组留空。' : '没有待整理反馈时feedbackDecisions留空；只有用户明确表达状态变化才写rules，否则记理解和有价值的信息即可。关闭方向可能涉及多个主题，方向标签可同时作用于以后相关主题。'}
+{"notes":[{"topicId":"已有主题ID或新ID","title":"主题名","text":"简短认识","occurredAt":null,"sources":["信息来源"],"tags":["方向标签"],"related":["可选的相关主题ID"]}],"feedbackDecisions":[{"feedbackId":"用户反馈ID","understanding":"对反馈的理解","rules":[{"quote":"反馈原话中的依据","status":"open|deferred|closed","reason":"原因","resumeAt":null,"topicIds":["作用主题"],"tags":["作用方向"]}]}],"messages":[{"text":"完整消息","topicIds":["涉及主题"]}],"withheld":[{"topicId":"已调查但决定不告知用户的主题ID","reason":"不告知的原因"}],"reopened":[{"topicId":"用户已关闭或暂缓的主题ID","reason":"信息出现了什么重大变化"}]}。
+occurredAt可写已知的发生时间或范围，不知道就null。无需填满各数组；输出只包含本次增量，不复制整本笔记。主题和方向标签可按内容新增，相关用户反馈仍需考虑。${role === 'exploration' ? '只填写notes，其余数组留空。' : '没有待整理反馈时feedbackDecisions留空；只有用户明确表达状态变化才写rules，否则记理解和有价值的信息即可。关闭方向可能涉及多个主题，方向标签可同时作用于以后相关主题。调查过某主题但决定不告知时写withheld，与已告知分开记录；只有当用户已关闭或暂缓的主题出现重大变化（先把变化按记事本规则追加为该主题的新笔记）时才写reopened，没有重大变化就保持用户的决定。'}
 提交与送达以当前记事本记录为准，写过结果文件不代表已提交或已发送。最终回复结果文件路径。`;
   return `${first ? (role === 'exploration' ? DISCOVERY_TASK : JUDGEMENT_TASK) + '\n\n' + NOTEBOOK_RULES + '\n\n' : ''}当前 UTC 时间：${now}\n记事本：${viewPath}\n${contract}`;
 }

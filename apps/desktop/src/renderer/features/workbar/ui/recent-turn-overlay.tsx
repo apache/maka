@@ -29,7 +29,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { activeHostTurn } from '../../../application/contracts/session-execution.js';
 import { useWorkbarServices } from '../services-context.js';
 
-const COPY: Record<UiLocale, {
+export const recentTurnCopy: Record<UiLocale, {
   processingFor: (elapsed: number) => string;
   noReply: string;
   runningTool: string;
@@ -52,21 +52,21 @@ const COPY: Record<UiLocale, {
 }>()({
   'zh-CN': {
     processingFor: (elapsed) => elapsed < 60
-      ? `已处理 ${elapsed} 秒` : `已处理 ${Math.floor(elapsed / 60)} 分钟 ${elapsed % 60} 秒`,
+      ? `已处理 ${elapsed} 秒` : `已处理 ${elapsed >= 3600 ? `${Math.floor(elapsed / 3600)} 小时 ` : ''}${Math.floor(elapsed / 60) % 60} 分钟 ${elapsed % 60} 秒`,
     noReply: '暂无最近回复', runningTool: '正在运行', finishedTool: '运行了', waiting: '等待下一步…', readFailed: '暂时无法读取最近回复',
     minimize: '收起输入区', restore: '继续输入',
     partial: '这里只显示部分回复，完整内容请查看对话。',
   },
   'zh-TW': {
     processingFor: (elapsed) => elapsed < 60
-      ? `已處理 ${elapsed} 秒` : `已處理 ${Math.floor(elapsed / 60)} 分鐘 ${elapsed % 60} 秒`,
+      ? `已處理 ${elapsed} 秒` : `已處理 ${elapsed >= 3600 ? `${Math.floor(elapsed / 3600)} 小時 ` : ''}${Math.floor(elapsed / 60) % 60} 分鐘 ${elapsed % 60} 秒`,
     noReply: '尚無最近回覆', runningTool: '正在執行', finishedTool: '執行了', waiting: '等待下一步…', readFailed: '暫時無法讀取最近回覆',
     minimize: '收起輸入區', restore: '繼續輸入',
     partial: '這裡只顯示部分回覆，完整內容請查看對話。',
   },
   en: {
     processingFor: (elapsed) => elapsed < 60
-      ? `Working for ${elapsed}s` : `Working for ${Math.floor(elapsed / 60)}m ${elapsed % 60}s`,
+      ? `Working for ${elapsed}s` : `Working for ${elapsed >= 3600 ? `${Math.floor(elapsed / 3600)}h ` : ''}${Math.floor(elapsed / 60) % 60}m ${elapsed % 60}s`,
     noReply: 'No recent reply', runningTool: 'Running', finishedTool: 'Ran', waiting: 'Waiting for the next step…', readFailed: 'Unable to load the latest reply',
     minimize: 'Minimize composer', restore: 'Continue typing',
     partial: 'Only part of this reply is shown. Open the conversation for the full content.',
@@ -113,7 +113,7 @@ export function RecentTurnOverlay(props: {
 }) {
   const { sideChat } = useWorkbarServices();
   const locale = useUiLocale();
-  const copy = COPY[locale];
+  const copy = recentTurnCopy[locale];
   const progress = progressStatusCopy[locale];
   const rootRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);

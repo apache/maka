@@ -24,6 +24,7 @@ import type {
 } from '@maka/core/model-call-usage-projection';
 import type { UsageGroupBy, UsageQuery } from '@maka/core/usage-stats/types';
 import type { CanonicalUsageSource } from '@maka/core/usage-ledger-merge';
+import type { SessionUsageWindow } from '../assistant/run-cost.js';
 import type {
   InteractiveUsageStoresWriter,
   ModelCallLedgerResult,
@@ -96,6 +97,41 @@ export function readCanonicalUsageLogs(
   return readCanonical(stores, query, repair, () =>
     stores.modelCalls.modelCallLogs(query, now, 0, limit),
   );
+}
+
+/**
+ * One Session's canonical usage in a time window, for the assistant's run-cost
+ * ledger (#6309). It is the window technique hosted-execution settlement uses:
+ * attempts are attributed by the Session that made them and the time they
+ * completed in. Anything the ledger could not fully account for (partial or
+ * missing provider usage, unreadable or unrepaired rows) marks the answer
+ * incomplete rather than presenting a lower bound as the whole.
+ */
+export async function readSessionUsageWindow(
+  stores: InteractiveUsageStoresWriter,
+  sessionId: string,
+  from: number,
+  to: number,
+): Promise<SessionUsageWindow> {
+  const source = await readCanonicalUsageSummary(
+    stores,
+    { range: { from, to }, sessionId },
+    Date.now(),
+  );
+  const { totalTokens, coverage } = source.projection;
+  return {
+    calls: source.projection.totalRequests,
+    inputTokens: totalTokens.input,
+    cacheReadTokens: totalTokens.cacheRead,
+    cacheWriteTokens: totalTokens.cacheWrite,
+    outputTokens: totalTokens.output,
+    modelDurationMs: source.projection.totalDurationMs,
+    complete:
+      source.unreadableRecords === 0 &&
+      source.pendingRepairs === 0 &&
+      coverage.usagePartialAttempts === 0 &&
+      coverage.usageMissingAttempts === 0,
+  };
 }
 
 /** Runs one bounded repair pass and rejects data still unsafe for durable derivatives. */

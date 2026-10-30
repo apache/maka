@@ -232,6 +232,7 @@ export async function fixture(options: any = {}) {
         const history = (workers.get(id).transcript ??= []);
         if (!history.some((row: any) => row.id === message.id)) history.push(message);
       },
+      ...(options.readSessionUsage ? { readSessionUsage: options.readSessionUsage } : {}),
     },
   );
   // Business-flow fixtures explicitly admit their coordinator; ordinary callers remain denied.

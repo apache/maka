@@ -421,6 +421,7 @@ type RawOpenAiCodexModel = {
   visibility?: unknown;
   priority?: unknown;
   context_window?: unknown;
+  comp_hash?: unknown;
 };
 
 /**
@@ -470,6 +471,15 @@ async function fetchOpenAiCodexModels(
     const entry: ModelInfo = { id: (model.slug as string).trim() };
     const contextWindow = providerTokenLimit(model.context_window);
     if (contextWindow !== undefined) entry.contextWindow = contextWindow;
+    if (
+      typeof model.comp_hash === 'string' &&
+      model.comp_hash.length > 0 &&
+      model.comp_hash.length <= 128 &&
+      model.comp_hash.trim() === model.comp_hash &&
+      !/[\u0000-\u001f\u007f]/.test(model.comp_hash)
+    ) {
+      entry.codexCompactionHash = model.comp_hash;
+    }
     return entry;
   });
 }

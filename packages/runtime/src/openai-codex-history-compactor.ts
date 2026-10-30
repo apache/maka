@@ -25,6 +25,7 @@ import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import { nonEmpty } from './context-budget-helpers.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
+  freshCodexCompactionHash,
   historyCompactCheckpointToModelMessage,
   isProviderHistoryCompactCheckpoint,
   projectHistoryCompactCheckpointReplay,
@@ -50,6 +51,8 @@ export interface BuildOpenAiCodexHistoryCompactorOptions {
   connectionId: string;
   providerStateIdentity?: `sha256:${string}`;
   modelId: string;
+  models?: readonly { id: string; codexCompactionHash?: string }[];
+  codexCompactionMetadataFetchedAt?: number;
   providerOptions?: Record<string, unknown>;
 }
 
@@ -73,7 +76,11 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
         previous &&
         canContinueHistoryCompactCheckpointForModel(
           previous,
-          { providerType: 'openai-codex' },
+          {
+            providerType: 'openai-codex',
+            models: options.models,
+            codexCompactionMetadataFetchedAt: options.codexCompactionMetadataFetchedAt,
+          },
           options.connectionId,
           options.modelId,
         );
@@ -143,6 +150,14 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
         content,
         options.connectionId,
         options.modelId,
+        freshCodexCompactionHash(
+          {
+            providerType: 'openai-codex',
+            models: options.models,
+            codexCompactionMetadataFetchedAt: options.codexCompactionMetadataFetchedAt,
+          },
+          options.modelId,
+        ),
       );
       if (!state) throw new HistoryCompactSummarizerError('invalid_provider_state');
       return state;
@@ -323,6 +338,7 @@ export function extractOpenAiCodexCompactionState(
   content: readonly unknown[] | undefined,
   connectionId: string,
   modelId: string,
+  codexCompactionHash?: string,
 ): HistoryCompactProviderState | undefined {
   const parts = (content ?? []).filter(isOpenAiCompactionPart);
   if (parts.length !== 1) return undefined;
@@ -332,6 +348,7 @@ export function extractOpenAiCodexCompactionState(
     kind: 'openai_codex_remote_v2',
     connectionId,
     modelId,
+    ...(codexCompactionHash ? { codexCompactionHash } : {}),
     itemId: metadata.itemId,
     encryptedContent: metadata.encryptedContent,
   };

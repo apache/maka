@@ -143,6 +143,13 @@ jobs:
           umask 077
           printf '%s' "$APPLE_API_KEY_CONTENT" > "$APPLE_API_KEY_PATH"
 
+      - name: Use TCP for Apple ticket delivery
+        if: matrix.platform == 'macos'
+        # Remove when actions/runner-images#14924 fixes HTTP/3 ticket connection loss.
+        run: |
+          echo 'block return out quick proto udp from any to any port 443' | sudo pfctl -f -
+          sudo pfctl -E
+
       - name: Package the signed and notarized macOS Nightly
         if: matrix.platform == 'macos'
         env:

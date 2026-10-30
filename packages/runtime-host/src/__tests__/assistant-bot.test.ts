@@ -36,6 +36,14 @@ import { BotController } from '../assistant/bot/controller.js';
 import { BotStore } from '../assistant/bot/store.js';
 import { DISCOVERY_TASK } from '../assistant/index-initiative/prompt.js';
 import { MESSAGE_OPERATION_SPECS } from '../protocol/message.js';
+import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
+import { createExternalExecutionBoundary } from '@maka/core/sandbox-boundary';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import {
+  createSessionEventMapMemory,
+  mapSessionEventToRuntimeEvent,
+} from '@maka/runtime/session-event-runtime-mapper';
 
 async function until(fn: () => unknown | Promise<unknown>, timeout = 7000) {
   const deadline = Date.now() + timeout;
@@ -300,6 +308,202 @@ async function fixture(
       await rm(directory, { recursive: true, force: true });
     },
   };
+}
+
+async function runCodeModeBot(
+  f: Awaited<ReturnType<typeof fixture>>,
+  input: { id: string; turnId: string; prompt: string },
+  hooks: { beforeSleep?: () => Promise<void>; afterSleep?: () => Promise<void> } = {},
+) {
+  const { id, turnId, prompt } = input;
+  const ledger: RuntimeEvent[] = [
+    {
+      id: randomUUID(),
+      sessionId: id,
+      turnId,
+      runId: turnId,
+      invocationId: turnId,
+      ts: 1,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: prompt },
+    },
+  ];
+  const memory = createSessionEventMapMemory();
+  const batches: string[][] = [];
+  let requests = 0;
+  let sleepAttempted = false;
+  const tools = f.service.toolCeiling(id)!.map<MakaTool>((tool) =>
+    tool.name !== 'Sleep'
+      ? tool
+      : {
+          ...tool,
+          impl: async (raw, context) => {
+            const result = await tool.impl(raw, context);
+            if (!sleepAttempted) {
+              sleepAttempted = true;
+              await hooks.afterSleep?.();
+            }
+            return result;
+          },
+        },
+  );
+  const backend = new AiSdkBackend({
+    sessionId: id,
+    header: {
+      id,
+      cwd: f.directory,
+      workspaceRoot: f.directory,
+      createdAt: 1,
+      name: 'Bot',
+      titleIsManual: true,
+      isFlagged: false,
+      labels: [],
+      isArchived: false,
+      status: 'active',
+      statusUpdatedAt: 1,
+      hasUnread: false,
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'controlled',
+      connectionLocked: true,
+      model: 'controlled',
+      permissionMode: 'ask',
+      toolMode: 'code_mode',
+      schemaVersion: 1,
+    },
+    connection: { slug: 'controlled', providerType: 'openai', defaultModel: 'controlled' },
+    apiKey: 'unused-controlled-model',
+    modelId: 'controlled',
+    tools,
+    maxSteps: 6,
+    readExecutionBoundary: async () => createExternalExecutionBoundary(),
+    readPermissionMode: async () => 'ask',
+    loadTurnRuntimeEvents: async () => ledger,
+    beforeTurnFinish: (context) => f.service.beforeFinish(context),
+    modelFactory: () => ({
+      specificationVersion: 'v4',
+      provider: 'controlled',
+      modelId: 'controlled',
+      supportedUrls: {},
+      doGenerate: async () => {
+        throw Error('Only streaming is used');
+      },
+      doStream: async ({ tools: modelTools }: { tools?: unknown }) => {
+        requests++;
+        assert.match(JSON.stringify(modelTools), /"name":"Sleep"/);
+        assert.match(JSON.stringify(modelTools), /"name":"exec"/);
+        if (requests === 2) await hooks.beforeSleep?.();
+        const read = requests % 2 === 1;
+        return {
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: 'stream-start', warnings: [] });
+              controller.enqueue({
+                type: 'tool-call',
+                toolCallId: `bot-step-${requests}`,
+                toolName: read ? 'exec' : 'Sleep',
+                input: read ? JSON.stringify({ code: 'return await tools.InboxCheck({})' }) : '{}',
+              });
+              controller.enqueue({
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: {
+                  inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 0, text: 0, reasoning: 0 },
+                },
+              });
+              controller.close();
+            },
+          }),
+        };
+      },
+    }),
+  });
+  const stops: string[] = [];
+  for await (const event of backend.send({
+    turnId,
+    runId: turnId,
+    invocationId: turnId,
+    text: prompt,
+    context: [],
+  })) {
+    if (event.type === 'error') assert.fail(event.message);
+    if (event.type === 'complete') stops.push(event.stopReason);
+    const mapped = mapSessionEventToRuntimeEvent(
+      event,
+      {
+        sessionId: id,
+        turnId,
+        runId: turnId,
+        invocationId: turnId,
+        now: () => 1,
+      },
+      memory,
+    );
+    if (!mapped.partial && mapped.content?.kind !== 'error') ledger.push(mapped);
+    if (mapped.content?.kind === 'function_response' && mapped.content.name === 'InboxCheck') {
+      const result = mapped.content.result as { kind: string; value: { items: { id: string }[] } };
+      assert.equal(result.kind, 'json');
+      batches.push(result.value.items.map((item) => item.id));
+    }
+  }
+  assert.deepEqual(stops, ['end_turn']);
+  return { requests, batches };
+}
+
+test('Code Mode Bot sleeps, survives restart and wakes for only new input', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const runs: Awaited<ReturnType<typeof runCodeModeBot>>[] = [];
+  f.runner(async (input) => {
+    runs.push(await runCodeModeBot(f, input));
+  });
+  await f.send('code-first', '先不用回复');
+  await until(
+    async () =>
+      ((await f.service.call('assistant.status', { includeMemory: false })) as any).bot.sleeping,
+  );
+  const workerId = f.invocation.id;
+  assert.deepEqual(runs, [{ requests: 2, batches: [['code-first']] }]);
+  await f.restart();
+  assert.equal(
+    ((await f.service.call('assistant.status', { includeMemory: false })) as any).bot.sleeping,
+    true,
+  );
+  assert.equal(f.starts(), 1, 'restart does not poll or submit another model turn');
+  await f.send('code-second', '现在有新消息');
+  await until(
+    async () =>
+      runs.length === 2 &&
+      ((await f.service.call('assistant.status', { includeMemory: false })) as any).bot.sleeping,
+  );
+  assert.equal(f.invocation.id, workerId);
+  assert.deepEqual(runs[1], { requests: 2, batches: [['code-second']] });
+  assert.equal(f.starts(), 2);
+  assert.equal(f.visible.filter((message) => message.type === 'assistant').length, 0);
+});
+
+for (const arrival of ['beforeSleep', 'afterSleep'] as const) {
+  test(`Code Mode Bot retains input arriving ${arrival} and suspends after reading it`, async (t) => {
+    const f = await fixture();
+    t.after(f.close);
+    let result: Awaited<ReturnType<typeof runCodeModeBot>> | undefined;
+    f.runner(async (input) => {
+      result = await runCodeModeBot(f, input, {
+        [arrival]: () => f.send('code-racing', '刚到的新消息'),
+      });
+    });
+    await f.send('code-initial', '开始');
+    await until(
+      async () =>
+        !!result &&
+        ((await f.service.call('assistant.status', { includeMemory: false })) as any).bot.sleeping,
+    );
+    assert.deepEqual(result, { requests: 4, batches: [['code-initial'], ['code-racing']] });
+    assert.equal(f.starts(), 1);
+    assert.equal(f.visible.filter((message) => message.type === 'assistant').length, 0);
+  });
 }
 
 test('Bot receives bodies in batches, may consult history, sends multiple messages, and sleeps', async (t) => {

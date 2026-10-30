@@ -26,10 +26,15 @@ const execute = promisify(execFile);
 
 export async function stapleMacosArtifact(
   path,
-  { run = execute, wait = sleep, report = (text) => process.stderr.write(text) } = {},
+  {
+    validateOnly = false,
+    run = execute,
+    wait = sleep,
+    report = (text) => process.stderr.write(text),
+  } = {},
 ) {
   const options = { encoding: 'utf8', timeout: 120_000 };
-  for (const action of ['staple', 'validate']) {
+  for (const action of validateOnly ? ['validate'] : ['staple', 'validate']) {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
         const result = await run('xcrun', ['stapler', action, path], options);

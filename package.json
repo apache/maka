@@ -147,9 +147,6 @@
     "@ai-sdk/code-mode": {
       "run": "2.1.4"
     },
-    "@modelcontextprotocol/sdk": {
-      "@hono/node-server": "2.0.12"
-    },
     "@jackwener/opencli@1.8.8": {
       "undici": "7.30.1"
     }

@@ -108,6 +108,8 @@ export interface ModelInfo {
   /** Account-advertised request wire when one provider exposes multiple model protocols. */
   apiProtocol?: ModelApiProtocol;
   contextWindow?: number;
+  /** Opaque compatibility identifier advertised by the Codex subscription model catalog. */
+  codexCompactionHash?: string;
   /** Maximum provider-visible input tokens, when narrower than contextWindow. */
   inputLimit?: number;
   maxOutputTokens?: number;
@@ -164,6 +166,8 @@ export interface RuntimeExecutionConnection {
   defaultApiProtocol?: ModelApiProtocol;
   defaultModel: string;
   models?: ModelInfo[];
+  /** Host-only timestamp of the fetched Codex compatibility metadata snapshot. */
+  codexCompactionMetadataFetchedAt?: number;
   /** User model parameters, retained independently of the enabled selection. */
   modelOverrides?: ModelOverrides;
   /** Additional top-level JSON properties added to model request bodies. */
