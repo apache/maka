@@ -119,7 +119,11 @@ pub(super) async fn canonical_image(
         assert!(!chunk.is_empty() && chunk.len() <= 32768);
         assembled.extend(chunk);
     }
-    assert_eq!(assembled, bytes);
+    assert!(
+        assembled == bytes,
+        "canonical original changed: actual digest {}, expected {expected_digest}",
+        content_digest(&assembled)
+    );
     request
 }
 
@@ -137,9 +141,22 @@ async fn selected_workspace_image_stream_reaches_model_and_immutable_canonical_r
         enable_vision(&f).await;
         let session = f.create("Actual workspace image").await;
         let (width, height) = (2200, 700);
-        let pixels: Vec<u8> = (0..width * height)
+        let mut pixels: Vec<u8> = (0..width * height)
             .flat_map(|index| [index as u8, (index >> 8) as u8, (index >> 16) as u8, 255])
             .collect();
+        for (x, y, color) in [
+            (0, 0, [255, 0, 0, 255]),
+            (width - 32, 0, [0, 255, 0, 255]),
+            (0, height - 32, [0, 0, 255, 255]),
+            (width - 32, height - 32, [255, 255, 0, 255]),
+        ] {
+            for row in y..y + 32 {
+                for column in x..x + 32 {
+                    let offset = (row as usize * width as usize + column as usize) * 4;
+                    pixels[offset..offset + 4].copy_from_slice(&color);
+                }
+            }
+        }
         let mut bytes = Vec::new();
         png::PngEncoder::new_with_quality(
             &mut bytes,
@@ -148,11 +165,6 @@ async fn selected_workspace_image_stream_reaches_model_and_immutable_canonical_r
         )
         .write_image(&pixels, width, height, ExtendedColorType::Rgba8)
         .unwrap();
-        let decoded = image::load_from_memory_with_format(&bytes, ImageFormat::Png)
-            .unwrap()
-            .into_rgba8();
-        assert_eq!(decoded.dimensions(), (2200, 700));
-        assert_eq!(decoded.as_raw(), &pixels);
         assert!(bytes.len() > 5 * 1024 * 1024);
         std::fs::write(f.workspace.join("large.png"), &bytes).unwrap();
         files::change(&f, &session, "read_only", false, false).await;
@@ -166,9 +178,24 @@ async fn selected_workspace_image_stream_reaches_model_and_immutable_canonical_r
         assert_eq!(
             images.len(),
             1,
-            "model must receive actual image content: {sent}"
+            "model must receive one complete image view"
         );
-        assert_eq!(images[0], bytes);
+        let view = image::load_from_memory_with_format(&images[0], ImageFormat::Png)
+            .unwrap()
+            .into_rgba8();
+        assert_eq!(view.dimensions(), (2000, 636));
+        for (x, y, color) in [
+            (0, 0, [255, 0, 0, 255]),
+            (1999, 0, [0, 255, 0, 255]),
+            (0, 635, [0, 0, 255, 255]),
+            (1999, 635, [255, 255, 0, 255]),
+        ] {
+            assert_eq!(
+                view.get_pixel(x, y).0,
+                color,
+                "whole source corner at {x},{y}"
+            );
+        }
         response(&mut socket).await;
         f.drained().await;
         // The original file can change; the canonical tool image must not.
