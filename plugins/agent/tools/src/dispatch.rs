@@ -210,10 +210,11 @@ impl<'a> RequestTools<'a> {
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         if self.run.mode == ToolMode::CodeMode {
             let mut exec = cell::definition(self.run.cells.language());
-            let definitions: Vec<_> = self.described.definitions().cloned().collect();
             exec.description.push('\n');
-            exec.description
-                .push_str(&cell::declarations(&definitions, self.run.cells.language()));
+            exec.description.push_str(&cell::declarations(
+                self.described.definitions(),
+                self.run.cells.language(),
+            ));
             std::iter::once(exec)
                 .chain(std::iter::once(cell::wait_definition()))
                 .chain(self.direct.definitions().cloned())

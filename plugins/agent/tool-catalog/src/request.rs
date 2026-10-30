@@ -272,8 +272,12 @@ mod tests {
         .unwrap()
         .with_request_binding(BTreeSet::from(["fixture".into()]), Arc::new(Binding))
         .unwrap();
-        let mut first = base.clone();
-        let mut second = base.clone();
+        let mut first = base.excluding(&[]).with_discovery();
+        let mut second = first.nested();
+        let base = base.with_discovery();
+        let mut excluded = base.excluding(&["fixture"]);
+        capture(&mut excluded, "changed");
+        assert!(excluded.names().is_empty());
         capture(&mut first, "unchanged");
         capture(&mut second, "unchanged");
         let original = base.definitions().next().unwrap();

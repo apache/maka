@@ -20,7 +20,10 @@
 mod declarations;
 mod session;
 pub(crate) use session::Cells;
-pub(super) fn declarations(definitions: &[ToolDefinition], language: CodeLanguage) -> String {
+pub(super) fn declarations<'a>(
+    definitions: impl IntoIterator<Item = &'a ToolDefinition>,
+    language: CodeLanguage,
+) -> String {
     match language {
         CodeLanguage::JavaScript => declarations::render(definitions),
         CodeLanguage::Python => declarations::python(definitions),

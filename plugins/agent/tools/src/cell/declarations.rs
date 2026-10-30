@@ -23,7 +23,7 @@ use serde_json::Value;
 /// A reading aid generated from the authoritative schema, not a validator.
 /// Bounds apply to traversal as well as output: recursive refs and wide DAGs
 /// cannot turn a small catalog into an unbounded prompt.
-pub(super) fn render(definitions: &[ToolDefinition]) -> String {
+pub(super) fn render<'a>(definitions: impl IntoIterator<Item = &'a ToolDefinition>) -> String {
     let mut output = String::from("declare const tools: {\n");
     for tool in definitions {
         for line in tool.description.lines() {
@@ -58,7 +58,7 @@ pub(super) fn render(definitions: &[ToolDefinition]) -> String {
 
 /// Python callers consume the same authoritative JSON schemas, including
 /// references and constraints that Python type annotations cannot express.
-pub(super) fn python(definitions: &[ToolDefinition]) -> String {
+pub(super) fn python<'a>(definitions: impl IntoIterator<Item = &'a ToolDefinition>) -> String {
     let mut output = String::new();
     for tool in definitions {
         for line in tool.description.lines() {
