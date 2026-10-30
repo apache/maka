@@ -508,8 +508,15 @@ export function Conversation(props: ConversationProps) {
         if (!turn || !turnExpanded(turn)) continue;
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
-        // The model's own text stays in Trajectory for the Bot.
-        if (botChat && row.role === 'assistant') continue;
+        // The model's own text stays in Trajectory for the Bot, unless the finished
+        // Turn sent nothing with SendUser: then its final answer is the reply, so the
+        // user is never left without one.
+        if (
+          botChat &&
+          row.role === 'assistant' &&
+          !(row.finalOutput && turn && !turn.active && bot.forTurn(turn.turnId).length === 0)
+        )
+          continue;
         if (entry.processTurnId && turn && !turnExpanded(turn)) continue;
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
@@ -527,8 +534,16 @@ export function Conversation(props: ConversationProps) {
     }
     if (botChat) {
       speak();
-      // Chat hides the model's own output, so show that the Bot is at work.
-      if (run() === 'running') result.push({ kind: 'botWorking', key: 'bot/working' });
+      // Chat hides the model's own output. Until the running Turn has its own
+      // header, show that the Bot is at work; afterwards the header says so.
+      const running = runTurn();
+      const headed = result.some(
+        (item) =>
+          running !== null &&
+          ((item.kind === 'process' && item.group.turnId === running) ||
+            (item.kind === 'summary' && item.turnId === running)),
+      );
+      if (run() === 'running' && !headed) result.push({ kind: 'botWorking', key: 'bot/working' });
     }
     return result;
   });
