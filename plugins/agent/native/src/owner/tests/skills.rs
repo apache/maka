@@ -60,13 +60,13 @@ async fn selected_skill_tools_use_actual_agent_context_and_original_grants_over_
             for (change, expected) in [
                 ("json", "agent_skill_tool_projection_required"),
                 ("method", "agent_skill_tool_method_invalid"),
-                ("binding", "agent_tool_import_unavailable"),
+                ("binding", "unknown service import: absent"),
             ] {
                 let mut invalid = original.clone();
                 match change {
                     "json" => invalid[0].input = contract::ToolInput::Json,
                     "method" => invalid[0].method = "list".into(),
-                    "binding" => invalid[0].import = "absent".into(),
+                    "binding" => invalid[0].target = maka_host_runtime::application::ServiceTarget::Import { name: "absent".into() },
                     _ => unreachable!(),
                 }
                 assert_eq!(crate::tools::catalog(f.services.clone(), f.store.clone(), f.config.clone(), &invalid, vec![], Default::default()).err().as_deref(), Some(expected));

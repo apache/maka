@@ -44,7 +44,7 @@ use maka_agent_facts::tools::ToolSemantics;
 use maka_capabilities::call::Attachments;
 use maka_capabilities::call::Identity;
 use maka_event_log::{RootStore, SessionStore};
-use maka_host_runtime::application::NativeServices;
+use maka_host_runtime::application::{NativeServices, ServiceTarget};
 use maka_plugin_core::{
     contract::{Interface, MethodMode},
     operation::{OperationCleanup, OperationOutcome, OperationReply, Receipt},
@@ -130,12 +130,7 @@ pub(crate) fn catalog(
     let editing: Vec<_> = selected
         .iter()
         .filter_map(|selection| {
-            let (_, bindings) = services
-                .imports()
-                .find(|(name, _)| *name == selection.import)?;
-            let [binding] = bindings else {
-                return None;
-            };
+            let binding = services.binding(&selection.target).ok()?;
             if binding.contract() != &file_contract {
                 return None;
             }
@@ -150,8 +145,8 @@ pub(crate) fn catalog(
     let mut planning = Vec::new();
     let questions_contract = maka_interactions_api::questions::contract();
     let web_contract = maka_web_api::contract();
-    let mut web_bindings = std::collections::BTreeMap::<String, Vec<Service>>::new();
-    let mut computer_bindings = std::collections::BTreeMap::<String, Vec<Service>>::new();
+    let mut web_bindings = std::collections::BTreeMap::<ServiceTarget, Vec<Service>>::new();
+    let mut computer_bindings = std::collections::BTreeMap::<ServiceTarget, Vec<Service>>::new();
     let mut shell_bindings = Vec::new();
     let mut skill_bindings = Vec::new();
     let skill_contract = maka_skills_api::contract();
@@ -173,14 +168,7 @@ pub(crate) fn catalog(
     let registrations = selected
         .iter()
         .map(|selection| {
-            let bindings = services
-                .imports()
-                .find(|(name, _)| *name == selection.import)
-                .map(|(_, bindings)| bindings)
-                .ok_or("agent_tool_import_unavailable")?;
-            let [binding] = bindings else {
-                return Err("agent_tool_import_ambiguous".to_owned());
-            };
+            let binding = services.binding(&selection.target)?;
             let Interface::Service { methods } = &binding.contract().interface else {
                 return Err("agent_tool_contract_invalid".to_owned());
             };
@@ -300,7 +288,7 @@ pub(crate) fn catalog(
                 binding: binding.execution_basis().into(),
                 target: format!(
                     "{} · {} v{} · {} / {} · {}",
-                    selection.import,
+                    selection.target.name(),
                     binding.contract().name,
                     binding.contract().version,
                     serde_json::to_string(binding.provider().instance())
@@ -323,7 +311,7 @@ pub(crate) fn catalog(
             }
             if selection.result == ToolResult::Computer {
                 computer_bindings
-                    .entry(selection.import.clone())
+                    .entry(selection.target.clone())
                     .or_default()
                     .push(service.clone());
             }
@@ -339,7 +327,7 @@ pub(crate) fn catalog(
             }
             if selection.input == ToolInput::Web {
                 web_bindings
-                    .entry(selection.import.clone())
+                    .entry(selection.target.clone())
                     .or_default()
                     .push(service.clone());
             }
@@ -807,9 +795,8 @@ impl Service {
                         match mode {
                             MethodMode::Query => {
                                 let result = request
-                                    .call(
-                                        &selection.import,
-                                        0,
+                                    .call_target(
+                                        &selection.target,
                                         selection.method,
                                         input,
                                         Attachments::default(),
@@ -831,9 +818,8 @@ impl Service {
                                     })?
                                     .language;
                                 let observer = request
-                                    .mutate(
-                                        &selection.import,
-                                        0,
+                                    .mutate_target(
+                                        &selection.target,
                                         selection.method,
                                         input,
                                         operation,
@@ -854,7 +840,7 @@ impl Service {
                             MethodMode::Subscription => {
                                 image::read(
                                     &request,
-                                    &selection.import,
+                                    &selection.target,
                                     selection.method.clone(),
                                     input,
                                     &cancellation,
@@ -1003,7 +989,7 @@ mod tests {
         let descriptor = serde_json::json!({
             "selected": { "selection": {
                 "input": "json", "result": "json", "confirmation": "required",
-                "name": "Read", "description": "Read file", "import": "Files", "method": "readText"
+                "name": "Read", "description": "Read file", "target": {"kind":"import", "name":"Files"}, "method": "readText"
             }, "binding": "original" },
             "capture": { "kind": "ordinary" }
         });

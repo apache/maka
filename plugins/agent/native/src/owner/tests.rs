@@ -33,6 +33,7 @@ mod todo_tests;
 mod computer_controls;
 
 mod service_tools;
+mod session_tools;
 mod skill_preparation;
 mod skills;
 
@@ -743,7 +744,16 @@ impl Fixture {
             FixtureApplication::Agent => match peer {
                 Some(peer) => (peer.issuer(), peer),
                 None => {
-                    let native = tooling.as_ref().map(service_tools::Setup::policy);
+                    let native = tooling.as_ref().map(service_tools::Setup::policy).or_else(|| {
+                        let methods = settings.tools.iter().filter(|tool|
+                            matches!(&tool.target, maka_host_runtime::application::ServiceTarget::Export { name } if name == EXPORT)
+                        ).map(|tool| tool.method.clone()).collect::<std::collections::BTreeSet<_>>();
+                        (!methods.is_empty()).then(|| Arc::new(maka_transport::transport::PeerPolicy::with_native_grants(vec![
+                            maka_transport::transport::NativeGrant {
+                                origin: id(1), consumer: id(1), provider: id(1), export: EXPORT.into(), methods, recovery: true,
+                            }
+                        ]).unwrap()))
+                    });
                     let issuer = native
                         .as_ref()
                         .map(|policy| policy.issuer())

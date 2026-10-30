@@ -414,9 +414,8 @@ export const configurations = {
             type: 'string',
             minLength: 1,
           },
-          import: {
-            type: 'string',
-            minLength: 1,
+          target: {
+            $ref: '#/$defs/ServiceTarget',
           },
           method: {
             type: 'string',
@@ -424,7 +423,7 @@ export const configurations = {
           },
         },
         additionalProperties: false,
-        required: ['result', 'confirmation', 'name', 'description', 'import', 'method'],
+        required: ['result', 'confirmation', 'name', 'description', 'target', 'method'],
       },
       AgentToolInput: {
         oneOf: [
@@ -474,6 +473,42 @@ export const configurations = {
       AgentToolConfirmation: {
         type: 'string',
         enum: ['required', 'preapproved'],
+      },
+      ServiceTarget: {
+        description:
+          "A selected service is either an imported provider or the caller's own export.",
+        oneOf: [
+          {
+            type: 'object',
+            properties: {
+              kind: {
+                type: 'string',
+                const: 'import',
+              },
+              name: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['kind', 'name'],
+          },
+          {
+            type: 'object',
+            properties: {
+              kind: {
+                type: 'string',
+                const: 'export',
+              },
+              name: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['kind', 'name'],
+          },
+        ],
       },
     },
   },
@@ -1042,16 +1077,15 @@ export const configurations = {
             type: 'string',
             minLength: 1,
           },
-          import: {
-            type: 'string',
-            minLength: 1,
+          target: {
+            $ref: '#/$defs/ServiceTarget',
           },
           method: {
             type: 'string',
             minLength: 1,
           },
         },
-        required: ['result', 'confirmation', 'name', 'description', 'import', 'method'],
+        required: ['result', 'confirmation', 'name', 'description', 'target', 'method'],
       },
       AgentToolInput: {
         oneOf: [
@@ -1101,6 +1135,42 @@ export const configurations = {
       AgentToolConfirmation: {
         type: 'string',
         enum: ['required', 'preapproved'],
+      },
+      ServiceTarget: {
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              kind: {
+                type: 'string',
+                const: 'import',
+              },
+              name: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            required: ['kind', 'name'],
+          },
+          {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              kind: {
+                type: 'string',
+                const: 'export',
+              },
+              name: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            required: ['kind', 'name'],
+          },
+        ],
+        description:
+          "A selected service is either an imported provider or the caller's own export.",
       },
     },
   },

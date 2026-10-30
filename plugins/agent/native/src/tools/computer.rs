@@ -79,14 +79,13 @@ impl RequestBinding for Binding {
                     })?,
                 )
                 .map_err(ToolError::Failed)?;
-            let import = service.selection.import.clone();
+            let target = service.selection.target.clone();
             let state = workers
                 .spawn(async move {
                     let result = AssertUnwindSafe(async {
                         request
-                            .call(
-                                &import,
-                                0,
+                            .call_target(
+                                &target,
                                 "state".into(),
                                 serde_json::json!({}),
                                 Attachments::default(),

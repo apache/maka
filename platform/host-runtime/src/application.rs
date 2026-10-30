@@ -38,6 +38,7 @@ pub use resource_ingress::{
 };
 mod requests;
 mod subscriptions;
+pub use maka_plugin_core::contract::ServiceTarget;
 pub use subscriptions::Subscription;
 
 use futures_util::future::BoxFuture;

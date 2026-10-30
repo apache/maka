@@ -67,13 +67,14 @@ impl NativePersistence {
     }
 }
 
-/// Frozen bindings and a dispatch handle for the original native activation.
+/// Frozen imports, own exports and dispatch for the original native activation.
 /// Unlike a request Context, this handle does not inherit a peer's cancellation
-/// or permission evidence. It cannot redirect retired imports to a replacement.
+/// or permission evidence. It cannot redirect retired bindings to a replacement.
 #[derive(Clone)]
 pub struct NativeServices {
     pub(super) activation: Activation,
     pub(super) imports: Arc<BTreeMap<String, Vec<Binding>>>,
+    pub(super) exports: Arc<BTreeMap<String, Binding>>,
     pub(super) dispatch: Weak<Dispatch>,
     pub(super) issuer: Issuer,
     pub(super) preparation_resources:
@@ -94,6 +95,11 @@ impl NativeServices {
         self.imports
             .iter()
             .map(|(name, bindings)| (name.as_str(), bindings.as_slice()))
+    }
+    /// Select one captured service, including an export published by this owner.
+    /// Own exports cannot execute until activation has successfully published them.
+    pub fn binding(&self, target: &ServiceTarget) -> Result<&Binding> {
+        super::context::select_service(&self.imports, &self.exports, target)
     }
     /// The native owner supplies its domain work's identity and cancellation.
     /// A request is inert until ordinary call/subscribe/mutate/recover admission succeeds.
@@ -138,6 +144,7 @@ impl NativeServices {
             operation_scope: None,
             attachments: Attachments::default(),
             imports: self.imports.clone(),
+            exports: self.exports.clone(),
             dispatch: self.dispatch.clone(),
         }))
     }

@@ -23,7 +23,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_agent_facts::tool_output::ToolSuccess;
 use maka_agent_facts::tools::ToolError;
 use maka_capabilities::call::Attachments;
-use maka_host_runtime::application::Context;
+use maka_host_runtime::application::{Context, ServiceTarget};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -31,13 +31,13 @@ use maka_agent_api::IMAGE_CHUNK_BYTES as CHUNK_BYTES;
 
 pub(super) async fn read(
     request: &Context,
-    import: &str,
+    target: &ServiceTarget,
     method: String,
     input: Value,
     cancellation: &CancellationToken,
 ) -> Result<ToolSuccess, ToolError> {
     let mut subscription = request
-        .subscribe(import, 0, method, input, Attachments::default())
+        .subscribe_target(target, method, input, Attachments::default())
         .map_err(failed)?
         .await
         .map_err(failed)?;

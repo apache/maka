@@ -483,7 +483,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
   const computerMethods = [
     ...new Set(
       configuration.agent.tools
-        .filter((tool) => tool.import === 'computer')
+        .filter((tool) => tool.target.kind === 'import' && tool.target.name === 'computer')
         .map((tool) => tool.method),
     ),
   ];
@@ -497,7 +497,9 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
     });
   const webMethods = [
     ...new Set(
-      configuration.agent.tools.filter((tool) => tool.import === 'web').map((tool) => tool.method),
+      configuration.agent.tools
+        .filter((tool) => tool.target.kind === 'import' && tool.target.name === 'web')
+        .map((tool) => tool.method),
     ),
   ];
   if (webMethods.length && !configuration.web)
@@ -506,29 +508,35 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
     throw new Error('Model Web tools select only fetch and search');
   const uiMethods = [
     ...new Set(
-      configuration.agent.tools.filter((tool) => tool.import === 'ui').map((tool) => tool.method),
+      configuration.agent.tools
+        .filter((tool) => tool.target.kind === 'import' && tool.target.name === 'ui')
+        .map((tool) => tool.method),
     ),
   ];
-  const asksForms = configuration.agent.tools.some((tool) => tool.import === 'forms');
-  const asksQuestions = configuration.agent.tools.some((tool) => tool.import === 'questions');
+  const asksForms = configuration.agent.tools.some(
+    (tool) => tool.target.kind === 'import' && tool.target.name === 'forms',
+  );
+  const asksQuestions = configuration.agent.tools.some(
+    (tool) => tool.target.kind === 'import' && tool.target.name === 'questions',
+  );
   const fileMethods = [
     ...new Set(
       configuration.agent.tools
-        .filter((tool) => tool.import === 'files')
+        .filter((tool) => tool.target.kind === 'import' && tool.target.name === 'files')
         .map((tool) => tool.method),
     ),
   ];
   const processMethods = [
     ...new Set(
       configuration.agent.tools
-        .filter((tool) => tool.import === 'processes')
+        .filter((tool) => tool.target.kind === 'import' && tool.target.name === 'processes')
         .map((tool) => tool.method),
     ),
   ];
   const skillMethods = [
     ...new Set(
       configuration.agent.tools
-        .filter((tool) => tool.import === 'skills')
+        .filter((tool) => tool.target.kind === 'import' && tool.target.name === 'skills')
         .map((tool) => tool.method),
     ),
   ];
@@ -564,7 +572,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
       // These imports bind known native v1 contracts. Freeze presentation in
       // the configuration; tool names and response shapes cannot opt into it.
       tools: configuration.agent.tools.map((tool) => {
-        if (tool.import === 'web')
+        if (tool.target.kind === 'import' && tool.target.name === 'web')
           return {
             ...tool,
             input: 'web' as const,
@@ -572,15 +580,22 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
               ? { presentation: `maka.workspace.Web@1/${tool.method}` }
               : {}),
           };
-        if (tool.import === 'skills') return { ...tool, input: 'skill' as const };
-        if (tool.import === 'processes' && tool.method === 'execute')
+        if (tool.target.kind === 'import' && tool.target.name === 'skills')
+          return { ...tool, input: 'skill' as const };
+        if (
+          tool.target.kind === 'import' &&
+          tool.target.name === 'processes' &&
+          tool.method === 'execute'
+        )
           tool = { ...tool, input: 'shell' };
         if (tool.presentation !== undefined) return tool;
         const contract =
-          tool.import === 'files' &&
+          tool.target.kind === 'import' &&
+          tool.target.name === 'files' &&
           ['readText', 'glob', 'grep', 'write', 'edit', 'applyPatch'].includes(tool.method)
             ? 'maka.workspace.Files'
-            : tool.import === 'processes' &&
+            : tool.target.kind === 'import' &&
+                tool.target.name === 'processes' &&
                 ['execute', 'read', 'writeStdin', 'stop'].includes(tool.method)
               ? 'maka.workspace.Processes'
               : null;
@@ -703,8 +718,16 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
       ),
     });
   }
+  const ownMethods = new Map<string, Set<string>>();
+  for (const tool of configuration.agent.tools) {
+    if (tool.target.kind !== 'export') continue;
+    const methods = ownMethods.get(tool.target.name) ?? new Set<string>();
+    methods.add(tool.method);
+    ownMethods.set(tool.target.name, methods);
+  }
   let native: NativeGrant[] = [];
   if (
+    ownMethods.size ||
     uiMethods.length ||
     asksForms ||
     asksQuestions ||
@@ -714,6 +737,14 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
     executors.length
   )
     native = [
+      ...[...ownMethods].map(([name, methods]) => ({
+        origin: [keys.agent],
+        consumer: [keys.agent],
+        provider: [keys.agent],
+        export: name,
+        methods: [...methods],
+        recovery: true,
+      })),
       ...(uiMethods.length
         ? [
             {

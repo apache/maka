@@ -49,10 +49,10 @@ fn workhub_composition_preserves_bindings_authority_and_installation_identities_
     let agent = json!({
         "workspaceRoots":[{"label":"Project","path":"/private/product-workspace"}],
         "permissions":{"access":"workspace_write","requestPermissions":true},
-        "tools":[{"name":"ReadPlugins","description":"Read enabled UI plugins","import":"ui","method":"readUi","result":"json","confirmation":"preapproved"}],
+        "tools":[{"name":"ReadPlugins","description":"Read enabled UI plugins","target":{"kind":"import","name":"ui"},"method":"readUi","result":"json","confirmation":"preapproved"}],
     });
     let mut coordinator = agent.clone();
-    coordinator["tools"] = json!([{"name":"Execute","description":"Run a command","import":"processes","method":"execute","result":"json","confirmation":"preapproved"}]);
+    coordinator["tools"] = json!([{"name":"Execute","description":"Run a command","target":{"kind":"import","name":"processes"},"method":"execute","result":"json","confirmation":"preapproved"}]);
     fs::write(&configuration, serde_json::to_vec(&json!({
         "locale":"en",
         "agent":agent,
