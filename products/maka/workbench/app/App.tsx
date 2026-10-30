@@ -108,7 +108,8 @@ function App(
     const owner = sideSession();
     try {
       if (id !== original && owner && !(await owner.leave())) return false;
-      if (!alive || blocked() || side() !== original) return false;
+      if (!alive || blocked() || side() !== original || (id !== null && id === selected()))
+        return false;
       batch(() => {
         if (id === null) sideSession.set(null);
         side.set(id);
@@ -128,7 +129,13 @@ function App(
     const owner = session();
     try {
       if (id !== original && owner && !(await owner.leave())) return false;
-      if (!alive || blocked() || generation !== navigationGeneration || selected() !== original)
+      if (
+        !alive ||
+        blocked() ||
+        generation !== navigationGeneration ||
+        selected() !== original ||
+        (id !== null && id === side())
+      )
         return false;
       batch(() => {
         notice.set(null);
