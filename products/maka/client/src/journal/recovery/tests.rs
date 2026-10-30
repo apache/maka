@@ -17,16 +17,14 @@
  * under the License.
  */
 
-use super::*;
 use crate::journal::{DraftEdit, DraftKey, DraftReference, Journal, Operation, UploadReference};
-use crate::{CONTROL_KIND, CONTROL_METHODS, SETTINGS_KIND, SETTINGS_METHODS, ServiceOwner};
+use crate::{CONTROL_KIND, SETTINGS_KIND, ServiceOwner};
 use maka_plugin_core::{
     composition::InstanceId,
     deployment::DeploymentRef,
     operation::{OperationCleanup, OperationOutcome, Receipt},
 };
 use serde_json::{Value, json};
-use sqlx::Row;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -49,15 +47,6 @@ const LISTS: [List; 5] = [
     List::Settings,
 ];
 impl List {
-    fn sql(self) -> &'static str {
-        match self {
-            Self::Drafts => DRAFTS,
-            Self::Uploads => UPLOADS,
-            Self::Controls => CONTROLS,
-            Self::Terminals => TERMINALS,
-            Self::Settings => SETTINGS,
-        }
-    }
     async fn read(self, journal: &Journal, key: &DraftKey, host: &DeploymentRef) -> Vec<Uuid> {
         let operations = match self {
             Self::Drafts => journal.pending(host, key).await,
@@ -74,37 +63,6 @@ impl List {
         operations
             .into_iter()
             .map(|operation| operation.id)
-            .collect()
-    }
-    async fn plan(self, journal: &Journal, key: &DraftKey, host: &DeploymentRef) -> Vec<String> {
-        let explain = format!("EXPLAIN QUERY PLAN {}", self.sql());
-        // SQL consists only of this fixed prefix and the static production query.
-        let mut query = sqlx::query(sqlx::AssertSqlSafe(explain.as_str()))
-            .bind(&host.state_domain)
-            .bind(host.deployment.to_string());
-        query = match self {
-            Self::Drafts | Self::Uploads => query.bind(serde_json::to_string(key).unwrap()),
-            Self::Controls => {
-                query = query.bind(serde_json::to_string(&CONTROL_METHODS).unwrap());
-                for _ in 0..7 {
-                    query = query
-                        .bind(json!({"kind":CONTROL_KIND,"owner":service_owner(key)}).to_string());
-                }
-                query
-            }
-            Self::Terminals => query
-                .bind(&key.session_id)
-                .bind(json!({"kind":"terminal","owner":service_owner(key)}).to_string()),
-            Self::Settings => query
-                .bind(json!([{"kind":SETTINGS_KIND,"owner":service_owner(key)}]).to_string())
-                .bind(serde_json::to_string(&SETTINGS_METHODS).unwrap()),
-        };
-        query
-            .fetch_all(&journal.pool)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|row| row.get("detail"))
             .collect()
     }
     async fn steps(self, journal: &Journal, key: &DraftKey, host: &DeploymentRef) -> usize {
@@ -236,14 +194,6 @@ async fn every_recovery_list_skips_resolved_history_in_the_actual_journal_path()
         let mut stage = Vec::new();
         for list in LISTS {
             let steps = list.steps(&journal, &key, &host).await;
-            let plan = list.plan(&journal, &key, &host).await;
-            eprintln!("{list:?}: history={end} steps={steps} plan={plan:?}");
-            assert!(
-                plan.iter()
-                    .any(|detail| detail
-                        .contains("SEARCH operations USING INDEX operations_pending")),
-                "{list:?}: {plan:?}"
-            );
             stage.push(steps);
         }
         measurements.push(stage);

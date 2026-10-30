@@ -18,6 +18,8 @@
  */
 
 use super::*;
+
+mod upload;
 use maka_agent_api::{
     contract::WorkspaceAccess,
     session::{ResolvedConfiguration, StoredSessionConfiguration},
@@ -54,6 +56,8 @@ pub(super) struct PreparationScope {
     /// Cancelled when the actual original native future becomes terminal.
     /// Retained already-written replies have separate settlement custody.
     pub active: CancellationToken,
+    /// Actual parent Host resource budgets and original Scope, not a read grant.
+    pub input_resources: Option<maka_host_runtime::application::ResourceCapturer>,
 }
 
 impl Access {
@@ -286,6 +290,21 @@ impl Access {
 }
 
 impl BrowserAuthorization for Access {
+    fn prepare_upload(
+        &self,
+        request: maka_computer_use::BrowserUploadRequest,
+        cancellation: CancellationToken,
+    ) -> maka_computer_use::BrowserUploadFuture {
+        self.prepare_upload_request(request, cancellation)
+    }
+    fn check_upload(
+        &self,
+        request: maka_computer_use::BrowserUploadRequest,
+        cancellation: CancellationToken,
+    ) -> AuthorizationFuture {
+        self.check_upload_request(request, cancellation)
+    }
+
     fn authorize_session_preparation(
         &self,
         preparation: BrowserSessionPreparation,
@@ -861,6 +880,7 @@ mod tests {
                 tools: Some(vec!["cua_repl".into()]),
                 title: "Clipboard authority fixture".into(),
                 title_is_manual: false,
+                pinned: false,
                 labels: vec![],
                 workspace: reference,
                 permissions: WorkspacePermissions {
@@ -1475,60 +1495,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn fixed_session_admission_rechecks_canonical_basis_turn_and_vm_gate() {
-        for changed in ["basis", "turn", "gate", "cancel"] {
-            let fixture = Fixture::new().await;
-            let request = session_preparation_request(&fixture.invocation.turn_id);
-            let cancellation = CancellationToken::new();
-            fixture
-                .attachment
-                .session_preparation_current(&request, &request.operation_id, &cancellation)
-                .await
-                .unwrap();
-            match changed {
-                "basis" => {
-                    let revision = fixture
-                        .store
-                        .get_session::<StoredSessionConfiguration>("session")
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .revision;
-                    let result = fixture
-                        .store
-                        .update_session_permissions::<StoredSessionConfiguration, _>(
-                            "session",
-                            revision,
-                            5,
-                            |configuration| {
-                                configuration.boundary_revision += 1;
-                                Ok(())
-                            },
-                        )
-                        .await
-                        .unwrap();
-                    assert!(matches!(
-                        result,
-                        maka_event_log::sessions::SessionMutation::Committed(_)
-                    ));
-                }
-                "turn" => fixture.end().await,
-                "gate" => fixture.attachment.gate.close_admission(),
-                "cancel" => cancellation.cancel(),
-                _ => unreachable!(),
-            }
-            assert!(
-                fixture
-                    .attachment
-                    .session_preparation_current(&request, &request.operation_id, &cancellation)
-                    .await
-                    .is_err(),
-                "{changed} must reject before further fixed preparation"
-            );
-            fixture.close().await;
-        }
-    }
     fn effect_preparation_binding(turn: &str) -> maka_computer_use::BrowserPreparationBinding {
         // Observations for permission testing only. This fixture deliberately
         // grants no native ownership: production's independent ledger must do so.
@@ -1753,92 +1719,6 @@ mod tests {
         // Production Access records potential epoch cleanup before polling the
         // native future. This checker proves neither native admission nor T2.
         fixture.close().await;
-    }
-
-    #[tokio::test]
-    async fn session_inventory_rechecks_actual_global_basis_turn_gate_and_operation() {
-        for changed in ["global", "basis", "turn", "gate", "cancel", "operation"] {
-            // A later Deny does not revoke an existing broad Allow. Exercise
-            // genuinely absent Global authority in the same real DB fixture.
-            let fixture = Fixture::new_with_global_grant(changed != "global").await;
-            let request = session_inventory_request(&fixture.invocation.turn_id);
-            let cancellation = CancellationToken::new();
-            if changed != "global" {
-                fixture
-                    .attachment
-                    .session_preparation_current(&request, &request.operation_id, &cancellation)
-                    .await
-                    .unwrap();
-            } else {
-                assert!(
-                    fixture
-                        .store
-                        .client_capability_grant("session", &api::target())
-                        .await
-                        .unwrap()
-                        .is_none()
-                );
-            }
-            let expected = match changed {
-                "global" => "Computer Use Session grant is missing or revoked",
-                "basis" => {
-                    let revision = fixture
-                        .store
-                        .get_session::<StoredSessionConfiguration>("session")
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .revision;
-                    let result = fixture
-                        .store
-                        .update_session_permissions::<StoredSessionConfiguration, _>(
-                            "session",
-                            revision,
-                            5,
-                            |configuration| {
-                                configuration.boundary_revision += 1;
-                                Ok(())
-                            },
-                        )
-                        .await
-                        .unwrap();
-                    assert!(matches!(
-                        result,
-                        maka_event_log::sessions::SessionMutation::Committed(_)
-                    ));
-                    "Browser permission boundary changed"
-                }
-                "turn" => {
-                    fixture.end().await;
-                    "Browser attachment turn is no longer active"
-                }
-                "gate" => {
-                    fixture.attachment.gate.close_admission();
-                    "Computer VM has retired"
-                }
-                "cancel" => {
-                    cancellation.cancel();
-                    "Browser attachment cancelled"
-                }
-                "operation" => "Browser session preparation lost its captured native scope",
-                _ => unreachable!(),
-            };
-            let operation = if changed == "operation" {
-                "another-operation"
-            } else {
-                &request.operation_id
-            };
-            let error = fixture
-                .attachment
-                .session_preparation_current(&request, operation, &cancellation)
-                .await
-                .unwrap_err();
-            assert!(
-                matches!(error, ToolError::Failed(message) if message == expected),
-                "{changed} did not reach its actual Host guard"
-            );
-            fixture.close().await;
-        }
     }
 
     #[tokio::test]

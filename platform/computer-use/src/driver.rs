@@ -99,6 +99,10 @@ struct RetiringEpoch {
 enum NativeCoordinates {
     Captured,
     WindowPixels,
+    #[cfg(target_os = "windows")]
+    WindowFrame(cua_driver_sdk::NativeWindowFrame),
+    #[cfg(target_os = "windows")]
+    RawWindowObservation,
 }
 
 #[derive(Clone)]
@@ -141,6 +145,30 @@ impl BoundSession {
             .clone()?;
         Ok(self.session.clone())
     }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WindowsObservationCommit {
+    pub frame: cua_driver_sdk::NativeWindowFrame,
+    pub logical_size: Option<[u32; 2]>,
+    pub captures: WindowsCaptureCommit,
+    pub image_bounds: Option<[i32; 4]>,
+    pub target_committed: bool,
+}
+#[cfg(target_os = "windows")]
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum WindowsCaptureCommit {
+    Unchanged,
+    Cleared,
+    Replaced { id: String },
+}
+#[cfg(target_os = "windows")]
+pub(crate) struct WindowsObservationResult {
+    pub commit: Option<WindowsObservationCommit>,
+    pub result: Result<CallResult, ToolError>,
 }
 
 impl Driver {
@@ -200,6 +228,77 @@ impl Driver {
     }
 
     #[cfg(target_os = "windows")]
+    pub(crate) async fn invoke_native_window_frame_in_generation(
+        driver: &Arc<Mutex<Self>>,
+        name: &str,
+        input: Value,
+        epoch: NativeEpochId,
+        expected: (
+            crate::desktop::worker::native_owner::NativeGeneration,
+            cua_driver_sdk::NativeWindowFrame,
+        ),
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<CallResult, ToolError> {
+        Self::invoke_with_coordinates(
+            driver,
+            name,
+            input,
+            epoch,
+            cancellation,
+            language,
+            NativeCoordinates::WindowFrame(expected.1),
+            Some(expected.0),
+        )
+        .await
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) async fn observe_raw_windows_in_generation(
+        driver: &Arc<Mutex<Self>>,
+        input: Value,
+        epoch: NativeEpochId,
+        expected: crate::desktop::worker::native_owner::NativeGeneration,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<WindowsObservationResult, ToolError> {
+        let result = Self::invoke_windows(
+            driver,
+            "get_window_state",
+            input,
+            epoch,
+            cancellation,
+            language,
+            NativeCoordinates::RawWindowObservation,
+            Some(expected),
+        )
+        .await?;
+        // Read the producer's commit before the ordinary error mapper discards
+        // the failed response. A failed observation is never a rollback ACK.
+        let call: CallResult = serde_json::from_str(&result.raw_json).map_err(|error| {
+            ToolError::OutcomeUnknown(format!("invalid native observation result: {error}"))
+        })?;
+        let commit = call
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("_native_window_observation"))
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|error| {
+                ToolError::OutcomeUnknown(format!("invalid native observation commit: {error}"))
+            })?;
+        let mapped = if result.is_error {
+            windows_native_result(result, language)
+        } else {
+            Ok(call)
+        };
+        Ok(WindowsObservationResult {
+            commit,
+            result: mapped,
+        })
+    }
+
+    #[cfg(target_os = "windows")]
     pub(crate) async fn start_windows_audio(
         driver: &Arc<Mutex<Self>>,
         input: Value,
@@ -220,7 +319,7 @@ impl Driver {
                 input,
                 epoch,
                 None,
-                false,
+                crate::desktop::worker::native_owner::NativeCoordinateFrame::Screenshot,
                 audio,
                 cancellation,
                 language,
@@ -256,6 +355,25 @@ impl Driver {
             })?
         })
     }
+    #[cfg(target_os = "macos")]
+    pub(crate) async fn mac_keyboard_layout(
+        driver: &Arc<Mutex<Self>>,
+    ) -> Result<Option<platform_macos::input::native_keyboard::NativeKeyboardLayout>, ToolError>
+    {
+        use crate::macos::page_scroll::metadata::{Observation, Query};
+        let pending = {
+            let mut driver = driver.lock().await;
+            driver.mac_admission()?;
+            driver.cursors.mac_metadata(Query::KeyboardLayout)
+        };
+        let Observation::KeyboardLayout { layout } = pending.await? else {
+            return Err(ToolError::Failed(
+                "unexpected native keyboard layout observation".into(),
+            ));
+        };
+        Ok(layout)
+    }
+
     #[cfg(target_os = "macos")]
     pub(crate) async fn mac_controller(
         driver: &Arc<Mutex<Self>>,
@@ -842,6 +960,49 @@ impl Driver {
             .map_err(|error| ToolError::OutcomeUnknown(format!("invalid native result: {error}")))
     }
 
+    #[cfg(target_os = "windows")]
+    async fn invoke_windows(
+        driver: &Arc<Mutex<Self>>,
+        name: &str,
+        input: Value,
+        epoch: NativeEpochId,
+        cancellation: &CancellationToken,
+        language: Language,
+        coordinates: NativeCoordinates,
+        expected_generation: Option<crate::desktop::worker::native_owner::NativeGeneration>,
+    ) -> Result<crate::desktop::worker::native_owner::NativeResult, ToolError> {
+        if cancellation.is_cancelled() {
+            return Err(ToolError::Failed(
+                "Computer Use cancelled before dispatch".into(),
+            ));
+        }
+        let (owner, audio) = {
+            let driver = driver.lock().await;
+            if matches!(driver.state, State::Closing(_) | State::Closed) {
+                return Err(ToolError::Failed("Computer Use Host is closing".into()));
+            }
+            (driver.native_owner.clone(), driver.audio_enabled)
+        };
+        Ok(owner
+            .invoke(
+                name,
+                input,
+                epoch,
+                expected_generation,
+                match coordinates {
+                    NativeCoordinates::Captured => crate::desktop::worker::native_owner::NativeCoordinateFrame::Screenshot,
+                    NativeCoordinates::WindowPixels => crate::desktop::worker::native_owner::NativeCoordinateFrame::WindowPixels,
+                    NativeCoordinates::WindowFrame(frame) => crate::desktop::worker::native_owner::NativeCoordinateFrame::WindowFrame(frame),
+                    NativeCoordinates::RawWindowObservation => crate::desktop::worker::native_owner::NativeCoordinateFrame::RawWindowObservation,
+                },
+                audio,
+                cancellation,
+                language,
+            )
+            .await?
+            .result)
+    }
+
     async fn invoke_with_coordinates(
         driver: &Arc<Mutex<Self>>,
         name: &str,
@@ -889,28 +1050,17 @@ impl Driver {
             ));
         }
         #[cfg(target_os = "windows")]
-        let result = {
-            let (owner, audio) = {
-                let driver = driver.lock().await;
-                if matches!(driver.state, State::Closing(_) | State::Closed) {
-                    return Err(ToolError::Failed("Computer Use Host is closing".into()));
-                }
-                (driver.native_owner.clone(), driver.audio_enabled)
-            };
-            owner
-                .invoke(
-                    name,
-                    input,
-                    epoch,
-                    expected_generation,
-                    matches!(coordinates, NativeCoordinates::WindowPixels),
-                    audio,
-                    cancellation,
-                    language,
-                )
-                .await?
-                .result
-        };
+        let result = Self::invoke_windows(
+            driver,
+            name,
+            input,
+            epoch,
+            cancellation,
+            language,
+            coordinates,
+            expected_generation,
+        )
+        .await?;
         #[cfg(not(target_os = "windows"))]
         let result = {
             let bound = driver.lock().await.bind_epoch(epoch, language)?;

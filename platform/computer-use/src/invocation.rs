@@ -530,6 +530,32 @@ pub trait BrowserAuthorization: Send + Sync {
             ))
         })
     }
+    /// Independent Host upload consent plus sandboxed, immutable source reads.
+    /// Paths are input requests, never browser-side filesystem authority.
+    fn prepare_upload(
+        &self,
+        _request: crate::BrowserUploadRequest,
+        _cancellation: CancellationToken,
+    ) -> crate::BrowserUploadFuture {
+        Box::pin(async {
+            Err(ToolError::Failed(
+                "Browser file upload requires Host authorization".into(),
+            ))
+        })
+    }
+    /// Recheck the same upload boundary without requesting another grant.
+    fn check_upload(
+        &self,
+        _request: crate::BrowserUploadRequest,
+        _cancellation: CancellationToken,
+    ) -> AuthorizationFuture {
+        Box::pin(async {
+            Err(ToolError::Failed(
+                "Browser file upload requires Host authorization".into(),
+            ))
+        })
+    }
+
     fn attachment(&self) -> Option<Arc<dyn BrowserAttachmentAuthorization>> {
         None
     }
@@ -599,6 +625,7 @@ pub struct InvocationContext<'a> {
     browser_host_effects: Option<Arc<dyn BrowserHostEffects>>,
     browser_asset_files: Option<Arc<dyn crate::BrowserAssetFiles>>,
     app_target: Option<crate::ComputerAppTarget>,
+    native_monitor_authority: Option<Arc<dyn crate::NativeMonitorAuthority>>,
     #[cfg(feature = "native-desktop")]
     browser_services: Option<Arc<dyn BrowserServicesProvider>>,
     browser_preparation_policy: BrowserPreparationPolicy,
@@ -617,6 +644,7 @@ pub(crate) struct OwnedInvocationContext {
     browser_host_effects: Option<Arc<dyn BrowserHostEffects>>,
     browser_asset_files: Option<Arc<dyn crate::BrowserAssetFiles>>,
     app_target: Option<crate::ComputerAppTarget>,
+    native_monitor_authority: Option<Arc<dyn crate::NativeMonitorAuthority>>,
     #[cfg(feature = "native-desktop")]
     browser_services: Option<Arc<dyn BrowserServicesProvider>>,
     browser_preparation_policy: BrowserPreparationPolicy,
@@ -634,6 +662,7 @@ impl OwnedInvocationContext {
             browser_host_effects: self.browser_host_effects.clone(),
             browser_asset_files: self.browser_asset_files.clone(),
             app_target: self.app_target.clone(),
+            native_monitor_authority: self.native_monitor_authority.clone(),
             #[cfg(feature = "native-desktop")]
             browser_services: self.browser_services.clone(),
             browser_preparation_policy: self.browser_preparation_policy.clone(),
@@ -654,6 +683,7 @@ impl<'a> InvocationContext<'a> {
             browser_host_effects: self.browser_host_effects.clone(),
             browser_asset_files: self.browser_asset_files.clone(),
             app_target: self.app_target.clone(),
+            native_monitor_authority: self.native_monitor_authority.clone(),
             #[cfg(feature = "native-desktop")]
             browser_services: self.browser_services.clone(),
             browser_preparation_policy: self.browser_preparation_policy.clone(),
@@ -671,6 +701,7 @@ impl<'a> InvocationContext<'a> {
             browser_host_effects: None,
             browser_asset_files: None,
             app_target: None,
+            native_monitor_authority: None,
             #[cfg(feature = "native-desktop")]
             browser_services: None,
             browser_preparation_policy: BrowserPreparationPolicy::default(),
@@ -844,6 +875,18 @@ impl<'a> InvocationContext<'a> {
 
     pub fn app_target(&self) -> Option<&crate::ComputerAppTarget> {
         self.app_target.as_ref()
+    }
+
+    pub fn with_native_monitor_authority(
+        mut self,
+        authority: Arc<dyn crate::NativeMonitorAuthority>,
+    ) -> Self {
+        self.native_monitor_authority = Some(authority);
+        self
+    }
+
+    pub fn native_monitor_authority(&self) -> Option<Arc<dyn crate::NativeMonitorAuthority>> {
+        self.native_monitor_authority.clone()
     }
 
     pub fn turn(&self) -> &str {

@@ -393,6 +393,7 @@ impl Tab {
             last_turn: self.last_turn.clone(),
             dialogs: None,
             downloads: None,
+            filechoosers: None,
             dialog_host: self.dialog_host.clone(),
             clipboard: None,
             clipboard_store: self.clipboard_store.clone(),

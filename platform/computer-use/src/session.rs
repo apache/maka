@@ -297,6 +297,13 @@ impl Session {
                 .prepare_wait(handle, operation, invocation, cancellation, language)
                 .await;
         }
+        if let Command::BrowserFileChooserWait { handle, options } = command {
+            self.admit_invocation(invocation.session(), cancellation)?;
+            return self
+                .browsers
+                .prepare_file_chooser(handle, options, invocation, cancellation, language)
+                .await;
+        }
         if let Command::BrowserDownloadWait { handle, options } = command {
             self.admit_invocation(invocation.session(), cancellation)?;
             return self
@@ -1662,7 +1669,6 @@ impl Session {
                 handle,
                 action.cursor_target(),
                 &window,
-                session,
                 cancellation,
                 language,
             )
@@ -1964,12 +1970,11 @@ impl Session {
         handle: &str,
         position: Option<Position>,
         window: &WindowInfo,
-        session: &str,
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<[f64; 2], ToolError> {
         #[cfg(not(target_os = "windows"))]
-        let _ = (session, cancellation);
+        let _ = cancellation;
         let target = self
             .targets
             .get(handle)

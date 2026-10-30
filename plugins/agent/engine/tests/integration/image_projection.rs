@@ -101,7 +101,6 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         let observed_log = log.clone();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-
             let body = request(&mut socket).await;
 
             let prefix = observed_log.prefix(100, 128 * 1024).await.unwrap();
@@ -153,7 +152,6 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let copied_request = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-
             let body = request(&mut socket).await;
 
             respond(&mut socket).await;

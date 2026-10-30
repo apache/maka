@@ -16,6 +16,7 @@
 # under the License.
 
 [package]
+autotests = false
 name = "maka-host-runtime"
 version.workspace = true
 edition.workspace = true
@@ -67,3 +68,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_Security"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

@@ -316,6 +316,109 @@ export function activate(context) {
 }
 "#;
 
+struct InstalledUi {
+    package: Value,
+    instance: Value,
+    source: Value,
+}
+
+async fn install_dynamic_ui(client: &Client) -> InstalledUi {
+    let initial = client
+        .query("management", "readUi", json!({}))
+        .await
+        .unwrap();
+    let installed = manage(
+        client,
+        "installSource",
+        json!({
+            "expectedRevision": initial["source"]["revision"],
+            "files": {
+                "maka.extension.json": json!({
+                    "schemaVersion": 1,
+                    "id": "test.nsh.dynamic-ui",
+                    "application": {"ui": {
+                        "module": "ui.js",
+                        "configuration": {
+                            "type":"object",
+                            "properties":{"caption":{"type":"string","default":"DYNAMIC_PANEL_INITIAL"}},
+                            "additionalProperties":false
+                        },
+                        "imports": {
+                            "session": {
+                                "contract":maka_agent_api::contract(),
+                                "cardinality":{"kind":"one"}
+                            }
+                        },
+                        "contributions": {
+                            "root":{"kind":"root"},
+                            "alternate":{"kind":"root"},
+                            "open":{"kind":"command","trigger":"dynamic-panel","title":{"fallback":"Open dynamic panel","translations":{}}},
+                            "panel":{"kind":"panel","title":{"fallback":"Dynamic panel","translations":{}}},
+                            "preferences":{"kind":"settings","title":{"fallback":"Dynamic preferences","translations":{}}}
+                        }
+                    }}
+                }).to_string(),
+                "ui.js": MODULE
+            }
+        }),
+    )
+    .await;
+    let inserted = manage(
+        client,
+        "editComposition",
+        json!({
+            "expectedRevision": installed["source"]["revision"],
+            "edits": [{
+                "kind":"insert","name":"dynamic-ui","package":installed["package"],
+                "usePackage":"ui","settings":[],
+                "bindings":{"session":[{"kind":"instance","path":["agent"],"export":"agent"}]}
+            }]
+        }),
+    )
+    .await;
+    let catalog = client
+        .query("management", "readUi", json!({"source": inserted}))
+        .await
+        .unwrap();
+    let instance = catalog["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["path"] == json!(["dynamic-ui"]))
+        .unwrap()["instance"]
+        .clone();
+    InstalledUi {
+        package: installed["package"].clone(),
+        instance,
+        source: inserted,
+    }
+}
+
+async fn record_original_mutation(view: &mut AppView, client: &Client) -> (Uuid, Value) {
+    support::click_button(view, "Record original mutation").await;
+    wait_view_state(view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.label.starts_with("UI_OPERATION:"))
+    })
+    .await;
+    let operation_id = Uuid::parse_str(
+        view.accessibility_snapshot()
+            .iter()
+            .find_map(|node| node.label.strip_prefix("UI_OPERATION:"))
+            .unwrap(),
+    )
+    .unwrap();
+    let original_operation = client.operation(operation_id).await.unwrap();
+    assert!(
+        matches!(&original_operation.receipt, Some(Receipt::Recorded {
+        outcome: OperationOutcome::Returned { value }, ..
+    }) if value["kind"] == "committed")
+    );
+    let original_operation = serde_json::to_value(original_operation).unwrap();
+    (operation_id, original_operation)
+}
+
 async fn manage(client: &Client, method: &str, input: Value) -> Value {
     let mutation = client
         .mutation(
@@ -517,7 +620,7 @@ async fn standalone_composer_replacement_preserves_the_original_draft_upload_and
             ).unwrap();
             (manifest, module)
         }).await.unwrap();
-        let mut fixture = Fixture::images().await;
+        let mut fixture = Fixture::configured(support::Options { images: true, ..Default::default() }).await;
         let client = fixture.client().await;
         const DRAFT: &str = "ORIGINAL_COMPOSER_DRAFT";
         const EDITED: &str = "ORIGINAL_COMPOSER_DRAFT_SAMPLE_EDIT";
@@ -640,7 +743,7 @@ async fn a_rebound_application_uses_its_agent_for_drafts_files_uploads_and_sends
     use base64::{Engine as _, engine::general_purpose::STANDARD};
 
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::images().await;
+        let mut fixture = Fixture::configured(support::Options { images: true, ..Default::default() }).await;
         let client = fixture.client().await;
         client.save_draft("agent", &fixture.session, EDITOR, None, "GATEWAY_DRAFT".into()).await.unwrap();
         std::fs::write(fixture.directory.path().join("workspace/gateway-only.txt"), "original gateway file").unwrap();
@@ -843,9 +946,9 @@ export function activate(context) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn installed_ui_module_uses_real_host_calls_and_tracks_configuration_and_disable() {
+async fn installed_ui_panel_keeps_native_edits_and_host_receipts_through_configuration() {
     tokio::time::timeout(Duration::from_secs(90), async {
-        let fixture = Fixture::plugin_settings().await;
+        let fixture = Fixture::configured(support::Options { plugins: true, ..Default::default() }).await;
         let client = fixture.client().await;
         let (mut view, bindings) =
             fixture.view(fixture.client().await, Some(fixture.session.clone()));
@@ -867,59 +970,7 @@ async fn installed_ui_module_uses_real_host_calls_and_tracks_configuration_and_d
         wait_view_state(&mut view, |view, _| {
             view.surface().input_context().is_some_and(|input| input.selection == (3..8))
         }).await;
-        let initial = client
-            .query("management", "readUi", json!({}))
-            .await
-            .unwrap();
-        let installed = manage(
-            &client,
-            "installSource",
-            json!({
-                "expectedRevision": initial["source"]["revision"],
-                "files": {
-                    "maka.extension.json": json!({
-                        "schemaVersion": 1,
-                        "id": "test.nsh.dynamic-ui",
-                        "application": {"ui": {
-                            "module": "ui.js",
-                            "configuration": {
-                                "type":"object",
-                                "properties":{"caption":{"type":"string","default":"DYNAMIC_PANEL_INITIAL"}},
-                                "additionalProperties":false
-                            },
-                            "imports": {
-                                "session": {
-                                    "contract":maka_agent_api::contract(),
-                                    "cardinality":{"kind":"one"}
-                                }
-                            },
-                            "contributions": {
-                                "root":{"kind":"root"},
-                                "alternate":{"kind":"root"},
-                                "open":{"kind":"command","trigger":"dynamic-panel","title":{"fallback":"Open dynamic panel","translations":{}}},
-                                "panel":{"kind":"panel","title":{"fallback":"Dynamic panel","translations":{}}},
-                                "preferences":{"kind":"settings","title":{"fallback":"Dynamic preferences","translations":{}}}
-                            }
-                        }}
-                    }).to_string(),
-                    "ui.js": MODULE
-                }
-            }),
-        )
-        .await;
-        let inserted = manage(
-            &client,
-            "editComposition",
-            json!({
-                "expectedRevision": installed["source"]["revision"],
-                "edits": [{
-                    "kind":"insert","name":"dynamic-ui","package":installed["package"],
-                    "usePackage":"ui","settings":[],
-                    "bindings":{"session":[{"kind":"instance","path":["agent"],"export":"agent"}]}
-                }]
-            }),
-        )
-        .await;
+        let installed = install_dynamic_ui(&client).await;
         shortcut(&mut view, 'p');
         wait_focused_input(&mut view, "Search commands").await;
         view.handle_event(Event::Paste("Open dynamic panel".into()));
@@ -941,16 +992,7 @@ async fn installed_ui_module_uses_real_host_calls_and_tracks_configuration_and_d
         support::click_button(&mut view, "Read actual session").await;
         wait_view(&mut view, |screen| screen.contains("HOST_TITLE:NSH real Agent")).await;
         evidence("ui-plugin-real-host-panel", &view.snapshot());
-        support::click_button(&mut view, "Record original mutation").await;
-        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label.starts_with("UI_OPERATION:"))).await;
-        let operation_id = Uuid::parse_str(
-            view.accessibility_snapshot().iter().find_map(|node| node.label.strip_prefix("UI_OPERATION:")).unwrap()
-        ).unwrap();
-        let original_operation = client.operation(operation_id).await.unwrap();
-        assert!(matches!(&original_operation.receipt, Some(Receipt::Recorded {
-            outcome: OperationOutcome::Returned { value }, ..
-        }) if value["kind"] == "committed"));
-        let original_operation = serde_json::to_value(original_operation).unwrap();
+        let (operation_id, original_operation) = record_original_mutation(&mut view, &client).await;
 
         support::click_button(&mut view, "Close panel").await;
         shortcut(&mut view, 'p');
@@ -972,17 +1014,7 @@ async fn installed_ui_module_uses_real_host_calls_and_tracks_configuration_and_d
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         wait_view(&mut view, |screen| screen.contains("DYNAMIC_PANEL_INITIAL")).await;
         support::wait_draft(&client, &fixture.session, "").await;
-        let catalog = client
-            .query("management", "readUi", json!({"source": inserted}))
-            .await
-            .unwrap();
-        let instance = catalog["instances"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["path"] == json!(["dynamic-ui"]))
-            .unwrap()["instance"]
-            .clone();
+        let instance = installed.instance.clone();
         let ui_instance = serde_json::from_value(instance.clone()).unwrap();
         assert_eq!(serde_json::to_value(client.operation_for_ui(&ui_instance, operation_id).await.unwrap()).unwrap(), original_operation);
         tab_to_label(&mut view, "Dynamic private editor").await;
@@ -993,7 +1025,7 @@ async fn installed_ui_module_uses_real_host_calls_and_tracks_configuration_and_d
             &client,
             "configure",
             json!({
-                "expectedRevision": catalog["source"]["revision"],
+                "expectedRevision": installed.source["revision"],
                 "instance": instance,
                 "changes":[{"path":["caption"],"value":{"kind":"text","text":"DYNAMIC_CONFIG_UPDATED"}}]
             }),
@@ -1023,15 +1055,40 @@ async fn installed_ui_module_uses_real_host_calls_and_tracks_configuration_and_d
                 && !screen.contains("DYNAMIC_PANEL_INITIAL")
         })
         .await;
+        assert_eq!(serde_json::to_value(client.operation_for_ui(&ui_instance, operation_id).await.unwrap()).unwrap(), original_operation);
+        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+        drop(view);
+        bindings.close().await.unwrap();
+        client.close().await.unwrap();
+        fixture.finish().await;
+    })
+    .await
+    .expect("installed panel configuration lost native edits or original Host calls");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn custom_ui_root_restores_private_state_and_closes_replaced_subscriptions() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let fixture = Fixture::configured(support::Options { plugins: true, ..Default::default() }).await;
+        let client = fixture.client().await;
+        let installed = install_dynamic_ui(&client).await;
+        let instance = installed.instance.clone();
+        let ui_instance = serde_json::from_value(instance.clone()).unwrap();
+        let (mut view, bindings) =
+            fixture.view(fixture.client().await, Some(fixture.session.clone()));
+        let reload = bindings.reload();
+        let mut requests = reload.take_requests();
+        wait_editable_composer(&mut view).await;
+        open_panel(&mut view).await;
+        let (operation_id, original_operation) = record_original_mutation(&mut view, &client).await;
         support::click_button(&mut view, "Close panel").await;
         tab_to_label(&mut view, "Message composer").await;
         wait_editable_composer(&mut view).await;
-        shortcut(&mut view, 'a');
         view.handle_event(Event::Paste("DYNAMIC_PLUGIN_UNSENT_DRAFT".into()));
         let custom = select_root(&client, "dynamic-ui", "root").await;
         reload_ui(&mut view, &bindings, &mut requests, &fixture.session).await;
         wait_view_state(&mut view, |view, screen| {
-            screen.contains("CUSTOM_ROOT:DYNAMIC_CONFIG_UPDATED")
+            screen.contains("CUSTOM_ROOT:DYNAMIC_PANEL_INITIAL")
                 && screen.contains("ROOT_RESTORED:none")
                 && !view.accessibility_snapshot().iter().any(|node| node.label == "Message composer" || node.label == "New conversation")
         }).await;
@@ -1061,7 +1118,7 @@ async fn installed_ui_module_uses_real_host_calls_and_tracks_configuration_and_d
         wait_view(&mut view, |screen| screen.contains("ROOT_WATCH_READY")).await;
         wait_active_calls(&mut view, &fixture, calls_before_watch + 1).await;
         let loaded = fixture.store.load_application(client.source().deployment).await.unwrap().unwrap();
-        let old_package = loaded.packages().iter().find(|package| serde_json::to_value(package.application_ref()).unwrap() == installed["package"]).unwrap();
+        let old_package = loaded.packages().iter().find(|package| serde_json::to_value(package.application_ref()).unwrap() == installed.package).unwrap();
         let manifest = String::from_utf8(old_package.file("maka.extension.json").unwrap().to_vec()).unwrap();
         let metadata = client.query("management", "read", json!({})).await.unwrap();
         let upgraded = manage(&client, "installSource", json!({
@@ -1071,8 +1128,8 @@ async fn installed_ui_module_uses_real_host_calls_and_tracks_configuration_and_d
                 "ui.js":MODULE.replace("ROOT_PRIVATE:", "UPDATED_ROOT_PRIVATE:")
             }
         })).await;
-        assert_eq!(upgraded["package"]["id"], installed["package"]["id"]);
-        assert_ne!(upgraded["package"]["revision"], installed["package"]["revision"]);
+        assert_eq!(upgraded["package"]["id"], installed.package["id"]);
+        assert_ne!(upgraded["package"]["revision"], installed.package["revision"]);
         let metadata = client.query("management", "read", json!({})).await.unwrap();
         let mut input = metadata["source"]["input"].clone();
         input["instances"]["dynamic-ui"]["package"]["package"] = upgraded["package"].clone();
@@ -1099,20 +1156,44 @@ async fn installed_ui_module_uses_real_host_calls_and_tracks_configuration_and_d
                 && !screen.contains("PRIVATE_ROOT_EDIT")
                 && !screen.contains("CUSTOM_ROOT:")
         }).await;
-        let restored = select_root(&client, "workbench-ui", "root").await;
+        select_root(&client, "workbench-ui", "root").await;
         reload_ui(&mut view, &bindings, &mut requests, &fixture.session).await;
         wait_editable_composer(&mut view).await;
         wait_view(&mut view, |screen| screen.contains("DYNAMIC_PLUGIN_UNSENT_DRAFT")).await;
+        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+        drop(view);
+        bindings.close().await.unwrap();
+        client.close().await.unwrap();
+        fixture.finish().await;
+    })
+    .await
+    .expect("custom root replacement lost state or retained its original subscription");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disabled_and_removed_ui_preserve_drafts_and_original_host_receipts() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let fixture = Fixture::configured(support::Options { plugins: true, ..Default::default() }).await;
+        let client = fixture.client().await;
+        let installed = install_dynamic_ui(&client).await;
+        let instance = installed.instance.clone();
+        let ui_instance = serde_json::from_value(instance.clone()).unwrap();
+        let (mut view, bindings) =
+            fixture.view(fixture.client().await, Some(fixture.session.clone()));
+        let reload = bindings.reload();
+        let mut requests = reload.take_requests();
+        wait_editable_composer(&mut view).await;
         open_panel(&mut view).await;
-        wait_view(&mut view, |screen| screen.contains("ROOT_CONFIG_UPDATED")).await;
+        let (operation_id, original_operation) = record_original_mutation(&mut view, &client).await;
         support::click_button(&mut view, "Close panel").await;
         tab_to_label(&mut view, "Message composer").await;
         wait_editable_composer(&mut view).await;
+        view.handle_event(Event::Paste("DYNAMIC_PLUGIN_UNSENT_DRAFT".into()));
         let disabled = manage(
             &client,
             "setEnabled",
             json!({
-                "expectedRevision":restored["revision"],
+                "expectedRevision":installed.source["revision"],
                 "instance":instance,"enabled":false
             }),
         )
@@ -1136,21 +1217,21 @@ async fn installed_ui_module_uses_real_host_calls_and_tracks_configuration_and_d
         support::click_button(&mut view, "Close commands").await;
         manage(&client, "setEnabled", json!({"expectedRevision":disabled["revision"],"instance":instance,"enabled":true})).await;
         open_panel(&mut view).await;
-        wait_view(&mut view, |screen| screen.contains("ROOT_CONFIG_UPDATED")).await;
+        wait_view(&mut view, |screen| screen.contains("DYNAMIC_PANEL_INITIAL")).await;
         let metadata = client.query("management", "read", json!({})).await.unwrap();
         let mut input = metadata["source"]["input"].clone();
         input["instances"].as_object_mut().unwrap().remove("dynamic-ui").unwrap();
-        let packages: Vec<_> = metadata["packages"].as_array().unwrap().iter().filter(|package| package["id"] != installed["package"]["id"]).cloned().collect();
+        let packages: Vec<_> = metadata["packages"].as_array().unwrap().iter().filter(|package| package["id"] != installed.package["id"]).cloned().collect();
         let removed = manage(&client, "replaceSource", json!({
             "expectedRevision":metadata["source"]["reference"]["revision"],
             "document":{"input":input,"remoteExports":metadata["source"]["remoteExports"],"packages":packages}
         })).await;
         reload_ui(&mut view, &bindings, &mut requests, &fixture.session).await;
-        wait_view_state(&mut view, |view, screen| screen.contains("DYNAMIC_PLUGIN_UNSENT_DRAFT") && !screen.contains("ROOT_CONFIG_UPDATED") && !view.accessibility_snapshot().iter().any(|node| node.label == "Close panel")).await;
+        wait_view_state(&mut view, |view, screen| screen.contains("DYNAMIC_PLUGIN_UNSENT_DRAFT") && !screen.contains("DYNAMIC_PANEL_INITIAL") && !view.accessibility_snapshot().iter().any(|node| node.label == "Close panel")).await;
         let current = client.query("management", "read", json!({})).await.unwrap();
         assert_eq!(current["source"]["reference"], removed);
         assert!(current["source"]["input"]["instances"].get("dynamic-ui").is_none());
-        assert!(!current["packages"].as_array().unwrap().iter().any(|package| package["id"] == installed["package"]["id"]));
+        assert!(!current["packages"].as_array().unwrap().iter().any(|package| package["id"] == installed.package["id"]));
         assert_eq!(serde_json::to_value(client.operation_for_ui(&ui_instance, operation_id).await.unwrap()).unwrap(), original_operation);
         let observed = client.query("agent", "observe", json!({"sessionId":fixture.session})).await.unwrap();
         assert_eq!(observed["session"]["title"], "UI original receipt");
@@ -1174,5 +1255,5 @@ async fn installed_ui_module_uses_real_host_calls_and_tracks_configuration_and_d
         fixture.finish().await;
     })
     .await
-    .expect("the installed NSH UI module did not follow the real Host lifecycle");
+    .expect("UI disable, re-enable or removal lost the original draft or receipt");
 }

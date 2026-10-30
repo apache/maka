@@ -108,6 +108,14 @@ pub fn profiles(values: &BTreeMap<String, ModelOverride>) -> ValidationResult {
 
 pub fn model_override(id: &str, p: &ModelOverride) -> ValidationResult {
     text(id)?;
+    if let Some(reference) = &p.catalog_model {
+        for id in [&reference.provider, &reference.model_id] {
+            text(id)?;
+            if id.chars().any(char::is_control) {
+                return Err("invalid catalog model reference".into());
+            }
+        }
+    }
     if let Some(adapter) = &p.adapter {
         text(adapter)?;
         if adapter.chars().any(char::is_control) {

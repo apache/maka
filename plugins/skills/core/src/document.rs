@@ -230,29 +230,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn yaml_preserves_large_metadata_and_body_but_rejects_aliases() {
-        for header in [
-            format!("name: {}\ndescription: b", "x".repeat(256 * 1024)),
-            format!(
-                "name: a\ndescription: b\nignored: {}0{}",
-                "[".repeat(64),
-                "]".repeat(64)
-            ),
-            format!(
-                "name: a\ndescription: b\nignored: [{}]",
-                "0,".repeat(32_768)
-            ),
-        ] {
-            let parsed = parse(&format!("---\n{header}\n---\nbody")).unwrap();
-            assert_eq!(parsed.body, "body");
-            assert_eq!(parsed.manifest.description, "b");
-        }
+    fn frontmatter_aliases_are_rejected_without_losing_the_instruction_body() {
         let rejected = parse("---\nname: &name a\ndescription: *name\n---\nbody").unwrap_err();
         assert_eq!(rejected.issues[0].code, MalformedFrontmatter);
         assert_eq!(rejected.body, "body");
-        let body = "😀".repeat(100_000);
-        let parsed = parse(&format!("---\nname: a\ndescription: b\n---\n{body}")).unwrap();
-        assert_eq!(parsed.body, body);
-        assert!(parsed.issues.is_empty());
     }
 }

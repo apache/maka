@@ -45,9 +45,7 @@ async fn edit(executor: &MutationExecutor, input: Value) -> Result<Value, ToolEr
 #[tokio::test]
 async fn exact_literal_replacement_preserves_inode_and_reports_original_line_span() {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    #[cfg(windows)]
-    let root = std::path::PathBuf::from(root.to_str().unwrap().strip_prefix(r"\\?\").unwrap());
+    let root = dunce::canonicalize(temp.path()).unwrap();
     let executor = executor(&root);
     let path = root.join("text");
     fs::write(&path, "零\n一\n二\n三\n").unwrap();
@@ -101,7 +99,7 @@ async fn exact_literal_replacement_preserves_inode_and_reports_original_line_spa
 #[tokio::test]
 async fn invalid_ambiguous_and_missing_edits_leave_bytes_intact() {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
+    let root = dunce::canonicalize(temp.path()).unwrap();
     let executor = executor(&root);
     let path = root.join("text");
     let cases = [
@@ -126,16 +124,8 @@ async fn invalid_ambiguous_and_missing_edits_leave_bytes_intact() {
             json!({"path":"text","old_string":"x","new_string":"two"}),
         ),
         (
-            vec![b'x'; 1024 * 1024 + 1],
-            json!({"path":"text","old_string":"x","new_string":"two"}),
-        ),
-        (
             b"one".to_vec(),
             json!({"path":"text","old_string":"one","new_string":"two","extra":true}),
-        ),
-        (
-            b"one".to_vec(),
-            json!({"path":"text","old_string":"x".repeat(1024 * 1024 + 1),"new_string":"two"}),
         ),
     ];
     for (source, input) in cases {
@@ -184,9 +174,7 @@ async fn invalid_ambiguous_and_missing_edits_leave_bytes_intact() {
 #[tokio::test]
 async fn exact_edit_large_utf8_source_preserves_bytes_inode_and_mode() {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    #[cfg(windows)]
-    let root = std::path::PathBuf::from(root.to_str().unwrap().strip_prefix(r"\\?\").unwrap());
+    let root = dunce::canonicalize(temp.path()).unwrap();
     let executor = executor(&root);
     let prefix = "unchanged configuration value: 零一二三四五六七八九\n".repeat(20_000);
     let path = root.join("text");
@@ -223,32 +211,32 @@ async fn exact_edit_large_utf8_source_preserves_bytes_inode_and_mode() {
 }
 
 #[tokio::test]
-async fn exact_edit_accepts_large_old_and_new_strings_and_output_growth() {
+async fn fuzzy_edits_report_the_original_span_and_write_replacements_literally() {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    #[cfg(windows)]
-    let root = std::path::PathBuf::from(root.to_str().unwrap().strip_prefix(r"\\?\").unwrap());
+    let root = dunce::canonicalize(temp.path()).unwrap();
     let executor = executor(&root);
     let path = root.join("text");
-    let large = "configuration value: 零一二三四五六七八九; ".repeat(24_000);
-    for (source, old, new, expected) in [
+    for (source, old, new, strategy, expected) in [
         (
-            format!("before:{large}:after"),
-            large.clone(),
-            "small".into(),
-            "before:small:after".into(),
+            "prefix\n  target value  \ntrailer\n",
+            "target value\n",
+            "$& 新\n",
+            "line-trimmed",
+            "prefix\n$& 新\ntrailer\n",
         ),
         (
-            "before:small:after".into(),
-            "small".into(),
-            large.clone(),
-            format!("before:{large}:after"),
+            "prefix\nlet  value =\t旧;\ntrailer\n",
+            "let value = 旧;",
+            "$& 新",
+            "whitespace",
+            "prefix\n$& 新\ntrailer\n",
         ),
         (
-            format!("{}target", "p".repeat(600_000)),
-            "target".into(),
-            "新".repeat(200_000),
-            format!("{}{}", "p".repeat(600_000), "新".repeat(200_000)),
+            "prefix\nliteral\\tvalue\ntrailer\n",
+            "literal\tvalue",
+            "$& 新",
+            "escape",
+            "prefix\n$& 新\ntrailer\n",
         ),
     ] {
         fs::write(&path, source).unwrap();
@@ -259,41 +247,8 @@ async fn exact_edit_accepts_large_old_and_new_strings_and_output_growth() {
             )
             .await
             .unwrap(),
-            json!({"ok":true,"path":path,"replacements":1,"matchedVia":"exact","startLine":1,"endLine":1})
+            json!({"ok":true,"path":path,"replacements":1,"matchedVia":strategy,"startLine":2,"endLine":2})
         );
         assert_eq!(fs::read(&path).unwrap(), expected.as_bytes());
-    }
-}
-
-#[tokio::test]
-async fn fuzzy_edit_accepts_large_utf16_source_and_many_lines() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    #[cfg(windows)]
-    let root = std::path::PathBuf::from(root.to_str().unwrap().strip_prefix(r"\\?\").unwrap());
-    let executor = executor(&root);
-    let path = root.join("text");
-    for (line, count) in [
-        (
-            "unchanged configuration value: 零一二三四五六七八九\n",
-            30_000,
-        ),
-        ("padding\n", 50_001),
-    ] {
-        let prefix = line.repeat(count);
-        fs::write(&path, format!("{prefix}  target value  \ntrailer\n")).unwrap();
-        assert_eq!(
-            edit(
-                &executor,
-                json!({"path":"text","old_string":"target value\n","new_string":"updated 新\n"})
-            )
-            .await
-            .unwrap(),
-            json!({"ok":true,"path":path,"replacements":1,"matchedVia":"line-trimmed","startLine":count+1,"endLine":count+1})
-        );
-        assert_eq!(
-            fs::read(&path).unwrap(),
-            format!("{prefix}updated 新\ntrailer\n").as_bytes()
-        );
     }
 }

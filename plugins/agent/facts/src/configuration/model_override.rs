@@ -41,9 +41,28 @@ pub enum ModelModality {
     Video,
 }
 
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CatalogModelReference {
+    #[schemars(length(min = 1))]
+    pub provider: String,
+    #[schemars(length(min = 1))]
+    pub model_id: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelOverride {
+    /// Catalog defaults for this connection's model; the request model ID is unchanged.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    #[schemars(with = "CatalogModelReference")]
+    pub catalog_model: Option<CatalogModelReference>,
     /// Public adapter contribution name; omitted selects the wire's default.
     #[serde(
         default,

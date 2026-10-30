@@ -48,10 +48,10 @@ against a loopback SSE fixture, verifies canonical output, and retains per-proce
 and system telemetry. Background-agent capacity probes distinguish requested
 sessions, actual active executions, confirmed completions and unknown outcomes.
 
-Terminal behavior uses the current [terminal-shell real Host tests](../../products/maka/terminal-shell/tests/real_host/main.rs), including the production PTY lifecycle. Run them through `cargo test -p maka-cli --no-default-features --test terminal_real_host`. Compare retained release artifacts with the same renderer, terminal protocol, viewport and workload; report input latency separately from frame encoding and output delivery.
+Terminal behavior uses the current [terminal-shell real Host tests](../../products/maka/terminal-shell/tests/real_host/mod.rs), including the production PTY lifecycle. Run them through `cargo test -p maka-cli --no-default-features --test integration terminal::`. Compare retained release artifacts with the same renderer, terminal protocol, viewport and workload; report input latency separately from frame encoding and output delivery.
 
 Long-task comparisons use retained release test executables from both revisions,
-with the same benchmark fixtures. Build `maka-event-log --test archive` and
+with the same benchmark fixtures. Build `maka-event-log --test integration` and
 `maka-agent-engine --test integration` using `cargo test --release --no-run`, then run:
 
 ```sh
@@ -71,7 +71,7 @@ supported CPU instructions at runtime and retains a software fallback.
 
 Fixture setup is excluded; Engine timings cover request delivery and completion,
 not Host IPC. The [Engine fixture](../../plugins/agent/engine/tests/integration/long_task_perf.rs)
-and [prune fixture](../../platform/event-log/tests/archive/performance.rs) expose
+and [prune fixture](../../platform/event-log/tests/integration/archive/performance.rs) expose
 workload settings for sparse tools, dense tools and projection sizes. Run without
 competing builds; collect CPU profiles separately from timing comparisons.
 
@@ -106,7 +106,7 @@ tests cover reclaiming both readers and transaction recovery; arbitrary
 synchronous Rust computation is not immediately interruptible.
 
 `--kind transcript --sizes 128,512` uses retained release
-`maka-event-log --test transcript_index` executables to check many model steps
+`maka-event-log --lib` executables to check many model steps
 inside one invocation. It verifies every assistant message from each
 fresh copy; this workload complements many-turn Engine fixtures.
 
@@ -162,15 +162,11 @@ MAKA_TOOL_STORM_CALLS=64 MAKA_TOOL_STORM_PAYLOAD_BYTES=128 \
 This case executes sequential mutations. Use `real_service_query_fanout` in the
 same module for read-only calls in one model step, or backend `javascript` for
 the actual JavaScript service. Fanout count does not imply simultaneous handlers.
-The `MAKA_AGENT_TOOL_STORM` JSON records actual calls, exact result checks,
-requests, latency/CPU, process peak RSS and cleanup. Timings include the controlled
-HTTP responder; they exclude external inference, IPC and rendering. Large
-payloads can trigger real automatic compaction. The responder supplies Summary
-text and verifies the resulting checkpoint and its adoption by the next Main,
-while history checks retain every original tool result. Summary requests and
-checkpoints are reported separately from tool work. This proves the controlled
-protocol and lifecycle, not a real model's context capacity or summary quality.
-Only completed, fully verified work counts as a successful case.
+The `MAKA_AGENT_TOOL_STORM` JSON records `calls`, `payload_bytes`, `query`,
+`backend`, `summary_requests` and `wall_ms`. Each run checks exact tool results,
+complete public history, checkpoint/summary consistency and completed cleanup. Wall time
+includes the controlled HTTP responder; inference and rendering are outside this
+probe.
 
 For real image uploads on Unix, use the same release native test executable:
 

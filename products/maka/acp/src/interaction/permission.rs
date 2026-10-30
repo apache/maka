@@ -127,6 +127,10 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
                 (target.capability, &target.scope)
             {
                 format!("Allow browser file downloads from {origin} for this session")
+            } else if let (GrantCapability::BrowserUpload, GrantScope::BrowserOrigin { origin }) =
+                (target.capability, &target.scope)
+            {
+                format!("Allow browser file uploads to {origin} for this session")
             } else {
                 format!(
                     "Allow {} / {} for this session",

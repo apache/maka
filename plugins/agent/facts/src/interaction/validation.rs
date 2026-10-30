@@ -112,7 +112,9 @@ impl GrantTarget {
         }
         match (&self.capability, &self.scope) {
             (
-                GrantCapability::Browser | GrantCapability::BrowserDownload,
+                GrantCapability::Browser
+                | GrantCapability::BrowserDownload
+                | GrantCapability::BrowserUpload,
                 GrantScope::BrowserOrigin { origin },
             ) => {
                 let url = url::Url::parse(origin).map_err(|_| "Invalid browser origin")?;
@@ -133,7 +135,9 @@ impl GrantTarget {
                     generation,
                 },
             ) => {
-                entity_id(browser_id)?;
+                if browser_id.is_empty() {
+                    return Err("Invalid browser profile identity");
+                }
                 entity_id(generation)?;
             }
             (GrantCapability::ComputerUse, GrantScope::ComputerApp { application_id, .. }) => {

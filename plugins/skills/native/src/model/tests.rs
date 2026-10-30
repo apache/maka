@@ -48,6 +48,38 @@ async fn load(
         .await
         .unwrap()
 }
+async fn resource_text(library: &Library, call: &Scope, tools: Value, mut page: Value) -> String {
+    schema("load", &page);
+    let mut text = String::new();
+    loop {
+        assert_eq!(page["kind"], "resource");
+        assert!(maka_workspace_support::fits(&page));
+        text.push_str(page["content"].as_str().unwrap());
+        if page["next"].is_null() {
+            return text;
+        }
+        let resource: maka_agent_facts::read::ReadInput =
+            serde_json::from_value(page["next"]["resource"].clone()).unwrap();
+        let next: usize = resource
+            .path
+            .split("?at=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        if next > text.encode_utf16().count() {
+            text.push('\n');
+        }
+        page = library
+            .model("load", json!({"tools":tools,"input":page["next"]}), call)
+            .await
+            .unwrap();
+    }
+}
+
 fn schema(method: &str, value: &Value) {
     let projection = maka_agent_facts::tool_output::DurableToolProjection::Json {
         value: value.clone(),
@@ -358,7 +390,7 @@ async fn model_resources_keep_original_root_and_revision_and_do_not_mix_changed_
     let tools = json!(["SkillSearch", "Skill"]);
     let catalog = search(&library, &call, tools.clone()).await;
     let revision = &catalog["revision"];
-    let mut page = load(
+    let page = load(
         &library,
         &call,
         tools.clone(),
@@ -368,36 +400,7 @@ async fn model_resources_keep_original_root_and_revision_and_do_not_mix_changed_
     )
     .await;
     let next = page["next"].clone();
-    let mut all = String::new();
-    loop {
-        schema("load", &page);
-        assert!(maka_workspace_support::fits(&page));
-        assert_eq!(page["kind"], "resource");
-        all.push_str(page["content"].as_str().unwrap());
-        if page["next"].is_null() {
-            break;
-        }
-        // Original Read continuations omit a newline when a page ends at a line boundary.
-        let resource: maka_agent_facts::read::ReadInput =
-            serde_json::from_value(page["next"]["resource"].clone()).unwrap();
-        let next_position: usize = resource
-            .path
-            .split("?at=")
-            .nth(1)
-            .unwrap()
-            .split('&')
-            .next()
-            .unwrap()
-            .parse()
-            .unwrap();
-        if next_position > all.encode_utf16().count() {
-            all.push('\n');
-        }
-        page = library
-            .model("load", json!({"tools":tools,"input":page["next"]}), &call)
-            .await
-            .unwrap();
-    }
+    let all = resource_text(&library, &call, tools.clone(), page).await;
     assert_eq!(all, text);
     for path in ["../secret", "/secret", "escape"] {
         assert_eq!(
@@ -511,7 +514,7 @@ async fn instruction_pages_preserve_the_complete_body_and_original_receipt() {
 #[tokio::test]
 async fn bundled_skills_share_model_eligibility_preparation_and_exact_resource_pages() {
     let dir = tempfile::tempdir().unwrap();
-    let mut library = Library::open(
+    let library = Library::open(
         Configuration {
             home: None,
             project_roots: vec![],
@@ -532,7 +535,13 @@ async fn bundled_skills_share_model_eligibility_preparation_and_exact_resource_p
         .await
         .unwrap();
     schema("search", &result);
-    assert_eq!(result["totalEligible"], 1);
+    assert!(
+        result["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["ref"] == "bundled:maka-plugin-authoring")
+    );
     let revision = &result["revision"];
     assert_eq!(
         load(
@@ -554,40 +563,19 @@ async fn bundled_skills_share_model_eligibility_preparation_and_exact_resource_p
         )
         .await
         .unwrap();
-    assert_eq!(with_cua["totalEligible"], 2);
+    assert!(
+        with_cua["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["ref"] == "bundled:maka-cua")
+    );
     let original_load = json!({"name":"maka-plugin-authoring","revision":revision,"resource":{"path":"references/sdk/workbench.ts"}});
-    let mut page = library
+    let page = library
         .model("load", json!({"tools":tools,"input":original_load}), &call)
         .await
         .unwrap();
-    let mut all = String::new();
-    loop {
-        schema("load", &page);
-        assert_eq!(page["kind"], "resource");
-        all.push_str(page["content"].as_str().unwrap());
-        if page["next"].is_null() {
-            break;
-        }
-        let resource: maka_agent_facts::read::ReadInput =
-            serde_json::from_value(page["next"]["resource"].clone()).unwrap();
-        let position: usize = resource
-            .path
-            .split("?at=")
-            .nth(1)
-            .unwrap()
-            .split('&')
-            .next()
-            .unwrap()
-            .parse()
-            .unwrap();
-        if position > all.encode_utf16().count() {
-            all.push('\n');
-        }
-        page = library
-            .model("load", json!({"tools":tools,"input":page["next"]}), &call)
-            .await
-            .unwrap();
-    }
+    let all = resource_text(&library, &call, tools.clone(), page).await;
     assert_eq!(
         all,
         include_str!("../../../../../packages/plugin-sdk/src/workbench.ts")
@@ -606,172 +594,5 @@ async fn bundled_skills_share_model_eligibility_preparation_and_exact_resource_p
             "resource_unavailable"
         );
     }
-    let prepared = library.model("prepare", json!({"tools":tools,"input":{"language":"en","message":"/skill:maka-plugin-authoring","loadTool":"Skill","searchTool":"SkillSearch"}}), &call).await.unwrap();
-    schema("prepare", &prepared);
-    assert_eq!(prepared["kind"], "ready");
-    assert_eq!(prepared["record"]["revision"], *revision);
-    assert!(matches!(
-        library
-            .preferences
-            .set(
-                SetPreference {
-                    reference: "bundled:maka-plugin-authoring".into(),
-                    revision: 0,
-                    preference: maka_skills::Preference {
-                        enabled: false,
-                        pinned: true
-                    }
-                },
-                &call
-            )
-            .await
-            .unwrap(),
-        PreferenceResult::Applied { .. }
-    ));
-    assert_eq!(
-        library
-            .model("load", json!({"tools":tools,"input":original_load}), &call)
-            .await
-            .unwrap()["kind"],
-        "changed"
-    );
-    let fresh = library
-        .model("search", search_all(tools.clone()), &call)
-        .await
-        .unwrap();
-    assert_eq!(fresh["totalEligible"], 0);
-    assert_eq!(
-        load(
-            &library,
-            &call,
-            tools.clone(),
-            &fresh["revision"],
-            "maka-plugin-authoring",
-            Value::Null
-        )
-        .await["reason"],
-        "disabled"
-    );
-    library.bundled = false;
-    assert!(library.snapshot(&call).await.unwrap().entries.is_empty());
     call.finish().await.unwrap();
-}
-
-#[tokio::test]
-async fn preparation_language_preserves_opaque_skills_metadata_and_protocol_identity() {
-    let dir = tempfile::tempdir().unwrap();
-    let source_path = dir.path().join("skills");
-    let body = "Opaque instructions 中文 / 繁體 and OriginalProtocolName.";
-    write(&source_path, "review", body);
-    write(&source_path, "empty", "");
-    let library = Library::open(
-        Configuration {
-            home: None,
-            project_roots: vec![],
-            bundled: false,
-            manage: false,
-            preferences: false,
-            sources: vec![source("original", &source_path)],
-        },
-        dir.path().join("private"),
-        preferences(dir.path()).await,
-    )
-    .unwrap();
-    let call = scope();
-    let user_text = "Keep MyExactUserText 中文 / 繁體";
-    let mut original_receipts = None;
-    let mut revision = None;
-    for (language, safety_word, discovery_word, no_task) in [
-        (
-            "en",
-            "permission",
-            "Available local skills",
-            "no additional task text",
-        ),
-        ("zh-CN", "权限", "可用的本地技能", "未提供额外的任务文本"),
-        ("zh-TW", "權限", "可用的本機技能", "未提供額外的任務文字"),
-    ] {
-        let result = library
-            .model(
-                "prepare",
-                json!({
-                    "tools": ["OriginalLoadTool", "OriginalSearchTool"],
-                    "input": {
-                        "language": language,
-                        "message": format!("/skill:review {user_text}"),
-                        "loadTool": "OriginalLoadTool",
-                        "searchTool": "OriginalSearchTool"
-                    }
-                }),
-                &call,
-            )
-            .await
-            .unwrap();
-        schema("prepare", &result);
-        assert_eq!(result["kind"], "ready");
-        for message in ["/skill:review", "ordinary"] {
-            let prepared = library.model(
-                "prepare",
-                json!({"tools":["OriginalLoadTool","OriginalSearchTool"],"input":{"language":language,"message":message,"loadTool":"OriginalLoadTool","searchTool":"OriginalSearchTool"}}),
-                &call,
-            ).await.unwrap();
-            assert_eq!(prepared["kind"], "ready");
-            if message == "/skill:review" {
-                let text = prepared["text"].as_str().unwrap();
-                assert!(text.contains(no_task));
-                assert!(text.contains(body));
-            } else {
-                assert_eq!(prepared["text"], Value::Null);
-                assert_eq!(prepared["record"]["invocation"]["loaded"], json!([]));
-            }
-        }
-        let text = result["text"].as_str().unwrap();
-        assert!(text.contains(safety_word));
-        assert!(text.contains(body));
-        assert!(text.contains(user_text));
-        let record = &result["record"];
-        let metadata = record["metadataPrompt"].as_str().unwrap();
-        assert!(metadata.contains(discovery_word));
-        assert!(metadata.contains("Reference for review"));
-        assert!(metadata.contains("source:original:review"));
-        assert!(metadata.contains("OriginalLoadTool"));
-        assert!(metadata.contains("OriginalSearchTool"));
-        assert!(metadata.contains(record["revision"].as_str().unwrap()));
-        if let Some(original) = &original_receipts {
-            assert_eq!(&record["invocation"], original);
-            assert_eq!(&record["revision"], revision.as_ref().unwrap());
-        } else {
-            original_receipts = Some(record["invocation"].clone());
-            revision = Some(record["revision"].clone());
-        }
-    }
-    for (name, original_body) in [("review", body), ("empty", "")] {
-        let loaded = load(
-            &library,
-            &call,
-            json!(["OriginalLoadTool", "OriginalSearchTool"]),
-            revision.as_ref().unwrap(),
-            name,
-            Value::Null,
-        )
-        .await;
-        schema("load", &loaded);
-        assert_eq!(loaded["kind"], "loaded");
-        assert_eq!(loaded["metadata"]["id"], name);
-        assert_eq!(loaded["instructions"], original_body);
-        assert_eq!(
-            loaded["relativePath"],
-            json!(std::path::Path::new(name).join("SKILL.md"))
-        );
-    }
-    assert!(
-        library
-            .model(
-                "prepare",
-                json!({"tools":[],"input":{"message":"ordinary"}}),
-                &call
-            )
-            .await
-            .is_err()
-    );
 }

@@ -72,14 +72,6 @@ impl CaptureArena {
                             bytes,
                         ]);
                     }
-                    SourceBacking::Artifact {
-                        rowid,
-                        bytes,
-                        digest,
-                    } => {
-                        words[..3].copy_from_slice(&[4, rowid as u64, bytes]);
-                        digest_words(&mut words[4..8], digest);
-                    }
                     SourceBacking::ArtifactMetadata {
                         rowid,
                         bytes,
@@ -135,11 +127,6 @@ impl CaptureArena {
             3 => SourceBacking::Pieces {
                 key,
                 bytes: words[3],
-            },
-            4 => SourceBacking::Artifact {
-                rowid: words[1] as i64,
-                bytes: words[2],
-                digest: read_digest(&words[4..8]),
             },
             5 => SourceBacking::ArtifactMetadata {
                 rowid: words[1] as i64,

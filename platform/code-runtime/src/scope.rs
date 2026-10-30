@@ -130,7 +130,12 @@ impl ToolScope {
                 }
                 // The effect is settled even if user code no longer observes its result.
                 let result = result.map_err(|error| {
-                    CellDiagnostic::new(CellDiagnosticKind::ToolFailure, error.to_string())
+                    let mut diagnostic =
+                        CellDiagnostic::new(CellDiagnosticKind::ToolFailure, error.to_string());
+                    if let ToolError::Native(error) = error {
+                        diagnostic.native = Some(error);
+                    }
+                    diagnostic
                 });
                 let _ = sender.send(result);
             },

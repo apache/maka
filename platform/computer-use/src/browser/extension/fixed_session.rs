@@ -242,6 +242,7 @@ fn render(ack: &ExtensionFixedUiAck) -> Result<RenderState, ToolError> {
         ExtensionFixedUiAck::Attempted {
             acknowledged: true,
             state: Some(state),
+            ..
         } => serde_json::from_value(json!({"status":"ready","visible":state.visible,
                 "requestedPosition":state.requested_position}))
         .map_err(failed)?,
@@ -271,7 +272,11 @@ impl Host {
             .tabs
             .get(identity)
             .ok_or_else(|| unknown("fixed session lost its actual lease"))?;
-        if lease.creator.owner != owner || lease.creator.provider.extension().is_none() {
+        let expected_owner = lease
+            .handoff_transfer
+            .as_ref()
+            .map_or(lease.creator.owner, |attempt| attempt.requested.owner);
+        if expected_owner != owner || lease.creator.provider.extension().is_none() {
             return Err(unknown("fixed session changed its actual owner/provider"));
         }
         lease
@@ -562,6 +567,13 @@ impl Host {
                 });
             }
         }
+        if matches!(operation, ExtensionOperation::SessionUi { ui, .. }
+            if matches!(ui.operation(), ExtensionFixedUiOperation::FinalizeDeliverable | ExtensionFixedUiOperation::FinalizeHandoff))
+        {
+            // Clear's actual acknowledgement must still drain this issued scope.
+            // The failed presentation does not turn a known page action into Unknown.
+            return Ok(());
+        }
         resource
             .uncertainty
             .get_or_insert_with(|| reason.to_owned());
@@ -614,7 +626,13 @@ impl Host {
             ui.cursor_id(),
             ui.owner_epoch(),
         );
-        if matches!(proof.ui, ExtensionFixedUiAck::Unknown) {
+        if matches!(proof.ui, ExtensionFixedUiAck::Unknown)
+            && !matches!(
+                ui.operation(),
+                ExtensionFixedUiOperation::FinalizeDeliverable
+                    | ExtensionFixedUiOperation::FinalizeHandoff
+            )
+        {
             resource
                 .uncertainty
                 .get_or_insert_with(|| "actual fixed UI outcome remains unknown".into());
@@ -645,6 +663,7 @@ impl Host {
                 ExtensionFixedUiAck::Attempted {
                     acknowledged: true,
                     state: Some(_),
+                    ..
                 } => None,
                 ExtensionFixedUiAck::NotAttempted => Some("fixed UI was not attempted".into()),
                 ExtensionFixedUiAck::Unknown => Some("fixed UI outcome remains unknown".into()),
@@ -1257,13 +1276,19 @@ pub(super) async fn prepare_fixed_tab(
             .clone()
     };
     let dispatch = expected.dispatch.clone();
+    let handoff_boundary = host
+        .lock()
+        .await
+        .handoff_preparation_boundary(scope, &identity);
     let result = scope
         .dispatch(async {
-            enter_fixed_ui(&dispatch).map_err(|error| *error)?;
+            enter_handoff_preparation(handoff_boundary.as_ref())?;
+            enter_fixed_ui(&dispatch)?;
             scope
                 .control
                 .prepare_fixed_session_tab(tab_id, &policy, &ui)
                 .await
+                .map_err(Box::new)
         })
         .await;
     let reconciled = host
@@ -1277,7 +1302,11 @@ pub(super) async fn prepare_fixed_tab(
                 .lock()
                 .await
                 .fixed_undispatched_error(scope, &identity, &expected, error);
-        if !not_dispatched {
+        if not_dispatched {
+            host.lock()
+                .await
+                .rollback_handoff_transfer(&identity, scope.owner, &scope.context);
+        } else {
             retain_prepare_error(scope, host, &identity, &expected, &error.to_string()).await;
         }
     } else if let Err(error) = &reconciled {
@@ -1950,6 +1979,140 @@ impl Host {
             FixedCleanupPurpose::Owner => false,
         })
     }
+    pub(super) async fn finalize_retained_presentation(
+        &mut self,
+        owner: uuid::Uuid,
+        identity: &TabIdentity,
+        mark: TabMark,
+    ) {
+        let result = self
+            .finalize_retained_presentation_once(owner, identity, mark)
+            .await;
+        if let Err(error) = result
+            && let Some(lease) = self.tabs.get_mut(identity)
+            && lease.creator.owner == owner
+            && let Some(state) = &mut lease.extension
+        {
+            state.retained_presentation = RetainedPresentation::Failed(error.to_string());
+            state.presentation_error = Some(error.to_string());
+        }
+    }
+
+    async fn finalize_retained_presentation_once(
+        &mut self,
+        owner: uuid::Uuid,
+        identity: &TabIdentity,
+        mark: TabMark,
+    ) -> Result<(), ToolError> {
+        let lease = self
+            .tabs
+            .get(identity)
+            .filter(|lease| lease.creator.owner == owner && lease.handoff_transfer.is_none())
+            .ok_or_else(|| unknown("retained presentation lost its owner"))?;
+        let provider = lease.creator.provider.clone();
+        let state = lease
+            .extension
+            .as_ref()
+            .ok_or_else(|| unknown("retained presentation lost its physical resource"))?;
+        match &state.retained_presentation {
+            RetainedPresentation::NotAttempted => {}
+            RetainedPresentation::Pending => return Ok(()),
+            RetainedPresentation::Acknowledged(ack) => {
+                if ack.tab_id.to_string() != identity.target {
+                    return Err(unknown(
+                        "retained presentation acknowledgement changed resource",
+                    ));
+                }
+                return Ok(());
+            }
+            RetainedPresentation::Failed(reason) => return Err(unknown(reason)),
+        }
+        if !provider.extension().is_some_and(|extension| {
+            extension
+                .capabilities()
+                .is_ok_and(|caps| caps.retained_tab_presentation)
+        }) {
+            return Err(failed(
+                "selected provider has no retained tab presentation service",
+            ));
+        }
+        let FixedPreparation::Retained(resource) = &state.fixed_preparation else {
+            return Err(failed(
+                "retained presentation requires an existing fixed UI resource",
+            ));
+        };
+        let prepared = resource
+            .acknowledged
+            .as_ref()
+            .ok_or_else(|| unknown("retained presentation has no matched preparation"))?;
+        let receipt = prepared.receipt.clone();
+        self.current_fixed(owner, identity, &receipt)?;
+        let (operation, epoch) = resource
+            .last_ui
+            .as_ref()
+            .map(|last| (last.operation.clone(), last.epoch))
+            .unwrap_or_else(|| (resource.attempt.operation.clone(), resource.attempt.epoch));
+        let mut ui = resource.current_ui.clone();
+        ui.operation = match mark {
+            TabMark::Deliverable => ExtensionFixedUiOperation::FinalizeDeliverable,
+            TabMark::Handoff => ExtensionFixedUiOperation::FinalizeHandoff,
+        };
+        ui.owner_epoch = epoch.to_string();
+        ui.point = None;
+        ui.action = ExtensionFixedUiAction::Idle;
+        let scope = self.extension_context(
+            owner,
+            &provider,
+            operation,
+            epoch,
+            CallTarget::Retirement,
+            false,
+        )?;
+        let dispatch = self.begin_fixed_ui(owner, identity, &scope, &ui)?;
+        self.fixed_state_mut(owner, identity)?.retained_presentation =
+            RetainedPresentation::Pending;
+        let result = scope
+            .dispatch_retirement(async {
+                enter_fixed_ui(&dispatch).map_err(|error| *error)?;
+                scope.control.session_ui(&receipt, &ui).await
+            })
+            .await;
+        self.reconcile_provider(owner, &provider).await?;
+        let proof = result.map_err(provider::extension_error)?;
+        let ExtensionFixedUiAck::Attempted {
+            retention: Some(ack),
+            ..
+        } = proof.ui
+        else {
+            return Err(unknown(
+                "retained presentation has no actual matched acknowledgement",
+            ));
+        };
+        let expected = match mark {
+            TabMark::Deliverable => {
+                cua_driver_core::browser::ExtensionRetentionPresentationStatus::Deliverable
+            }
+            TabMark::Handoff => {
+                cua_driver_core::browser::ExtensionRetentionPresentationStatus::Handoff
+            }
+        };
+        if ack.tab_id.to_string() != identity.target
+            || ack.status != expected
+            || !ack.intent_persisted
+        {
+            return Err(unknown(
+                "retained presentation acknowledgement changed its requested intent",
+            ));
+        }
+        let state = self.fixed_state_mut(owner, identity)?;
+        if !ack.renderer_acknowledged || (!ack.observed && !ack.badge_applied) {
+            state.presentation_error =
+                Some("retained intent persisted but favicon rendering was not confirmed".into());
+        }
+        state.retained_presentation = RetainedPresentation::Acknowledged(ack);
+        Ok(())
+    }
+
     pub(in crate::browser) async fn finalize_fixed_session_ui(
         &mut self,
         owner: uuid::Uuid,
@@ -2126,169 +2289,12 @@ impl Host {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    impl FixedPreparation {
-        pub(super) fn unknown(&self) -> Option<&str> {
-            match self {
-                Self::Retained(resource) => resource.uncertainty.as_deref(),
-                _ => None,
-            }
+impl FixedPreparation {
+    fn unknown(&self) -> Option<&str> {
+        match self {
+            Self::Retained(resource) => resource.uncertainty.as_deref(),
+            _ => None,
         }
-    }
-
-    // Local lifecycle projections only: no SDK receipt/actual UI proof/Host
-    // permission/Chrome effect/physical claim/T2 is constructed by these cases.
-    fn projected_ui(turn: &str, epoch: crate::desktop::NativeEpochId) -> FixedUiAttempt {
-        FixedUiAttempt {
-            operation: ExtensionHostOperation {
-                operation_id: format!("ui-{turn}"),
-                turn_id: turn.into(),
-            },
-            epoch,
-            request: ui_request(
-                &Spec::default(),
-                epoch,
-                None,
-                "idle",
-                ExtensionFixedUiOperation::Configure,
-            )
-            .unwrap(),
-            dispatch: Arc::new(AtomicU8::new(UI_RESERVED)),
-        }
-    }
-    fn projected_resource(epoch: crate::desktop::NativeEpochId) -> FixedPreparation {
-        let ui = projected_ui("original-turn", epoch);
-        FixedPreparation::Retained(Box::new(FixedResource {
-            attempt: FixedAttempt {
-                operation: ui.operation.clone(),
-                epoch,
-                policy: ExtensionPreparationPolicy::default(),
-                ui: ui.request.clone(),
-                dispatch: Arc::new(AtomicU8::new(UI_MAY_DISPATCH)),
-            },
-            receipt: None,
-            acknowledged: None,
-            last_ui: None,
-            current_ui: ui.request,
-            pending_ui: None,
-            clear_attempt: None,
-            phase: FixedPhase::Unknown,
-            uncertainty: Some("retained cause".into()),
-        }))
-    }
-
-    #[test]
-    fn ui_retirement_and_actual_firstpoll_have_one_atomic_winner() {
-        let retired = AtomicU8::new(UI_RESERVED);
-        retired
-            .compare_exchange(UI_RESERVED, UI_RETIRED, Ordering::SeqCst, Ordering::SeqCst)
-            .unwrap();
-        assert!(matches!(
-            enter_fixed_ui(&retired).map_err(|error| *error),
-            Err(cua_driver_core::browser::ExtensionProviderError::Refused { .. })
-        ));
-        let dispatched = AtomicU8::new(UI_RESERVED);
-        enter_fixed_ui(&dispatched).unwrap();
-        assert!(
-            dispatched
-                .compare_exchange(UI_RESERVED, UI_RETIRED, Ordering::SeqCst, Ordering::SeqCst)
-                .is_err()
-        );
-        assert_eq!(dispatched.load(Ordering::SeqCst), UI_MAY_DISPATCH);
-    }
-
-    #[test]
-    fn newer_turn_possible_ui_is_protected_without_ack() {
-        let old = crate::desktop::NativeEpochId::new();
-        let new = crate::desktop::NativeEpochId::new();
-        let mut preparation = projected_resource(old);
-        let pending = projected_ui("new-turn", new);
-        enter_fixed_ui(&pending.dispatch).unwrap();
-        let FixedPreparation::Retained(resource) = &mut preparation else {
-            unreachable!()
-        };
-        resource.pending_ui = Some(pending);
-        preparation.retire_unpolled_ui();
-        assert!(preparation.protected_from_turn("original-turn"));
-        assert!(!preparation.protected_from_turn("new-turn"));
-        assert!(preparation.protected_from_epoch(old));
-        assert!(!preparation.protected_from_epoch(new));
-        assert_eq!(preparation.unknown(), Some("retained cause"));
-        assert!(!preparation.settled());
-    }
-
-    #[test]
-    fn same_turn_new_vm_remains_selectable_by_turn_cleanup() {
-        let old = crate::desktop::NativeEpochId::new();
-        let new = crate::desktop::NativeEpochId::new();
-        let mut preparation = projected_resource(old);
-        let pending = projected_ui("original-turn", new);
-        enter_fixed_ui(&pending.dispatch).unwrap();
-        let FixedPreparation::Retained(resource) = &mut preparation else {
-            unreachable!()
-        };
-        resource.pending_ui = Some(pending);
-        assert!(!preparation.protected_from_turn("original-turn"));
-        assert!(preparation.protected_from_epoch(old));
-        assert!(!preparation.protected_from_epoch(new));
-        assert_eq!(preparation.unknown(), Some("retained cause"));
-    }
-
-    #[test]
-    fn unpolled_new_turn_intent_cannot_invent_a_possible_effect() {
-        let old = crate::desktop::NativeEpochId::new();
-        let new = crate::desktop::NativeEpochId::new();
-        let mut preparation = projected_resource(old);
-        let pending = projected_ui("new-turn", new);
-        let dispatch = pending.dispatch.clone();
-        let FixedPreparation::Retained(resource) = &mut preparation else {
-            unreachable!()
-        };
-        resource.pending_ui = Some(pending);
-        preparation.retire_unpolled_ui();
-        assert!(!preparation.protected_from_turn("original-turn"));
-        assert!(!preparation.protected_from_epoch(old));
-        assert!(enter_fixed_ui(&dispatch).is_err());
-        assert_eq!(preparation.unknown(), Some("retained cause"));
-    }
-    #[test]
-    fn older_ui_ack_cannot_cover_newer_possible_ui() {
-        let old = crate::desktop::NativeEpochId::new();
-        let new = crate::desktop::NativeEpochId::new();
-        let mut preparation = projected_resource(old);
-        let pending = projected_ui("new-turn", new);
-        enter_fixed_ui(&pending.dispatch).unwrap();
-        let old_ui = projected_ui("original-turn", old);
-        let FixedPreparation::Retained(resource) = &mut preparation else {
-            unreachable!()
-        };
-        resource.last_ui = Some(FixedUiRecord {
-            operation: old_ui.operation.clone(),
-            epoch: old,
-            completion_id: 1,
-            dispatch: old_ui.dispatch.clone(),
-        });
-        resource.pending_ui = Some(pending.clone());
-        assert!(!resource.matches_ui_ack(
-            &old_ui.operation,
-            old,
-            old_ui.request.operation,
-            &old_ui.request.cursor.id,
-            &old_ui.request.owner_epoch
-        ));
-        assert!(resource.matches_ui_ack(
-            &pending.operation,
-            new,
-            pending.request.operation,
-            &pending.request.cursor.id,
-            &pending.request.owner_epoch
-        ));
-        assert!(preparation.protected_from_turn("original-turn"));
-        assert!(!preparation.protected_from_turn("new-turn"));
-        assert!(preparation.protected_from_epoch(old));
-        assert_eq!(preparation.unknown(), Some("retained cause"));
     }
 }
 

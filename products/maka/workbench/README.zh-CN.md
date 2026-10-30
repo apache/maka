@@ -38,7 +38,9 @@ tsc -p /tmp/maka-workbench-types/tsconfig.json --noEmit --skipLibCheck false
 
 ```sh
 MAKA_NSH_EVIDENCE=/tmp/maka-nsh-evidence cargo nextest run --locked --workspace \
-  -E 'package(=maka-cli) & binary(=terminal_real_host) & test(=keyboard::connection_filter_preserves_model_search_focus_and_keyboard_selection)'
+  -E 'package(=maka-cli) & binary(=integration) & test(=terminal::keyboard::connection_filter_preserves_model_search_focus_and_keyboard_selection)'
 ```
 
 这会运行真实 Host 测试，不是独立的类型生成器，也不对应用做 TypeScript 类型检查。
+
+在会话操作菜单中选择 **置顶会话**，会话会出现在列表顶部的 **已置顶** 分组；选择 **取消置顶** 可恢复普通列表位置。Host 持久化这一选择，并在不同界面和重启后保持一致的分页顺序。

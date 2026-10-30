@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use crate::support::root;
 use maka_agent_facts::{configuration::*, public_catalog::PublicCatalogBody};
 use maka_config::{
     ConfigurationStore,
@@ -25,20 +26,7 @@ use maka_config::{
 };
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use serde_json::{Value, json};
-use std::{path::Path, sync::Arc};
-
-fn root(path: &Path) -> Arc<RootOwner> {
-    Arc::new(
-        RootOwner::create(
-            &path.join("root"),
-            &RootNamespaces {
-                ownership: path.join("owners"),
-                control: path.join("control"),
-            },
-        )
-        .unwrap(),
-    )
-}
+use std::sync::Arc;
 
 fn record(body: Value, checked_at: i64) -> PublicCatalogRecord {
     PublicCatalogRecord {

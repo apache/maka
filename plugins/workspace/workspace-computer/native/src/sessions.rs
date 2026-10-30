@@ -50,7 +50,7 @@ pub(super) type Retirement =
     futures_util::future::Shared<BoxFuture<'static, Result<(), ToolError>>>;
 
 #[derive(Default)]
-struct TurnCleanup {
+pub(super) struct TurnCleanup {
     pending: Mutex<Option<Retirement>>,
     // Actual observation-write custody, not a second permission flag. Native
     // admission always checks the canonical logical-Turn fact in its T1.
@@ -60,6 +60,18 @@ struct TurnCleanup {
 }
 
 impl TurnCleanup {
+    pub(super) fn check_native_monitor_admission(&self) -> Result<(), ToolError> {
+        if self
+            .pending
+            .lock()
+            .expect("Computer turn cleanup lock poisoned")
+            .is_some()
+        {
+            return Err(failed("Native monitor turn is closing"));
+        }
+        Ok(())
+    }
+
     fn start(
         &self,
         tasks: &tokio_util::task::TaskTracker,
@@ -294,8 +306,9 @@ pub(super) struct Epoch {
     pub native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
     audio: Mutex<Option<Arc<AudioReceipt>>>,
     browser_preparations: Mutex<Vec<Arc<BrowserPreparationReceipt>>>,
+    pub(super) native_monitors: Mutex<Vec<Arc<super::native_monitor::Receipt>>>,
     turns: Arc<Mutex<BTreeMap<String, Arc<TurnCleanup>>>>,
-    effects_changed: Arc<tokio::sync::Notify>,
+    pub(super) effects_changed: Arc<tokio::sync::Notify>,
     retirement: Mutex<Option<Retirement>>,
 }
 struct BrowserPreparationReceipt {
@@ -530,6 +543,18 @@ async fn turn_ended(
     Ok(boundary.state.terminal_outcome().is_some())
 }
 impl Epoch {
+    pub(super) fn native_monitor_turn(&self, turn: &str) -> Result<Arc<TurnCleanup>, ToolError> {
+        let cleanup = self
+            .turns
+            .lock()
+            .expect("Computer turn registry lock poisoned")
+            .get(turn)
+            .cloned()
+            .ok_or_else(|| failed("Native monitor turn retired"))?;
+        cleanup.check_native_monitor_admission()?;
+        Ok(cleanup)
+    }
+
     /// Retain cleanup responsibility before the fixed native preparation can start.
     pub fn record_browser_preparation(
         &self,
@@ -585,7 +610,15 @@ impl Epoch {
     }
 
     async fn close_native(&self) -> Result<(), ToolError> {
-        let result = self.native.lock().await.close_native().await;
+        self.seal_native_monitors(None);
+        let monitors = self.retire_native_monitors(None).await;
+        let native = self.native.lock().await.close_native().await;
+        let result = match (monitors, native) {
+            (Ok(()), result) | (result, Ok(())) => result,
+            (Err(monitors), Err(native)) => Err(ToolError::CleanupUnconfirmed(format!(
+                "{monitors}; {native}"
+            ))),
+        };
         if result.is_ok() {
             self.files.close().await?;
             self.clear_audio();
@@ -670,6 +703,7 @@ impl Kernel {
         // Retained transport for an admitted RPC does not keep this VM's
         // automatic attached-service producer alive after reset/retirement.
         self.admission.close_admission();
+        self.epoch.seal_native_monitors(None);
         let mut failures = Vec::new();
         if let Some(runtime) = self.repl
             && let Err(error) = runtime.close().await
@@ -707,6 +741,7 @@ impl Interaction {
             native: Arc::new(tokio::sync::Mutex::new(native)),
             audio: Default::default(),
             browser_preparations: Default::default(),
+            native_monitors: Default::default(),
             turns: self.turns.clone(),
             effects_changed: self.effects_changed.clone(),
             retirement: Default::default(),
@@ -845,6 +880,10 @@ impl Interaction {
         language: Language,
     ) -> Retirement {
         let epochs = self.epochs.lock().unwrap().clone();
+        // Fence fixed producers synchronously, before any sibling cleanup wait.
+        for epoch in &epochs {
+            epoch.seal_native_monitors(Some(turn));
+        }
         let native_owner = self.native_owner.clone();
         let session = session.to_owned();
         let turn = turn.to_owned();
@@ -858,6 +897,9 @@ impl Interaction {
                 failures.push(message(error));
             }
             for epoch in &epochs {
+                if let Err(error) = epoch.retire_native_monitors(Some(&turn)).await {
+                    failures.push(message(error));
+                }
                 let mut native = epoch.native.lock().await;
                 let windows = native.platform() == "windows";
                 match native.finish_turn(&session, &turn, language).await {
@@ -1161,6 +1203,7 @@ fn watch_scanned(owner: &Arc<Computer>, scanned: impl Fn() + Send + 'static) {
                 }
                 let epochs = entry.epochs.lock().unwrap().clone();
                 for epoch in epochs {
+                    epoch.observe_native_monitor_authority().await;
                     let preparations = epoch
                         .browser_preparations
                         .lock()
@@ -1227,196 +1270,49 @@ mod tests {
     };
     use serde_json::json;
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn late_turn_watcher_observes_the_original_cleanup_without_stopping_a_new_capture() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            let sessions = Sessions::default();
-            let entry = sessions.get("turn-custody").unwrap();
-            let cleanup = Arc::new(TurnCleanup::default());
-            entry
-                .turns
-                .lock()
-                .unwrap()
-                .insert("turn-a".into(), cleanup.clone());
-            let current_capture = Arc::new(AtomicUsize::new(1));
-            let cleanup_count = Arc::new(AtomicUsize::new(0));
-            let watcher_ready = CancellationToken::new();
-            let release_watcher = CancellationToken::new();
-            let late_watcher = {
-                let cleanup = cleanup.clone();
-                let current_capture = current_capture.clone();
-                let cleanup_count = cleanup_count.clone();
-                let watcher_ready = watcher_ready.clone();
-                let release_watcher = release_watcher.clone();
-                let tasks = entry.tasks.clone();
-                tokio::spawn(async move {
-                    watcher_ready.cancel();
-                    release_watcher.cancelled().await;
-                    cleanup
-                        .start(&tasks, async move {
-                            cleanup_count.fetch_add(1, Ordering::SeqCst);
-                            current_capture.store(0, Ordering::SeqCst);
-                            Ok(())
-                        })
-                        .await
-                })
-            };
-            watcher_ready.cancelled().await;
-            let draining = {
-                let current_capture = current_capture.clone();
-                let cleanup_count = cleanup_count.clone();
-                cleanup.start(&entry.tasks, async move {
-                    cleanup_count.fetch_add(1, Ordering::SeqCst);
-                    current_capture.store(0, Ordering::SeqCst);
-                    Ok(())
-                })
-            };
-            let drained = draining.await;
-            entry.release_turn("turn-a", &cleanup, &drained);
-            drained.unwrap();
-            assert!(!entry.turns.lock().unwrap().contains_key("turn-a"));
-            current_capture.store(2, Ordering::SeqCst);
-            let replacement = Arc::new(TurnCleanup::default());
-            entry
-                .turns
-                .lock()
-                .unwrap()
-                .insert("turn-b".into(), replacement.clone());
-            release_watcher.cancel();
-            late_watcher.await.unwrap().unwrap();
-            assert_eq!(cleanup_count.load(Ordering::SeqCst), 1);
-            assert_eq!(current_capture.load(Ordering::SeqCst), 2);
-            assert!(
-                entry
-                    .turns
-                    .lock()
-                    .unwrap()
-                    .get("turn-b")
-                    .is_some_and(|current| Arc::ptr_eq(current, &replacement))
-            );
-            entry.tasks.close();
-            entry.tasks.wait().await;
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn turn_cleanup_observers_retain_the_first_failure_without_retrying() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            let sessions = Sessions::default();
-            let entry = sessions.get("failed-turn-custody").unwrap();
-            let cleanup = Arc::new(TurnCleanup::default());
-            entry
-                .turns
-                .lock()
-                .unwrap()
-                .insert("turn-a".into(), cleanup.clone());
-            let tasks = entry.tasks.clone();
-            let started = CancellationToken::new();
-            let release = CancellationToken::new();
-            let attempts = Arc::new(AtomicUsize::new(0));
-            let error =
-                ToolError::CleanupUnconfirmed("fixture original turn cleanup failure".into());
-            let expected = error.to_string();
-            let first = {
-                let attempts = attempts.clone();
-                let started = started.clone();
-                let release = release.clone();
-                cleanup.start(&tasks, async move {
-                    attempts.fetch_add(1, Ordering::SeqCst);
-                    started.cancel();
-                    release.cancelled().await;
-                    Err(error)
-                })
-            };
-            started.cancelled().await;
-            let second = {
-                let attempts = attempts.clone();
-                cleanup.start(&tasks, async move {
-                    attempts.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                })
-            };
-            release.cancel();
-            let (first, second) = tokio::join!(first, second);
-            entry.release_turn("turn-a", &cleanup, &first);
-            assert!(
-                entry
-                    .turns
-                    .lock()
-                    .unwrap()
-                    .get("turn-a")
-                    .is_some_and(|current| Arc::ptr_eq(current, &cleanup))
-            );
-            assert_eq!(first.unwrap_err().to_string(), expected);
-            assert_eq!(second.unwrap_err().to_string(), expected);
-            let late = {
-                let attempts = attempts.clone();
-                cleanup.start(&tasks, async move {
-                    attempts.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                })
-            };
-            assert_eq!(late.await.unwrap_err().to_string(), expected);
-            assert_eq!(attempts.load(Ordering::SeqCst), 1);
-            tasks.close();
-            tasks.wait().await;
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancelled_turn_cleanup_observation_keeps_the_original_worker_and_result() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            let cleanup = Arc::new(TurnCleanup::default());
+    #[tokio::test]
+    async fn turn_cleanup_keeps_its_worker_and_result_after_observers_are_dropped() {
+        for original in [
+            Ok(()),
+            Err(ToolError::CleanupUnconfirmed(
+                "original cleanup failed".into(),
+            )),
+        ] {
+            let cleanup = TurnCleanup::default();
             let tasks = tokio_util::task::TaskTracker::new();
-            let started = CancellationToken::new();
-            let release = CancellationToken::new();
-            let completed = Arc::new(AtomicUsize::new(0));
-            let observer = {
-                let cleanup = cleanup.clone();
-                let tasks = tasks.clone();
-                let started = started.clone();
-                let release = release.clone();
-                let completed = completed.clone();
-                tokio::spawn(async move {
-                    cleanup
-                        .start(&tasks, async move {
-                            started.cancel();
-                            release.cancelled().await;
-                            completed.fetch_add(1, Ordering::SeqCst);
-                            Ok(())
-                        })
-                        .await
-                })
-            };
-            started.cancelled().await;
-            observer.abort();
-            assert!(observer.await.unwrap_err().is_cancelled());
-            assert_eq!(completed.load(Ordering::SeqCst), 0);
-            release.cancel();
+            let (release, waiting) = tokio::sync::oneshot::channel();
+            let completed = original.clone();
+            let mut observer = Box::pin(cleanup.start(&tasks, async move {
+                waiting.await.expect("release the original cleanup");
+                completed
+            }));
+            assert!(futures_util::poll!(&mut observer).is_pending());
+            drop(observer);
+            let replacement = cleanup.start(&tasks, async {
+                Err(ToolError::CleanupUnconfirmed(
+                    "replacement worker ran".into(),
+                ))
+            });
+            release.send(()).unwrap();
             tasks.close();
             tasks.wait().await;
-            assert_eq!(completed.load(Ordering::SeqCst), 1);
-            let observed = cleanup
-                .start(&tasks, async {
-                    Err(ToolError::CleanupUnconfirmed(
-                        "replacement cleanup must never run".into(),
-                    ))
-                })
-                .await;
-            assert!(observed.is_ok());
-        })
-        .await
-        .unwrap();
+            let expected = original.map_err(|error| error.to_string());
+            assert_eq!(
+                replacement.await.map_err(|error| error.to_string()),
+                expected
+            );
+            assert_eq!(
+                cleanup
+                    .start(&tasks, async {
+                        Err(ToolError::CleanupUnconfirmed(
+                            "completed cleanup was retried".into(),
+                        ))
+                    })
+                    .await
+                    .map_err(|error| error.to_string()),
+                expected
+            );
+        }
     }
 
     async fn approved(
@@ -1758,6 +1654,7 @@ mod tests {
                     tools: None,
                     title: "fixture".into(),
                     title_is_manual: false,
+                    pinned: false,
                     labels: vec![],
                     workspace: binding,
                     permissions: WorkspacePermissions {
@@ -2102,6 +1999,7 @@ mod tests {
                         compaction_prompt: None,
                         title: "browser authority fixture".into(),
                         title_is_manual: false,
+                        pinned: false,
                         labels: vec![],
                         workspace: binding,
                         permissions: WorkspacePermissions {

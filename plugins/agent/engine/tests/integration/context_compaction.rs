@@ -189,12 +189,6 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
     else {
         unreachable!()
     };
-    assert!(
-        !prefix.events.iter().any(|event| matches!(&event.event.fact,
-        Fact::ModelObserved { step_id, event } if step_id == summary_step
-            && !matches!(event, ModelObservation::ResponseMetadata { .. } | ModelObservation::Finished { .. }))),
-        "successful summary prose has only its completed durable representation"
-    );
     let completed = prefix
         .events
         .iter()
@@ -203,31 +197,53 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
             _ => None,
         })
         .unwrap();
-    let metadata: Vec<_> = prefix
+    assert_eq!(completed.response_id.as_deref(), Some("reply"));
+    assert_eq!(completed.model.as_deref(), Some("test"));
+    assert_eq!(
+        completed.timestamp.as_deref(),
+        Some("1970-01-01T00:00:01.000Z")
+    );
+    let mut metadata_count = 0;
+    for observation in prefix
         .events
         .iter()
         .filter_map(|event| match &event.event.fact {
-            Fact::ModelObserved {
-                step_id,
-                event:
-                    ModelObservation::ResponseMetadata {
-                        id,
-                        model,
-                        timestamp,
-                    },
-            } if step_id == summary_step => {
-                Some((id.as_deref(), model.as_deref(), timestamp.as_deref()))
-            }
+            Fact::ModelObserved { step_id, event } if step_id == summary_step => Some(event),
             _ => None,
         })
-        .collect();
-    assert_eq!(
-        metadata,
-        vec![(
-            Some("reply"),
-            Some("test"),
-            Some("1970-01-01T00:00:01.000Z")
-        )]
+    {
+        match observation {
+            ModelObservation::ResponseMetadata {
+                id,
+                model,
+                timestamp,
+            } => {
+                metadata_count += 1;
+                assert_eq!(id, &completed.response_id);
+                assert_eq!(model, &completed.model);
+                assert_eq!(timestamp, &completed.timestamp);
+            }
+            ModelObservation::Finished {
+                reason,
+                usage,
+                provider_options,
+            } => {
+                assert_eq!(reason, &completed.finish_reason);
+                assert_eq!(usage, &completed.usage);
+                assert_eq!(provider_options, &completed.provider_options);
+            }
+            ModelObservation::Part(_) | ModelObservation::ProviderOptions { .. } => {
+                panic!("summary body and part metadata must remain private until completion");
+            }
+        }
+    }
+    assert_eq!(metadata_count, 1);
+    assert!(
+        completed
+            .parts
+            .iter()
+            .all(|part| matches!(part, CompletionPart::Own(_))),
+        "summary prose is owned by completion rather than duplicated in observed parts"
     );
     let text: String = completed
         .parts

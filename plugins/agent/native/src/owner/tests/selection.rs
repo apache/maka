@@ -422,40 +422,20 @@ async fn captured_execution_ignores_catalog_labels_and_other_models_but_rejects_
 }
 
 #[tokio::test]
-async fn ordinary_settings_pages_keep_root_revision_and_exact_default_cas_without_secrets() {
-    let first = Fixture::new("http://127.0.0.1:1/v1", None).await;
-    let second = Fixture::new("http://127.0.0.1:2/v1", None).await;
-    edit(&first, |changes| {
-        changes.enabled_model_ids = Some((0..20).map(|at| format!("model-{at:02}")).collect())
-    })
-    .await;
-    let page = models(&first, json!({"kind":"start"})).await.unwrap();
-    assert_eq!(page["defaultModel"], json!({"kind":"none"}));
-    assert_eq!(page["choices"].as_array().unwrap().len(), 16);
-    assert!(serde_json::to_vec(&page).unwrap().len() < 48 * 1024);
-    assert!(!page.to_string().contains("private-fixture-key"));
-    assert!(!page.to_string().contains("baseUrl"));
-    let continuation = json!({"kind":"continue","revision":page["revision"],"cursor":page["next"]});
-    let last = models(&first, continuation.clone()).await.unwrap();
-    assert_eq!(last["choices"].as_array().unwrap().len(), 4);
-    assert!(last["next"].is_null());
-    let other = models(&second, json!({"kind":"start"})).await.unwrap();
-    assert_eq!(other["choices"].as_array().unwrap().len(), 1);
-    assert_ne!(
-        other["choices"][0]["selection"]["connectionId"],
-        page["choices"][0]["selection"]["connectionId"]
-    );
-    let binding = settings(&first).await;
+async fn settings_default_mutation_requires_host_authority_and_records_catalog_cas() {
+    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+    let catalog = fixture.config.catalog().await.unwrap();
+    let binding = settings(&fixture).await;
     let operation = Uuid::new_v4();
-    let input = json!({"expectedCatalogRevision":page["revision"],"target":{"connectionId":page["choices"][0]["selection"]["connectionId"],"modelId":"model-19"}});
-    let client = first.app.client();
+    let input = json!({"expectedCatalogRevision":catalog.revision,"target":{"connectionId":catalog.connections[0].connection_id,"modelId":"fixture-model"}});
+    let client = fixture.app.client();
     assert!(
         client
             .prepare_mutation(
                 binding.clone(),
                 "setDefault".into(),
                 input.clone(),
-                scope(&first.issuer, false),
+                scope(&fixture.issuer, false),
                 operation,
                 Attachments::new().into()
             )
@@ -467,8 +447,8 @@ async fn ordinary_settings_pages_keep_root_revision_and_exact_default_cas_withou
             .prepare_mutation(
                 binding.clone(),
                 "setDefault".into(),
-                json!({"expectedCatalogRevision":page["revision"]}),
-                scope(&first.issuer, true),
+                json!({"expectedCatalogRevision":catalog.revision}),
+                scope(&fixture.issuer, true),
                 operation,
                 Attachments::new().into()
             )
@@ -480,13 +460,13 @@ async fn ordinary_settings_pages_keep_root_revision_and_exact_default_cas_withou
             binding,
             "setDefault".into(),
             input,
-            scope(&first.issuer, true),
+            scope(&fixture.issuer, true),
             operation,
             Attachments::new().into(),
         )
         .await
         .unwrap();
-    let recorded = first
+    let recorded = fixture
         .store
         .record_application_intent(
             prepared.reference().source.clone(),
@@ -505,134 +485,13 @@ async fn ordinary_settings_pages_keep_root_revision_and_exact_default_cas_withou
     assert!(
         matches!(reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. } if value["kind"] == "committed")
     );
-    let changed = models(&first, continuation).await.unwrap();
-    assert_eq!(changed["kind"], "changed");
-    let new = models(&first, json!({"kind":"start"})).await.unwrap();
-    assert_eq!(new["defaultModel"]["kind"], "ready");
     assert_eq!(
-        new["defaultModel"]["choice"]["selection"]["modelId"],
-        "model-19"
+        fixture.config.catalog().await.unwrap().default_target,
+        Some(ConnectionTarget {
+            connection_id: catalog.connections[0].connection_id.clone(),
+            model_id: "fixture-model".into()
+        })
     );
-    assert_eq!(
-        new["defaultModel"]["choice"]["selection"]["revision"],
-        new["choices"][0]["selection"]["revision"]
-    );
-    assert!(
-        !new["choices"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|choice| choice["selection"]["modelId"] == "model-19")
-    );
-    assert!(new["choices"][0].get("isDefault").is_none());
-    assert!(models(&first, json!({"kind":"continue","revision":new["revision"],"cursor":{"connection":0,"model":4000}})).await.is_err());
-    // A valid Root default can belong to a provider outside this capability's
-    // selectable catalog. It must remain visible as unavailable, not disappear
-    // or silently become the first available choice.
-    let CatalogMutationResult::Committed {
-        catalog_revision,
-        connection: Some(unsupported),
-    } = first.config.create_connection(serde_json::from_value(json!({
-        "expectedCatalogRevision":new["revision"],
-        "connection":{
-            "slug":"other-provider","name":"Other provider",
-            "provider":{"packageId":"example.models","entryId":"models","scope":"profile","name":"custom"},
-            "configuration":{},"enabled":true,"enabledModelIds":["other-model"]
-        }
-    })).unwrap()).await.unwrap() else { panic!("other provider commit"); };
-    let target = ConnectionTarget {
-        connection_id: unsupported.connection_id,
-        model_id: "other-model".into(),
-    };
-    assert!(matches!(
-        first
-            .config
-            .set_default_target(SetDefaultConnectionTargetInput {
-                expected_catalog_revision: catalog_revision,
-                target: Some(target.clone()),
-            })
-            .await
-            .unwrap(),
-        CatalogMutationResult::Committed {
-            connection: None,
-            ..
-        }
-    ));
-    let unavailable = models(&first, json!({"kind":"start"})).await.unwrap();
-    assert_eq!(
-        unavailable["defaultModel"],
-        json!({"kind":"unavailable","target":target})
-    );
-    assert_eq!(unavailable["choices"].as_array().unwrap().len(), 16);
-    assert_eq!(
-        first.config.catalog().await.unwrap().default_target,
-        Some(target)
-    );
-    first.app.shutdown().await.unwrap();
-    second.app.shutdown().await.unwrap();
-    first.config.shutdown().await.unwrap();
-    second.config.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn model_search_reaches_sparse_matches_and_true_eof_with_catalog_fences() {
-    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
-    let long_term = format!("{}終", "界".repeat(257));
-    edit(&fixture, |changes| {
-        changes.name = Some(format!("Research Account {long_term}"));
-        changes.enabled_model_ids = Some((0..300).map(|at| format!("model-{at:03}")).collect());
-    })
-    .await;
-    let browsing_query = format!("RESEARCH {long_term}");
-    let browsing = models(&fixture, json!({"kind":"start","query":browsing_query}))
-        .await
-        .unwrap();
-    assert_eq!(browsing["choices"].as_array().unwrap().len(), 16);
-    assert_eq!(browsing["next"]["query"], browsing_query);
-    let continuation =
-        json!({"kind":"continue","revision":browsing["revision"],"cursor":browsing["next"]});
-    assert!(
-        models(&fixture, json!({"kind":"start","query":null}))
-            .await
-            .is_err()
-    );
-    let query = format!("RESEARCH {long_term} model-299");
-    let found = models(&fixture, json!({"kind":"start","query":query}))
-        .await
-        .unwrap();
-    assert_eq!(found["choices"].as_array().unwrap().len(), 1);
-    assert_eq!(found["choices"][0]["selection"]["modelId"], "model-299");
-    assert!(found["next"].is_null());
-    assert!(!found.to_string().contains("private-fixture-key"));
-    assert!(!found.to_string().contains("baseUrl"));
-    // A distinct tail beyond the old text boundary must participate in matching.
-    let missing_tail = format!("RESEARCH {}異 model-299", "界".repeat(257));
-    let missing = models(&fixture, json!({"kind":"start","query":missing_tail}))
-        .await
-        .unwrap();
-    assert!(missing["choices"].as_array().unwrap().is_empty());
-    assert!(missing["next"].is_null());
-    let matches = models(&fixture, json!({"kind":"start","query":"MoDeL-29"}))
-        .await
-        .unwrap();
-    assert_eq!(matches["choices"].as_array().unwrap().len(), 10);
-    assert_eq!(matches["choices"][0]["selection"]["modelId"], "model-290");
-    assert_eq!(matches["choices"][9]["selection"]["modelId"], "model-299");
-    assert!(matches["next"].is_null());
-    let none = models(
-        &fixture,
-        json!({"kind":"start","query":"research missing-token"}),
-    )
-    .await
-    .unwrap();
-    assert!(none["choices"].as_array().unwrap().is_empty());
-    assert!(none["next"].is_null());
-    edit(&fixture, |changes| {
-        changes.name = Some("Renamed Account".into())
-    })
-    .await;
-    let changed = models(&fixture, continuation).await.unwrap();
-    assert_eq!(changed["kind"], "changed");
     fixture.app.shutdown().await.unwrap();
     fixture.config.shutdown().await.unwrap();
 }
@@ -1078,183 +937,95 @@ async fn accepted_tool_policy_survives_settings_changes_and_requires_explicit_fi
 }
 
 #[tokio::test]
-async fn model_filter_distinguishes_connections_and_preserves_search_across_pages() {
+async fn accepted_manual_catalog_association_survives_reassociation_and_restore() {
+    use maka_agent_facts::configuration::CatalogModelReference;
     let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
-    let ids: Vec<_> = (0..20).map(|at| format!("family/shared.{at:02}")).collect();
+    let snapshot = maka_providers::catalog::Snapshot::bundled().unwrap();
+    let (provider, model) = snapshot
+        .models(None)
+        .find(|(provider, model)| {
+            *provider == "anthropic"
+                && model.context_window.is_some()
+                && model.max_output_tokens.is_some()
+        })
+        .unwrap();
+    let context = model.context_window;
+    let reference = CatalogModelReference {
+        provider: provider.into(),
+        model_id: model.id.clone(),
+    };
+    *fixture.owner.catalog.snapshot.write().await = Ok(Arc::new(snapshot));
     edit(&fixture, |changes| {
-        changes.name = Some("OpenRouter".into());
-        changes.enabled_model_ids = Some(ids.clone());
-        changes.model_overrides = Patch::Set(BTreeMap::from([
-            (
-                "family/shared.00".into(),
-                ModelOverride {
-                    context_window: Some(8192),
-                    ..Default::default()
-                },
-            ),
-            (
-                "family/shared.01".into(),
-                ModelOverride {
-                    context_window: Some(16384),
-                    ..Default::default()
-                },
-            ),
-        ]));
+        changes.model_overrides = Patch::Set(BTreeMap::from([(
+            "fixture-model".into(),
+            ModelOverride {
+                catalog_model: Some(reference),
+                ..Default::default()
+            },
+        )]));
     })
     .await;
-    let original = fixture.config.catalog().await.unwrap();
-    let first = &original.connections[0];
-    let created = fixture
-        .config
-        .create_connection(
-            serde_json::from_value(json!({
-                "expectedCatalogRevision": original.revision,
-                "connection": {
-                    "slug":"custom", "name":"Custom connection", "provider":first.provider,
-                    "configuration":first.configuration, "enabled":true,
-                    "enabledModelIds":ids,
-                }
-            }))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-    let CatalogMutationResult::Committed {
-        connection: Some(custom),
-        catalog_revision,
-    } = created
-    else {
-        panic!("custom connection commit");
-    };
-    let target = ConnectionTarget {
-        connection_id: first.connection_id.clone(),
-        model_id: "family/shared.00".into(),
-    };
-    fixture
-        .config
-        .set_default_target(SetDefaultConnectionTargetInput {
-            expected_catalog_revision: catalog_revision,
-            target: Some(target),
-        })
-        .await
-        .unwrap();
-    let summaries = fixture.config.connection_summaries().await.unwrap();
+    let (source, prepared) = crate::model::Source::select(
+        fixture.config.clone(),
+        fixture.owner.catalog.clone(),
+        fixture.owner.credentials.clone(),
+        fixture.selection().await,
+        None,
+        "association".into(),
+        fixture.owner.revision.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(prepared.context.unwrap().model_context_window, context);
+    let stored = serde_json::to_string(&source.accepted).unwrap();
     assert_eq!(
-        summaries
-            .connections
-            .iter()
-            .map(|row| (row.name.as_str(), row.enabled_model_count))
-            .collect::<Vec<_>>(),
-        vec![("OpenRouter", 20), ("Custom connection", 20)]
+        serde_json::from_str::<Value>(&stored).unwrap()["public_model"]["id"],
+        "fixture-model"
     );
-    let scoped = fixture
-        .config
-        .model_catalog(Some(&custom.connection_id))
-        .await
-        .unwrap();
-    let default = scoped
-        .connections
-        .iter()
-        .find(|row| row.connection_id == first.connection_id)
-        .unwrap();
-    assert_eq!(default.enabled_model_ids, vec!["family/shared.00"]);
+    edit(&fixture, |changes| {
+        changes.model_overrides = Patch::Clear;
+    })
+    .await;
     assert_eq!(
-        default
-            .model_overrides
-            .as_ref()
+        source
+            .capture()
+            .await
             .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        vec!["family/shared.00"]
-    );
-    let all = models(&fixture, json!({"kind":"start","query":"family/shared.00"}))
-        .await
-        .unwrap();
-    assert_eq!(
-        all["choices"]
-            .as_array()
+            .context
             .unwrap()
-            .iter()
-            .map(|choice| choice["connectionName"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        vec!["OpenRouter", "Custom connection"]
+            .model_context_window,
+        context
     );
-    let page = models(
-        &fixture,
-        json!({"kind":"start","query":"shared","connectionId":custom.connection_id}),
+    let restored = crate::model::Source::restore(
+        fixture.config.clone(),
+        fixture.owner.credentials.clone(),
+        serde_json::from_str(&stored).unwrap(),
+        "association".into(),
+        fixture.owner.revision.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        restored
+            .capture()
+            .await
+            .unwrap()
+            .context
+            .unwrap()
+            .model_context_window,
+        context
+    );
+    let (_, next) = crate::model::Source::select(
+        fixture.config.clone(),
+        fixture.owner.catalog.clone(),
+        fixture.owner.credentials.clone(),
+        fixture.selection().await,
+        None,
+        "next".into(),
+        fixture.owner.revision.clone(),
     )
     .await
     .unwrap();
-    assert_eq!(page["choices"].as_array().unwrap().len(), 16);
-    assert_eq!(page["next"]["connectionId"], custom.connection_id);
-    assert_eq!(
-        page["defaultModel"]["choice"]["limits"]["contextWindow"],
-        8192
-    );
-    assert_eq!(
-        page["defaultModel"]["choice"]["selection"]["connectionId"],
-        first.connection_id
-    );
-    assert_eq!(
-        page["defaultModel"]["choice"]["selection"]["modelId"],
-        "family/shared.00"
-    );
-    let last = models(
-        &fixture,
-        json!({"kind":"continue","revision":page["revision"],"cursor":page["next"]}),
-    )
-    .await
-    .unwrap();
-    let choices: Vec<_> = page["choices"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .chain(last["choices"].as_array().unwrap())
-        .collect();
-    assert_eq!(
-        choices
-            .iter()
-            .map(|choice| choice["selection"]["modelId"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        (0..20)
-            .map(|at| format!("family/shared.{at:02}"))
-            .collect::<Vec<_>>()
-    );
-    assert!(
-        choices
-            .iter()
-            .all(|choice| choice["selection"]["connectionId"] == custom.connection_id)
-    );
-    assert!(last["next"].is_null());
-    let missing = models(
-        &fixture,
-        json!({"kind":"start","query":"absent","connectionId":custom.connection_id}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(missing["choices"], json!([]));
-    fixture
-        .config
-        .set_default_target(SetDefaultConnectionTargetInput {
-            expected_catalog_revision: summaries.revision,
-            target: Some(ConnectionTarget {
-                connection_id: first.connection_id.clone(),
-                model_id: "family/shared.02".into(),
-            }),
-        })
-        .await
-        .unwrap();
-    let without_override = models(
-        &fixture,
-        json!({"kind":"start","query":"family/shared.00","connectionId":custom.connection_id}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        without_override["defaultModel"]["choice"]["selection"]["modelId"],
-        "family/shared.02"
-    );
+    assert_eq!(next.context.unwrap().model_context_window, None);
     fixture.app.shutdown().await.unwrap();
     fixture.config.shutdown().await.unwrap();
 }

@@ -76,6 +76,8 @@ Recall 在 [FTS5](https://sqlite.org/fts5.html#the_detail_option) 中记录每�
 
 历史、事件投递和资源分页保留后续项的字节打包目标；首个完整项即使元数据超出目标，也携带原始元数据与游标继续推进。历史正文仍按 UTF-8 字节窗口传输。`history_source` 只接收正文字节目标，并保留该单块的完整原始元数据，不再设置独立 JSON 信封配额。Session 范围与冻结来源边界仍为必要条件。
 
+集成场景通过 `cargo test -p maka-event-log --test integration` 统一运行，可用 `archive::`、`sessions::` 等模块名筛选。跨进程租约测试单独放在 `--test root_lease`，避免创建子进程时短暂继承其他测试线程持有的文件租约。私有投影测试通过 `--lib` 运行。
+
 [源码](src/lib.rs) · [Cargo 配置](Cargo.toml)
 
 启动恢复读取全部未决执行状态，不另设条数或字节配额，已完成历史仍不参与扫描。工具结果 payload 与冻结请求配置不设应用层存储大小上限，数据库迁移保留已有内容和配置引用。

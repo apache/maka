@@ -67,3 +67,5 @@ const operation = await context.services.agent[0].mutation('setCompactionPrompt'
 macOS 上，活动订阅还会比较直接子项的元数据。每次扫描后至少等待一秒；扫描耗时较长时，等待时间延长到该次扫描耗时的九倍，目标是每个订阅约用 10% 的时间扫描，并不承诺固定通知期限或限制总 CPU 用量。即使原生通知延迟，也能发现持续存在的变化；未变化时不发送通知。扫描不读取文件内容、不跟随符号链接，也不进入子目录。`ready` 会等待首次扫描；大目录或较慢的存储可能延迟就绪和后续通知。关闭订阅会等待其正在执行的文件系统工作结束。
 
 [源码](src/lib.rs) · [Cargo 配置](Cargo.toml)
+
+`metadata.pinned` 用于置顶或取消置顶会话，省略时保留原状态。Session 结果包含 `pinned`。会话目录先返回置顶会话，再沿用原有 ID 顺序，前后翻页游标仍受目录 revision 约束。新会话和新分支默认不置顶。

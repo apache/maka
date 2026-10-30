@@ -1564,4 +1564,15 @@ export const conversationMessages = {
     '浏览器配置：{browser}',
     '瀏覽器設定檔：{browser}',
   ],
+  'Browser file uploads for this session': [
+    'Browser file uploads for this session',
+    '此会话的浏览器文件上传权限',
+    '此對話的瀏覽器檔案上傳權限',
+  ],
+  "This allows the requesting tool to upload files to the displayed browser origin. File access, browser page access and file downloads require separate permissions. The grant lasts for this session's current permission boundary.":
+    [
+      "This allows the requesting tool to upload files to the displayed browser origin. File access, browser page access and file downloads require separate permissions. The grant lasts for this session's current permission boundary.",
+      '允许请求工具向所显示的浏览器来源上传文件。文件访问、页面访问和文件下载需要各自的权限。此授权持续至该会话当前权限边界失效。',
+      '允許請求工具向所顯示的瀏覽器來源上傳檔案。檔案存取、頁面存取與檔案下載需要各自的權限。此授權持續至該對話目前權限邊界失效。',
+    ],
 } as const satisfies Catalog;

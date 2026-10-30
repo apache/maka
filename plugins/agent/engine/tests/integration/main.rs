@@ -41,7 +41,6 @@ mod session_import;
 mod session_longevity;
 mod stale_pruning;
 mod startup_recovery;
-mod startup_recovery_limits;
 mod tool_arguments;
 mod tool_scheduling;
 

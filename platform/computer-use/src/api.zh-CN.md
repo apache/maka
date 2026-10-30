@@ -14,8 +14,8 @@ nodeRepl.write(await (native.list_windows ? native.list_windows() : native.list_
 | `windows` | `activate_window`, `get_window_state`, `click`, `scroll`, `drag`, `press_key`, `type_text`, `launch_app`, `list_apps`, `list_windows`, `get_window`, `perform_secondary_action`, `set_value` |
 
 - Linux X11：使用返回的 `window` 对象调用 `get_window_state({window, query?, include_screenshot?})`。点击传观察到的 `element_id` **或**整数 `x,y`：`click({window,element_id})` / `click({window,x,y,mouse_button?,click_count?,duration?,key?})`。有 `window` 时坐标相对窗口，省略则操作桌面。其他输入为 `type_text({window?,text,element_id?})`、`press_key({window?,key,duration?})`、`scroll({window?,direction,pixels?,x?,y?,element_id?,key?})`、`drag({window?,path:[{x,y},…],key?})`、`move({window?,x,y,key?})`、`move_relative({dx,dy,key?})`、`activate_window({window})`、`perform_secondary_action({window,element_id,action})`、`launch_app({app})`。`duration` 单位为毫秒。`drag_handle()` 创建桌面拖动句柄，提供 `start({x,y})`、`move_to({x,y})`、`end()`；请在本 turn 内显式结束。
-- Windows：使用返回的 `{app,id,...}` 窗口描述。索引或截图输入前先读 `get_window_state({window,include_text?,include_screenshot?})`；默认含截图、不含文本。输入为 `click({window,element_index})` 或 `click({window,x,y,screenshotId})`、`scroll({window,x,y,scrollX,scrollY,screenshotId?})`、`drag({window,from_x,from_y,to_x,to_y,screenshotId})`、`press_key({window,key})`、`type_text({window,text})`、`set_value({window,element_index,value})`、`perform_secondary_action({window,element_index,action})`、`activate_window({window})`、`get_window({id})`、`launch_app({app})`。坐标输入需要当前窗口截图；`screenshotId` 使用返回截图的 `id`。当前 checkpoint 的坐标点击和拖动必须提供 `screenshotId`。原生 Windows `scroll` 已出现在接口清单中，但执行后端尚未接通，调用会被拒绝。次要操作目前支持 Expand/Collapse，其他标签会被拒绝。
-- macOS：将返回的应用 `id` 用作 `app`。先读 `get_app_state({app})`，再用 `click({app,element_index})` 或 `click({app,x,y,mouse_button?,click_count?})`、`drag({app,from_x,from_y,to_x,to_y})`、`scroll({app,element_index,direction,pages?})`（也可用 `x,y`）、`press_key({app,key})`、`type_text({app,text})`、`paste({app,text,format:'text'})`、`set_value({app,element_index,value})`、`select_text({app,element_index,text,prefix?,suffix?,selection_type?})`、`perform_secondary_action({app,element_index,action})`。
+- Windows：使用返回的 `{app,id,...}` 窗口描述。索引或截图输入前先读 `get_window_state({window,include_text?,include_screenshot?})`；默认含截图、不含文本。输入为 `click({window,element_index})` 或 `click({window,x,y,screenshotId?})`、`scroll({window,x,y,scrollX,scrollY,screenshotId?})`、`drag({window,from_x,from_y,to_x,to_y,screenshotId?})`、`press_key({window,key})`、`type_text({window,text})`、`set_value({window,element_index,value})`、`perform_secondary_action({window,element_index,action})`、`activate_window({window})`、`get_window({id})`、`launch_app({app})`。将 `screenshotId` 设为返回截图的 `id` 时使用图像坐标。省略时使用窗口局部整数坐标，范围按最近观察到的截图尺寸计算；未观察过截图时使用窗口尺寸。一次滚动可同时指定 `scrollX` 和 `scrollY`。次要操作目前支持 Expand/Collapse，其他标签会被拒绝。
+- macOS：将返回的应用 `id` 用作 `app`。先读 `get_app_state({app})`，再用 `click({app,element_index,mouse_button?,click_count?})` 或 `click({app,x,y,mouse_button?,click_count?})`、`drag({app,from_x,from_y,to_x,to_y})`、`scroll({app,element_index,direction,pages?})`（也可用 `x,y`）、`press_key({app,key})`、`type_text({app,text})`、`paste({app,text,format:'text'})`、`set_value({app,element_index,value})`、`select_text({app,element_index,text,prefix?,suffix?,selection_type?})`、`perform_secondary_action({app,element_index,action})`。
 
 原生清单和状态形状依平台而异；复用返回的 ID 和选择器，不传 App 包装对象的句柄。Linux 状态含 `ax_tree`、`screenshots`，截图项含 `filepath`、`bytes`、`data_url`。Windows 状态会输出截图；其他原生结果由调用者用 `nodeRepl.write`/`emitImage` 输出，变更方法返回 undefined。当前 Host/应用权限仍然生效；方法存在不保证后端可用或操作已支持。目标失效后重新观察，不重播结果未知的输入；不要把未结束的拖动跨 turn 使用；重置后重新观察。
 
@@ -65,7 +65,11 @@ App 输入：`typeText(text)`、`paste(text, {format?})`、`pressKey(key)`。
 Tab 输入：`typeText(index|null, text)`、`paste(index|null, text, {format?})`、`pressKey(index|null, key)`。给定索引会先聚焦已观察的字段，`null` 表示当前焦点。按键示例：`Return`、`Tab`、`super+a`、`shift+Left`。
 粘贴格式：`text`（默认）、`md`（将 Markdown 源码作为纯文本）和 `html`。Linux 和 Windows 原生应用仅支持 `text`。原生 HTML 粘贴仅支持 macOS，需要可读的可编辑值和选区；它会临时激活确切窗口、保留选区，并恢复原剪贴板，除非用户已复制更新的内容。值未改变会报告为不确定。浏览器 HTML 粘贴需要已观察的 contenteditable 元素。
 
-Tab 导航：`goto(url)`、`back()`、`forward()`、`reload()`、`close()`。导航支持 HTTP(S) 和 about:blank，并等待可观察的文档。覆盖主要 CDP 目标；跨进程 iframe 无障碍支持尚不完整。
+Tab 导航：`goto(url)`、`back()`、`forward()`、`reload()`、`close()`。
+`await tab.screenshot({ fullPage: false, clip: { x, y, width, height } })` 返回 JPEG 字节，不自动输出图片。不传 `clip` 时截取视口；`fullPage: true` 截取整个文档。裁剪宽高必须为正数，坐标与尺寸使用 CSS 像素。视口截图先等待新帧，确认清理后才回退到同一标签页的截图命令；不重放结果不确定的操作。
+
+Extension 提供方支持 `await tab.markDeliverable()`：在正常 Turn 结束时保留标签页并归还用户；`await tab.markHandoff()` 则为同一个 Session 保留标签页，下一次实际 Turn 激活时恢复并清除标记。原来的 agent/user 来源不变，因此 agent 创建的页面在之后未重新标记的 Turn 结束时关闭。后一次明确标记覆盖前一次。两者在收到匹配的意图 ACK 后返回 undefined；这不证明物理交付或清理成功，不保留站点权限，也不自动重放不确定的请求。直接 CDP 不支持这些标记。
+导航支持 HTTP(S) 和 about:blank，并等待可观察的文档。覆盖主要 CDP 目标；跨进程 iframe 无障碍支持尚不完整。
 
 `tab.clipboard` 提供 `read()`、`readText()`、`write(items)`、`writeText(text)`，返回数据而不自动输出。
 富文本项目包含非空 `entries`；每个条目包含 `mimeType`，以及字符串字段 `text` 或 `base64` 中的一个。
@@ -137,7 +141,7 @@ confirm 还有 `accept()`，prompt 有 `accept(text)`，允许空字符串。旧
 CDP 页数接受有限数字，包括小数、零和负数。一页使用目标内容的宽或高，最小为 100 CSS 像素；坐标目标使用视口尺寸。CDP 的 `{pixels:n}` 扩展接受正的有限像素增量。
 Linux 拒绝数字页数。Linux X11 默认使用 `{pixels:800}`，接受 1 到 65535 的整数像素距离，并发送 `max(round(pixels/100),1)` 个滚轮步进；实际内容移动量由应用决定。Linux Wayland 目前拒绝像素输入。
 
-macOS 滚动使用正的有限数字页数，默认一页，并拒绝 `{pixels}`。当前原生适配器仅能交付 1 到 50 的整数页数；小数或更大页数仍未支持。Windows 要求坐标点和正的有限 `{pixels:500}`，拒绝省略距离及数字页数；坐标和按方向取正负后的距离使用 JavaScript `Math.round`，舍入结果须在有符号 32 位整数范围内。原生滚轮每轴增量限制在 [-32768,32767]，指针停留在目标点；内容移动量由应用决定。原生索引滚动保留选定的无障碍目标。原生索引点击支持一次语义点击；需要多次点击时使用截图坐标。
+macOS 滚动使用正的有限数字页数，默认一页，并拒绝 `{pixels}`。当前原生适配器仅能交付 1 到 50 的整数页数；小数或更大页数仍未支持。Windows 要求坐标点和正的有限 `{pixels:500}`，拒绝省略距离及数字页数；坐标和按方向取正负后的距离使用 JavaScript `Math.round`，舍入结果须在有符号 32 位整数范围内。原生滚轮每轴增量限制在 [-32768,32767]，指针停留在目标点；内容移动量由应用决定。原生索引滚动保留选定的无障碍目标。App 包装对象的原生索引点击支持一次语义点击；多次点击需使用截图坐标。macOS 的 raw `cua.computer.click` 还支持通过模拟鼠标事件进行多次索引点击。
 
 输入派发成功不代表已经确定应用的结果状态。
 浏览器坐标操作使用 CSS 视口坐标，无需先截图；截图不缩放坐标。Linux 窗口局部坐标无需先截图即可使用。Linux/Windows 原生截图映射在输入操作后继续有效，直到下一次观察替换；仅 AX 观察会清除图像映射，Windows 此后按坐标操作需要重新截图。窗口几何变化会使已保存的映射失效。macOS 当前仍要求在操作后重新截图再按坐标输入。原生语义操作使用保留的无障碍元素。应用菜单仅限所属进程和确切绑定窗口，关闭菜单的内容不会显示。菜单交互可能激活绑定窗口，并在菜单打开时保持激活。
@@ -151,7 +155,7 @@ Host 启用输出音频后，`await cua.computer.start_audio_recording({max_dura
 
 应用、浏览器站点和音频授权等待会暂停剩余执行预算。macOS/Windows 原生等待也会暂停预算；普通异步等待和 Linux 原生操作继续计时。暂停不会重置预算，也不会禁用取消。
 每个 Session 有独立的 Maka 光标。输入操作自动显示光标。`cua.cursor.configure({label?, color?, enabled?, reducedMotion?})` 修改此 Session 的显示。颜色为 `blue`、`mint`、`violet`、`amber`、`rose`、`cyan`；标签最多 48 个字符。`cua.cursor.getState()` 报告设置及原生/浏览器可见性。处于 `idle` 的原生渲染器在首次原生指示时启动；`unavailable` 表示显示主机缺失或失败。重新配置可重试失败的渲染器。空闲光标保留至禁用或清理。光标不共享输入权限，也不移动系统指针。多个光标不能隔离物理键盘、应用焦点或输入法。
-REPL 被取消、超时或耗尽堆内存后，需要 `cua_reset` 并重新绑定目标。已接纳的原生工作会在返回前结算；重置不会撤销已派发的输入。Turn 结束时，当前 Session 会关闭为该 Turn 创建的临时标签页，并释放页面观察；已有的用户标签页保持打开。重置会清除此 Session 的 REPL 和绑定并关闭其临时标签页，保留用户应用和原有标签页。关闭结果未确认时会保留所有权，不重放关闭操作。
+REPL 被取消、超时或耗尽堆内存后，需要 `cua_reset` 并重新绑定目标。已接纳的原生工作会在返回前结算；重置不会撤销已派发的输入。正常 Turn 结束时，当前 Session 会关闭未标记保留的临时标签页，并释放页面观察；已有的用户标签页和明确保留的标签页按上述规则保持打开。重置清除本 Session 的 REPL 和绑定，不授予新权限，也不丢弃该 Session 保留的资源及清理责任。标记或关闭结果未确认时会保留责任，不重放操作。
 
 `agent.browsers` 与 `cua.browsers` 是同一个浏览器集合；`list`、`get(id)`、`getDefault` 和 `getForUrl(url)` 返回元数据或惰性 Browser，不输出观察。`cua.getBrowser` 是输出说明的便捷入口。`browser.tabs.selected()` 返回逻辑会话选中的标签页；它不选择操作系统焦点标签页。直接 CDP 尚无逻辑选中服务，返回 `undefined`。
 
@@ -245,3 +249,21 @@ Alt、Control、Meta、Shift、ControlOrMeta。`keypress({keys:[...]})` 向当�
 # 页面资源能力
 仅在所选标签页发布该能力时使用页面资源接口。资源清单归属于已观察的页面和文档。导航或文档替换后获取新清单；旧资源 ID 不能授权另一页面的文件。保存文件需要该操作当前的文件传输许可。
 <!-- /browser-document -->
+
+### 文件选择与上传
+
+```js
+const pending = tab.playwright.waitForEvent('filechooser', { timeoutMs: 3000 });
+await tab.playwright.getByRole('button', { name: 'Upload' }).click();
+const chooser = await pending;
+chooser.isMultiple();
+await chooser.setFiles(['workspace-file.bin']);
+```
+
+先开始等待，再执行打开文件选择器的操作。默认及最长事件等待时间为 3000 毫秒；显式 timeout 必须是正整数。`isMultiple()` 同步返回。`setFiles(pathOrPaths, {timeoutMs})` 接受单一路径或非空数组；单选选择器拒绝多个路径。可选 timeout 会校验，但不会丢弃已经派发的文件选择请求。
+
+路径属于 Agent Host 的文件系统，仍受调用者的工作区文件策略约束。网页访问、当前 HTTP(S) 来源的上传批准、文件读取权限互相独立。当前输入快照支持普通文件。文件作为不可变字节传输，由所选 Maka 浏览器宿主物化；不要自行换算操作系统之间的文件路径。
+
+选择器句柄绑定签发它的标签页、文档及 turn。子 target 的选择器不受支持。扩展选择器要求完整的事件来源信息，上传还要求证实浏览器宿主的文件可见位置。Chatgpt 尽力兼容；没有该位置证明的配置 CDP 会在发送文件前拒绝上传。不会为此把已绑定标签页替换到另一浏览器。成功选择会消耗句柄；结果未知时应先处理原请求，不能重放。
+
+若清理报告结果未确认，不要假定上传副本已经删除。浏览器宿主退出时仍被选择的文件，目前没有后续自动回收能力。

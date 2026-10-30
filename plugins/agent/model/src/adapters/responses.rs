@@ -42,10 +42,9 @@ pub(super) enum Error {
         replay_safe: bool,
         retained_output_safe: bool,
     },
-    #[error("Responses provider failed: {message}")]
+    #[error("Responses provider failed: {error:?}")]
     Provider {
-        code: Option<String>,
-        message: String,
+        error: Box<maka_provider_protocol::output::ProviderError>,
         observed_output: bool,
         replay_safe: bool,
         retained_output_safe: bool,
@@ -72,14 +71,12 @@ impl From<maka_provider_protocol::responses::Error> for Error {
                 retained_output_safe,
             },
             ProtocolError::Provider {
-                code,
-                message,
+                error,
                 observed_output,
                 replay_safe,
                 retained_output_safe,
             } => Self::Provider {
-                code,
-                message,
+                error,
                 observed_output,
                 replay_safe,
                 retained_output_safe,

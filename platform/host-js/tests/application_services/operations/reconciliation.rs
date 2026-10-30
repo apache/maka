@@ -202,7 +202,7 @@ async fn live_installed_replacement_waits_for_original_call_resources_and_native
             resource_started: resource_started.clone(),
             resource_release: resource_release.clone(),
         });
-        let mut native = NativeRegistry::default();
+        let mut native = observer_registry(NativeRegistry::default());
         let closing = close_started.clone();
         let closed = close_release.clone();
         native

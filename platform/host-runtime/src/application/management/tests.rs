@@ -767,6 +767,33 @@ async fn immutable_document_resource_over_two_mib_roundtrips_through_validated_p
         "paged document differs from the complete original source"
     );
 
+    let mut foreign = source.clone();
+    foreign.deployment = Uuid::new_v4();
+    for (selected, offset, expected) in [
+        (
+            source.clone(),
+            first.find('界').unwrap() + 1,
+            "invalid document byte offset",
+        ),
+        (foreign, 0, "foreign managed deployment source"),
+    ] {
+        let context = context(Attachments::new());
+        let scope = context.scope.clone();
+        assert_eq!(
+            fixture
+                .manager
+                .call(
+                    "readDocument".into(),
+                    json!({"source":selected,"offset":offset}),
+                    context,
+                )
+                .await
+                .unwrap_err(),
+            expected
+        );
+        scope.finish().await.unwrap();
+    }
+
     // Advancing the head cannot reinterpret any old-source continuation.
     let smaller = DeploymentDocument {
         input: fixture.input.clone(),

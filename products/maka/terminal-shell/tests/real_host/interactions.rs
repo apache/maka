@@ -17,7 +17,10 @@
  * under the License.
  */
 
-use super::{shortcut, support, tab_to_label, wait_enabled_node, wait_focused_input};
+use super::{
+    activate, commit_native_events, shortcut, support, tab_to_label, wait_enabled_node,
+    wait_focused_input,
+};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use maka_agent_api::session::StoredSessionConfiguration;
 use maka_agent_facts::interaction::{Decision, InteractionOutcome, InteractionRecord};
@@ -144,31 +147,6 @@ fn escape(view: &mut AppView) {
     view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
 }
 
-async fn commit_input(view: &mut AppView) {
-    // Native text edits precede their JS change callbacks. Commit those events
-    // before testing validation or admitting an answer from a painted button.
-    let (done, committed) = tokio::sync::oneshot::channel();
-    view.control()
-        .unwrap()
-        .advance_clock(Duration::ZERO, move || {
-            let _ = done.send(());
-        });
-    tokio::time::timeout(Duration::from_secs(20), committed)
-        .await
-        .unwrap()
-        .unwrap();
-    support::tick(view);
-}
-
-async fn activate(view: &mut AppView, label: &str) {
-    tab_to_label(view, label).await;
-    view.handle_event(Event::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
-    commit_input(view).await;
-}
-
 async fn await_response_gate(view: &mut AppView, gate: &ReplyGate) {
     tokio::time::timeout(Duration::from_secs(20), async {
         let held = gate.held.notified();
@@ -241,7 +219,7 @@ async fn computer_consent_keeps_the_original_target_boundary_and_single_click_re
         wait_focused_input(&mut view, "Message composer").await;
         let composer = view.surface().focused().unwrap();
         view.handle_event(Event::Paste("The original consent draft stays here".into()));
-        commit_input(&mut view).await;
+        commit_native_events(&mut view).await;
         let caret = view.surface().input_context().unwrap().selection;
         tab_to_label(&mut view, "Deny").await;
         escape(&mut view);
@@ -760,14 +738,14 @@ async fn inline_questions_keep_their_draft_and_submit_only_from_the_request_seat
         wait_focused_input(&mut view, "Message composer").await;
         let composer = view.surface().focused().unwrap();
         view.handle_event(Event::Paste("The message draft remains separate".into()));
-        commit_input(&mut view).await;
+        commit_native_events(&mut view).await;
         let composer_caret = view.surface().input_context().unwrap().selection;
-        activate(&mut view, "Other answer").await;
+        activate(&mut view, "Other answer 1 · Which release should we use?").await;
         tab_to_label(&mut view, "Other answer 1").await;
         wait_focused_input(&mut view, "Other answer 1").await;
         let original_answer = format!("原始答案 · 门口 {}", "完整答案保持原文 ".repeat(512));
         view.handle_event(Event::Paste(original_answer.clone()));
-        commit_input(&mut view).await;
+        commit_native_events(&mut view).await;
         let answer_editor = view.surface().focused().unwrap();
         let answer_caret = view.surface().input_context().unwrap().selection;
 
@@ -775,12 +753,12 @@ async fn inline_questions_keep_their_draft_and_submit_only_from_the_request_seat
         let pending = client.query("agent", "pendingInteractions", json!({"sessionId":fixture.session})).await.unwrap();
         assert_eq!(pending["entries"].as_array().unwrap().len(), 2);
         shortcut(&mut view, 'r');
-        commit_input(&mut view).await;
+        commit_native_events(&mut view).await;
         support::wait_enabled_button(&mut view, "Refresh status").await;
         assert_eq!(view.surface().focused(), Some(answer_editor));
         assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some(original_answer.as_str()));
         assert_eq!(view.surface().input_context().unwrap().selection, answer_caret);
-        activate(&mut view, "Skip").await;
+        activate(&mut view, "Skip · 2. Add diagnostics?").await;
         wait_enabled_node(&mut view, "Submit answers").await;
         view.resize(80, 24);
         escape(&mut view);
@@ -789,7 +767,7 @@ async fn inline_questions_keep_their_draft_and_submit_only_from_the_request_seat
         assert_eq!(view.surface().input_context().unwrap().selection, composer_caret);
         assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("The message draft remains separate"));
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)));
-        commit_input(&mut view).await;
+        commit_native_events(&mut view).await;
         assert!(fixture.store.session(&fixture.session).await.unwrap().interaction(&question.request_id).await.unwrap().unwrap().outcome.is_none());
         assert!(client.pending_controls().await.unwrap().is_empty());
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
@@ -842,15 +820,15 @@ async fn structured_form_defaults_omission_validation_masking_and_receipt_are_re
         assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("1.25"));
         shortcut(&mut view, 'a');
         view.handle_event(Event::Paste("invalid-number".into()));
-        commit_input(&mut view).await;
+        commit_native_events(&mut view).await;
         assert!(view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Submit form" && node.state.disabled));
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)));
-        commit_input(&mut view).await;
+        commit_native_events(&mut view).await;
         assert!(fixture.store.session(&fixture.session).await.unwrap().interaction(&record.request_id).await.unwrap().unwrap().outcome.is_none());
         assert!(client.pending_controls().await.unwrap().is_empty());
         shortcut(&mut view, 'a');
         view.handle_event(Event::Paste("1.25".into()));
-        commit_input(&mut view).await;
+        commit_native_events(&mut view).await;
         wait_enabled_node(&mut view, "Submit form").await;
 
         activate(&mut view, "Include Optional note").await;
@@ -872,7 +850,7 @@ async fn structured_form_defaults_omission_validation_masking_and_receipt_are_re
         wait_focused_input(&mut view, "Private note").await;
         shortcut(&mut view, 'a');
         view.handle_event(Event::Paste(PRIVATE_NOTE.into()));
-        commit_input(&mut view).await;
+        commit_native_events(&mut view).await;
         let context = view.surface().input_context().unwrap();
         assert!(context.secure);
         assert_eq!(context.text, None);
@@ -882,7 +860,7 @@ async fn structured_form_defaults_omission_validation_masking_and_receipt_are_re
         let private_editor = view.surface().focused().unwrap();
         let private_caret = view.surface().input_context().unwrap().selection;
         shortcut(&mut view, 'r');
-        commit_input(&mut view).await;
+        commit_native_events(&mut view).await;
         support::wait_enabled_button(&mut view, "Refresh status").await;
         assert_eq!(view.surface().focused(), Some(private_editor));
         let refreshed = view.surface().input_context().unwrap();
@@ -921,7 +899,7 @@ async fn structured_form_defaults_omission_validation_masking_and_receipt_are_re
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_production_pty_leaves_requests_unanswered_then_records_cancel_and_decline() {
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::registered().await;
+        let mut fixture = Fixture::configured(support::Options { registered: true, ..Default::default() }).await;
         let client = fixture.client().await;
         support::mutate(&client, "send", json!({"sessionId":fixture.session,"message":"Keep physical form decisions active","model":fixture.selection})).await;
         let request = fixture.next_request().await;

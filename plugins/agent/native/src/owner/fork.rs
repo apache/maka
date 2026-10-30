@@ -160,6 +160,7 @@ impl Owner {
             tools,
             title: input.title,
             title_is_manual: true,
+            pinned: false,
             labels: input.labels,
             workspace,
             permissions: WorkspacePermissions {

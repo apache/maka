@@ -298,6 +298,9 @@ pub(super) async fn execute_main(
                     if tools.finished() {
                         return Ok(Outcome::FinishedByTool);
                     }
+                    if !failure.retryable() {
+                        return result.map(Outcome::from);
+                    }
                     if failures >= 9 {
                         if !lane.try_switch_fallback_transport() {
                             return result.map(Outcome::from);
@@ -309,11 +312,10 @@ pub(super) async fn execute_main(
                         // +/-10% jitter. The bounded attempt count caps this delay.
                         let base_ms = 200u64 << failures;
                         failures += 1;
-                        failure.retry_after().unwrap_or_else(|| {
-                            std::time::Duration::from_millis(fastrand::u64(
-                                base_ms * 9 / 10..=base_ms * 11 / 10,
-                            ))
-                        })
+                        let backoff = std::time::Duration::from_millis(fastrand::u64(
+                            base_ms * 9 / 10..=base_ms * 11 / 10,
+                        ));
+                        retry_delay(failure, backoff, maka_model::ProviderFailure::now_unix_ms())
                     }
                 }
                 _ => return result.map(Outcome::from),
@@ -345,7 +347,7 @@ pub(super) async fn execute_main(
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(RunError::Cancelled),
-                _ = tokio::time::sleep(delay) => {}
+                _ = wait_retry(delay) => {}
             }
         }
     }
@@ -359,6 +361,22 @@ pub(super) async fn execute_main(
         }
     };
     (high_water, result)
+}
+
+async fn wait_retry(delay: std::time::Duration) {
+    match tokio::time::Instant::now().checked_add(delay) {
+        Some(at) => tokio::time::sleep_until(at).await,
+        // An unrepresentable deadline cannot authorize an earlier replay.
+        None => std::future::pending::<()>().await,
+    }
+}
+
+fn retry_delay(
+    failure: &maka_model::ProviderFailure,
+    backoff: std::time::Duration,
+    now_unix_ms: u64,
+) -> std::time::Duration {
+    backoff.max(failure.retry_delay_at(now_unix_ms).unwrap_or_default())
 }
 
 async fn close_retry(retry: &mut Option<PreparedPrompt>) -> Result<(), RunError> {
@@ -649,8 +667,9 @@ where
                 result = running.next(), if !running.is_empty() => { tool_result(result.unwrap())?; }
                 prepared = preparing.next(), if !preparing.is_empty() => {
                     let prepared: maka_tools::PreparedCall<'_> = prepared.expect("nonempty preparation set")?;
-                    let published = catch_tool(prepared.publish(&[])).await?;
+                    let (published, execution) = publish_while_executing(prepared, &[], &mut running, &mut preparing, &tool_cancellation).await?;
                     running.push(catch_tool(published.completion).boxed());
+                    execution?;
                 }
                 event = stream.next() => {
                     let Some(event) = event else { break; };
@@ -687,7 +706,7 @@ where
                     };
                     if let Some(prepared) = prepared {
                         let prepared = prepared?;
-                        let published = catch_tool(prepared.publish(&writes)).await?;
+                        let (published, execution) = publish_while_executing(prepared, &writes, &mut running, &mut preparing, &tool_cancellation).await?;
                         record_prefix(&mut writer, &writes, &published.prefix_sequences);
                         if !writes.is_empty() {
                             finalizer.receipt_prefix(&writes, writer.snapshot());
@@ -695,11 +714,17 @@ where
                         inner.attempts.publish(finalizer, writer.snapshot());
                         // The receipt authorizes completion even when the ready model tail failed.
                         running.push(catch_tool(published.completion).boxed());
+                        execution?;
                     } else if !writes.is_empty() {
-                        let sequences = inner.log.append_batch(&writes).await?;
+                        let (sequences, execution) = wait_while_executing(inner.log.append_batch(&writes), &mut running, &mut preparing, &tool_cancellation).await;
+                        let sequences = match sequences {
+                            Ok(sequences) => sequences,
+                            Err(error) => return merge_execution(Err(error.into()), execution),
+                        };
                         record_prefix(&mut writer, &writes, &sequences);
                         finalizer.receipt_prefix(&writes, writer.snapshot());
                         inner.attempts.publish(finalizer, writer.snapshot());
+                        execution?;
                     }
                     drop(observations.reservations);
                     let accepted_item = observations.events.iter().any(|event| matches!(event, ModelObservation::Part(_)));
@@ -717,7 +742,14 @@ where
         }
         Ok(())
     }.await;
-    let stream_cleanup = stream.cancel_and_wait().await;
+    let (stream_cleanup, execution) = wait_while_executing(
+        stream.cancel_and_wait(),
+        &mut running,
+        &mut preparing,
+        &tool_cancellation,
+    )
+    .await;
+    let result = merge_execution(result, execution);
     if matches!(result, Err(ref error) if !matches!(error, RunError::Model(_)) || error.is_cleanup_unconfirmed())
     {
         tool_cancellation.cancel();
@@ -743,7 +775,18 @@ where
     } else {
         result
     };
-    let confirmation = match confirm_prefix(finalizer, confirm).await {
+    let (confirmation, execution) = wait_while_executing(
+        confirm_prefix(finalizer, confirm),
+        &mut running,
+        &mut preparing,
+        &tool_cancellation,
+    )
+    .await;
+    if execution.is_err() {
+        preparing.clear();
+    }
+    let result = merge_execution(result, execution);
+    let confirmation = match confirmation {
         Ok(Some(cut)) => {
             inner.attempts.publish(finalizer, cut);
             Ok(())
@@ -756,30 +799,52 @@ where
             .into(),
         ),
     };
-    let mut result = match confirmation {
-        Ok(()) => {
-            finish(
-                inner,
-                writer,
-                finalizer,
-                result,
-                cancellation,
-                completion_tools,
-                retry,
-            )
-            .await
-        }
-        Err(error) => {
-            drop(writer);
-            match result {
-                Ok(()) => Err(error),
-                Err(original) => additional_failure(Err(original), error),
+    let (result, execution) = wait_while_executing(
+        async {
+            match confirmation {
+                Ok(()) => {
+                    finish(
+                        inner,
+                        writer,
+                        finalizer,
+                        result,
+                        cancellation,
+                        completion_tools,
+                        retry,
+                    )
+                    .await
+                }
+                Err(error) => {
+                    drop(writer);
+                    match result {
+                        Ok(()) => Err(error),
+                        Err(original) => additional_failure(Err(original), error),
+                    }
+                }
             }
-        }
-    };
+        },
+        &mut running,
+        &mut preparing,
+        &tool_cancellation,
+    )
+    .await;
+    if execution.is_err() {
+        preparing.clear();
+    }
+    let mut result = merge_execution(result, execution);
     if finalizer.terminal_confirmed() {
         inner.attempts.remove(&binding.step_id);
-        if let Err(error) = close_retry(&mut retired_prompt).await {
+        let (closed, execution) = wait_while_executing(
+            close_retry(&mut retired_prompt),
+            &mut running,
+            &mut preparing,
+            &tool_cancellation,
+        )
+        .await;
+        if execution.is_err() {
+            preparing.clear();
+        }
+        if let Err(error) = merge_execution(closed, execution) {
             result = additional_failure(result, error);
         }
     }
@@ -788,15 +853,21 @@ where
         tokio::select! {
             prepared = preparing.next(), if !preparing.is_empty() => {
                 let published = match prepared.expect("nonempty preparation set") {
-                    Ok(prepared) => catch_tool(prepared.publish(&[])).await,
-                    Err(error) => Err(error),
+                    Ok(prepared) => publish_while_executing(prepared, &[], &mut running, &mut preparing, &tool_cancellation).await,
+                    Err(error) => Err(error.into()),
                 };
                 match published {
-                    Ok(published) => running.push(catch_tool(published.completion).boxed()),
+                    Ok((published, execution)) => {
+                        running.push(catch_tool(published.completion).boxed());
+                        if let Err(error) = execution {
+                            preparing.clear();
+                            cleanup = additional_failure(cleanup, error);
+                        }
+                    },
                     Err(error) => {
                         tool_cancellation.cancel();
                         preparing.clear();
-                        if cleanup.is_ok() { cleanup = Err(error.into()); }
+                        if cleanup.is_ok() { cleanup = Err(error); }
                     }
                 }
             }
@@ -816,6 +887,85 @@ where
         result = additional_failure(result, error);
     }
     result
+}
+
+type RunningCalls<'a> = futures_util::stream::FuturesUnordered<
+    futures_util::future::BoxFuture<
+        'a,
+        Result<serde_json::Value, maka_agent_facts::tools::ToolError>,
+    >,
+>;
+type PreparingCalls<'a> = futures_util::stream::FuturesUnordered<
+    futures_util::future::BoxFuture<
+        'a,
+        Result<maka_tools::PreparedCall<'a>, maka_agent_facts::tools::ToolError>,
+    >,
+>;
+
+async fn wait_while_executing<'a, F: std::future::Future>(
+    future: F,
+    running: &mut RunningCalls<'a>,
+    preparing: &mut PreparingCalls<'a>,
+    cancellation: &CancellationToken,
+) -> (F::Output, Result<(), RunError>) {
+    use futures_util::{FutureExt, StreamExt};
+    // A suspended sibling can already own a granted fair permit. Keep its
+    // original future polled without abandoning the operation being awaited.
+    tokio::pin!(future);
+    let mut execution = Ok(());
+    let mut ready = Vec::new();
+    loop {
+        tokio::select! {
+            output = &mut future => {
+                // Preparation may finish, but only the writer publishes it
+                // after the original operation and its receipt have settled.
+                preparing.extend(ready.into_iter().map(|prepared| futures_util::future::ready(prepared).boxed()));
+                return (output, execution);
+            },
+            prepared = preparing.next(), if !preparing.is_empty() => {
+                ready.push(prepared.expect("nonempty preparation set"));
+            }
+            result = running.next(), if !running.is_empty() => {
+                if let Err(error) = tool_result(result.expect("nonempty completion set")) {
+                    cancellation.cancel();
+                    execution = additional_failure(execution, error);
+                }
+            }
+        }
+    }
+}
+
+fn merge_execution<T>(
+    result: Result<T, RunError>,
+    execution: Result<(), RunError>,
+) -> Result<T, RunError> {
+    match execution {
+        Ok(()) => result,
+        Err(error) => additional_failure(result, error),
+    }
+}
+
+async fn publish_while_executing<'a>(
+    prepared: maka_tools::PreparedCall<'a>,
+    prefix: &[maka_agent_facts::event::EventWrite],
+    running: &mut RunningCalls<'a>,
+    preparing: &mut PreparingCalls<'a>,
+    cancellation: &CancellationToken,
+) -> Result<(maka_tools::PublishedCall<'a>, Result<(), RunError>), RunError> {
+    let (published, execution) = wait_while_executing(
+        catch_tool(prepared.publish(prefix)),
+        running,
+        preparing,
+        cancellation,
+    )
+    .await;
+    match published {
+        Ok(published) => Ok((published, execution)),
+        Err(error) => match execution {
+            Ok(()) => Err(error.into()),
+            Err(original) => additional_failure(Err(original), error.into()),
+        },
+    }
 }
 
 async fn catch_tool<T>(
@@ -918,6 +1068,7 @@ fn tool_result(
         Ok(_)
         | Err(
             ToolError::Failed(_)
+            | ToolError::Native(_)
             | ToolError::Io { .. }
             | ToolError::OutcomeUnknown(_)
             | ToolError::OperationUnknown { .. },
@@ -1083,9 +1234,17 @@ async fn finish(
             let prepared = preparing.next().now_or_never().flatten();
             let sequence = match prepared {
                 Some(Ok(prepared)) => {
-                    let published = catch_tool(prepared.publish(&writes)).await?;
+                    let (published, execution) = publish_while_executing(
+                        prepared,
+                        &writes,
+                        &mut running,
+                        &mut preparing,
+                        &tool_cancellation,
+                    )
+                    .await?;
                     let sequence = published.prefix_sequences[0];
                     running.push(catch_tool(published.completion).boxed());
+                    cleanup = merge_execution(cleanup, execution);
                     sequence
                 }
                 Some(Err(error)) => {
@@ -1105,7 +1264,14 @@ async fn finish(
         }
         drop(writes);
         drop(completion);
-        if let Err(error) = close_retry(retry).await {
+        let (closed, execution) = wait_while_executing(
+            close_retry(retry),
+            &mut running,
+            &mut preparing,
+            &tool_cancellation,
+        )
+        .await;
+        if let Err(error) = merge_execution(closed, execution) {
             tool_cancellation.cancel();
             preparing.clear();
             cleanup = additional_failure(cleanup, error);
@@ -1114,15 +1280,21 @@ async fn finish(
             tokio::select! {
                 prepared = preparing.next(), if !preparing.is_empty() => {
                     let published = match prepared.expect("nonempty preparation set") {
-                        Ok(prepared) => catch_tool(prepared.publish(&[])).await,
-                        Err(error) => Err(error),
+                        Ok(prepared) => publish_while_executing(prepared, &[], &mut running, &mut preparing, &tool_cancellation).await,
+                        Err(error) => Err(error.into()),
                     };
                     match published {
-                        Ok(published) => running.push(catch_tool(published.completion).boxed()),
+                        Ok((published, execution)) => {
+                            running.push(catch_tool(published.completion).boxed());
+                            if let Err(error) = execution {
+                                preparing.clear();
+                                cleanup = additional_failure(cleanup, error);
+                            }
+                        },
                         Err(error) => {
                             tool_cancellation.cancel();
                             preparing.clear();
-                            if cleanup.is_ok() { cleanup = Err(error.into()); }
+                            if cleanup.is_ok() { cleanup = Err(error); }
                         }
                     }
                 }
@@ -1155,7 +1327,9 @@ fn interruption(
         }
         RunError::Model(ModelError::TimedOut) => ModelInterruption::TimedOut,
         RunError::Model(ModelError::Provider(failure))
-            if failure.replay_safe() || (item_acceptance && failure.retained_output_safe()) =>
+            if failure.retryable()
+                && (failure.replay_safe()
+                    || (item_acceptance && failure.retained_output_safe())) =>
         {
             ModelInterruption::RetryableFailure
         }
@@ -1488,3 +1662,36 @@ mod tests {
 
 #[cfg(test)]
 mod publication_tests;
+
+#[cfg(test)]
+mod retry_timing_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn provider_deadline_is_a_lower_bound_and_never_reduces_backoff() {
+        let failure = maka_model::ProviderFailure::new(
+            maka_model::ProviderFailureReason::RateLimit,
+            "temporary throttle",
+            true,
+            Some(18_001_000),
+        );
+        let delay = retry_delay(&failure, Duration::from_millis(200), 1000);
+        assert_eq!(delay, Duration::from_secs(18_000));
+        let sleep = wait_retry(delay);
+        tokio::pin!(sleep);
+        assert!(futures_util::poll!(&mut sleep).is_pending());
+        tokio::time::advance(Duration::from_secs(17_999)).await;
+        assert!(futures_util::poll!(&mut sleep).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        sleep.await;
+        assert_eq!(
+            retry_delay(&failure, Duration::from_millis(200), 18_000_999),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            retry_delay(&failure, Duration::from_millis(200), 18_001_001),
+            Duration::from_millis(200)
+        );
+    }
+}

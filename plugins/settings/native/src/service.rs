@@ -173,6 +173,13 @@ async fn model_defaults(
     supported: &[maka_agent_facts::execution::ThinkingLevel],
     snapshot: Arc<maka_providers::catalog::Snapshot>,
 ) -> Option<ModelDefaults> {
+    let catalog_matched = snapshot
+        .model_base(
+            &row.provider.name,
+            model,
+            overrides.and_then(|value| value.catalog_model.as_ref()),
+        )
+        .is_some();
     let mut inherited = overrides.cloned().unwrap_or_default();
     inherited.display_name = None;
     inherited.context_window = None;
@@ -224,6 +231,7 @@ async fn model_defaults(
         }
     });
     Some(ModelDefaults {
+        catalog_matched,
         label: metadata.info.display_name.unwrap_or_else(|| model.into()),
         context_window: metadata.info.context_window,
         input_limit: maka_agent_facts::context::effective_input_limit(
@@ -576,6 +584,23 @@ impl Handler for Settings {
                             .await,
                     )
                 }
+                "catalogModels" => {
+                    let request: CatalogModelsRead =
+                        serde_json::from_value(input).map_err(|_| "settings_input_invalid")?;
+                    let snapshot = public_catalog
+                        .snapshot
+                        .read()
+                        .await
+                        .as_ref()
+                        .map_err(|_| "settings_store_unavailable")?
+                        .clone();
+                    let page = tokio::task::spawn_blocking(move || {
+                        super::catalog_models::page(&snapshot, request)
+                    })
+                    .await
+                    .map_err(|_| "settings_catalog_search_failed")?;
+                    super::connections::encode(page)
+                }
                 "resolveModel" => {
                     let request: ResolveModel =
                         serde_json::from_value(input).map_err(|_| "settings_input_invalid")?;
@@ -734,3 +759,6 @@ impl NativeOwner for Settings {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

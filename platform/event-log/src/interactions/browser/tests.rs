@@ -411,6 +411,7 @@ fn browser_decision_lookup_work_stays_constant_as_unrelated_history_grows() {
     for (capability, wire) in [
         (GrantCapability::Browser, "browser"),
         (GrantCapability::BrowserDownload, "browser_download"),
+        (GrantCapability::BrowserUpload, "browser_upload"),
     ] {
         decision_lookup_work_stays_constant(capability, wire);
     }
@@ -615,4 +616,194 @@ async fn file_download_decisions_are_separate_from_read_grants_and_latest_denial
         None
     );
     log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn upload_decisions_are_separate_from_page_and_download_grants() {
+    let (directory, log, basis) = fixture().await;
+    let page = target();
+    let mut download = page.clone();
+    download.capability = GrantCapability::BrowserDownload;
+    let mut upload = page.clone();
+    upload.capability = GrantCapability::BrowserUpload;
+    for (id, target) in [("page-allow", &page), ("download-allow", &download)] {
+        decide(
+            &log,
+            &request(id, 1, target.clone(), Some(basis)),
+            Decision::Allow,
+            2,
+        )
+        .await;
+        assert_eq!(
+            log.browser_origin_decision("session", &upload, &basis)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(
+            log.client_capability_grant("session", &upload)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    decide(
+        &log,
+        &request("upload-allow", 3, upload.clone(), Some(basis)),
+        Decision::Allow,
+        4,
+    )
+    .await;
+    assert_eq!(
+        log.browser_origin_decision("session", &upload, &basis)
+            .await
+            .unwrap(),
+        Some(Decision::Allow)
+    );
+    decide(
+        &log,
+        &request("upload-deny", 5, upload.clone(), Some(basis)),
+        Decision::Deny,
+        6,
+    )
+    .await;
+    assert_eq!(
+        log.browser_origin_decision("session", &upload, &basis)
+            .await
+            .unwrap(),
+        Some(Decision::Deny)
+    );
+    for target in [&page, &download] {
+        assert_eq!(
+            log.browser_origin_decision("session", target, &basis)
+                .await
+                .unwrap(),
+            Some(Decision::Allow)
+        );
+    }
+    assert!(
+        log.client_capability_grant("session", &upload)
+            .await
+            .unwrap()
+            .is_some(),
+        "a historical allow does not override the latest upload denial"
+    );
+    let mut foreign = upload.clone();
+    foreign.scope = GrantScope::BrowserOrigin {
+        origin: "https://foreign.example".into(),
+    };
+    assert_eq!(
+        log.browser_origin_decision("session", &foreign, &basis)
+            .await
+            .unwrap(),
+        None
+    );
+    let stale = PermissionBasis {
+        boundary_revision: basis.boundary_revision + 1,
+        ..basis
+    };
+    assert_eq!(
+        log.browser_origin_decision("session", &upload, &stale)
+            .await
+            .unwrap(),
+        None
+    );
+    log.close().await.unwrap();
+    let log = EventLog::open(&directory.path().join("browser.sqlite"))
+        .await
+        .unwrap();
+    assert_eq!(
+        log.browser_origin_decision("session", &upload, &basis)
+            .await
+            .unwrap(),
+        Some(Decision::Deny)
+    );
+    for target in [&page, &download] {
+        assert_eq!(
+            log.browser_origin_decision("session", target, &basis)
+                .await
+                .unwrap(),
+            Some(Decision::Allow)
+        );
+    }
+    log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn upload_index_migration_preserves_v1_browser_decisions_and_checksum() {
+    let (directory, log, basis) = fixture().await;
+    let page = target();
+    decide(
+        &log,
+        &request("historical-page", 1, page.clone(), Some(basis)),
+        Decision::Allow,
+        2,
+    )
+    .await;
+    let original = serde_json::to_value(log.interaction("historical-page").await.unwrap()).unwrap();
+    log.close().await.unwrap();
+    let path = directory.path().join("browser.sqlite");
+    let db = Connection::open(&path).unwrap();
+    // Construct the previous index and ledger while retaining its canonical facts.
+    let baseline = include_str!("../../../migrations/0001_runtime.sql");
+    let index = baseline
+        .split_once("CREATE INDEX interaction_browser_origin_decision ON")
+        .unwrap()
+        .1
+        .split_once(';')
+        .unwrap()
+        .0;
+    db.execute_batch(&format!("DROP INDEX interaction_browser_origin_decision; CREATE INDEX interaction_browser_origin_decision ON{index};")).unwrap();
+    assert_eq!(
+        db.execute("DELETE FROM _sqlx_migrations WHERE version=7", [])
+            .unwrap(),
+        1
+    );
+    let checksum: Vec<u8> = db
+        .query_row(
+            "SELECT checksum FROM _sqlx_migrations WHERE version=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(db);
+    let log = EventLog::open(&path).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(log.interaction("historical-page").await.unwrap()).unwrap(),
+        original
+    );
+    assert_eq!(
+        log.browser_origin_decision("session", &page, &basis)
+            .await
+            .unwrap(),
+        Some(Decision::Allow)
+    );
+    log.close().await.unwrap();
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT checksum FROM _sqlx_migrations WHERE version=1",
+            [],
+            |row| row.get::<_, Vec<u8>>(0)
+        )
+        .unwrap(),
+        checksum
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM _sqlx_migrations WHERE version=7 AND success=1",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    let index: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='interaction_browser_origin_decision'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(index.contains("'browser_upload'"));
 }

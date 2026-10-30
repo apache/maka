@@ -89,8 +89,7 @@ async fn graph_tool_arguments(socket: &mut TcpStream, name: &str, input: Value) 
 #[tokio::test]
 async fn graph_modes_are_per_conversation_and_keep_pinned_epochs_across_restart() {
     tokio::time::timeout(Duration::from_secs(60), async {
-        let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
-        activate_workers(&mut fixture, true, true, true).await;
+        let mut fixture = Fixture::workhub("http://127.0.0.1:9/v1", Setup::workers()).await;
         let ready = resolve(&fixture, selection(&fixture).await, Uuid::new_v4()).await;
         let first = ready["session"]["id"].as_str().unwrap();
         let second = fixture.create("Second coordinator").await;
@@ -124,8 +123,7 @@ async fn graph_modes_are_per_conversation_and_keep_pinned_epochs_across_restart(
 async fn graph_real_model_dispatches_original_work_wakes_and_selects_actual_result() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture = Fixture::new(&format!("http://{}/v1", listener.local_addr().unwrap()), None).await;
-        activate_workers(&mut fixture, true, true, true).await;
+        let mut fixture = Fixture::workhub(&format!("http://{}/v1", listener.local_addr().unwrap()), Setup::workers()).await;
         let ready = resolve(&fixture, selection(&fixture).await, Uuid::new_v4()).await;
         let session = ready["session"]["id"].as_str().unwrap();
         let epoch = change(&fixture, json!({"sessionId":session,"action":{"kind":"start","mode":"swarm"}})).await;
@@ -267,8 +265,7 @@ async fn graph_real_model_dispatches_original_work_wakes_and_selects_actual_resu
 async fn graph_stop_cancels_original_worker_and_other_coordinator_cannot_read_its_task() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture = Fixture::new(&format!("http://{}/v1", listener.local_addr().unwrap()), None).await;
-        activate_workers(&mut fixture, true, true, true).await;
+        let mut fixture = Fixture::workhub(&format!("http://{}/v1", listener.local_addr().unwrap()), Setup::workers()).await;
         let ready = resolve(&fixture, selection(&fixture).await, Uuid::new_v4()).await;
         let session = ready["session"]["id"].as_str().unwrap();
         let epoch = change(&fixture, json!({"sessionId":session,"action":{"kind":"start","mode":"graph"}})).await;
@@ -418,8 +415,7 @@ async fn finish_graph(fixture: &Fixture, listener: &TcpListener, session: &str, 
 async fn graph_operator_and_selected_history_preserve_large_original_results_without_redispatch() {
     tokio::time::timeout(Duration::from_secs(120), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture = Fixture::new(&format!("http://{}/v1", listener.local_addr().unwrap()), None).await;
-        activate_workers(&mut fixture, true, true, true).await;
+        let mut fixture = Fixture::workhub(&format!("http://{}/v1", listener.local_addr().unwrap()), Setup::workers()).await;
         let ready = resolve(&fixture, selection(&fixture).await, Uuid::new_v4()).await;
         let session = ready["session"]["id"].as_str().unwrap();
         let first_epoch = change(&fixture, json!({"sessionId":session,"action":{"kind":"start","mode":"swarm"}})).await;
@@ -467,15 +463,12 @@ async fn model_tool_envelopes_reject_invalid_branches_before_dispatch_and_allow_
 
     tokio::time::timeout(Duration::from_secs(90), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut fixture = Fixture::configured(
+        let fixture = Fixture::workhub_configured(
             &format!("http://{}/v1", listener.local_addr().unwrap()),
-            None,
-            None,
-            None,
+            Setup::workers(),
             |settings| settings.scheduled_tasks = true,
         )
         .await;
-        activate_workers(&mut fixture, true, true, true).await;
         let ready = resolve(&fixture, selection(&fixture).await, Uuid::new_v4()).await;
         let session = ready["session"]["id"].as_str().unwrap();
         assert_eq!(

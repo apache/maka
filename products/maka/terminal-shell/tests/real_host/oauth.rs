@@ -93,77 +93,11 @@ impl HostServices for Clipboard {
     }
 }
 
-async fn editable(view: &mut AppView, label: &str) {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            view.poll().unwrap();
-            support::tick(view);
-            if view
-                .surface()
-                .input_context()
-                .is_some_and(|input| input.editable)
-                && view
-                    .accessibility_snapshot()
-                    .iter()
-                    .any(|node| node.focused && node.label == label)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("the native input did not become editable");
-}
-
-async fn activate(view: &mut AppView, label: &str) {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            view.poll().unwrap();
-            support::tick(view);
-            if view.accessibility_snapshot().iter().any(|node| {
-                node.role == nsh_core::AccessibilityRole::Button
-                    && node.label == label
-                    && !node.state.disabled
-            }) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("the actual native button did not become enabled");
-    tab_to_label(view, label).await;
-    let target = support::wait_enabled_button(view, label).await;
-    assert!(target.focused);
-    view.handle_event(Event::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
-}
-
-async fn fill(view: &mut AppView, label: &str, value: &str) {
-    tab_to_label(view, label).await;
-    editable(view, label).await;
-    shortcut(view, 'a');
-    view.handle_event(Event::Paste(value.into()));
-    let (done, committed) = tokio::sync::oneshot::channel();
-    view.control()
-        .unwrap()
-        .advance_clock(Duration::ZERO, move || {
-            let _ = done.send(());
-        });
-    tokio::time::timeout(Duration::from_secs(20), committed)
-        .await
-        .unwrap()
-        .unwrap();
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn provider_prompt_copy_and_cancel_settle_the_original_without_replacing_the_composer() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let authentication = std::sync::Arc::new(Authentication::default());
-        let mut fixture = Fixture::oauth(authentication.clone()).await;
+        let mut fixture = Fixture::configured(support::Options { login_handler: Some(authentication.clone()), ..Default::default() }).await;
         let client = fixture.client().await;
         let identity = json!({"packageId":"maka.codex","entryId":"maka.codex","scope":"profile","name":"chatgpt"});
         let provider = client.query("authentication", "provider", identity.clone()).await.unwrap();

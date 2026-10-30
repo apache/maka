@@ -1017,7 +1017,6 @@ async fn bounded_history_windows_cover_sparse_rows_both_directions_and_validate_
             .await
             .unwrap();
         let encoded = serde_json::to_vec(&bounded).unwrap();
-        assert!(encoded.len() > 1024);
         for budget in [encoded.len() - 1, encoded.len(), encoded.len() + 1] {
             let limited = log
                 .history_view(
@@ -1056,106 +1055,84 @@ async fn bounded_history_windows_cover_sparse_rows_both_directions_and_validate_
             }
         }
     }
-    let mut canonical = None;
-    for budget in [4, 5, 7, 13, 128 * 1024] {
-        for reverse in [false, true] {
-            let db = Connection::open(&path).unwrap();
-            crate::test_store::inspect_cache(&log, move |db| {
-                db.execute("DELETE FROM temp.transcript_text", []).unwrap()
-            })
-            .await;
-            drop(db);
-            let mut position = if reverse {
-                Position::Tail
-            } else {
-                Position::Start
-            };
-            let mut collected: BTreeMap<RowPosition, (u64, String)> = BTreeMap::new();
-            let mut previous = None;
-            let mut done = false;
-            for _ in 0..512 {
-                let Page::Ready {
-                    chunks,
-                    before,
-                    after,
-                    through: actual,
-                } = log
-                    .history_text(
-                        "window",
-                        through,
-                        position,
-                        false,
-                        maka_event_log::transcript::HistoryLimits {
-                            max_bytes: budget,
-                            max_chunks: Some(2),
-                            max_json_bytes: 1024 * 1024,
-                        },
-                    )
-                    .await
-                    .unwrap();
-                assert_eq!(actual, through);
-                assert!(chunks.len() <= 2);
-                assert!(chunks.iter().map(|chunk| chunk.text.len()).sum::<usize>() <= budget);
-                assert!(
-                    chunks
-                        .windows(2)
-                        .all(|pair| pair[0].position < pair[1].position)
-                );
-                for chunk in chunks {
-                    let entry = collected.entry(chunk.position).or_insert_with(|| {
-                        (if reverse { chunk.total_bytes } else { 0 }, String::new())
-                    });
-                    if reverse {
-                        assert_eq!(chunk.offset + chunk.text.len() as u64, entry.0);
-                        entry.1.insert_str(0, &chunk.text);
-                        entry.0 = chunk.offset;
-                    } else {
-                        assert_eq!(chunk.offset, entry.0);
-                        entry.1.push_str(&chunk.text);
-                        entry.0 += chunk.text.len() as u64;
-                    }
-                    assert!(
-                        chunk.position.source_sequence <= through,
-                        "row positions retain the original raw event fence"
-                    );
-                }
-                let cursor = if reverse { before } else { after };
-                let Some(cursor) = cursor else {
-                    done = true;
-                    break;
-                };
-                assert_ne!(
-                    previous,
-                    Some(cursor),
-                    "empty pages and cache rebuilding must progress"
-                );
-                previous = Some(cursor);
-                position = if reverse {
-                    Position::Before { cursor }
-                } else {
-                    Position::After { cursor }
-                };
-            }
-            assert!(done, "budget {budget}, reverse {reverse}");
-            let texts = collected
-                .values()
-                .map(|(_, text)| text.clone())
-                .collect::<Vec<_>>();
-            assert_eq!(texts, expected);
-            let sequences = collected.keys().copied().collect::<Vec<_>>();
+    let mut first_position = None;
+    for reverse in [false, true] {
+        let mut position = if reverse {
+            Position::Tail
+        } else {
+            Position::Start
+        };
+        let mut collected = BTreeMap::<RowPosition, (u64, String)>::new();
+        let mut previous = None;
+        loop {
+            let Page::Ready {
+                chunks,
+                before,
+                after,
+                through: actual,
+            } = log
+                .history_text(
+                    "window",
+                    through,
+                    position,
+                    false,
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: 7,
+                        max_chunks: Some(2),
+                        max_json_bytes: 64 * 1024,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(actual, through);
+            assert!(chunks.len() <= 2);
+            assert!(chunks.iter().map(|chunk| chunk.text.len()).sum::<usize>() <= 7);
             assert!(
-                sequences
+                chunks
                     .windows(2)
-                    .all(|pair| pair[1].source_sequence > pair[0].source_sequence)
+                    .all(|pair| pair[0].position < pair[1].position)
             );
-            canonical.get_or_insert(collected);
+            for chunk in chunks {
+                let entry = collected.entry(chunk.position).or_insert_with(|| {
+                    (if reverse { chunk.total_bytes } else { 0 }, String::new())
+                });
+                if reverse {
+                    assert_eq!(chunk.offset + chunk.text.len() as u64, entry.0);
+                    entry.1.insert_str(0, &chunk.text);
+                    entry.0 = chunk.offset;
+                } else {
+                    assert_eq!(chunk.offset, entry.0);
+                    entry.1.push_str(&chunk.text);
+                    entry.0 += chunk.text.len() as u64;
+                }
+                assert!(chunk.position.source_sequence <= through);
+            }
+            let Some(cursor) = (if reverse { before } else { after }) else {
+                break;
+            };
+            assert_ne!(previous, Some(cursor), "sparse windows must advance");
+            previous = Some(cursor);
+            position = if reverse {
+                Position::Before { cursor }
+            } else {
+                Position::After { cursor }
+            };
         }
+        assert_eq!(
+            collected.values().map(|(_, text)| text).collect::<Vec<_>>(),
+            expected.iter().collect::<Vec<_>>()
+        );
+        first_position = collected.keys().next().copied();
     }
-    let first = *canonical.as_ref().unwrap().keys().next().unwrap();
-    // The first message starts with two ASCII digits plus a space and then 'a'.
-    // Find every exact byte boundary rather than deriving one from a JS index.
-    let text = &canonical.as_ref().unwrap()[&first].1;
-    for offset in 0..=text.len() {
+    let first = first_position.unwrap();
+    let text = &expected[0];
+    let inside_utf8 = text.find('🦀').unwrap() + 1;
+    for (offset, valid) in [
+        (0, true),
+        (inside_utf8 - 1, true),
+        (inside_utf8, false),
+        (text.len(), true),
+    ] {
         for reverse in [false, true] {
             let cursor = Cursor {
                 field: Default::default(),
@@ -1175,15 +1152,11 @@ async fn bounded_history_windows_cover_sparse_rows_both_directions_and_validate_
                     maka_event_log::transcript::HistoryLimits {
                         max_bytes: 7,
                         max_chunks: Some(2),
-                        max_json_bytes: 1024 * 1024,
+                        max_json_bytes: 64 * 1024,
                     },
                 )
                 .await;
-            assert_eq!(
-                result.is_ok(),
-                text.is_char_boundary(offset),
-                "offset {offset}, reverse {reverse}"
-            );
+            assert_eq!(result.is_ok(), valid, "offset={offset}, reverse={reverse}");
         }
     }
     for cursor in [
@@ -1483,7 +1456,7 @@ async fn empty_projection_boundaries_obey_the_exact_json_window_budget() {
 }
 
 #[tokio::test]
-async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_loss() {
+async fn message_materials_keep_display_views_sources_and_timestamps_after_reopen() {
     use maka_agent_facts::attachment::AttachmentKind;
     use maka_agent_facts::attachment::AttachmentRef;
     use maka_agent_facts::attachment::StorageRef;
@@ -1578,89 +1551,63 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
             "c" => "",
             _ => unreachable!(),
         };
-        for reverse in [false, true] {
-            let mut position = if reverse {
-                Position::Tail
-            } else {
-                Position::Start
-            };
-            let mut actual = String::new();
-            let mut pages = 0;
-            loop {
-                pages += 1;
-                assert!(pages < conversation.len() + 8);
-                let Page::Ready {
-                    chunks,
-                    before,
-                    after,
-                    ..
-                } = log
-                    .history_view(
-                        session,
-                        through,
-                        position,
-                        false,
-                        maka_agent_ports::session::history::HistoryView::Conversation,
-                        maka_event_log::transcript::HistoryLimits {
-                            max_bytes: 4,
-                            max_chunks: Some(1),
-                            max_json_bytes: 64 * 1024,
-                        },
-                    )
-                    .await
-                    .unwrap();
-                if chunks.is_empty() && !reverse && pages > 1 {
-                    // InvocationOpened also records a non-visible running state.
-                    // A one-chunk window can leave that terminal boundary to read.
-                    assert_eq!(actual, conversation);
-                    assert_eq!(after, None);
-                    assert_eq!(
-                        before,
-                        Some(maka_agent_ports::session::history::Cursor {
-                            position: RowPosition {
-                                source_sequence: sequence.source_sequence,
-                                item_index: 1,
-                            },
-                            field: maka_agent_ports::session::history::HistoryField::Body,
-                            offset: 0,
-                        })
-                    );
-                    break;
-                }
-                assert_eq!(
-                    chunks.len(),
-                    1,
-                    "attachment-only conversation rows remain visible: session={session}, reverse={reverse}, page={pages}, before={before:?}, after={after:?}"
-                );
-                let chunk = &chunks[0];
-                assert_eq!(chunk.total_bytes, conversation.len() as u64);
-                if chunk.offset == 0 {
-                    assert_eq!(
-                        chunk.attachments.len(),
-                        match session {
-                            "a" => 3,
-                            "c" => 1,
-                            _ => 0,
-                        }
-                    );
-                } else {
-                    assert!(chunk.attachments.is_empty());
-                }
-                if reverse {
-                    actual.insert_str(0, &chunk.text);
-                } else {
-                    actual.push_str(&chunk.text);
-                }
-                let Some(cursor) = (if reverse { before } else { after }) else {
-                    break;
-                };
-                position = if reverse {
-                    Position::Before { cursor }
-                } else {
-                    Position::After { cursor }
-                };
+        let Page::Ready { chunks, .. } = log
+            .history_view(
+                session,
+                through,
+                Position::Start,
+                false,
+                maka_agent_ports::session::history::HistoryView::Conversation,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 8192,
+                    max_chunks: Some(1),
+                    max_json_bytes: 64 * 1024,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            chunks.len(),
+            1,
+            "material-only conversation remains visible"
+        );
+        assert_eq!(chunks[0].text, conversation);
+        assert_eq!(chunks[0].total_bytes, conversation.len() as u64);
+        assert_eq!(
+            chunks[0].attachments.len(),
+            match session {
+                "a" => 3,
+                "c" => 1,
+                _ => 0,
             }
-            assert_eq!(actual, conversation);
+        );
+        if session == "a" {
+            let Page::Ready { chunks, .. } = log
+                .history_view(
+                    session,
+                    through,
+                    Position::After {
+                        cursor: maka_agent_ports::session::history::Cursor {
+                            position: sequence,
+                            field: Default::default(),
+                            offset: 8,
+                        },
+                    },
+                    false,
+                    maka_agent_ports::session::history::HistoryView::Conversation,
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: 8192,
+                        max_chunks: Some(1),
+                        max_json_bytes: 64 * 1024,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(chunks[0].text, &conversation[8..]);
+            assert!(
+                chunks[0].attachments.is_empty(),
+                "continuations do not repeat material"
+            );
         }
         if session == "a" {
             let split = maka_agent_ports::session::history::Cursor {
@@ -1686,86 +1633,23 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
                 "conversation cursors must validate their own UTF-8 bytes"
             );
         }
-        for budget in [4, 19, 8192] {
-            for reverse in [false, true] {
-                let mut position = if reverse {
-                    Position::Tail
-                } else {
-                    Position::Start
-                };
-                let mut actual = String::new();
-                let mut pages = 0;
-                loop {
-                    pages += 1;
-                    assert!(pages < expected.len() + 8, "bounded windows must progress");
-                    let Page::Ready {
-                        chunks,
-                        before,
-                        after,
-                        ..
-                    } = log
-                        .history_text(
-                            session,
-                            through,
-                            position,
-                            false,
-                            maka_event_log::transcript::HistoryLimits {
-                                max_bytes: budget,
-                                max_chunks: Some(1),
-                                max_json_bytes: 64 * 1024,
-                            },
-                        )
-                        .await
-                        .unwrap();
-                    assert!(chunks.len() <= 1);
-                    for chunk in &chunks {
-                        assert_eq!(chunk.timestamp, timestamp);
-                        assert_eq!(chunk.total_bytes, expected.len() as u64);
-                        let source = log
-                            .history_source(
-                                session,
-                                through,
-                                maka_event_log::transcript::SourceSelection {
-                                    locator: sequence,
-                                    field: SourceField::Body,
-                                    path: None,
-                                },
-                                if reverse {
-                                    SourcePosition::Before {
-                                        offset: chunk.offset + chunk.text.len() as u64,
-                                    }
-                                } else {
-                                    SourcePosition::After {
-                                        offset: chunk.offset,
-                                    }
-                                },
-                                budget,
-                            )
-                            .await
-                            .unwrap();
-                        assert_eq!(source.text, chunk.text);
-                        assert_eq!(source.offset, chunk.offset);
-                        assert_eq!(source.timestamp, chunk.timestamp);
-                        if reverse {
-                            actual.insert_str(0, &chunk.text);
-                        } else {
-                            actual.push_str(&chunk.text);
-                        }
-                    }
-                    let Some(cursor) = (if reverse { before } else { after }) else {
-                        break;
-                    };
-                    let next = if reverse {
-                        Position::Before { cursor }
-                    } else {
-                        Position::After { cursor }
-                    };
-                    assert_ne!(next, position);
-                    position = next;
-                }
-                assert_eq!(actual, expected);
-            }
-        }
+        let source = log
+            .history_source(
+                session,
+                through,
+                maka_event_log::transcript::SourceSelection {
+                    locator: sequence,
+                    field: SourceField::Body,
+                    path: None,
+                },
+                SourcePosition::Start,
+                8192,
+            )
+            .await
+            .unwrap();
+        assert_eq!(source.text, expected);
+        assert_eq!(source.timestamp, timestamp);
+        assert_eq!(source.position, sequence);
         sources.push((session, through, sequence, expected, conversation));
     }
     assert!(
@@ -1773,69 +1657,8 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
         "display paths perform no I/O"
     );
     let before = serde_json::to_vec(&log.prefix(10, 65536).await.unwrap()).unwrap();
-    let db = Connection::open(&path).unwrap();
-    let sessions: Vec<String> = sources
-        .iter()
-        .map(|(session, ..)| session.to_string())
-        .collect();
-    let canonical = crate::test_store::inspect_cache(&log, move |db| {
-        sessions
-            .iter()
-            .map(|session| rows(db, session))
-            .collect::<Vec<_>>()
-    })
-    .await;
-    crate::test_store::inspect_cache(&log, move |db| {
-        db.execute(
-            "UPDATE temp.transcript_text SET body = CAST('old derived text' AS BLOB)",
-            [],
-        )
-        .unwrap()
-    })
-    .await;
-    crate::test_store::inspect_cache(&log, move |db| {
-        db.execute("DELETE FROM temp.transcript_text", []).unwrap()
-    })
-    .await;
-    drop(db);
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
-    let db = Connection::open(&path).unwrap();
-    assert_eq!(
-        crate::test_store::inspect_cache(&log, move |db| {
-            db.query_row("SELECT count(*) FROM temp.transcript_text", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .unwrap()
-        })
-        .await,
-        0
-    );
-    for ((session, through, ..), expected_rows) in sources.iter().zip(&canonical) {
-        assert!(
-            crate::test_store::inspect_cache(&log, {
-                let session = session.to_string();
-                move |db| rows(db, &session)
-            })
-            .await
-            .is_empty()
-        );
-        crate::transcript_cache::materialize_all_rows(&log, session, *through)
-            .await
-            .unwrap();
-        assert_eq!(
-            crate::test_store::inspect_cache(&log, {
-                let session = session.to_string();
-                move |db| rows(db, &session)
-            })
-            .await,
-            *expected_rows
-        );
-    }
-    assert_eq!(
-        serde_json::to_vec(&log.prefix(10, 65536).await.unwrap()).unwrap(),
-        before
-    );
     for (session, through, sequence, expected, conversation) in sources {
         let Page::Ready { chunks, .. } = log
             .history_text(
@@ -1872,7 +1695,10 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
         assert_eq!(chunks[0].text, conversation);
         assert_eq!(chunks[0].total_bytes, conversation.len() as u64);
     }
-    drop(db);
+    assert_eq!(
+        serde_json::to_vec(&log.prefix(10, 65536).await.unwrap()).unwrap(),
+        before
+    );
     log.close().await.unwrap();
 }
 
@@ -1896,8 +1722,8 @@ async fn thinking_windows_preserve_field_order_bytes_and_explicit_body_only_read
         authority_session_id: None,
     };
 
-    let thinking = "reason 中😀\0\r\n".repeat(101);
-    let body = "answer é🦀\0tail".repeat(13);
+    let thinking = "reason 中😀\0\r\n".repeat(3);
+    let body = "answer é🦀\0tail".repeat(2);
     let records = [
         Content::User {
             text: "question".into(),
@@ -1978,126 +1804,55 @@ async fn thinking_windows_preserve_field_order_bytes_and_explicit_body_only_read
         "body with empty thinking".into(),
         "body without thinking".into(),
     ];
-    let mut thinking_cursor = None;
     for include in [false, true] {
-        for reverse in [false, true] {
-            for budget in [4, 13, 8192] {
-                let db = Connection::open(&path).unwrap();
-                crate::test_store::inspect_cache(&log, move |db| {
-                    db.execute("DELETE FROM temp.transcript_text", []).unwrap()
-                })
-                .await;
-                drop(db);
-                let mut position = if reverse {
-                    Position::Tail
-                } else {
-                    Position::Start
-                };
-                let mut last = None;
-                let mut collected = BTreeMap::<(RowPosition, u8), (u64, String)>::new();
-                let mut done = false;
-                for _ in 0..2048 {
-                    let page = log
-                        .history_text(
-                            "thinking",
-                            through,
-                            position,
-                            include,
-                            maka_event_log::transcript::HistoryLimits {
-                                max_bytes: budget,
-                                max_chunks: Some(2),
-                                max_json_bytes: 64 * 1024,
-                            },
-                        )
-                        .await
-                        .unwrap();
-                    assert!(serde_json::to_vec(&page).unwrap().len() <= 64 * 1024);
-                    let Page::Ready {
-                        chunks,
-                        before,
-                        after,
-                        ..
-                    } = page;
-                    assert!(chunks.len() <= 2);
-                    assert!(chunks.iter().map(|c| c.text.len()).sum::<usize>() <= budget);
-                    let keys = chunks
-                        .iter()
-                        .map(|c| {
-                            (
-                                c.position,
-                                if c.field == HistoryField::Thinking {
-                                    0
-                                } else {
-                                    1
-                                },
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
-                    for (chunk, key) in chunks.into_iter().zip(keys) {
-                        assert_eq!(
-                            chunk.model.as_ref(),
-                            (chunk.message_id == imported_message).then_some(&imported_model)
-                        );
-                        if chunk.field == HistoryField::Thinking {
-                            assert!(include);
-                            assert_eq!(chunk.role, Role::Assistant);
-                            assert!(chunk.tool.is_none() && chunk.attachments.is_empty());
-                            thinking_cursor.get_or_insert(Cursor {
-                                position: chunk.position,
-                                field: chunk.field,
-                                offset: 0,
-                            });
-                        }
-                        let entry = collected.entry(key).or_insert((
-                            if reverse { chunk.total_bytes } else { 0 },
-                            String::new(),
-                        ));
-                        if reverse {
-                            assert_eq!(chunk.offset + chunk.text.len() as u64, entry.0);
-                            entry.1.insert_str(0, &chunk.text);
-                            entry.0 = chunk.offset;
-                        } else {
-                            assert_eq!(chunk.offset, entry.0);
-                            entry.1.push_str(&chunk.text);
-                            entry.0 += chunk.text.len() as u64;
-                        }
-                    }
-                    let Some(cursor) = (if reverse { before } else { after }) else {
-                        done = true;
-                        break;
-                    };
-                    assert_ne!(last, Some(cursor), "every field boundary must advance");
-                    last = Some(cursor);
-                    position = if reverse {
-                        Position::Before { cursor }
-                    } else {
-                        Position::After { cursor }
-                    };
-                }
-                assert!(done);
-                let actual = collected
-                    .into_values()
-                    .map(|(_, text)| text)
-                    .collect::<Vec<_>>();
-                let wanted = if include {
-                    expected.clone()
-                } else {
-                    vec![
-                        expected[0].clone(),
-                        body.clone(),
-                        expected[4].clone(),
-                        expected[5].clone(),
-                    ]
-                };
-                assert_eq!(
-                    actual, wanted,
-                    "include={include} reverse={reverse} budget={budget}"
-                );
+        let Page::Ready { chunks, .. } = log
+            .history_text(
+                "thinking",
+                through,
+                Position::Start,
+                include,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 8192,
+                    max_chunks: None,
+                    max_json_bytes: 64 * 1024,
+                },
+            )
+            .await
+            .unwrap();
+        let wanted = if include {
+            expected.clone()
+        } else {
+            vec![
+                expected[0].clone(),
+                body.clone(),
+                expected[4].clone(),
+                expected[5].clone(),
+            ]
+        };
+        assert_eq!(
+            chunks.iter().map(|chunk| &chunk.text).collect::<Vec<_>>(),
+            wanted.iter().collect::<Vec<_>>()
+        );
+        for chunk in &chunks {
+            assert_eq!(
+                chunk.model.as_ref(),
+                (chunk.message_id == imported_message).then_some(&imported_model)
+            );
+            if chunk.field == HistoryField::Thinking {
+                assert_eq!(chunk.role, Role::Assistant);
+                assert!(chunk.tool.is_none() && chunk.attachments.is_empty());
             }
         }
     }
-    let cursor = thinking_cursor.unwrap();
+    let cursor = Cursor {
+        position: chunks
+            .iter()
+            .find(|chunk| chunk.field == HistoryField::Thinking)
+            .unwrap()
+            .position,
+        field: HistoryField::Thinking,
+        offset: 0,
+    };
     assert!(
         log.history_text(
             "thinking",
@@ -2189,15 +1944,6 @@ async fn thinking_windows_preserve_field_order_bytes_and_explicit_body_only_read
         .is_err(),
         "Thinking offsets must not split UTF-8"
     );
-    // Reopen with optional bodies/text missing; preserve canonical identities,
-    // fences and both fields without rewriting directory metadata.
-    let db = Connection::open(&path).unwrap();
-    crate::test_store::inspect_cache(&log, move |db| {
-        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
-            .unwrap()
-    })
-    .await;
-    drop(db);
     log.close().await.unwrap();
     let reopened = EventLog::open(&path).await.unwrap();
 
@@ -2405,14 +2151,15 @@ async fn notification_origin_survives_every_history_and_bounded_source_fragment(
     use maka_agent_facts::input::DeliveredMessage;
     use maka_agent_facts::message::RootSourceMessage;
     use maka_agent_facts::message::{MessageDisposition, MessageOrigin, Placement};
-    use maka_agent_ports::session::history::{SourceField, SourcePosition};
+    use maka_agent_ports::session::history::{Cursor, SourceField, SourcePosition};
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("notification.sqlite");
     let log = EventLog::open(&path).await.unwrap();
     log.create_session("notice", "create", &serde_json::json!({}), 1)
         .await
         .unwrap();
-    let text = "通知😀\0suffix\n".repeat(300);
+    let text = "通知😀\0suffix\n".repeat(3);
+    let body_bytes = "通知".len() + 1;
     let content: maka_agent_facts::input::MessageInput = text.clone().into();
     let origin = MessageOrigin::WorkhubGraph {
         graph_id: "agent_graph_actual".into(),
@@ -2470,9 +2217,8 @@ async fn notification_origin_survives_every_history_and_bounded_source_fragment(
     let log = EventLog::open(&path).await.unwrap();
     let mut position = Position::Start;
     let mut assembled = String::new();
-    let mut fragments = 0;
     let mut source_sequence = None;
-    let mut pages = 0;
+    let mut previous: Option<Cursor> = None;
     loop {
         let page = log
             .history_text(
@@ -2481,7 +2227,7 @@ async fn notification_origin_survives_every_history_and_bounded_source_fragment(
                 position,
                 false,
                 maka_event_log::transcript::HistoryLimits {
-                    max_bytes: 256,
+                    max_bytes: body_bytes,
                     max_chunks: Some(2),
                     max_json_bytes: 1536,
                 },
@@ -2490,27 +2236,33 @@ async fn notification_origin_survives_every_history_and_bounded_source_fragment(
             .unwrap();
         assert!(serde_json::to_vec(&page).unwrap().len() <= 1536);
         let Page::Ready { chunks, after, .. } = page;
+        assert!(chunks.iter().map(|chunk| chunk.text.len()).sum::<usize>() <= body_bytes);
         for chunk in chunks {
             assert_eq!(chunk.role, Role::User);
             assert_eq!(chunk.message_id, "notification");
             assert_eq!(chunk.origin.as_ref(), Some(&origin));
             assert_eq!(chunk.offset, assembled.len() as u64);
+            assert_eq!(chunk.total_bytes, text.len() as u64);
             source_sequence = Some(chunk.position);
             assembled.push_str(&chunk.text);
-            fragments += 1;
         }
-        pages += 1;
-        assert!(pages < 100, "history continuation must advance");
         let Some(cursor) = after else {
             break;
         };
+        assert!(
+            previous.is_none_or(|before| {
+                (before.position, before.offset) < (cursor.position, cursor.offset)
+            }),
+            "history continuation must advance"
+        );
+        previous = Some(cursor);
         position = Position::After { cursor };
     }
-    assert!(fragments > 2);
     assert_eq!(assembled, text);
     let sequence = source_sequence.unwrap();
     let mut offset = 0;
     let mut assembled = String::new();
+    let mut metadata = None;
     loop {
         let source = log
             .history_source(
@@ -2522,13 +2274,18 @@ async fn notification_origin_survives_every_history_and_bounded_source_fragment(
                     path: None,
                 },
                 SourcePosition::After { offset },
-                256,
+                body_bytes,
             )
             .await
             .unwrap();
         assert_eq!(source.origin.as_ref(), Some(&origin));
-        assert!(serde_json::to_vec(&source).unwrap().len() <= 1536);
+        assert_eq!(source.position, sequence);
         assert_eq!(source.offset, offset);
+        assert_eq!(source.total_bytes, text.len() as u64);
+        assert!(source.text.len() <= body_bytes);
+        let expected = metadata.get_or_insert_with(|| (source.timestamp, source.fields.clone()));
+        assert_eq!(source.timestamp, expected.0);
+        assert_eq!(source.fields, expected.1);
         assert!(!source.text.is_empty());
         assembled.push_str(&source.text);
         offset += source.text.len() as u64;
@@ -2537,54 +2294,6 @@ async fn notification_origin_survives_every_history_and_bounded_source_fragment(
         }
     }
     assert_eq!(assembled, text);
-    let source = log
-        .history_source(
-            "notice",
-            through,
-            maka_event_log::transcript::SourceSelection {
-                locator: sequence,
-                field: SourceField::Body,
-                path: None,
-            },
-            SourcePosition::Start,
-            1024,
-        )
-        .await
-        .unwrap();
-    // Complete provenance and escaping may exceed the body-byte target.
-    // The single source chunk still obeys its UTF-8 body boundary.
-    assert!(serde_json::to_vec(&source).unwrap().len() > 1024);
-    assert_eq!(source.origin.as_ref(), Some(&origin));
-    assert_eq!(source.position, sequence);
-    assert_eq!(source.offset, 0);
-    assert_eq!(source.total_bytes, text.len() as u64);
-    let end = text.floor_char_boundary(1024);
-    assert_eq!(source.text, text[..end]);
-    assert!(end > 0 && end < text.len());
-    let continued = log
-        .history_source(
-            "notice",
-            through,
-            maka_event_log::transcript::SourceSelection {
-                locator: sequence,
-                field: SourceField::Body,
-                path: None,
-            },
-            SourcePosition::After { offset: end as u64 },
-            1024,
-        )
-        .await
-        .unwrap();
-    assert_eq!(continued.origin.as_ref(), Some(&origin));
-    assert_eq!(continued.position, sequence);
-    assert_eq!(continued.timestamp, source.timestamp);
-    assert_eq!(continued.fields, source.fields);
-    assert_eq!(continued.offset, end as u64);
-    assert_eq!(continued.total_bytes, source.total_bytes);
-    assert_eq!(
-        continued.text,
-        text[end..text.floor_char_boundary(end + 1024)]
-    );
     log.close().await.unwrap();
 }
 

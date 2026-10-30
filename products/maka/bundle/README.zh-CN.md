@@ -87,4 +87,4 @@ npm --workspace @maka-agent/product run typecheck
 npm --workspace @maka-agent/product test
 ```
 
-npm 测试使用轻量编译器，检查完整的 Host/UI 包与工具展示声明。`cargo test --locked -p maka-cli --test product_composition` 通过实际 CLI 验证业务组合，运行时无需 Node。原生渲染、焦点和输入变更由对应 shell 的测试验证。
+npm 测试使用轻量编译器，检查完整的 Host/UI 包与工具展示声明。`cargo test --locked -p maka-cli --test integration product_composition::` 通过实际 CLI 验证业务组合，运行时无需 Node。原生渲染、焦点和输入变更由对应 shell 的测试验证。

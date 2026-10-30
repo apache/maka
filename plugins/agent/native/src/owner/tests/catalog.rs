@@ -87,17 +87,26 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
         .await
         .unwrap();
     assert_eq!(next(&mut bootstrap).await["sessions"], json!([]));
-    let mut ids = Vec::new();
-    for title in ["First", "Second", "Third"] {
-        ids.push(fixture.create(title).await);
-        assert!(
-            !next(&mut bootstrap).await["sessions"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-    }
+    let first_id = fixture.create("First").await;
+    let published = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let page = next(&mut bootstrap).await;
+            // A partition commit can precede publication of its Root route.
+            if !page["sessions"].as_array().unwrap().is_empty() {
+                break page;
+            }
+        }
+    })
+    .await
+    .expect("created Session must be published to the catalog");
+    assert_eq!(published["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(published["sessions"][0]["id"], first_id);
+    assert_eq!(published["sessions"][0]["title"], "First");
     bootstrap.completion().await;
+    let mut ids = vec![first_id];
+    for title in ["Second", "Third"] {
+        ids.push(fixture.create(title).await);
+    }
     ids.sort();
     let owned_scope = json!({"kind":"workspace","sessionId":ids[0]});
     let first_title = fixture
@@ -598,6 +607,83 @@ async fn k64_complete_session_metadata_persists_and_remains_searchable() {
         .unwrap();
     assert_eq!(found["sessions"][0]["id"], id);
     assert_eq!(found["sessions"][0]["title"], title);
+    fixture.app.shutdown().await.unwrap();
+    fixture.config.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn pinning_keeps_title_policy_survives_restart_and_respects_metadata_revision() {
+    let mut fixture = Fixture::configured("http://127.0.0.1:1/v1", None, None, None, |settings| {
+        settings.automatic_titles = true
+    })
+    .await;
+    for title in ["Pin first", "Pin second", "Pin third"] {
+        let mut input = fixture.create_input(title).await;
+        input["automaticTitle"] = json!(true);
+        fixture
+            .mutation(2, "create", input, Uuid::new_v4())
+            .await
+            .unwrap();
+    }
+    let original = fixture
+        .query("list", json!({"filter":"all","position":{"kind":"start"}}))
+        .await
+        .unwrap();
+    let last = original["sessions"].as_array().unwrap().last().unwrap();
+    let id = last["id"].as_str().unwrap();
+    assert_eq!(last["pinned"], false);
+    let input = json!({"sessionId":id,"expectedRevision":last["revision"],"title":last["title"],"labels":last["labels"],"pinned":true});
+    let changed = fixture
+        .mutation(2, "metadata", input.clone(), Uuid::new_v4())
+        .await
+        .unwrap();
+    assert_eq!(changed["kind"], "committed");
+    assert_eq!(changed["session"]["pinned"], true);
+    assert_eq!(
+        changed["session"]["boundaryRevision"],
+        last["boundaryRevision"]
+    );
+    let record = fixture
+        .store
+        .get_session::<StoredSessionConfiguration>(id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !record.configuration.title_is_manual,
+        "pinning must preserve automatic titles"
+    );
+    let conflict = fixture
+        .mutation(2, "metadata", input, Uuid::new_v4())
+        .await
+        .unwrap();
+    assert_eq!(conflict["kind"], "revision_conflict");
+    let listed = fixture
+        .query("list", json!({"filter":"all","position":{"kind":"start"}}))
+        .await
+        .unwrap();
+    assert_eq!(listed["sessions"][0]["id"], id);
+    todo_tests::reopen(&mut fixture).await;
+    let observed = fixture
+        .query("observe", json!({"sessionId":id}))
+        .await
+        .unwrap();
+    assert_eq!(observed["session"]["pinned"], true);
+    let unpinned = fixture.mutation(2,"metadata",json!({"sessionId":id,"expectedRevision":observed["session"]["revision"],"title":last["title"],"labels":last["labels"],"pinned":false}),Uuid::new_v4()).await.unwrap();
+    assert_eq!(unpinned["session"]["pinned"], false);
+    let listed = fixture
+        .query("list", json!({"filter":"all","position":{"kind":"start"}}))
+        .await
+        .unwrap();
+    let ids = |page: &Value| {
+        page["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&listed), ids(&original));
     fixture.app.shutdown().await.unwrap();
     fixture.config.shutdown().await.unwrap();
 }

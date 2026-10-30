@@ -255,6 +255,10 @@ async fn native_browser_consent_accepts_original_producer_and_rejects_foreign_pr
                     "download",
                     maka_agent_facts::interaction::GrantCapability::BrowserDownload,
                 ),
+                (
+                    "upload",
+                    maka_agent_facts::interaction::GrantCapability::BrowserUpload,
+                ),
             ] {
                 for (id, original) in [("browser_original", true), ("browser_foreign", false)] {
                     let id = format!("{name}_{id}");

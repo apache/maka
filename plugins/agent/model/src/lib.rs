@@ -32,12 +32,11 @@ pub mod adapters;
 mod conversation;
 mod network;
 pub mod reasoning;
-mod step;
 pub use conversation::Conversation;
 pub use maka_agent_facts::model::ModelEvent;
+pub use maka_agent_facts::model::assembly::StepBuilder;
 pub use maka_agent_facts::tools::ToolDefinition;
 pub use maka_agent_ports::model::Emission;
-pub use step::StepBuilder;
 
 use std::sync::Arc;
 use std::time::Duration;

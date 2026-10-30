@@ -41,6 +41,20 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) const ENTRY: &str = "__maka-cua-native-windows";
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(
+    tag = "frame",
+    content = "window",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub(crate) enum NativeCoordinateFrame {
+    Screenshot,
+    WindowPixels,
+    WindowFrame(cua_driver_sdk::NativeWindowFrame),
+    RawWindowObservation,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NativeGeneration(uuid::Uuid);
 impl NativeGeneration {
@@ -407,7 +421,7 @@ impl NativeOwner {
         input: Value,
         epoch: NativeEpochId,
         expected: Option<NativeGeneration>,
-        pixels: bool,
+        coordinate_frame: NativeCoordinateFrame,
         audio: bool,
         cancellation: &CancellationToken,
         language: Language,
@@ -492,7 +506,7 @@ impl NativeOwner {
                     operation,
                     operation_id: scope.operation_id,
                     arguments: input,
-                    native_window_pixels: pixels,
+                    coordinate_frame,
                     language,
                 },
                 cancellation.clone(),
@@ -834,7 +848,7 @@ async fn serve(
                         last_request = id;
                         match *request {
                             Request::Shutdown => { closing = true; shutdown = Some(id); },
-                            Request::NativeInvoke { key, operation, operation_id, arguments, native_window_pixels, .. } => {
+                            Request::NativeInvoke { key, operation, operation_id, arguments, coordinate_frame, .. } => {
                                 if let Some(reason) = &quarantined {
                                     write(&mut output, &WorkerFrame::Response { id, result: Err(Failure::Failed(format!("native input producer is quarantined: {reason}"))) }).await?;
                                     continue;
@@ -871,9 +885,18 @@ async fn serve(
                                 let session = bound.session.clone(); let monitor = bound.monitor.as_ref().expect("created actual input producer").clone(); let events = events.clone();
                                 active = Some(id);
                                 tasks.spawn(async move {
-                                    let call = if native_window_pixels {
-                                        session.call_tool_with_native_window_pixels_and_windows_interruption(operation.name().into(), arguments.to_string(), monitor).await
-                                    } else { session.call_tool_with_windows_interruption(operation.name().into(), arguments.to_string(), monitor).await };
+                                    let call = match coordinate_frame {
+                                        NativeCoordinateFrame::RawWindowObservation => {
+                                            if !matches!(operation,NativeOperation::GetWindowState) {
+                                                Err(cua_driver_sdk::DriverError::Protocol { reason:"raw observation refinement requires get_window_state".into() })
+                                            } else {
+                                                session.observe_raw_window_with_windows_interruption(arguments.to_string(),monitor).await
+                                            }
+                                        },
+                                        NativeCoordinateFrame::WindowFrame(frame) => session.call_tool_with_native_window_frame_and_windows_interruption(operation.name().into(), arguments.to_string(), frame, monitor).await,
+                                        NativeCoordinateFrame::WindowPixels => session.call_tool_with_native_window_pixels_and_windows_interruption(operation.name().into(), arguments.to_string(), monitor).await,
+                                        NativeCoordinateFrame::Screenshot => session.call_tool_with_windows_interruption(operation.name().into(), arguments.to_string(), monitor).await,
+                                    };
                                     let result = match call {
                                         Ok(result) => {
                                             let completion = if matches!(operation, NativeOperation::StartAudioRecording) && !result.is_error {
@@ -1418,7 +1441,7 @@ mod tests {
                 Value::Null,
                 epoch,
                 None,
-                false,
+                NativeCoordinateFrame::Screenshot,
                 false,
                 &cancellation,
                 Language::En,

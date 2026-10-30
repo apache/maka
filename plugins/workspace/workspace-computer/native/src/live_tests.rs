@@ -75,7 +75,7 @@ struct Window {
 impl Window {
     async fn open(directory: &Path) -> Self {
         let binary = std::env::var_os("MAKA_COMPUTER_LIVE_FIXTURE_BIN")
-            .expect("explicit prebuilt repl_browser fixture ELF is required");
+            .expect("explicit prebuilt computer-use integration fixture ELF is required");
         // C:-mapped artifact storage need not support Unix socket nodes.
         let socket_base = std::env::var_os("MAKA_COMPUTER_LIVE_SOCKET_DIR")
             .map(PathBuf::from)
@@ -306,6 +306,7 @@ impl Run {
             tools: Some(vec!["cua_repl".into(), "cua_reset".into()]),
             title: "Isolated native epoch".into(),
             title_is_manual: false,
+            pinned: false,
             labels: vec![],
             workspace: reference,
             permissions: WorkspacePermissions {
@@ -504,7 +505,7 @@ impl Run {
                     Box::pin(async move {
                         serde_json::to_value(
                             owner
-                                .evaluate(&method, input, scope, basis, interaction, cancel)
+                                .evaluate(&method, input, scope.into(), basis, interaction, cancel)
                                 .await?,
                         )
                         .map_err(failed)

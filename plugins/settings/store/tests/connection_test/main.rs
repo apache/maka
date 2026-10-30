@@ -26,10 +26,11 @@ use maka_config::{
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use serde_json::{Value, json};
 use std::sync::Arc;
+#[path = "header_cases.rs"]
 mod header_cases;
+#[path = "network_cases.rs"]
 mod network_cases;
-#[path = "../support/mod.rs"]
-mod provider_support;
+use crate::support as provider_support;
 
 fn failed(error_class: ConnectionEffectFailureClass) -> ConnectionTestProjection {
     ConnectionTestProjection::Failed {

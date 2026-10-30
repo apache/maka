@@ -124,7 +124,6 @@ pub(super) async fn artifact(
         return Ok(result);
     }
     let mut buffer = context.budget.allocate(1024).await?;
-    let source = captured.clone();
     let arena = context.arena.cloned();
     let internal = context.internal_arena;
     let result = captured
@@ -160,18 +159,8 @@ pub(super) async fn artifact(
                     source_bytes: 0,
                 });
             }
-            if let Some(payload) = capture.protected_source {
-                let bytes = SourceBytes::Source(source.byte_source(&payload)?);
-                let source_bytes = raw_footprint(&bytes)?;
-                return Ok(ReadArtifact {
-                    metadata,
-                    body: Some(bytes),
-                    available: true,
-                    reason: "",
-                    backing_bytes: 0,
-                    source_bytes,
-                });
-            }
+            // Freeze media once: reopening a SQLite Blob for every codec chunk
+            // repeatedly walks its overflow chain, including protected artifacts.
             let backing_bytes = usize::try_from(capture.bytes).map_err(io::Error::other)?;
             let source_bytes = super::super::capture_arena::source_metadata_bytes(1)?;
             if matches!(mode, Mode::Probe) {
@@ -187,7 +176,7 @@ pub(super) async fn artifact(
             let arena = arena.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "deletable media requires request backing",
+                    "media capture requires request backing",
                 )
             })?;
             let range = arena.with_writer_sync(|writer| {

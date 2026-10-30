@@ -17,6 +17,7 @@
 #
 
 [package]
+autotests = false
 name = "maka-network"
 version.workspace = true
 edition.workspace = true
@@ -48,3 +49,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["net", "io-util"] }
 futures-util.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

@@ -181,6 +181,18 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
                 Some(browser_id.as_str()),
             ),
         },
+        Command::BrowserScreenshot { .. } => (
+            "Capture tab screenshot",
+            "截取标签页画面",
+            "擷取分頁畫面",
+            bound_target,
+        ),
+        Command::BrowserMarkTab { .. } => (
+            "Mark tab retention",
+            "标记标签页保留意图",
+            "標記分頁保留意圖",
+            bound_target,
+        ),
         Command::TabMetadata { .. }
         | Command::BrowserRead { .. }
         | Command::BrowserEvaluate { .. }
@@ -193,6 +205,18 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
         Command::BrowserCua { .. } | Command::BrowserMutation { .. } => {
             ("Interact with page", "操作网页", "操作網頁", bound_target)
         }
+        Command::BrowserFileChooserWait { .. } => (
+            "Wait for file chooser",
+            "等待文件选择",
+            "等待檔案選擇",
+            bound_target,
+        ),
+        Command::BrowserFileChooserSetFiles { .. } => (
+            "Upload selected files",
+            "上传所选文件",
+            "上傳所選檔案",
+            bound_target,
+        ),
         Command::BrowserDownloadWait { .. } => (
             "Wait for browser download",
             "等待浏览器下载",

@@ -136,7 +136,6 @@ pub enum PayloadEncoding {
     SemanticRow,
     Payload,
     CanonicalProjection,
-    Artifact,
     ArtifactMetadata,
 }
 #[derive(Clone)]
@@ -211,7 +210,6 @@ pub struct ArtifactCapture {
     pub bytes: u64,
     pub digest: [u8; 32],
     pub metadata_bytes: u64,
-    pub protected_source: Option<PayloadSource>,
     pub protected_metadata: Option<PayloadSource>,
 }
 /// The original Run or read scope owns the file until its physical close is confirmed.
@@ -275,7 +273,6 @@ impl PayloadSource {
             Backing::Row { .. } => PayloadEncoding::SemanticRow,
             Backing::Canonical { .. } => PayloadEncoding::CanonicalProjection,
             Backing::Pieces { .. } => PayloadEncoding::Payload,
-            Backing::Artifact { .. } => PayloadEncoding::Artifact,
             Backing::ArtifactMetadata { .. } => PayloadEncoding::ArtifactMetadata,
         }
     }
@@ -283,7 +280,6 @@ impl PayloadSource {
         match self.backing {
             Backing::Row { bytes, .. } | Backing::Canonical { bytes, .. } => Some(bytes),
             Backing::Pieces { bytes, .. } => Some(bytes),
-            Backing::Artifact { bytes, .. } => Some(bytes),
             Backing::ArtifactMetadata { bytes, .. } => Some(bytes),
         }
     }
@@ -457,7 +453,7 @@ impl CapturedSource {
                             None => {},
                             Some(Backing::Pieces{key,bytes}) => { words[7]=1; words[8]=key.source_sequence; words[9]=key.item_index; words[11]=bytes; },
                             Some(Backing::Canonical{key,offset,bytes}) => { words[7]=2; words[8]=key.source_sequence; words[9]=key.item_index; words[10]=offset; words[11]=bytes; },
-                            Some(Backing::Row{..}|Backing::Artifact{..}|Backing::ArtifactMetadata{..}) => unreachable!("payload is never row metadata"),
+                            Some(Backing::Row{..}|Backing::ArtifactMetadata{..}) => unreachable!("payload is never row metadata"),
                         }
                         for (target,word) in buffer.as_mut()[count*METADATA_BYTES..(count+1)*METADATA_BYTES].as_chunks_mut::<8>().0.iter_mut().zip(words) { target.copy_from_slice(&word.to_le_bytes()); }
                         count+=1; last=Some(SemanticCursor{order,id});
@@ -605,11 +601,8 @@ impl CapturedSource {
                     drop(statement);
                     let deletable=with_blob(raw,"artifacts","record_json",rowid,0,metadata_bytes,locator::artifact_user_deletable)?;
                     let protected=protection||alias_protected||!deletable;
-                    let protected_source = protected.then(||PayloadSource {
-                        domain:domain.clone(),backing:Backing::Artifact { rowid,bytes:length,digest },
-                    });
                     let protected_metadata=protected.then_some(PayloadSource { domain,backing:Backing::ArtifactMetadata { rowid,bytes:metadata_bytes,payload_bytes:length,digest } });
-                    let capture = ArtifactCapture { bytes:length,digest,metadata_bytes,protected_source,protected_metadata };
+                    let capture = ArtifactCapture { bytes:length,digest,metadata_bytes,protected_metadata };
                     with_blob(raw,"artifacts","record_json",rowid,0,metadata_bytes,|metadata| {
                         with_blob(raw,"artifacts","payload",rowid,0,length,|body| {
                             consume(capture,metadata,body)
@@ -701,14 +694,6 @@ impl CapturedSource {
                                         Some(error) => Err(error),
                                         None => result,
                                     }
-                                }
-                                Backing::Artifact {
-                                    rowid,
-                                    bytes,
-                                    digest,
-                                } => {
-                                    check_artifact(raw, rowid, bytes, &digest)?;
-                                    with_blob(raw, "artifacts", "payload", rowid, 0, bytes, consume)
                                 }
                                 Backing::ArtifactMetadata {
                                     rowid,
@@ -1023,30 +1008,6 @@ fn read_chunk<B: SourceBuffer>(
             )
         }
         Backing::Pieces { key, .. } => read_piece_chunk(raw, key, position, output)?,
-        Backing::Artifact {
-            rowid,
-            bytes,
-            digest,
-        } => {
-            check_artifact(raw, rowid, bytes, &digest)?;
-            let (count, end) = read_blob(
-                raw,
-                ("artifacts", "payload", rowid),
-                0,
-                bytes,
-                position.offset,
-                output,
-            )?;
-            (
-                count,
-                None,
-                end,
-                (!end).then_some(SourcePosition {
-                    offset: position.offset + count as u64,
-                    ..position
-                }),
-            )
-        }
         Backing::ArtifactMetadata {
             rowid,
             bytes,
