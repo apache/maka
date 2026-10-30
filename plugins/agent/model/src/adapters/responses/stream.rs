@@ -22,9 +22,9 @@ use super::{
     decode::Decoder,
     transport::{Exchange, ResponsesLane, Shared},
 };
+use maka_agent_facts::model::error::ModelError;
 use maka_agent_facts::model::error::ProviderFailure;
 use maka_agent_facts::model::error::ProviderFailureReason;
-use maka_agent_facts::model::error::{ModelError, ModelFailureCause};
 use maka_agent_ports::model::Context;
 use maka_agent_ports::model::Credentials as ProviderAuth;
 use maka_agent_ports::model::Events;
@@ -52,12 +52,6 @@ pub async fn stream(
     };
     let lane = lane.map(|lane| lane.transport);
     run(request, skip, context, lane, transport).await
-}
-fn http_failure(status: u16, message: Option<String>) -> ModelError {
-    match (ModelFailureCause::Http { status }).validate() {
-        Ok(()) => ModelError::Http { status, message },
-        Err(error) => error,
-    }
 }
 fn interruption(
     decoder: &Decoder,
@@ -218,14 +212,20 @@ async fn run(
         &decoder,
     )
     .await?;
+    let retry_at = super::super::retry::at(&response.head);
     let result = read_response(
         &response,
         &mut decoder,
         &sender,
         idle_timeout,
         &cancellation,
+        retry_at,
     )
-    .await;
+    .await
+    .map_err(|error| match error {
+        ModelError::Provider(failure) => ModelError::Provider(failure.with_retry_at(retry_at)),
+        error => error,
+    });
     // A provider may finish before it consumes the complete upload. All exits,
     // including terminal SSE, rejection, timeout and cancellation, settle the
     // response's upload lease before this adapter returns.
@@ -241,6 +241,7 @@ async fn read_response(
     sender: &Arc<dyn Events>,
     idle_timeout: Duration,
     cancellation: &CancellationToken,
+    retry_at: Option<u64>,
 ) -> Result<(), ModelError> {
     let content_type = header(&response.head, "content-type");
     // Some Responses endpoints omit Content-Type even for a valid event
@@ -253,25 +254,12 @@ async fn read_response(
     });
     if !(200..300).contains(&response.head.status) || !event_stream {
         let status = response.head.status;
-        let retry_after = header(&response.head, "retry-after")
-            .and_then(|v| v.parse::<u64>().ok())
-            .and_then(|v| v.checked_mul(1000));
-        let reason = match status {
-            429 => Some(ProviderFailureReason::RateLimit),
-            500..=599 => Some(ProviderFailureReason::ProviderUnavailable),
-            _ => None,
-        };
-        // A stalled error body cannot turn an explicit permanent rejection
-        // into a retry, or discard rate-limit advice already in the headers.
-        let body_failure = || match reason {
-            Some(reason) => ModelError::Provider(ProviderFailure::new(
-                reason,
-                format!("Responses HTTP {status}: error body interrupted"),
-                true,
-                retry_after,
-            )),
-            None if !(200..300).contains(&status) => http_failure(status, None),
-            None => ModelError::Adapter(format!("Responses HTTP {status}: error body interrupted")),
+        let body_failure = || {
+            super::super::error::Evidence::default().provider(
+                super::super::error::http_error(status, &[]),
+                false,
+                retry_at,
+            )
         };
         let mut bytes = Vec::new();
         while let Some(chunk) = wait(idle_timeout, decoder, cancellation, response.body.next())
@@ -292,26 +280,22 @@ async fn read_response(
             bytes.extend_from_slice(&chunk);
         }
         let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        let code = value["error"]["code"]
-            .as_str()
-            .or_else(|| value["error"]["type"].as_str());
-        if code.is_some_and(context_overflow) {
-            return Err(ModelError::ContextOverflow {
-                observed_output: false,
-            });
-        }
-        if let Some(reason) = reason {
-            return Err(ModelError::Provider(ProviderFailure::new(
-                reason,
-                value["error"]["message"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| format!("Responses HTTP {status}")),
-                true,
-                retry_after,
-            )));
-        }
         if (200..300).contains(&status) {
+            if value.get("error").is_some_and(|error| {
+                error.is_object()
+                    && ["code", "type", "message"].iter().any(|key| {
+                        error.get(key).is_some_and(|value| {
+                            value.is_number()
+                                || value.as_str().is_some_and(|value| !value.is_empty())
+                        })
+                    })
+            }) {
+                return Err(super::super::error::Evidence::default().provider(
+                    super::super::error::http_error(status, &bytes),
+                    false,
+                    retry_at,
+                ));
+            }
             let message = value["error"]["message"]
                 .as_str()
                 .or_else(|| value["detail"].as_str())
@@ -321,9 +305,10 @@ async fn read_response(
                 "Responses HTTP {status} returned {content_type}, expected text/event-stream: {message}"
             )));
         }
-        return Err(http_failure(
-            status,
-            value["error"]["message"].as_str().map(str::to_owned),
+        return Err(super::super::error::Evidence::default().provider(
+            super::super::error::http_error(status, &bytes),
+            false,
+            retry_at,
         ));
     }
     let mut sse = maka_provider_protocol::responses::sse::Sse::default();
@@ -407,12 +392,6 @@ fn headers(request: &ModelRequest) -> Result<BTreeMap<String, String>, ModelErro
     }
     Ok(headers)
 }
-fn context_overflow(code: &str) -> bool {
-    matches!(
-        code,
-        "context_length_exceeded" | "model_context_window_exceeded" | "request_too_large"
-    )
-}
 fn failure(error: super::Error) -> ModelError {
     use super::Error;
     match error {
@@ -430,32 +409,22 @@ fn failure(error: super::Error) -> ModelError {
             .with_retained_output(retained_output_safe),
         ),
         Error::Provider {
-            code,
+            error,
             observed_output,
-            ..
-        } if code.as_deref().is_some_and(context_overflow) => {
-            ModelError::ContextOverflow { observed_output }
-        }
-        Error::Provider {
-            code,
-            message,
             replay_safe,
             retained_output_safe,
-            ..
-        } if matches!(
-            code.as_deref(),
-            Some("rate_limit_exceeded" | "server_error" | "service_unavailable")
-        ) =>
-        {
-            let reason = if code.as_deref() == Some("rate_limit_exceeded") {
-                ProviderFailureReason::RateLimit
-            } else {
-                ProviderFailureReason::ProviderUnavailable
+        } => {
+            let evidence = super::super::error::Evidence {
+                observed: observed_output,
+                unsafe_replay: !replay_safe,
+                ..Default::default()
             };
-            ModelError::Provider(
-                ProviderFailure::new(reason, message, replay_safe, None)
-                    .with_retained_output(retained_output_safe),
-            )
+            match evidence.provider(*error, false, None) {
+                ModelError::Provider(failure) => {
+                    ModelError::Provider(failure.with_retained_output(retained_output_safe))
+                }
+                error => error,
+            }
         }
         error => ModelError::Adapter(error.to_string()),
     }

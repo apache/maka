@@ -51,4 +51,4 @@ rusqlite.workspace = true
 tokio-tungstenite.workspace = true
 maka-presentation.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["net", "io-util"] }
+tokio = { workspace = true, features = ["net", "io-util", "test-util"] }

@@ -22,7 +22,7 @@ use super::{
     ToolInput,
 };
 use crate::output::{Stop, TextKind, Usage as OutputUsage};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
@@ -199,10 +199,12 @@ struct InputTokens {
 struct OutputTokens {
     reasoning_tokens: Option<u64>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub(crate) struct ProviderError {
-    pub code: Option<String>,
+    pub code: Option<Value>,
     pub message: String,
+    #[serde(flatten)]
+    pub fields: BTreeMap<String, Value>,
 }
 struct Part {
     kind: TextKind,
@@ -710,6 +712,7 @@ impl Decoder {
             Event::Failed { response } => {
                 return Err(self.provider(response.error.unwrap_or(ProviderError {
                     code: None,
+                    fields: BTreeMap::new(),
                     message: "Responses request failed".into(),
                 })));
             }
@@ -782,9 +785,16 @@ impl Decoder {
         Ok(out)
     }
     fn provider(&self, error: ProviderError) -> Error {
+        let data = serde_json::to_value(&error).expect("provider error contains only JSON fields");
         Error::Provider {
-            code: error.code,
-            message: error.message,
+            error: Box::new(crate::output::ProviderError {
+                kind: data.get("type").and_then(Value::as_str).map(str::to_owned),
+                code: error.code,
+                message: Some(error.message),
+                status: None,
+                retryable: None,
+                data,
+            }),
             observed_output: self.observed_output,
             replay_safe: self.replay_safe,
             retained_output_safe: self.retained_output_safe(),

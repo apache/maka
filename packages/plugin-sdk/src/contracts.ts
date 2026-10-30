@@ -3696,6 +3696,11 @@ export const contracts = {
                       reason: {
                         $ref: '#/$defs/ProviderFailureReason',
                       },
+                      retry_at_unix_ms: {
+                        type: ['integer', 'null'],
+                        format: 'uint64',
+                        minimum: 0,
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'reason'],
@@ -3719,6 +3724,7 @@ export const contracts = {
                   'network',
                   'timed_out',
                   'rate_limit',
+                  'quota_exhausted',
                   'provider_unavailable',
                   'stream_truncated',
                 ],

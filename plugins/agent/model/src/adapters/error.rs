@@ -24,6 +24,7 @@ use serde_json::Value;
 #[derive(Default)]
 pub(super) struct Evidence {
     pub observed: bool,
+    pub retry_at_unix_ms: Option<u64>,
     pub unsafe_replay: bool,
 }
 impl Evidence {
@@ -36,17 +37,14 @@ impl Evidence {
             reason,
             message,
             !self.unsafe_replay,
-            None,
+            self.retry_at_unix_ms,
         ))
     }
     pub fn transport(&self, error: ModelError) -> ModelError {
         match error {
-            ModelError::Provider(failure) => ModelError::Provider(ProviderFailure::new(
-                failure.reason(),
-                failure.message(),
-                !self.unsafe_replay,
-                failure.retry_after().map(|d| d.as_millis() as u64),
-            )),
+            ModelError::Provider(failure) => {
+                ModelError::Provider(failure.restrict_replay(!self.unsafe_replay))
+            }
             error => error,
         }
     }
@@ -54,8 +52,15 @@ impl Evidence {
         &self,
         error: ProviderError,
         anthropic: bool,
-        retry_after: Option<u64>,
+        retry_at_unix_ms: Option<u64>,
     ) -> ModelError {
+        if error
+            .status
+            .is_some_and(|status| !(100..600).contains(&status))
+        {
+            return ModelError::Adapter("invalid model HTTP failure status".into());
+        }
+        let retry_at_unix_ms = retry_at_unix_ms.or(self.retry_at_unix_ms);
         let mut records = vec![&error.data];
         if let Some(inner) = error.data.get("error") {
             records.push(inner);
@@ -71,7 +76,7 @@ impl Evidence {
             .collect::<Vec<_>>();
         let has = |values: &[&str]| identifiers.iter().any(|id| values.contains(&id.as_str()));
         let too_long = anthropic
-            && error.status == Some(400)
+            && matches!(error.status, None | Some(400))
             && records.iter().any(|record| {
                 record.get("type").and_then(Value::as_str) == Some("invalid_request_error")
                     && record
@@ -79,48 +84,63 @@ impl Evidence {
                         .and_then(Value::as_str)
                         .is_some_and(prompt_too_long)
             });
-        if has(&[
-            "context_length_exceeded",
-            "model_context_window_exceeded",
-            "request_too_large",
-        ]) || too_long
-        {
+        if has(&["context_length_exceeded", "model_context_window_exceeded"]) || too_long {
             return ModelError::ContextOverflow {
                 observed_output: self.observed,
             };
         }
-        let permanent = matches!(error.status, Some(401..=403))
+        let positive_quota = has(&[
+            "insufficient_quota",
+            "insufficient_balance",
+            "freeusagelimiterror",
+        ]);
+        let permanent = matches!(error.status, Some(401 | 403))
+            || (error.status == Some(402) && !positive_quota)
             || has(&[
-                "insufficient_quota",
-                "insufficient_balance",
-                "quota_exceeded",
-                "freeusagelimiterror",
+                "request_too_large",
                 "authentication_error",
                 "permission_error",
                 "invalid_api_key",
             ]);
         let reason = if permanent {
             None
+        } else if positive_quota {
+            Some(ProviderFailureReason::QuotaExhausted)
         } else if has(&["resource-exhausted"]) {
             Some(ProviderFailureReason::ProviderUnavailable)
-        } else if error.status == Some(429) || has(&["rate_limit_error"]) {
+        } else if error.status == Some(429) || has(&["rate_limit_error", "rate_limit_exceeded"]) {
             Some(ProviderFailureReason::RateLimit)
         } else if matches!(error.status, Some(408 | 500..=599))
-            || has(&["server_error", "overloaded_error"])
+            || has(&[
+                "api_error",
+                "server_error",
+                "overloaded_error",
+                "service_unavailable",
+            ])
         {
             Some(ProviderFailureReason::ProviderUnavailable)
         } else {
             None
         };
         if let Some(reason) = reason {
-            return ModelError::Provider(ProviderFailure::new(
-                reason,
-                error
-                    .message
-                    .unwrap_or_else(|| provider_message(error.status)),
-                !self.unsafe_replay,
-                retry_after,
-            ));
+            return ModelError::Provider(
+                ProviderFailure::new(
+                    reason,
+                    error
+                        .message
+                        .unwrap_or_else(|| provider_message(error.status)),
+                    !self.unsafe_replay,
+                    retry_at_unix_ms,
+                )
+                .with_diagnostic(
+                    error.status,
+                    error.code.as_ref().and_then(|code| match code {
+                        Value::String(value) => Some(value.clone()),
+                        Value::Number(value) => Some(value.to_string()),
+                        _ => None,
+                    }),
+                ),
+            );
         }
         if let Some(status) = error
             .status
@@ -203,7 +223,6 @@ mod tests {
         for value in [
             json!({"code":"context_length_exceeded"}),
             json!({"error":{"code":"context_length_exceeded"}}),
-            json!({"type":"request_too_large"}),
             json!({"code":"model_context_window_exceeded"}),
         ] {
             assert!(matches!(
@@ -237,6 +256,25 @@ mod tests {
             Evidence::default().provider(http_error(400, b"not JSON"), false, None),
             ModelError::Http { status: 400, .. }
         ));
+    }
+
+    #[test]
+    fn transport_normalization_cannot_upgrade_existing_replay_evidence_or_move_a_deadline() {
+        let failure = ProviderFailure::new(
+            ProviderFailureReason::Network,
+            "ambiguous write",
+            false,
+            Some(18_001_000),
+        )
+        .with_retained_output(true);
+        let ModelError::Provider(failure) =
+            Evidence::default().transport(ModelError::Provider(failure))
+        else {
+            panic!("typed transport failure")
+        };
+        assert!(!failure.replay_safe());
+        assert!(failure.retained_output_safe());
+        assert_eq!(failure.retry_at_unix_ms(), Some(18_001_000));
     }
 
     #[test]
@@ -288,7 +326,7 @@ mod tests {
                 Some(maka_agent_facts::model::error::ModelFailureCause::Http { status })
             );
         }
-        for status in [401, 402, 403, 429] {
+        for status in [401, 403] {
             assert!(matches!(
                 classify(
                     status,
@@ -310,7 +348,7 @@ mod tests {
             };
             assert_eq!(failure.reason(), reason);
             assert!(failure.replay_safe());
-            assert_eq!(failure.retry_after().unwrap().as_millis(), 1234);
+            assert_eq!(failure.retry_at_unix_ms(), Some(1234));
         }
     }
 }

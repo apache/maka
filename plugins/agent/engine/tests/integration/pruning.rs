@@ -378,7 +378,8 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
                 assert_eq!(
                     failed.2.as_ref(),
                     Some(&ModelFailureCause::Provider {
-                        reason: ProviderFailureReason::ProviderUnavailable
+                        reason: ProviderFailureReason::ProviderUnavailable,
+                        retry_at_unix_ms: None,
                     })
                 );
                 assert!(

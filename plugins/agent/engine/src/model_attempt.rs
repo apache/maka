@@ -298,6 +298,9 @@ pub(super) async fn execute_main(
                     if tools.finished() {
                         return Ok(Outcome::FinishedByTool);
                     }
+                    if !failure.retryable() {
+                        return result.map(Outcome::from);
+                    }
                     if failures >= 9 {
                         if !lane.try_switch_fallback_transport() {
                             return result.map(Outcome::from);
@@ -309,11 +312,10 @@ pub(super) async fn execute_main(
                         // +/-10% jitter. The bounded attempt count caps this delay.
                         let base_ms = 200u64 << failures;
                         failures += 1;
-                        failure.retry_after().unwrap_or_else(|| {
-                            std::time::Duration::from_millis(fastrand::u64(
-                                base_ms * 9 / 10..=base_ms * 11 / 10,
-                            ))
-                        })
+                        let backoff = std::time::Duration::from_millis(fastrand::u64(
+                            base_ms * 9 / 10..=base_ms * 11 / 10,
+                        ));
+                        retry_delay(failure, backoff, maka_model::ProviderFailure::now_unix_ms())
                     }
                 }
                 _ => return result.map(Outcome::from),
@@ -345,7 +347,7 @@ pub(super) async fn execute_main(
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(RunError::Cancelled),
-                _ = tokio::time::sleep(delay) => {}
+                _ = wait_retry(delay) => {}
             }
         }
     }
@@ -359,6 +361,22 @@ pub(super) async fn execute_main(
         }
     };
     (high_water, result)
+}
+
+async fn wait_retry(delay: std::time::Duration) {
+    match tokio::time::Instant::now().checked_add(delay) {
+        Some(at) => tokio::time::sleep_until(at).await,
+        // An unrepresentable deadline cannot authorize an earlier replay.
+        None => std::future::pending::<()>().await,
+    }
+}
+
+fn retry_delay(
+    failure: &maka_model::ProviderFailure,
+    backoff: std::time::Duration,
+    now_unix_ms: u64,
+) -> std::time::Duration {
+    backoff.max(failure.retry_delay_at(now_unix_ms).unwrap_or_default())
 }
 
 async fn close_retry(retry: &mut Option<PreparedPrompt>) -> Result<(), RunError> {
@@ -1309,7 +1327,9 @@ fn interruption(
         }
         RunError::Model(ModelError::TimedOut) => ModelInterruption::TimedOut,
         RunError::Model(ModelError::Provider(failure))
-            if failure.replay_safe() || (item_acceptance && failure.retained_output_safe()) =>
+            if failure.retryable()
+                && (failure.replay_safe()
+                    || (item_acceptance && failure.retained_output_safe())) =>
         {
             ModelInterruption::RetryableFailure
         }
@@ -1642,3 +1662,36 @@ mod tests {
 
 #[cfg(test)]
 mod publication_tests;
+
+#[cfg(test)]
+mod retry_timing_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn provider_deadline_is_a_lower_bound_and_never_reduces_backoff() {
+        let failure = maka_model::ProviderFailure::new(
+            maka_model::ProviderFailureReason::RateLimit,
+            "temporary throttle",
+            true,
+            Some(18_001_000),
+        );
+        let delay = retry_delay(&failure, Duration::from_millis(200), 1000);
+        assert_eq!(delay, Duration::from_secs(18_000));
+        let sleep = wait_retry(delay);
+        tokio::pin!(sleep);
+        assert!(futures_util::poll!(&mut sleep).is_pending());
+        tokio::time::advance(Duration::from_secs(17_999)).await;
+        assert!(futures_util::poll!(&mut sleep).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        sleep.await;
+        assert_eq!(
+            retry_delay(&failure, Duration::from_millis(200), 18_000_999),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            retry_delay(&failure, Duration::from_millis(200), 18_001_001),
+            Duration::from_millis(200)
+        );
+    }
+}

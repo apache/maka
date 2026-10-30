@@ -572,6 +572,7 @@ async fn idle_http_reads_keep_protocol_safety_and_explicit_rejections() {
             let mut input = super::provider_stream::request(ProviderKind::OpenaiResponses, base_url);
             input.provider.auth = maka_model::ProviderAuth::ApiKey("local-test-key".into());
             input.provider.headers.insert("x-test-provider".into(), "responses".into());
+            let before = maka_model::ProviderFailure::now_unix_ms();
             let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
             let error = loop {
                 match stream.next().await.expect("must report the interruption") {
@@ -590,7 +591,10 @@ async fn idle_http_reads_keep_protocol_safety_and_explicit_rejections() {
                 assert_eq!(failure.reason(), match status { 429 => ProviderFailureReason::RateLimit, 503 => ProviderFailureReason::ProviderUnavailable, _ => ProviderFailureReason::TimedOut });
                 assert_eq!(failure.replay_safe(), mode == "empty");
                 assert_eq!(failure.retained_output_safe(), status < 400 && mode != "opaque");
-                assert_eq!(failure.retry_after(), (status >= 400).then_some(Duration::from_secs(2)));
+                match failure.retry_at_unix_ms() {
+                    Some(at) => { assert_ne!(status, 0, "a response actually supplied Retry-After, including successful SSE"); assert!((before + 2000..=maka_model::ProviderFailure::now_unix_ms() + 2000).contains(&at)); },
+                    None => assert_eq!(status, 0, "only the fixture without HTTP headers has no deadline"),
+                }
             }
         }
     }).await.expect("all idle HTTP boundaries must settle");
