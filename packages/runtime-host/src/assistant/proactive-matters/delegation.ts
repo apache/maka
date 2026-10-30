@@ -337,17 +337,22 @@ export function registerDelegation(
   );
   register(
     'MatterTaskMessage',
-    'Add a new user requirement or correction to an existing task, preserving the original meaning. Saves it and supplies it at the running task’s next model request, or schedules continuation when applicable. Returns task state and delivery stage; it cannot undo an executing tool or prove the worker has already complied. Use MatterTaskControl for pause/cancel and MatterTasks for progress queries.',
+    'Add a new user requirement or correction to an existing task, preserving the original meaning. A completed task reopens in the same Session with its previous state and history; do not create a duplicate task for the same continuing work. A cancelled task requires explicit resume first. Saves it and supplies it at the running task’s next model request, or schedules continuation when applicable. Returns task state and delivery stage; it cannot undo an executing tool or prove the worker has already complied. Use MatterTaskControl for pause/cancel and MatterTasks for progress queries.',
     z.object({ id: z.string(), text: z.string().trim().min(1).max(8000) }),
     true,
     (input: any, call: any) => {
       const m = owned(call.sessionId, input.id);
-      if (['completed', 'cancelled'].includes(m.status)) throw Error('Matter has ended');
-      store.ingest(m.id, {
-        key: `delegate:${call.sessionId}:${call.turnId}:${call.toolCallId}`,
-        source: 'coordinator',
-        text: input.text,
-      });
+      if (m.status === 'cancelled')
+        throw Error('Task was cancelled; explicitly resume it before adding requirements');
+      store.ingest(
+        m.id,
+        {
+          key: `delegate:${call.sessionId}:${call.turnId}:${call.toolCallId}`,
+          source: 'coordinator',
+          text: input.text,
+        },
+        true,
+      );
       void controller.tick();
       return {
         ...describe(store.get(m.id).matter),
@@ -362,7 +367,7 @@ export function registerDelegation(
   );
   register(
     'MatterTaskControl',
-    'Control the specified delegated task: pause/resume/cancel on user request; check requests another execution check and is not a read-only progress query (use MatterTasks). Changes only this task, not global discovery or index maintenance. Returns resulting task state; cancel stops its worker, never the assistant chat.',
+    'Control the specified delegated task: pause/resume/cancel on user request; resume also reopens a completed or cancelled task in its original Session, preserving context; check requests another execution check and is not a read-only progress query (use MatterTasks). Changes only this task, not global discovery or index maintenance. Returns resulting task state; cancel stops its worker, never the assistant chat.',
     z.object({ id: z.string(), action: z.enum(['pause', 'resume', 'cancel', 'check']) }),
     true,
     async (input: any, call: any) => {

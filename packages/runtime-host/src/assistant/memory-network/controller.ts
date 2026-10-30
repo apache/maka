@@ -19,8 +19,9 @@
 
 import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import { createHash, randomUUID } from 'node:crypto';
+import { compactTitle, compactTitles, evidenceMetadata } from './presentation.js';
 import { sourceKey } from './store.js';
-import { CorpusStore } from './corpus.js';
+import { CorpusStore, HistoryRangeUnavailableError } from './corpus.js';
 
 /** A normal independent Maka Agent receives a task and exact source boundaries, not batches. */
 export class MemoryController {
@@ -353,16 +354,20 @@ export class MemoryController {
     const allowed = new Set(await this.ctx.sources.authorize(source, page.items));
     return {
       ...page,
-      items: page.items
-        .filter((o: any) => allowed.has(o.id))
-        .map((object: any) => {
-          const reference = this.store.rememberReference(source, object);
-          return {
-            ...object,
-            ref: reference.ref,
-            citation: `[source](memory-original:${reference.ref})`,
-          };
-        }),
+      ...compactTitles(
+        page.items
+          .filter((o: any) => allowed.has(o.id))
+          .map((object: any) => {
+            const reference = this.store.rememberReference(source, object);
+            return {
+              ...object,
+              ...(object.title ? { title: compactTitle(object.title) } : {}),
+              ...evidenceMetadata(object.evidenceKind),
+              ref: reference.ref,
+              citation: `[source](memory-original:${reference.ref})`,
+            };
+          }),
+      ),
     };
   }
   async readReference(ref: string, latest = false, expandBacklinks = false, visibility?: string[]) {
@@ -379,6 +384,7 @@ export class MemoryController {
         ref,
         source: reference.source,
         object: reference.object,
+        ...evidenceMetadata(reference.object.evidenceKind),
         message: JSON.parse(String(row!.body)),
         neighbors: original.neighbors,
         isLatestRevision: original.isLatestRevision,
@@ -416,6 +422,7 @@ export class MemoryController {
       requestedRef: ref,
       source: reference.source,
       ...result,
+      ...evidenceMetadata(result.object?.evidenceKind ?? reference.object.evidenceKind),
       ...(latestRef ? { latestRef } : {}),
       backlinks: this.backlinks(ref, allowed, expandBacklinks),
       notice:
@@ -517,6 +524,7 @@ export class MemoryController {
           ref,
           citation: `[source](memory-original:${ref})`,
           message,
+          ...evidenceMetadata(original.object.evidenceKind),
         });
       }
       if (more) break;
@@ -636,8 +644,18 @@ export class MemoryController {
           continue;
         const key = sourceKey(source, head.id);
         if (!head.historyRevision) throw Error('Source must expose an opaque content revision');
-        if (this.store.head(key)?.revision === head.historyRevision && this.store.record(key))
-          continue;
+        const recorded = this.store.record(key);
+        if (
+          recorded &&
+          head.labels?.includes('synthetic-test-data') &&
+          recorded.evidenceKind !== 'test'
+        ) {
+          // A test label added later also annotates existing references, without rewriting originals.
+          this.store.db
+            .prepare('UPDATE memory_source_records SET payload=? WHERE key=?')
+            .run(JSON.stringify({ ...recorded, evidenceKind: 'test' }), key);
+        }
+        if (this.store.head(key)?.revision === head.historyRevision && recorded) continue;
         const existing = this.sourceReads.get(key);
         if (existing) {
           await existing;
@@ -655,6 +673,12 @@ export class MemoryController {
               revision: head.historyRevision,
               title: head.title ?? snapshot.session.title,
               updatedAt: head.updatedAt,
+              evidenceKind:
+                head.labels?.includes('synthetic-test-data') ||
+                snapshot.session.labels?.includes('synthetic-test-data') ||
+                recorded?.evidenceKind === 'test'
+                  ? 'test'
+                  : undefined,
             },
             snapshot.messages,
           );
@@ -736,21 +760,20 @@ export class MemoryController {
     return Promise.allSettled(
       indexes.map(async (index) => {
         const sources = [...new Set(sourcesOf(index))];
-        const initial = (await Promise.all(sources.map(visibility))).flat();
-        this.store.assertIndexVisible(index.id, initial);
         const checkedAt = Date.now();
         this.store.saveWorker(index.id, {
           ...this.store.worker(index.id),
           lastCheckAttemptAt: checkedAt,
         });
         try {
+          // Permission checks precede I/O; an obsolete index range must not prevent observation.
+          await Promise.all(sources.map(visibility));
           const settled = await Promise.allSettled(sources.map(refresh));
           const results = settled.map((result) => {
             if (result.status === 'rejected') throw result.reason;
             return result.value;
           });
           const allowed = [...new Set(results.flatMap((result) => result.allowed))];
-          this.store.assertIndexVisible(index.id, allowed);
           const failed = results.find((result) => result.error !== undefined);
           if (failed) {
             this.store.saveWorker(index.id, {
@@ -847,23 +870,30 @@ export class MemoryController {
     const coveredCursor = this.store.boundary(indexId);
     const observedCursor = w?.latestCursor ?? work?.to ?? coveredCursor;
     const checkedAt = w?.lastCheckedAt ?? this.store.checkedAt(observedCursor);
-    const knownPending =
-      !w?.lastCheckError && observedCursor
-        ? this.store.describe(coveredCursor, observedCursor, visible)
-        : null;
-    const pending = observedCursor ? this.store.pending(indexId, observedCursor, visible) : null;
+    let checkError = w?.lastCheckError;
+    let knownPending = null;
+    let pending = null;
+    if (!checkError && observedCursor) {
+      try {
+        knownPending = this.store.describe(coveredCursor, observedCursor, visible);
+        pending = this.store.pending(indexId, observedCursor, visible);
+      } catch (error) {
+        if (!(error instanceof HistoryRangeUnavailableError)) throw error;
+        checkError = error.message;
+      }
+    }
     return {
       coveredCursor,
       observedCursor,
       lastOrganizedAt: (this.store.lastCompletedAt(indexId) ?? w?.lastSuccess) || null,
       lastCheckedAt: checkedAt ?? null,
       lastCheckAttemptAt: w?.lastCheckAttemptAt ?? null,
-      lastCheckError: w?.lastCheckError ?? null,
+      lastCheckError: checkError ?? null,
       lastMaintenanceError: w?.lastError ?? null,
       knownPending,
       status: running
         ? 'updating'
-        : w?.lastCheckError
+        : checkError
           ? 'check_failed'
           : w?.lastError
             ? 'maintenance_failed'
@@ -885,7 +915,7 @@ export class MemoryController {
           ? 'coveredCursor=null，索引尚无已完成的覆盖范围。'
           : `索引只覆盖到 coveredCursor="${coveredCursor}"。之后的数据不在已完成的覆盖范围内，`) +
         'knownPending 表示截至 lastCheckedAt 已检查到、尚未纳入索引的变化。索引读取会自动刷新来源范围，无需先调用 MemoryRange。按需使用 MemoryHistory，以 coveredCursor 为 from、observedCursor 为 to 读取未覆盖历史，或直接查询最新原文。刷新和读取原文不会整理索引或推进覆盖范围。' +
-        (w?.lastCheckError
+        (checkError
           ? ' 本次来源检查失败，knownPending=null；observedCursor 和 lastCheckedAt 保留上次成功观察，不能据此判断当前没有增量。'
           : '') +
         ' 游标、增量数量和状态只负责定位覆盖范围及读取位置，不是价值或推荐条件；没有增量不代表存量信息没有值得调查或交流的内容，不应据此停止调查。',
@@ -957,7 +987,7 @@ export class MemoryController {
         available: to ? this.store.describe(this.store.boundary(indexId), to, visible) : null,
         legacy: !work && !this.store.boundary(indexId),
       },
-      notes: this.store.notes(indexId),
+      notes: this.store.notes(indexId, visible),
       contents: this.store.overview(indexId, visible),
       maintenance: worker
         ? {
@@ -1258,16 +1288,11 @@ export class MemoryController {
           if (result?.status === 'rejected') throw result.reason;
           if (result && this.store.worker(id)?.lastCheckError)
             throw Error(this.store.worker(id).lastCheckError);
-          const cursor = this.store.cursor(
-            existing && !existing.completed ? existing.to : this.store.worker(id).latestCursor,
-          );
-          const visible = await this.indexVisible(id);
-          const work = this.store.work(id);
-          pending.push({
+          const prepared = await this.prepareRange(
             id,
-            work: work && !work.completed ? work : this.store.begin(id, cursor.id, visible),
-            visible,
-          });
+            existing && !existing.completed ? undefined : this.store.worker(id).latestCursor,
+          );
+          pending.push({ id, ...prepared });
           if (scheduled) {
             const schedule = this.schedule();
             this.saveSchedule({
@@ -1392,6 +1417,24 @@ export class MemoryController {
       callerSignal.removeEventListener('abort', onAbort);
     }
   }
+  private async prepareRange(indexId: string, observedCursor?: string) {
+    const index = this.store.index(indexId);
+    let visible = await this.indexVisible(indexId);
+    const existing = this.store.work(indexId);
+    if (existing && !existing.completed) {
+      try {
+        this.store.assertVisible(this.store.cursor(existing.to), visible);
+        return { work: existing, visible };
+      } catch (error) {
+        if (!(error instanceof HistoryRangeUnavailableError)) throw error;
+      }
+    }
+    const cursor = observedCursor
+      ? this.store.cursor(observedCursor)
+      : await this.capture(index.sources ?? ['maka'], index.sessions, indexId);
+    visible = await this.indexVisible(indexId);
+    return { work: this.store.begin(indexId, cursor.id, visible), visible };
+  }
   private async run(indexId: string, signal: AbortSignal) {
     let agent: any;
 
@@ -1402,17 +1445,7 @@ export class MemoryController {
         lastAttempt: Date.now(),
         lastError: undefined,
       });
-      let work = this.store.work(indexId);
-      let visible: string[];
-      if (work && !work.completed) {
-        // Resume the exact unfinished range, including after restart; new arrivals wait for the next range.
-        visible = await this.indexVisible(indexId);
-        this.store.assertVisible(this.store.cursor(work.to), visible);
-      } else {
-        const cursor = await this.capture(index.sources ?? ['maka'], index.sessions, indexId);
-        visible = await this.indexVisible(indexId);
-        work = this.store.begin(indexId, cursor.id, visible);
-      }
+      const { work, visible } = await this.prepareRange(indexId);
       agent = await this.ctx.agents.resume({
         sessionId: this.store.worker(indexId).sessionId,
       });

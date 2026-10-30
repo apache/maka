@@ -159,6 +159,7 @@ test('browser IPC isolates owned renderer documents and their native parents', a
       },
     };
     const mainWindowController = {
+      browserWindow: () => ({ isDestroyed: () => false, contentView: mainParent }),
       getBrowserViews: (resolve: typeof parentResolver) => {
         parentResolver = resolve;
         return manager;
@@ -221,6 +222,29 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     assert.deepEqual(mainController.navigations, ['https://main.example/']);
     assert.deepEqual(workHubController.navigations, ['https://workhub.example/']);
 
+    // Hidden workers get a main-process, invocation-scoped lease, never renderer selection.
+    const workerKey = desktopSessionResourceKey({...scope, sessionId:'hidden-worker'});
+    assert.equal(await browserViewHost().canDrive(workerKey,'navigate'),false);
+    const workerAbort = new AbortController();
+    const releaseWorker = browserIpc.admitAction(workerKey,workerAbort.signal);
+    assert.equal(await browserViewHost().canDrive(workerKey,'navigate'),true);
+    assert.equal(parentResolver!(workerKey),mainParent);
+    const secondAbort = new AbortController();
+    const releaseSecond = browserIpc.admitAction(workerKey,secondAbort.signal);
+    workerAbort.abort();
+    assert.equal(await browserViewHost().canDrive(workerKey,'navigate'),true);
+    releaseSecond(); releaseWorker();
+    assert.equal(await browserViewHost().canDrive(workerKey,'navigate'),false);
+    assert.throws(()=>browserIpc.admitAction(workerKey,workerAbort.signal));
+    const retireAbort = new AbortController();
+    const releaseRetired = browserIpc.admitAction(workerKey,retireAbort.signal);
+    hostActive=false;
+    browserIpc.refreshVisibility();
+    assert.equal(await browserViewHost().canDrive(workerKey,'navigate'),false);
+    assert.throws(()=>browserIpc.admitAction(workerKey,new AbortController().signal),/unavailable/);
+    hostActive=true;
+    releaseRetired();
+
     // An ordinary selected Session can operate with its browser hidden.
     // Hiding does not revoke a read already waiting on the page.
     setBridgeFactoryForTest(() => ({
@@ -229,6 +253,22 @@ test('browser IPC isolates owned renderer documents and their native parents', a
       send: async () => undefined,
       waitForEvent: async () => undefined,
     }));
+    const hiddenAbort = new AbortController();
+    const releaseHidden = browserIpc.admitAction(workerKey, hiddenAbort.signal);
+    let hiddenStarted!: () => void;
+    let finishHidden!: () => void;
+    const hiddenReady = new Promise<void>(resolve => { hiddenStarted = resolve; });
+    const hiddenRead = withBrowserPage(workerKey, 'snapshot', async () => {
+      hiddenStarted();
+      return new Promise<void>(resolve => { finishHidden = resolve; });
+    });
+    const hiddenRevoked = assert.rejects(hiddenRead, BrowserActionRevokedError);
+    await hiddenReady;
+    hiddenAbort.abort();
+    await hiddenRevoked;
+    finishHidden(); releaseHidden();
+    assert.equal(await browserViewHost().canDrive(workerKey, 'observe'), false);
+
     let finishReadOrdinary!: () => void;
     let reading!: () => void;
     const started = new Promise<void>((resolve) => { reading = resolve; });
