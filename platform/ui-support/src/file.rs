@@ -55,7 +55,7 @@ pub enum FileError {
 }
 
 /// Resource reads share the transport's 64 KiB chunk size, not a whole-file limit.
-pub const FILE_CHUNK_BYTES: usize = 64 * 1024;
+const CHUNK: usize = 64 * 1024;
 
 #[derive(Debug)]
 pub struct FileSnapshot {
@@ -127,11 +127,7 @@ impl ReadResource for FileSnapshot {
         serde_json::to_value(&self.descriptor).expect("file descriptor")
     }
     fn read(&self, range: Range<usize>) -> Result<Vec<u8>, String> {
-        if range.end > self.bytes()
-            || range
-                .end
-                .checked_sub(range.start)
-                .is_none_or(|n| n > FILE_CHUNK_BYTES)
+        if range.end > self.bytes() || range.end.checked_sub(range.start).is_none_or(|n| n > CHUNK)
         {
             return Err("invalid file resource range or exceeds 64 KiB".into());
         }

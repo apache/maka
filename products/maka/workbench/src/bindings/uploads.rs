@@ -77,50 +77,6 @@ impl StagedFile {
     }
 }
 
-#[class]
-pub struct StagedFiles {
-    pub(super) owner: Arc<Owner>,
-    pub(super) files: Vec<(String, Arc<FileSnapshot>)>,
-}
-impl StagedFiles {
-    pub(super) fn new(owner: Arc<Owner>) -> Self {
-        Self {
-            owner,
-            files: Vec::new(),
-        }
-    }
-}
-#[class]
-impl StagedFiles {
-    pub fn push(&mut self, file: Instance<StagedFile>) -> Result<(), String> {
-        self.files.push(pending_snapshot(&file, &self.owner)?);
-        Ok(())
-    }
-}
-pub(super) fn pending_snapshot(
-    file: &Instance<StagedFile>,
-    owner: &Arc<Owner>,
-) -> Result<(String, Arc<FileSnapshot>), String> {
-    file.with(|file| {
-        if Arc::ptr_eq(&file.owner, owner) {
-            Ok((file.id.to_string(), file.snapshot.clone()))
-        } else {
-            Err("Selected file belongs to another client".into())
-        }
-    })
-}
-pub(super) fn restored_file(
-    owner: Arc<Owner>,
-    id: String,
-    snapshot: Arc<FileSnapshot>,
-) -> Result<Instance<StagedFile>, String> {
-    Ok(Instance::new(StagedFile {
-        id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
-        owner,
-        snapshot,
-    }))
-}
-
 pub(super) async fn stage_files(
     owner: Arc<Owner>,
     files: Vec<String>,

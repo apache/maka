@@ -23,7 +23,7 @@
 
 NSH 源码位于 [`third-party/nsh`](../../../third-party/nsh/SOURCE.md)。Cargo 从这里构建运行时、TSX 打包器、`nsh-base` 组件和 UI 类型声明生成器，无需单独检出 NSH。相关的 NSH 与 Maka 修改在同一源码树中完成，并通过终端的[真实 Host 测试](tests/real_host/mod.rs)一起验证：`cargo test -p maka-cli --no-default-features --test integration terminal::`。
 
-桌面草稿与重启测试使用无窗口的 GPUI 渲染器：`cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test integration -E 'test(terminal::desktop_new_session)' -j 1`。仅运行终端测试时不会构建这些桌面依赖。
+桌面首次发送测试使用无窗口的 GPUI 渲染器：`cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test integration -E 'test(terminal::desktop_new_session)' -j 1`。仅运行终端测试时不会构建这些桌面依赖。
 
 ## 启动
 
@@ -120,6 +120,8 @@ Markdown 图片支持工作区相对路径和 HTTP(S) URL，并在正文中显�
 
 ## 保存状态与运行边界
 
-草稿和操作回执保存在 `<root>/clients/terminal.sqlite`。每个会话保留自己的草稿，恢复使用原始 Host 与操作。切换会话前先保存当前草稿。恢复从最近一次确认保存的 revision 开始，之后未保存的输入可能在关闭时丢失。发送使用该已保存 revision；结果不明确时，请使用原操作恢复入口，避免重复提交。
+桌面新会话在首次发送时创建。在此之前，草稿只保留在当前窗口中，关闭或重新启动应用会丢弃它。
+
+已有会话的草稿和操作回执保存在 `<root>/clients/terminal.sqlite`。每个会话保留自己的草稿，恢复使用原始 Host 与操作。切换会话前先保存当前草稿。恢复从最近一次确认保存的 revision 开始，之后未保存的输入可能在关闭时丢失。发送使用该已保存 revision；结果不明确时，请使用原操作恢复入口，避免重复提交。
 
 可执行文件验证所选 Root 和在线 Host epoch。Ctrl+Q，以及 Unix 上的 SIGTERM，可独立于 JavaScript 和终端输出请求退出。退出时尝试恢复终端并关闭所拥有的 Host 请求和任务；清理未完成会返回错误。

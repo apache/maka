@@ -350,12 +350,6 @@ impl Journal {
             }
             sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]')")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating drafts table: {error}"))?;
-            sqlx::query("CREATE TABLE IF NOT EXISTS desktop_drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, state TEXT NOT NULL)")
-                .execute(&mut *transaction).await.map_err(|e| e.to_string())?;
-            sqlx::query("CREATE TABLE IF NOT EXISTS desktop_draft_files (owner TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, length INTEGER NOT NULL, PRIMARY KEY(owner,id))")
-                .execute(&mut *transaction).await.map_err(|e| e.to_string())?;
-            sqlx::query("CREATE TABLE IF NOT EXISTS desktop_draft_chunks (owner TEXT NOT NULL, id TEXT NOT NULL, offset INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY(owner,id,offset), FOREIGN KEY(owner,id) REFERENCES desktop_draft_files(owner,id) ON DELETE CASCADE)")
-                .execute(&mut *transaction).await.map_err(|error| error.to_string())?;
             transaction
                 .commit()
                 .await

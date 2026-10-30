@@ -19,68 +19,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createComposerCommandRunner } from '../../../../plugins/agent/composer/ui/composerCommand.ts';
 import {
   completionToken,
   fileInvocation,
   referenceEdit,
 } from '../../../../plugins/agent/composer/ui/composerCompletionSyntax.ts';
-
-test('a command confirmation consumes its original draft and preserves later edits', async () => {
-  const run = createComposerCommandRunner();
-  const owner = {};
-  let draft = '/workspace';
-  let revision = 0;
-  const selected = [];
-  const confirmation = Promise.withResolvers();
-  const command = {
-    id: 'workspace',
-    title: 'Choose workspace',
-    trigger: 'workspace',
-    run(argument) {
-      selected.push(argument);
-      return confirmation.promise;
-    },
-  };
-  const invocation = (argument, action = command) => {
-    const expectedText = draft;
-    const expectedRevision = revision;
-    return {
-      owner,
-      text: expectedText,
-      revision: expectedRevision,
-      command: action,
-      argument,
-      current: () => draft === expectedText && revision === expectedRevision,
-      consume: () => {
-        draft = '';
-        revision += 1;
-      },
-    };
-  };
-  run(invocation('/first'));
-  run(invocation('/first'));
-  draft = '/models';
-  revision += 1;
-  draft = '/workspace';
-  revision += 1;
-  confirmation.resolve(true);
-  await confirmation.promise;
-  assert.equal(draft, '/workspace');
-  assert.deepEqual(selected, ['/first']);
-
-  run(
-    invocation('/second', {
-      ...command,
-      run(argument) {
-        selected.push(argument);
-        return true;
-      },
-    }),
-  );
-  assert.equal(draft, '');
-  assert.deepEqual(selected, ['/first', '/second']);
-});
 
 test('composer completion replaces the caret token while preserving Unicode prose and paths', () => {
   const source = '先😀 /rev旧尾 后文';

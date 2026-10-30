@@ -1371,11 +1371,6 @@ export const conversationMessages = {
     '{tool} · 權限邊界：{revision}',
   ],
   'Attachment path': ['Attachment path', '附件路径', '附件路徑'],
-  'The saved draft could not be loaded.': [
-    'The saved draft could not be loaded.',
-    '无法加载已保存的草稿。',
-    '無法載入已儲存的草稿。',
-  ],
   'The conversation draft changed. Open the conversation to review it.': [
     'The conversation draft changed. Open the conversation to review it.',
     '此会话的草稿已发生变化，请打开会话查看。',

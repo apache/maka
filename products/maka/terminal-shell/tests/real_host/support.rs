@@ -1713,9 +1713,6 @@ impl ReplyGate {
         )
     }
     #[cfg(feature = "desktop-tests")]
-    pub fn disconnect_send(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "agent", "send", "mutation", true, None)
-    }
     pub fn start(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "send", "mutation", false, None)
     }

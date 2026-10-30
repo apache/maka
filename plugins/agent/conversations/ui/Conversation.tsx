@@ -194,8 +194,9 @@ type ConversationProps = {
     send: boolean,
   ): Promise<boolean>;
   /** Text for an empty draft once it loads, taken once (a fork made to edit or regenerate). */
-  firstAccepted?(): void;
-  takePrefill?(): { text: string; send: boolean; files?: StagedFile[]; first?: boolean } | null;
+  takePrefill?(
+    available: boolean,
+  ): { text: string; send: boolean; files?: StagedFile[]; first?: boolean } | null;
   commands(): void;
   visible(): boolean;
   foreground(): boolean;
@@ -1625,7 +1626,6 @@ export function Conversation(props: ConversationProps) {
       notice.set(receiptMessage(reply));
       return;
     }
-    props.firstAccepted?.();
     if (
       accepted.kind === 'started' &&
       text !== undefined &&
@@ -2218,7 +2218,8 @@ export function Conversation(props: ConversationProps) {
         draft.set(stored.text);
         attachments.restore(stored.attachments);
         draftReady.set(true);
-        const prefill = props.takePrefill?.() ?? null;
+        const prefill =
+          props.takePrefill?.(stored.text === '' && stored.attachments.length === 0) ?? null;
         if (prefill) {
           try {
             if (stored.text === '' && stored.attachments.length === 0) {

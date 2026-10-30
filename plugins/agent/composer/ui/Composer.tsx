@@ -41,7 +41,6 @@ import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
-import { createComposerCommandRunner } from './composerCommand';
 import { createComposerPaste } from './composerPaste';
 import logo from '../../../../products/maka/workbench/app/assets/maka.png';
 
@@ -55,12 +54,10 @@ const skillTokens = () => [
 ];
 
 export function Composer(props: ComposerViewInput<JSX.Element>) {
-  const runCommand = createComposerCommandRunner();
   const completion = createComposerCompletion({
     session: props.session,
     commands: props.commands,
     active: props.active,
-    runCommand,
   });
   // Files dropped on the conversation attach as they do on the field.
   props.dropFiles?.((event) => {
@@ -73,6 +70,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   const noConnections = () => !platform.isTerminal && (props.needsConnection?.() ?? false);
   const pending = () => props.pending?.() ?? null;
   type Pending = NonNullable<ReturnType<NonNullable<ComposerViewInput<JSX.Element>['pending']>>>;
+  let pendingCommand: { owner: Pending; text: string; confirmation: string; id: string } | null =
+    null;
   const submitPending = (owner: Pending, text: string, expected?: string) => {
     if (
       pending() !== owner ||
@@ -89,15 +88,32 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       return;
     }
     const confirmation = owner.confirmation();
-    runCommand({
-      owner,
-      text,
-      revision: confirmation,
-      command: command.found,
-      argument: command.argument || undefined,
-      current: () => pending() === owner && owner.confirmation() === confirmation,
-      consume: () => owner.changeDraft(''),
-    });
+    if (
+      pendingCommand?.owner === owner &&
+      pendingCommand.text === text &&
+      pendingCommand.confirmation === confirmation &&
+      pendingCommand.id === command.found.id
+    )
+      return;
+    const ticket = { owner, text, confirmation, id: command.found.id };
+    pendingCommand = ticket;
+    const finish = (accepted: void | boolean) => {
+      if (pendingCommand === ticket) pendingCommand = null;
+      if (accepted !== false && pending() === owner && owner.confirmation() === confirmation)
+        owner.changeDraft('');
+    };
+    try {
+      const result = command.found.run(command.argument || undefined);
+      if (result instanceof Promise)
+        void result.then(finish, (reason) => {
+          if (pendingCommand === ticket) pendingCommand = null;
+          throw reason;
+        });
+      else finish(result);
+    } catch (reason) {
+      if (pendingCommand === ticket) pendingCommand = null;
+      throw reason;
+    }
   };
   const sendPending = ({
     owner,
@@ -114,23 +130,20 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     if (pending() === owner && owner.picking() === open) owner.openPicker(!open);
   };
   const blocked = () => props.session()?.blockedReason() ?? '';
-  const cannotSend = () => {
-    if (props.blocked?.()) return true;
-    const owner = props.session();
-    if (owner)
-      return (
-        !owner.editable() ||
-        (!completion.isCommand() &&
-          (!!blocked() || (!owner.draft().trim() && !owner.attachments.files().length)))
-      );
-    const local = pending();
-    return (
-      !local ||
-      local.sending() ||
-      !local.ready() ||
-      (!local.draft().trim() && !local.files().length)
-    );
-  };
+  const cannotSend = () =>
+    props.blocked?.() ||
+    (props.session() === null &&
+      (pending() === null ||
+        pending()!.sending() ||
+        !pending()!.ready() ||
+        (!pending()!.draft().trim() && !pending()!.files().length))) ||
+    (props.session() !== null && !props.session()!.editable()) ||
+    (!completion.isCommand() &&
+      (!!blocked() ||
+        (!props.session()?.draft().trim() &&
+          !props.session()?.attachments.files().length &&
+          !pending()?.draft().trim() &&
+          !pending()?.files().length)));
   const sendLabel = () =>
     props.session()?.invocation() != null ? tr('Queue message') : tr('Send message');
   const primaryStops = () => props.session()?.invocation() != null && cannotSend();

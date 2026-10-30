@@ -63,7 +63,7 @@ import {
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
 import { currentLocale, displayText, tr } from '../../../../products/maka/workbench/app/locale';
-import { loadDraft, pendingSends, type Host } from '../../../../products/maka/workbench/app/host';
+import { loadDraft, type Host } from '../../../../products/maka/workbench/app/host';
 import {
   bodyTextStyle,
   C,
@@ -127,7 +127,6 @@ import {
 import { viewRuntimeContext } from '../../../../products/maka/workbench/app/plugins/viewContext';
 import { projectComposerAttachments } from '../../../../products/maka/workbench/app/composerSession';
 import { watchNotifications } from '../../../../products/maka/workbench/app/notifications';
-import { createPendingDraft } from './pendingDraft';
 
 type OverlayTarget = {
   sessionId: string | null;
@@ -147,6 +146,19 @@ function unavailableSession(reason: unknown): boolean {
   );
 }
 type ActionContext = { instance: number | null; sessionId: string | null };
+type PendingFile = { id: string; name: string; bytes: number; file: StagedFile };
+type PendingDraft = {
+  workspace: BrowserWorkspace;
+  workspaceLabel: string;
+  text: string;
+  backend: ModelBackend | null;
+  access: AgentWorkspaceAccess | null;
+  requests: boolean | null;
+  modelChosen: boolean;
+  files: PendingFile[];
+  target: { kind: 'creating'; operationId: string } | { kind: 'session'; sessionId: string } | null;
+  revision: number;
+};
 export function createConversationUi(context: UiContext<UiHost, JSX.Element>, host: Host) {
   const runtime = context.runtime;
   effect(() => currentLocale.set(context.locale()));
@@ -190,32 +202,42 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   // user leaves it: the switch is otherwise silent and the titles look alike.
   const forkNotice = signal<{ id: string; source: string; title: string } | null>(null);
   const handle = signal<ConversationHandle | null>(null);
-  const pending = createPendingDraft(host, (reason) => report(reason), !platform.isTerminal);
-  const pendingWorkspace = computed(() => pending.state()?.workspace ?? null);
-  const pendingWorkspaceLabel = computed(() => pending.state()?.workspaceLabel ?? '');
-  const pendingText = computed(() => pending.state()?.text ?? '');
+  const pending = signal<PendingDraft | null>(null);
+  const updatePending = (patch: Partial<Omit<PendingDraft, 'revision'>>) => {
+    const current = pending();
+    if (current) pending.set({ ...current, ...patch, revision: current.revision + 1 });
+  };
+  const replacePending = (next: PendingDraft | null) => {
+    const previous = pending();
+    pending.set(next);
+    for (const file of previous?.files ?? []) file.file.dispose();
+  };
+  cleanup(() => replacePending(null));
+  const pendingWorkspace = computed(() => pending()?.workspace ?? null);
+  const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
+  const pendingText = computed(() => pending()?.text ?? '');
   const pendingSending = signal(false);
-  const pendingFiles = computed(pending.files);
+  const pendingFiles = computed(() => pending()?.files ?? []);
   const pendingIntake = signal<Promise<void> | null>(null);
   const pendingFileBusy = () => pendingIntake() !== null;
   const pendingPicker = signal(false);
-  const pendingAccess = computed(() => pending.state()?.access ?? null);
-  const pendingRequests = computed(() => pending.state()?.requests ?? null);
-  const pendingBackend = computed(() => pending.state()?.backend ?? null);
-  const pendingModelChosen = computed(() => pending.state()?.modelChosen ?? false);
+  const pendingAccess = computed(() => pending()?.access ?? null);
+  const pendingRequests = computed(() => pending()?.requests ?? null);
+  const pendingBackend = computed(() => pending()?.backend ?? null);
+  const pendingModelChosen = computed(() => pending()?.modelChosen ?? false);
   const pendingModelDetails = signal<ModelDetails>({
     kind: 'unavailable',
     message: uiMessage('Choose a model.'),
   });
   const pendingModelInstance = signal<number | null>(null);
-  const pendingPhase = computed(() => pending.state()?.phase ?? null);
+  const pendingTarget = computed(() => pending()?.target ?? null);
   const pendingCreated = computed(() => {
-    const phase = pendingPhase();
-    return phase?.kind === 'session' ? phase.sessionId : null;
+    const target = pendingTarget();
+    return target?.kind === 'session' ? target.sessionId : null;
   });
   const pendingCreateAttempt = computed(() => {
-    const phase = pendingPhase();
-    return phase?.kind === 'creating' ? phase.operationId : null;
+    const target = pendingTarget();
+    return target?.kind === 'creating' ? target.operationId : null;
   });
   const pendingHandoff = signal<string | null>(null);
   const pendingCreateUncertain = () => pendingCreateAttempt() !== null;
@@ -284,8 +306,6 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   };
   let observedSession: string | null = null;
   let wasVisible = false;
-  const pendingInitialized = signal(false);
-  const pendingReady = () => pending.ready() && pendingInitialized();
   const readPendingSession = async () => {
     const id = pendingCreated();
     if (!id) return null;
@@ -293,69 +313,10 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       return await host.query('agent', 'observe', { sessionId: id });
     } catch (reason) {
       if (!unavailableSession(reason)) throw reason;
-      if (pendingCreated() !== id) return null;
-      pending.update({ phase: { kind: 'local' } });
-      await pending.restoreFiles();
-      await pending.flush();
+      if (pendingCreated() === id) updatePending({ target: null });
       return null;
     }
   };
-  const recoverPendingCreation = async () => {
-    const id = pendingCreateAttempt();
-    if (!id) return;
-    const original = await host.abandonControl(id);
-    if (pendingCreateAttempt() !== id) return;
-    if (original.abandoned) {
-      pending.update({ phase: { kind: 'local' } });
-      await pending.flush();
-      return;
-    }
-    const result = returned(await host.recoverControl(id));
-    if (pendingCreateAttempt() !== id) return;
-    pending.update({
-      phase:
-        result.kind === 'created'
-          ? { kind: 'session', sessionId: result.session.id }
-          : { kind: 'local' },
-    });
-    await pending.flush();
-  };
-  const resumePendingSession = async () => {
-    const id = pendingCreated();
-    if (!id) return;
-    const client = host.session(id);
-    const draft = await loadDraft(client);
-    const originals = await pendingSends(client);
-    const owned = draft.revision > 0 || originals.length > 0;
-    try {
-      await readPendingSession();
-    } catch (reason) {
-      if (!owned) throw reason;
-      report(reason);
-    }
-    if (!alive || pendingCreated() !== id) return;
-    if (owned) {
-      for (const file of pending.takeFiles()) file.dispose();
-      if (selected() === null) await switchSession(id, { sessionId: null, instance: null });
-    } else await pending.restoreFiles();
-  };
-  const pendingLoaded = pending.loaded.then(async () => {
-    if (!pending.ready() || !alive) return;
-    try {
-      await recoverPendingCreation();
-      await resumePendingSession();
-      if (pendingBackend()) await pendingModel.refreshModel();
-    } catch (reason) {
-      report(reason);
-      try {
-        await pending.restoreFiles();
-      } catch (restoreFailure) {
-        report(restoreFailure);
-        return;
-      }
-    }
-    if (alive) pendingInitialized.set(true);
-  });
 
   effect(() => {
     const next = selected();
@@ -488,26 +449,23 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       let result: any;
       if (pendingCreation) {
         const original = await host.beginControl(method, input);
-        pending.update({ phase: { kind: 'creating', operationId: original.operationId } });
-        await pending.flush();
+        updatePending({ target: { kind: 'creating', operationId: original.operationId } });
         for (;;) {
           const event = await original.next();
           if (event === null)
             throw new UiError('Confirmation is still unknown. Recover the original action below.');
           if (event.kind === 'not_dispatched') {
-            pending.update({ phase: { kind: 'local' } });
-            await pending.flush();
+            updatePending({ target: null });
             throw new UiError('The action was not dispatched. Try again.');
           }
           if (event.kind === 'finished') {
             result = returned(event.reply);
-            pending.update({
-              phase:
+            updatePending({
+              target:
                 result.kind === 'created'
                   ? { kind: 'session', sessionId: result.session.id }
-                  : { kind: 'local' },
+                  : null,
             });
-            await pending.flush();
             break;
           }
         }
@@ -632,8 +590,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     expectedSessionId = selected(),
     workspaceLabel?: string,
   ) => {
-    await pendingLoaded;
-    if (!pendingReady() || !alive || selected() !== expectedSessionId) return;
+    if (!alive || selected() !== expectedSessionId) return;
     if (!platform.isTerminal) {
       if (pendingSending() || pendingFileBusy() || pendingCreateUncertain()) return;
       const label =
@@ -657,7 +614,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
           );
           return;
         }
-        pending.update({ workspace, workspaceLabel: label });
+        updatePending({ workspace, workspaceLabel: label });
         pendingDraftGeneration.set(pendingDraftGeneration() + 1);
         pendingModelInstance.set(null);
         overlay.set(null);
@@ -673,21 +630,22 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
           pendingRequests() !== null ||
           pendingModelChosen())
       ) {
-        try {
-          const id = pendingCreated();
-          const owned = id ? (await loadDraft(host.session(id))).revision > 0 : false;
-          if (!owned) {
-            await pending.restoreFiles();
-            overlay.set(null);
-            focusComposer();
-            return;
-          }
-        } catch (reason) {
-          report(reason);
-          return;
-        }
+        overlay.set(null);
+        focusComposer();
+        return;
       }
-      pending.start(workspace, label);
+      replacePending({
+        workspace,
+        workspaceLabel: label,
+        text: '',
+        backend: null,
+        access: null,
+        requests: null,
+        modelChosen: false,
+        files: [],
+        target: null,
+        revision: 0,
+      });
       pendingDraftGeneration.set(pendingDraftGeneration() + 1);
       const generation = ++pendingDefaultEpoch;
       pendingPicker.set(false);
@@ -706,7 +664,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
             !page.defaultTarget
           )
             return;
-          pending.update({ backend: { ...page.defaultTarget, thinkingLevel: null } });
+          updatePending({ backend: { ...page.defaultTarget, thinkingLevel: null } });
           return pendingModel.refreshModel();
         })
         .catch(report);
@@ -751,9 +709,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   };
   const removeSelected = async (sessionId: string) => {
     if (pendingCreated() === sessionId) {
-      pending.update({ phase: { kind: 'local' } });
-      await pending.restoreFiles();
-      await pending.flush();
+      updatePending({ target: null });
     }
     const scope = browsing.scope();
     if (scope.kind === 'workspace' && scope.sessionId === sessionId)
@@ -776,16 +732,23 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     onText?: (text: string) => void,
   ) => {
     const workspace = pendingWorkspace();
-    if (!pendingReady() || !workspace || pendingFileBusy() || pendingSending()) return;
+    if (!workspace || pendingFileBusy() || pendingSending()) return;
     const intake = read()
       .then(async ({ files, text }) => {
         if (!alive || pendingWorkspace() !== workspace) {
           for (const file of files) file.dispose();
           return;
         }
-        pending.addFiles(files);
+        updatePending({
+          files: [
+            ...pendingFiles(),
+            ...files.map((file) => {
+              const metadata = file.metadata() as { name: string; bytes: number };
+              return { id: file.id, name: metadata.name, bytes: metadata.bytes, file };
+            }),
+          ],
+        });
         if (text) onText?.(text);
-        await pending.flush();
         pendingPicker.set(false);
         if (selected() === null && overlay() === null && (shell()?.visible() ?? false))
           focusComposer();
@@ -804,7 +767,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       selected() === null &&
       pendingWorkspace() === workspace &&
       pendingDraftGeneration() === generation;
-    const confirmation = () => `${generation}/${pending.version()}`;
+    const confirmation = () => `${generation}/${pending()?.revision ?? 0}`;
     return {
       id: `pending/${generation}`,
       draft: pendingText,
@@ -816,23 +779,23 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
         pending: pendingSending,
         selectAccess: (access: AgentWorkspaceAccess) => {
           if (owns() && !pendingSending() && pendingAccess() !== access) {
-            pending.update({ access });
+            updatePending({ access });
           }
         },
         selectRequests: (requests: boolean) => {
           if (owns() && !pendingSending() && pendingRequests() !== requests) {
-            pending.update({ requests });
+            updatePending({ requests });
           }
         },
       },
       changeDraft: (text: string) => {
-        if (pendingReady() && owns() && pendingText() !== text) {
-          pending.update({ text });
+        if (owns() && pendingText() !== text) {
+          updatePending({ text });
         }
       },
       confirmation,
-      sending: () => pendingSending() || !pendingReady(),
-      ready: () => pendingReady() && !pendingCreateUncertain() && !pendingFileBusy(),
+      sending: pendingSending,
+      ready: () => !pendingCreateUncertain() && !pendingFileBusy(),
       files: pendingFiles,
       picking: pendingPicker,
       openPicker: (open: boolean) => {
@@ -840,7 +803,10 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       },
       removeFile: (id: string) => {
         if (!owns() || pendingSending()) return;
-        pending.removeFile(id);
+        const removed = pendingFiles().find((file) => file.id === id);
+        if (!removed) return;
+        updatePending({ files: pendingFiles().filter((file) => file.id !== id) });
+        removed.file.dispose();
       },
       selectFiles(files: string[]) {
         if (owns() && files.length)
@@ -866,7 +832,6 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
         const requests = pendingRequests();
         if (
           !owns() ||
-          !pendingReady() ||
           !workspace ||
           text !== pendingText() ||
           (expected !== undefined && expected !== confirmation()) ||
@@ -887,8 +852,6 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                   'The draft changed before confirmation. Send again to confirm it.',
                 );
             };
-            await pendingLoaded;
-            await pending.flush();
             await pendingDefaultRead;
             if (!alive || selected() !== null || pendingWorkspace() !== workspace) return;
             requireUnchangedDraft();
@@ -1202,18 +1165,9 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     recovering.set(true);
     error.set('');
     try {
-      const creation = pendingCreateAttempt();
-      if (creation) {
-        try {
-          await recoverPendingCreation();
-        } catch (reason) {
-          report(reason);
-        }
-      }
       const originals = await host.pendingControls();
       let responseConfirmed = false;
       for (const original of originals) {
-        if (original.id === creation) continue;
         if (!original.reference) continue;
         try {
           const reply = await host.recoverControl(original.id);
@@ -1246,7 +1200,14 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               id: result.session.id,
               title: result.session.title,
             });
-          if (original.method === 'create' && result.kind === 'created') {
+          if (original.method === 'create' && original.id === pendingCreateAttempt()) {
+            updatePending({
+              target:
+                result.kind === 'created'
+                  ? { kind: 'session', sessionId: result.session.id }
+                  : null,
+            });
+          } else if (original.method === 'create' && result.kind === 'created') {
             await switchSession(result.session.id);
             if (selected() === result.session.id && !result.session.backend)
               open({
@@ -1276,8 +1237,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     try {
       const original = await host.abandonControl(id);
       if (id === pendingCreateAttempt() && original.abandoned) {
-        pending.update({ phase: { kind: 'local' } });
-        await pending.flush();
+        updatePending({ target: null });
       }
       await refreshControls();
     } catch (reason) {
@@ -1608,14 +1568,25 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                     await changeBrowsedSession(action, id());
                   }}
                   edit={(action, text, send) => changeBrowsedSession(action, id(), { text, send })}
-                  firstAccepted={() => {
-                    if (pendingCreated() === id()) pending.clear();
-                  }}
-                  takePrefill={() => {
+                  takePrefill={(available: boolean) => {
                     const prefill = prefills.get(id()) ?? null;
                     prefills.delete(id());
+                    if (!available) {
+                      if (pendingHandoff() === id()) {
+                        pendingHandoff.set(null);
+                        pendingSending.set(false);
+                        void shell()!.openSession(null).catch(report);
+                      }
+                      if (prefill)
+                        report(
+                          new UiError(
+                            'The draft changed before confirmation. Send again to confirm it.',
+                          ),
+                        );
+                      return null;
+                    }
                     if (pendingHandoff() === id()) {
-                      pending.takeFiles();
+                      pending.set(null);
                       pendingHandoff.set(null);
                     }
                     return prefill;
@@ -1661,11 +1632,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               blocked={reloading}
               active={() => overlay() === null && !reloading() && (shell()?.visible() ?? false)}
               session={composerSession}
-              pending={() =>
-                selected() === null && pendingReady() && pendingWorkspace()
-                  ? pendingComposer()
-                  : null
-              }
+              pending={() => (selected() === null && pendingWorkspace() ? pendingComposer() : null)}
               stopAction={stopAction}
               needsConnection={noConnections}
               request={
@@ -1821,7 +1788,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               commands={composerCommands}
               models={
                 <>
-                  <If when={selected() === null && pendingReady() && pendingWorkspace() !== null}>
+                  <If when={selected() === null && pendingWorkspace() !== null}>
                     <ModelSelect
                       owner={pendingModel}
                       instance={pendingModelInstance}
@@ -1843,7 +1810,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                       }}
                       select={async (_instance, backend) => {
                         if (pendingSending()) return;
-                        pending.update({ backend, modelChosen: true });
+                        updatePending({ backend, modelChosen: true });
                         await pendingModel.refreshModel();
                       }}
                     />
@@ -2053,9 +2020,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     async prepareReload() {
       if (pendingSending() || pendingCreateUncertain() || pendingHandoff())
         throw new UiError('Finish or recover the pending action before reloading.');
-      await pendingLoaded;
       await pendingIntake();
-      await pending.flush();
       const owner = handle();
       if (owner && !(await owner.flushDraft()))
         throw new UiError(

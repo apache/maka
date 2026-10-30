@@ -299,9 +299,7 @@ async fn large_selected_upload_keeps_complete_bytes_and_session_authority() {
     let file = f._dir.path().join("large.txt");
     std::fs::write(&file, &bytes).unwrap();
     let completed = async {
-        let snapshot = maka_ui_support::file::read_selected(
-            &file,
-        ).map_err(|error| error.to_string())?;
+        let snapshot = maka_ui_support::file::read_selected(&file).map_err(|error| error.to_string())?;
         let uploaded = f.mutation_with(
             2, "uploadAttachment",
             json!({"sessionId":session,"name":"large.txt","bytes":bytes.len(),"digest":content_digest(&bytes)}),
@@ -452,7 +450,7 @@ async fn attachment_payload_validation_and_image_read_use_actual_bytes() {
         let attachment = &uploaded["attachment"];
         assert_eq!(attachment["mimeType"], "image/gif", "signature takes precedence over the filename");
         // A clipboard encoder has no selected filesystem path: its immutable snapshot
-        // cross the same actual Host mutation and canonical model projection.
+        // crosses the same actual Host mutation and canonical model projection.
         use base64::{Engine as _, engine::general_purpose::STANDARD};
         use maka_capabilities::call::ReadResource;
         use std::io::Write;
