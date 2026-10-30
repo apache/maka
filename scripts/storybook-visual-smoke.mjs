@@ -29,6 +29,13 @@ const NARROW_RENDER_VIEWPORT = Object.freeze({ width: 720, height: 900 });
 const PROMPT_RAIL_CLEARANCE_STORY_ID =
   'product-shell-official-appshell--prompt-rail-clears-user-messages-in-a-narrow-window';
 const COLOR_SCHEMES = Object.freeze(['light', 'dark']);
+const MODEL_ROWS_SHORT_WINDOW_STORY_ID =
+  'product-settings-providers--large-connection-detail-short-window';
+// The shortest window the Desktop shell supports. The sticky Save bar
+// takes a fifth of it, which is what put keyboard focus underneath the
+// bar before the pane reserved the bar's height (#6164 review).
+const SHORT_WINDOW_VIEWPORT = Object.freeze({ width: 600, height: 320 });
+
 const FULL_PALETTE_STORY_IDS = new Set(['product-shell-official-appshell--native-conversation']);
 const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
   'product-accessibility-dialogs--create-scheduled-task',
@@ -205,6 +212,19 @@ export function catalogJobs(
           })),
         );
       }
+      // The model-row viewport is bound by 60vh, so its height follows the
+      // window: run the story's keyboard-focus assertions both in the window
+      // the bound was written for and in the shortest supported one, where
+      // the Save bar covers enough of the pane to hide a focused control.
+      if (entry.id === MODEL_ROWS_SHORT_WINDOW_STORY_ID) {
+        return [storyViewport(entry.id), SHORT_WINDOW_VIEWPORT].map((viewport) => ({
+          storyId: entry.id,
+          colorScheme: 'light',
+          forcedColors: 'none',
+          palette: 'default',
+          viewport,
+        }));
+      }
       if (entry.id === 'product-workhub--next-prompt-suggestion') {
         return COLOR_SCHEMES.flatMap((colorScheme) =>
           [RENDER_VIEWPORT, NARROW_RENDER_VIEWPORT].map((viewport) => ({
@@ -253,6 +273,13 @@ export function storyViewport(storyId) {
   // The progress card also uses viewport-relative picker sizing inside its
   // native 360px WebContents; a narrow wrapper alone does not reproduce that.
   if (storyId === 'product-workhub--progress-model-picker') return { width: 360, height: 900 };
+  // A short, narrow window is the case the model-row viewport's 60vh bound
+  // exists for: at 900px tall the 32rem cap wins instead, and the story would
+  // never exercise the branch that keeps the settings around the list on
+  // screen. Narrow as well, so the rows' container query runs here too.
+  if (storyId === MODEL_ROWS_SHORT_WINDOW_STORY_ID) {
+    return { width: 480, height: 800 };
+  }
   return storyId.includes('narrow') ? NARROW_RENDER_VIEWPORT : RENDER_VIEWPORT;
 }
 

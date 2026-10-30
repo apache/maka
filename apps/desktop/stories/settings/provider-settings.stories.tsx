@@ -816,6 +816,21 @@ export const ConnectionDetailPage: Story = {
       autoOpen="detail"
     />
   ),
+  // The same viewport with a two-model catalog, the common case: the bound is a
+  // maximum, so the rows stand at their own height with no scrollbar and no
+  // empty box under them, and the filter stays absent below its threshold.
+  play: async ({ canvasElement }) => {
+    const viewport = await waitFor(() => {
+      const found = canvasElement.querySelector<HTMLElement>('.providerModelRowsViewport');
+      expect(found).not.toBeNull();
+      expect(found!.childElementCount).toBe(2);
+      return found!;
+    });
+    expect(viewport.scrollHeight).toBe(viewport.clientHeight);
+    expect(viewport.clientHeight).toBeLessThan(modelRowsHeightBound());
+    expect(within(canvasElement).queryByPlaceholderText(detailCopy.filterModels)).toBeNull();
+    expect(within(canvasElement).getByText('GLM 4.7')).toBeTruthy();
+  },
 };
 
 // Real path: after upgrading, open the retained OpenCode Free connection in Settings.
@@ -837,6 +852,130 @@ export const RetiredFreeConnection: Story = {
   },
 };
 
+/** The model rows' own scroll viewport, once the fixture catalog has rendered. */
+async function reachModelRowsViewport(canvasElement: HTMLElement, rows: number): Promise<HTMLElement> {
+  await waitFor(() => {
+    expect(canvasElement.querySelectorAll('button[aria-label*="Fixture model"]').length).toBe(rows);
+  }, { timeout: 20_000 });
+  const viewport = canvasElement.querySelector<HTMLElement>('.providerModelRowsViewport');
+  expect(viewport).not.toBeNull();
+  return viewport!;
+}
+
+/** The bound the viewport's CSS asks for, in this window. Read rather than
+ *  hard-coded at 512: the cap is in rem, so a user's text size moves it. */
+function modelRowsHeightBound(): number {
+  const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+  return Math.min(32 * rem, window.innerHeight * 0.6);
+}
+
+/** What the model rows are measured against: the settings pane is the page's
+ *  scroll owner (nav-sidebar.css), and the list used to stretch it. */
+function settingsPane(canvasElement: HTMLElement): HTMLElement {
+  const pane = canvasElement.querySelector<HTMLElement>('.settingsMainPane');
+  expect(pane).not.toBeNull();
+  return pane!;
+}
+
+/** How far a focus ring is painted outside the control it belongs to: the ring
+ *  recipe is two tokens (maka-tokens.css), read from the element rather than
+ *  hard-coded so a retune of the recipe moves this bound with it. */
+function focusRingBleed(element: HTMLElement): number {
+  const style = getComputedStyle(element);
+  const token = (name: string, fallback: number) => {
+    const value = Number.parseFloat(style.getPropertyValue(name));
+    return Number.isFinite(value) ? value : fallback;
+  };
+  return token('--focus-ring-width', 2) + token('--focus-ring-offset', 2);
+}
+
+/** The keyboard's view of the list, which the viewport could have broken in two
+ *  ways: a scroll container clips at its padding edge, and the Save bar is
+ *  stuck over the bottom of the pane. Both are about a control the keyboard
+ *  reaches, so neither is covered by the scroll-width and row-bottom geometry
+ *  above (#6164 review). */
+async function expectLastRowControlFullyVisible(canvasElement: HTMLElement, viewport: HTMLElement) {
+  viewport.scrollTop = viewport.scrollHeight;
+  const switches = viewport.querySelectorAll<HTMLElement>('[role="switch"]');
+  const last = switches[switches.length - 1];
+  expect(last).toBeTruthy();
+
+  // 1. The ring of the trailing control fits inside the clipping boundary:
+  // the rows run flush with the viewport's edges, so without room reserved for
+  // it the outward ring is cut off on the right.
+  const bleed = focusRingBleed(last);
+  expect(bleed).toBeGreaterThan(0);
+  const clip = viewport.getBoundingClientRect();
+  const control = last.getBoundingClientRect();
+  expect(control.right + bleed).toBeLessThanOrEqual(clip.right + 0.5);
+  expect(control.left - bleed).toBeGreaterThanOrEqual(clip.left - 0.5);
+  expect(control.bottom + bleed).toBeLessThanOrEqual(clip.bottom + 0.5);
+
+  // 2. Focus lands clear of the sticky Save bar, wherever the page itself is
+  // scrolled. The bar hangs over the bottom of the pane, and no amount of
+  // scrolling inside the viewport can move a row out from under it, so the
+  // pane holds the bar's height as scroll padding and scrolls itself.
+  const bar = canvasElement.querySelector<HTMLElement>('.providerModelsSaveBar');
+  expect(bar).not.toBeNull();
+  const pane = settingsPane(canvasElement);
+  const paneRange = pane.scrollHeight - pane.clientHeight;
+  for (let step = 0; step <= 10; step += 1) {
+    pane.scrollTop = (paneRange * step) / 10;
+    viewport.scrollTop = viewport.scrollHeight;
+    const trailing = viewport.querySelectorAll<HTMLElement>('[role="switch"]');
+    const control = trailing[trailing.length - 1];
+    // Refocusing the already-focused control would scroll nothing, so the
+    // focus has to leave the list between positions.
+    (document.activeElement as HTMLElement | null)?.blur();
+    control.focus();
+    await waitFor(() => {
+      const focused = control.getBoundingClientRect();
+      const covered = bar!.getBoundingClientRect();
+      expect(focused.bottom <= covered.top + 1 || focused.top >= covered.bottom - 1).toBe(true);
+      const hit = document.elementFromPoint(
+        Math.round(focused.left + focused.width / 2),
+        Math.round(focused.top + focused.height / 2),
+      );
+      expect(hit !== null && bar!.contains(hit)).toBe(false);
+    });
+  }
+}
+
+/** The rows scroll inside their viewport, nothing is clipped at its edges, and
+ *  the controls around the list stay out of it. Shared by the standard and the
+ *  short-window runs, which differ only in how much height the bound leaves. */
+async function expectBoundedModelRows(canvasElement: HTMLElement, viewport: HTMLElement) {
+  // Bounded, and bounded against the window: in a short window 60vh wins over
+  // the 32rem cap, so the sections around the list stay on screen.
+  expect(viewport.clientHeight).toBeLessThanOrEqual(Math.ceil(modelRowsHeightBound()) + 1);
+  // The list owns its overflow instead of handing it to the page.
+  expect(viewport.scrollHeight).toBeGreaterThan(viewport.clientHeight);
+  expect(settingsPane(canvasElement).scrollHeight).toBeLessThan(viewport.scrollHeight);
+
+  // Nothing pokes out sideways, at any window width.
+  expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth + 1);
+
+  // The search box and the section's own buttons are not carried along by the
+  // rows — they are siblings of the viewport, not children of it.
+  expect(viewport.contains(within(canvasElement).getByPlaceholderText(detailCopy.filterModels))).toBe(false);
+  expect(viewport.contains(within(canvasElement).getByRole('button', { name: detailCopy.addModel }))).toBe(false);
+
+  // The last row is reachable and whole: scrolled to the end, its bottom edge
+  // sits inside the viewport rather than under its lower border.
+  viewport.scrollTop = viewport.scrollHeight;
+  expect(viewport.scrollTop).toBeGreaterThan(0);
+  const lastRow = viewport.lastElementChild as HTMLElement | null;
+  expect(lastRow).not.toBeNull();
+  expect(lastRow!.getBoundingClientRect().bottom)
+    .toBeLessThanOrEqual(viewport.getBoundingClientRect().bottom + 1);
+
+  // The settings below the list are a short scroll away rather than 444 rows
+  // away: the whole page is now shorter than the catalog it contains.
+  expect(within(canvasElement).getByText(detailCopy.advancedRequest)).toBeTruthy();
+
+  await expectLastRowControlFullyVisible(canvasElement, viewport);
+}
+
 // Real path: 设置 → 模型 → an OpenRouter connection after fetching hundreds of models.
 // The fetched snapshot is local; browsing it never needs an API key.
 export const LargeConnectionDetail: Story = {
@@ -847,9 +986,9 @@ export const LargeConnectionDetail: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    await waitFor(() => {
-      expect(canvasElement.querySelectorAll('button[aria-label*="Fixture model"]').length).toBe(444);
-    }, { timeout: 20_000 });
+    const viewport = await reachModelRowsViewport(canvasElement, 444);
+    await expectBoundedModelRows(canvasElement, viewport);
+
     const canvas = within(canvasElement);
     const second = canvas.getByRole('switch', { name: /Fixture model 002$/ });
     const third = canvas.getByRole('switch', { name: /Fixture model 003$/ });
@@ -860,19 +999,46 @@ export const LargeConnectionDetail: Story = {
     const bar = canvasElement.querySelector<HTMLElement>('.providerModelsSaveBar')!;
     const save = within(bar).getByRole('button', { name: /^(保存|儲存|Save)$/ });
     expect(save).toBeEnabled();
-    const pane = canvasElement.querySelector<HTMLElement>('.settingsMainPane')!;
-    // The production pane is the sole scroll owner. Save stays on screen at
-    // the top, middle and end of a hundreds-of-models catalog.
+    const pane = settingsPane(canvasElement);
+    // Save stays on screen at the top, middle and end of the page. With the
+    // rows in their own viewport the page is short enough that there is little
+    // left to scroll, which is the point: the bar was being pushed away by the
+    // list, not by the page.
     for (const top of [0, pane.scrollHeight / 2, pane.scrollHeight]) {
       pane.scrollTop = top;
       await waitFor(() => {
         const rect = bar.getBoundingClientRect();
-        const viewport = pane.getBoundingClientRect();
-        expect(rect.top).toBeGreaterThanOrEqual(viewport.top);
-        expect(rect.bottom).toBeLessThanOrEqual(viewport.bottom + 1);
+        const paneRect = pane.getBoundingClientRect();
+        expect(rect.top).toBeGreaterThanOrEqual(paneRect.top);
+        expect(rect.bottom).toBeLessThanOrEqual(paneRect.bottom + 1);
         expect(rect.height).toBeGreaterThan(0);
       });
     }
+
+    // Filtering down to a handful of models leaves no empty box below them:
+    // the bound is a maximum, so a short list is as tall as its own rows.
+    const filter = canvas.getByPlaceholderText(detailCopy.filterModels);
+    filter.focus();
+    await userEvent.paste('model-04');
+    await waitFor(() => {
+      expect(canvasElement.querySelectorAll('button[aria-label*="Fixture model"]').length).toBe(10);
+    }, { timeout: 10_000 });
+    expect(viewport.scrollHeight).toBe(viewport.clientHeight);
+    expect(viewport.clientHeight).toBeLessThan(modelRowsHeightBound());
+  },
+};
+
+// The same catalog in a short, narrow window — the case the bound exists for.
+// The smoke run gives this story a 480 × 800 viewport (storybook-visual-smoke).
+export const LargeConnectionDetailShortWindow: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: [largeConnection], defaultSlug: 'openrouter-large' })}
+      autoOpen="detail-large"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expectBoundedModelRows(canvasElement, await reachModelRowsViewport(canvasElement, 444));
   },
 };
 
