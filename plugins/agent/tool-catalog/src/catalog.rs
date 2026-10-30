@@ -163,17 +163,30 @@ impl ToolCatalog {
     }
 
     pub(super) fn select(&self, keep: impl Fn(&str) -> bool) -> Self {
-        Self {
-            entries: Arc::new(
-                self.entries
-                    .iter()
-                    .filter(|(name, _)| keep(name))
-                    .map(|(name, entry)| (name.clone(), entry.clone()))
-                    .collect(),
-            ),
-            discovery: self.discovery,
-            request_bindings: self.request_bindings.clone(),
+        self.filtered(|name, _| keep(name))
+    }
+
+    fn filtered(&self, keep: impl Fn(&str, &RegisteredTool) -> bool) -> Self {
+        let mut entries = self.entries.iter().enumerate();
+        while let Some((index, (name, entry))) = entries.next() {
+            if !keep(name, entry) {
+                let prefix = self.entries.iter().take(index);
+                let remaining = entries
+                    .map(|(_, entry)| entry)
+                    .filter(|(name, entry)| keep(name, entry));
+                return Self {
+                    entries: Arc::new(
+                        prefix
+                            .chain(remaining)
+                            .map(|(name, entry)| (name.clone(), entry.clone()))
+                            .collect(),
+                    ),
+                    discovery: self.discovery,
+                    request_bindings: self.request_bindings.clone(),
+                };
+            }
         }
+        self.clone()
     }
 
     pub fn definitions(&self) -> impl Iterator<Item = &ToolDefinition> {
@@ -186,17 +199,7 @@ impl ToolCatalog {
     }
 
     pub fn nested(&self) -> Self {
-        Self {
-            entries: Arc::new(
-                self.entries
-                    .iter()
-                    .filter(|(_, entry)| entry.nesting == ToolNesting::Nestable)
-                    .map(|(name, entry)| (name.clone(), entry.clone()))
-                    .collect(),
-            ),
-            discovery: self.discovery,
-            request_bindings: self.request_bindings.clone(),
-        }
+        self.filtered(|_, entry| entry.nesting == ToolNesting::Nestable)
     }
 
     pub(super) fn direct_only(&self) -> Self {
@@ -303,3 +306,6 @@ impl ToolCatalog {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;
