@@ -3513,8 +3513,12 @@ function oversizedTurnMessages(steps = 24): StoredMessage[] {
 
 const oversizedTurn = oversizedTurnMessages();
 
-export const Performance45Tools: Story = {
-  render: () => <ComposedShell chat={{ messages: oversizedTurnMessages(45) }} />,
+// Real path: session transcript → one Turn with repeated tool steps; the steps
+// control also exposes the 360-step expanded fixture reported in #5842.
+export const Performance45Tools: StoryObj<{ steps: number }> = {
+  args: { steps: 45 },
+  argTypes: { steps: { control: { type: 'number', min: 1, max: 360, step: 1 } } },
+  render: ({ steps }) => <ComposedShell chat={{ messages: oversizedTurnMessages(steps) }} />,
 };
 
 function mixedTurnText(i: number): string {

@@ -94,3 +94,30 @@ about a thousand cheap fibers rather than concentrated in one component. A
 change that lowers the commit count has not necessarily lowered the time, and a
 change that moves the top self-time entry has not necessarily lowered anything.
 Read both, and read the medians.
+
+## Expanded transcript hover (#5842)
+
+After `npm install`, `npm --workspace @maka/core run build`, and
+`npm --workspace @maka/desktop run build-storybook`:
+
+```sh
+npx playwright install chromium
+node scripts/perf/transcript-hover.mjs
+node scripts/perf/astryx-hover-interactions.mjs
+```
+
+The hover probe expands the existing `Performance45Tools` story with `steps:360`,
+asserts 360 tool rows and 16 marker selector rules, and records the actual DOM
+size. It alternates the original ancestor-hover conditions and the patched
+marker conditions in one document for three pairs of 14×40 serpentine sweeps
+(two CDP mouse steps per move). Only those 16 CSSOM conditions change; product
+DOM and the browser instance remain fixed. Output includes LoAF counts over
+50ms, style recalc time/count, layout time and screenshots in `perf-results`
+(or `MAKA_PERF_OUTPUT`). Set `HEADED=1` for a visible performance run.
+
+This isolates the selector change on the current main-based fixture; it does
+not claim to reproduce a different machine's 86 LoAF result. Treat the numbers
+as measurements, not a hardware-independent timing assertion. The separate
+interaction probe exercises actual Astryx controls with mouse, keyboard and
+Chromium touch taps. Touch emulation does not establish physical-device
+compatibility. Run the probes sequentially on an otherwise idle machine.

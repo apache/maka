@@ -1,0 +1,62 @@
+{
+  "workload": {
+    "elements": 15436,
+    "scrollHeight": 103028
+  },
+  "samples": [
+    {
+      "trial": 0,
+      "mode": "ancestor-hover",
+      "loafOver50ms": 26,
+      "maxLoafMs": 135.3999999910593,
+      "styleRecalcMs": 2692.162,
+      "styleRecalcCount": 28,
+      "layoutMs": 0
+    },
+    {
+      "trial": 0,
+      "mode": "marker",
+      "loafOver50ms": 2,
+      "maxLoafMs": 109.5,
+      "styleRecalcMs": 666.0139999999997,
+      "styleRecalcCount": 30,
+      "layoutMs": 0
+    },
+    {
+      "trial": 1,
+      "mode": "marker",
+      "loafOver50ms": 2,
+      "maxLoafMs": 118.09999999403954,
+      "styleRecalcMs": 687.5279999999999,
+      "styleRecalcCount": 30,
+      "layoutMs": 0
+    },
+    {
+      "trial": 1,
+      "mode": "ancestor-hover",
+      "loafOver50ms": 26,
+      "maxLoafMs": 133,
+      "styleRecalcMs": 2749.6089999999995,
+      "styleRecalcCount": 28,
+      "layoutMs": 0
+    },
+    {
+      "trial": 2,
+      "mode": "ancestor-hover",
+      "loafOver50ms": 26,
+      "maxLoafMs": 137.40000000596046,
+      "styleRecalcMs": 2723.6350000000007,
+      "styleRecalcCount": 28,
+      "layoutMs": 0
+    },
+    {
+      "trial": 2,
+      "mode": "marker",
+      "loafOver50ms": 2,
+      "maxLoafMs": 113.59999999403954,
+      "styleRecalcMs": 678.324,
+      "styleRecalcCount": 30,
+      "layoutMs": 0
+    }
+  ]
+}
