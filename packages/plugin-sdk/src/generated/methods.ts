@@ -674,6 +674,11 @@ export interface ServiceMethods {
       input: Runtime.AgentInteractionRespond;
       output: Runtime.AgentInteractionResult;
     };
+    resumable: {
+      mode: 'query';
+      input: Runtime.AgentResumableRead;
+      output: Runtime.AgentResumable;
+    };
     resume: {
       mode: 'mutation';
       input: Runtime.AgentResume;

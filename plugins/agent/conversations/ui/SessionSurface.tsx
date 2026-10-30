@@ -1641,6 +1641,12 @@ export function createConversationUi(
                   }
                   foreground={foreground}
                   control={control}
+                  continuationPending={() =>
+                    !controlsKnown() ||
+                    controls().some(
+                      (original) => original.method === 'resume' && original.sessionId === id(),
+                    )
+                  }
                   fork={async (action) => {
                     await changeBrowsedSession(action, id());
                   }}
@@ -2179,6 +2185,9 @@ function projectComposerSession(
     unconfirmed: owner.unconfirmed,
     invocation: owner.invocation,
     stopping: owner.stopping,
+    resumable: owner.resumable,
+    resuming: owner.resuming,
+    resume: owner.resume,
     metrics: owner.metrics,
     changeDraft: owner.changeDraft,
     submit: owner.submit,

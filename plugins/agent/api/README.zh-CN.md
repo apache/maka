@@ -27,6 +27,8 @@
 
 `history` 分页保持同一个 `through` 边界，`watch` 从最后的 `nextAfter` 继续，并发布队列与待处理交互更新。`send` 接受工作并返回其身份，`stop` 指定该次 invocation。重连后通过 `pendingInteractions`、`interaction` 和 `respond` 重建并回答原请求。修改保留原操作回执；丢失响应不代表可以重新发送。参见[原生接入验收](../native/README.zh-CN.md)及[传输所有权与退出方式](../../../platform/transport/README.zh-CN.md)。
 
+`resumable` 使用选定的续跑模型检查最新执行，返回精确来源回执或不可继续的原因；复用来源条件与 engine 重放检查，不准入新工作，也不启动 MCP 服务；实时工具可用性留到 `resume` 启动服务时检查。调用 `resume` 时提交该来源边界并保持操作身份稳定；准入时重新检查当前安全条件与权限，创建新 turn，丢失响应后恢复同一回执。可继续的查询结果不预留来源。
+
 历史行引用使用 `position: { sourceSequence, itemIndex }`，先按产生该行的原始事件排序，再按该事件内的行序号排序。游标、来源读取、提示词锚点及工具图片引用共用这一位置。`through` 和 `{ kind: "event", sequence }` 仍指向原始事件；模型完成时产生的所有历史行都归属于该完成事件。
 
 `search` 在所选 Session 的历史中按字面量查询，显式传入 `caseSensitive` 和 `wholeWord`。忽略大小写使用 Unicode 简单大小写折叠，不做规范化；全字匹配要求两侧不紧邻 Unicode 单词字符（字母、组合标记、十进制数字、连接标点或连接控制符）。以 `after: null` 开始，分页时保持查询、选项和 `through` 不变，沿 `nextAfter` 继续，即使当前页没有命中；null 表示扫描结束。每条命中标明原始字段，可通过 `source` 精确读取。搜索命中以 `position` 和原始 `field` 定位。用相同 `through` 调用 `history`，位置为 `{ kind: "row", position: hit.position, field: hit.field === "thinking" ? "thinking" : "body" }`，可打开空工具行及明确指定的内部工具；后续隐藏规则不变。已有字节游标仍用于续页。

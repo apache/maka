@@ -26,6 +26,10 @@ import {
 } from '../../../../products/maka/workbench/app/text';
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import type { StagedFile } from 'maka/host';
+import type {
+  AgentResumable,
+  AgentExecution,
+} from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import {
   batch,
   cleanup,
@@ -185,6 +189,7 @@ export type ConversationHandle = Omit<
 type ConversationProps = {
   client: ScopedHost;
   control: Control;
+  continuationPending(): boolean;
   /** The Bot Session when the application knows it; `null` for none; `undefined` if unknown. */
   botSession?(): string | null | undefined;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
@@ -292,6 +297,10 @@ export function Conversation(props: ConversationProps) {
   const run = signal<ConversationStatus>('loading');
   const invocation = signal<string | null>(null);
   const compacting = signal<AgentCompactionProgress | null>(null);
+  const resumable = signal<AgentResumable | null>(null);
+  const resuming = signal(false);
+  const confirmingContinuation = () => resuming() || props.continuationPending();
+  const resumeRevision = signal(0);
   const stoppingRun = signal<string | null>(null);
   const stopping = () => invocation() !== null && stoppingRun() === invocation();
   const workspace = signal('');
@@ -1670,6 +1679,87 @@ export function Conversation(props: ConversationProps) {
     return { model: resolved.choice.selection, thinkingLevel: backend.thinkingLevel ?? null };
   };
 
+  const resumeBasis = computed(() =>
+    JSON.stringify([
+      resumeRevision(),
+      ready(),
+      archived(),
+      invocation(),
+      readState().revision,
+      readState().through,
+      backendIdentity(backend()),
+      props.continuationPending(),
+    ]),
+  );
+  effect(() => {
+    resumeBasis();
+    let current = true;
+    untracked(() => {
+      if (props.continuationPending()) return;
+      resumable.set(null);
+      const selected = backendIdentity(backend());
+      if (!ready() || archived() || invocation() || !selected) return;
+      void (async () => {
+        const resolved = await host.query('settings', 'resolveModel', {
+          connectionId: selected.connectionId,
+          modelId: selected.modelId,
+        });
+        if (!alive || !current || resolved.kind !== 'ready') return;
+        const value = await host.query('agent', 'resumable', {
+          sessionId,
+          model: resolved.choice.selection,
+          thinkingLevel: selected.thinkingLevel,
+        });
+        if (alive && current) resumable.set(value);
+      })().catch((reason) => {
+        if (alive && current) report(reason);
+      });
+    });
+    return () => {
+      current = false;
+    };
+  });
+  const resume = async (source: AgentExecution, expectedBackend: BackendIdentity) => {
+    const observed = resumable();
+    if (
+      !alive ||
+      confirmingContinuation() ||
+      invocation() ||
+      draft().trim() ||
+      attachments.files().length ||
+      sendBlockedReason() ||
+      observed?.kind !== 'ready' ||
+      observed.source.sessionId !== source.sessionId ||
+      observed.source.invocationId !== source.invocationId ||
+      observed.source.highWater !== source.highWater ||
+      !sameBackend(backendIdentity(backend()), expectedBackend)
+    )
+      return;
+    resuming.set(true);
+    try {
+      const model = await selection(expectedBackend);
+      if (!alive || !model || draft().trim() || attachments.files().length) return;
+      const result = await props.control('resume', {
+        sessionId,
+        sourceInvocationId: source.invocationId,
+        sourceHighWater: source.highWater,
+        ...model,
+      });
+      if (!alive) return;
+      if (result.kind === 'parked')
+        notice.set(uiMessage('Continuation is unavailable: {reason}.', { reason: result.reason }));
+      await observe();
+    } catch (reason) {
+      report(reason);
+    } finally {
+      if (alive)
+        batch(() => {
+          resuming.set(false);
+          resumeRevision.set(resumeRevision() + 1);
+        });
+    }
+  };
+
   const settleReply = (
     reply: any,
     text?: string,
@@ -1734,6 +1824,7 @@ export function Conversation(props: ConversationProps) {
     if (!draftReady()) return tr('Loading the saved draft…');
     if (savingFailed()) return tr('The draft could not be saved. Sending is unavailable.');
     if (attachments.blocked()) return attachments.blocked();
+    if (confirmingContinuation()) return tr('Confirming continuation…');
     if (sending()) return tr('Confirming send… New typing is kept.');
     if (recovering()) return tr('Reading original receipts… New typing is kept.');
     if (!receiptsKnown() || unresolved().length)
@@ -1958,10 +2049,16 @@ export function Conversation(props: ConversationProps) {
         .filter((original) => !original.reference)
         .map((original) => original.id),
     stopping,
+    resumable,
+    resuming: confirmingContinuation,
+    resume,
     metrics: () => metricText(metrics()),
     changeDraft,
     submit(event) {
-      void send(event.text);
+      const value = resumable();
+      if (!event.text.trim() && !attachments.files().length && value?.kind === 'ready')
+        void resume(value.source, backendIdentity(backend()));
+      else void send(event.text);
     },
     sendRendered,
     recover,
@@ -2103,7 +2200,10 @@ export function Conversation(props: ConversationProps) {
       await observe();
       ownHandle.jumpLatest(null, true);
     },
-    refresh: observe,
+    refresh() {
+      resumeRevision.set(resumeRevision() + 1);
+      return observe();
+    },
   };
   const readTarget = () => {
     const observed = readState();

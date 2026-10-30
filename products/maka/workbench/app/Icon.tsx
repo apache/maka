@@ -29,6 +29,8 @@ const glyphs = {
   plus: '+',
   send: '↑',
   stop: '■',
+  pause: 'Ⅱ',
+  play: '▶',
   close: '×',
   down: '⌄',
   right: '›',
@@ -134,6 +136,18 @@ export function Icon(props: { name: keyof typeof glyphs; color: string; size?: n
             cx.lineTo(8, 3);
             cx.lineTo(12.5, 7.5);
             break;
+          case 'pause':
+            cx.rect(4, 3, 3, 10);
+            cx.rect(9, 3, 3, 10);
+            cx.fill();
+            return;
+          case 'play':
+            cx.moveTo(5, 3);
+            cx.lineTo(13, 8);
+            cx.lineTo(5, 13);
+            cx.closePath();
+            cx.fill();
+            return;
           case 'stop':
             cx.roundRect(4, 4, 8, 8, 1);
             cx.fill();

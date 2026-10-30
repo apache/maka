@@ -1868,6 +1868,7 @@ pub fn contract() -> Contract {
                     method::<ExecutionRead, ExecutionResult>(MethodMode::Query),
                 ),
                 ("work".into(), method::<WorkRead, Work>(MethodMode::Query)),
+                ("resumable".into(), method::<ResumableRead, Resumable>(MethodMode::Query)),
                 (
                     "compactionPrompt".into(),
                     method::<SessionRead, CompactionPrompt>(MethodMode::Query),

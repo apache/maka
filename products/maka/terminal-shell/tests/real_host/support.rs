@@ -157,6 +157,8 @@ impl Fixture {
 
     pub async fn configured(options: Options) -> Self {
         let directory = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        std::fs::remove_dir(directory.path()).unwrap();
         private_directory(directory.path()).unwrap();
         let workspace = directory.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
@@ -529,6 +531,9 @@ impl ModelRequest {
     pub async fn delta(&mut self, text: &str) {
         self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]})).await;
     }
+    pub async fn thinking(&mut self, text: &str) {
+        self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{"reasoning_content":text},"finish_reason":null}]})).await;
+    }
     pub async fn finish(self) {
         self.finish_with_reason("stop").await;
     }
@@ -721,6 +726,9 @@ pub struct ReplyGate {
     worker: JoinHandle<()>,
 }
 impl ReplyGate {
+    pub fn resume(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(directory, target, "agent", "resume", "mutation")
+    }
     pub fn resolve_model(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "settings", "resolveModel", "finished")
     }

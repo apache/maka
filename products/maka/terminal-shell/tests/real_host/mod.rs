@@ -24,6 +24,7 @@ mod configuration_management;
 #[cfg(feature = "desktop-tests")]
 mod desktop_new_session;
 mod keyboard;
+mod resumable;
 mod send_hold;
 mod support;
 mod ui_plugins;

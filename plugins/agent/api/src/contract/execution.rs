@@ -168,6 +168,24 @@ pub enum ExecutionState {
     Failed,
     Cancelled,
 }
+/// Observe the latest run using the model selected for a possible continuation.
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentResumableRead")]
+pub struct ResumableRead {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    pub model: ModelSelection,
+    pub thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentResumable")]
+pub enum Resumable {
+    Ready { source: Execution },
+    Unavailable { reason: ResumeParkReason },
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentResume")]

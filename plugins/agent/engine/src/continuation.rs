@@ -46,8 +46,15 @@ pub(super) async fn prepare(
     cancellation: &CancellationToken,
 ) -> Result<PreparedClaim, RunError> {
     let loaded_basis = inner.shared.loaded_snapshot(&input.invocation.session_id)?;
-    let (base, replay) =
-        inspect(inner, input, source, catalog, cancellation, &loaded_basis).await?;
+    let (base, replay) = inspect(
+        inner,
+        input,
+        source,
+        Some(catalog),
+        cancellation,
+        &loaded_basis,
+    )
+    .await?;
     let pause = match &input.work {
         crate::RunWork::Handoff { pause, .. } => Some(pause),
         _ => None,
@@ -76,7 +83,7 @@ pub(super) async fn inspect(
     inner: &Arc<RunContext>,
     input: &RunInput,
     source: &RunBoundary,
-    catalog: &maka_tools::ToolCatalog,
+    catalog: Option<&maka_tools::ToolCatalog>,
     cancellation: &CancellationToken,
     loaded_basis: &BTreeSet<String>,
 ) -> Result<(SessionBase, ReplayEvidence), RunError> {
@@ -153,65 +160,70 @@ pub(super) async fn inspect(
     .await?;
     let arena = prompt.arena().cloned();
     let result = async {
-        let tools = maka_tools::RunTools::new(
-            input.configuration.language,
-            inner.log.clone(),
-            input.invocation.clone(),
-            catalog.clone(),
-            input.configuration.tool_mode,
-            inner
-                .shared
-                .cells
-                .clone()
-                .with_language(input.configuration.code_language),
-            inner.shared.loaded(&input.invocation.session_id),
-        )
-        .with_model(input.provider.tool_context());
-        let selected = if let crate::RunWork::Handoff { pause, .. } = &input.work {
-            if pause.execution.tools.catalog_digest != catalog.digest()
-                || pause
-                    .execution
-                    .tools
-                    .loaded
-                    .iter()
-                    .any(|name| name.is_empty() || name.len() > 128)
-            {
-                return Err(RunError::InvalidInput(
-                    "handoff tool catalog changed".into(),
-                ));
-            }
-            &pause.execution.tools.loaded
-        } else {
-            loaded_basis
-        };
-        let definitions = tools.replay_selected(selected);
-        // Resume validates names from the full explicit inventory, including tools
-        // not yet advertised through lazy discovery.
-        let mut available: std::collections::HashSet<_> = catalog.names().into_iter().collect();
-        available.extend(definitions.iter().map(|definition| definition.name.clone()));
-        // A handoff replays settled facts, including rejected calls to unavailable
-        // tools. It never executes them again; the registered catalog is checked above.
-        if !matches!(input.work, crate::RunWork::Handoff { .. }) {
-            let available: std::collections::HashSet<[u8; 32]> = available
-                .iter()
-                .map(|name| Sha256::digest(name.as_bytes()).into())
-                .collect();
-            let recipes = prompt
-                .recipes()
-                .ok_or_else(|| invalid("continuation lacks a frozen logical directory"))?;
-            let mut cursor = recipes.open_metadata(0);
-            while let Some(message) = cursor.next().await.map_err(RunError::Preparation)? {
-                if cancellation.is_cancelled() {
-                    return Err(RunError::Cancelled);
+        let definitions = if let Some(catalog) = catalog {
+            let tools = maka_tools::RunTools::new(
+                input.configuration.language,
+                inner.log.clone(),
+                input.invocation.clone(),
+                catalog.clone(),
+                input.configuration.tool_mode,
+                inner
+                    .shared
+                    .cells
+                    .clone()
+                    .with_language(input.configuration.code_language),
+                inner.shared.loaded(&input.invocation.session_id),
+            )
+            .with_model(input.provider.tool_context());
+            let selected = if let crate::RunWork::Handoff { pause, .. } = &input.work {
+                if pause.execution.tools.catalog_digest != catalog.digest()
+                    || pause
+                        .execution
+                        .tools
+                        .loaded
+                        .iter()
+                        .any(|name| name.is_empty() || name.len() > 128)
+                {
+                    return Err(RunError::InvalidInput(
+                        "handoff tool catalog changed".into(),
+                    ));
                 }
-                let mut names = message.local_tool_names.open(0);
-                while let Some(name) = names.next().await.map_err(RunError::Preparation)? {
-                    if !available.contains(&name.identity) {
-                        return Err(invalid("continuation requires an unavailable tool"));
+                &pause.execution.tools.loaded
+            } else {
+                loaded_basis
+            };
+            let definitions = tools.replay_selected(selected);
+            // Resume validates names from the full explicit inventory, including tools
+            // not yet advertised through lazy discovery.
+            let mut available: std::collections::HashSet<_> = catalog.names().into_iter().collect();
+            available.extend(definitions.iter().map(|definition| definition.name.clone()));
+            // A handoff replays settled facts, including rejected calls to unavailable
+            // tools. It never executes them again; the registered catalog is checked above.
+            if !matches!(input.work, crate::RunWork::Handoff { .. }) {
+                let available: std::collections::HashSet<[u8; 32]> = available
+                    .iter()
+                    .map(|name| Sha256::digest(name.as_bytes()).into())
+                    .collect();
+                let recipes = prompt
+                    .recipes()
+                    .ok_or_else(|| invalid("continuation lacks a frozen logical directory"))?;
+                let mut cursor = recipes.open_metadata(0);
+                while let Some(message) = cursor.next().await.map_err(RunError::Preparation)? {
+                    if cancellation.is_cancelled() {
+                        return Err(RunError::Cancelled);
+                    }
+                    let mut names = message.local_tool_names.open(0);
+                    while let Some(name) = names.next().await.map_err(RunError::Preparation)? {
+                        if !available.contains(&name.identity) {
+                            return Err(invalid("continuation requires an unavailable tool"));
+                        }
                     }
                 }
             }
-        }
+            definitions
+        } else {
+            Vec::new()
+        };
         let replay = replay(input, prompt, definitions, cancellation).await?;
         if let crate::RunWork::Handoff { pause, .. } = &input.work
             && replay != pause.execution.replay

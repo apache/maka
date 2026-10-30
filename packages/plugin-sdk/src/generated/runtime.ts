@@ -245,6 +245,8 @@ export type RuntimeProtocol =
   | AgentStop
   | AgentExecutionRead
   | AgentExecutionResult
+  | AgentResumableRead
+  | AgentResumable
   | AgentResume
   | AgentResumeResult
   | AgentUploadAttachment
@@ -3289,6 +3291,15 @@ export type AgentExecutionResult =
   | {
       kind: 'found';
       execution: AgentExecution;
+    };
+export type AgentResumable =
+  | {
+      kind: 'ready';
+      source: AgentExecution;
+    }
+  | {
+      kind: 'unavailable';
+      reason: AgentResumeParkReason;
     };
 export type AgentAttachmentUploadResult =
   | {
@@ -7892,6 +7903,14 @@ export interface AgentStop {
 export interface AgentExecutionRead {
   sessionId: string;
   invocationId: string;
+}
+/**
+ * Observe the latest run using the model selected for a possible continuation.
+ */
+export interface AgentResumableRead {
+  sessionId: string;
+  model: ModelSelection;
+  thinkingLevel?: ThinkingLevel | null;
 }
 export interface AgentResume {
   sessionId: string;
