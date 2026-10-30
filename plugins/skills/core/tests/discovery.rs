@@ -19,8 +19,7 @@
 
 use maka_skills::SkillFailureReason;
 use maka_skills::{
-    Catalog, DiscoveryFailure, HostCapabilities, IssueCode, Preference, Preferences, ScanError,
-    Source, scan,
+    Catalog, DiscoveryFailure, HostCapabilities, Preference, Preferences, ScanError, Source, scan,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -91,7 +90,7 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
     let project = temporary.path().join("project");
     let home = temporary.path().join("home");
     for (path, name) in [
-        (project.join(".agents/skills/REVIEW"), "Shadow"),
+        (project.join(".agents/skills/REVIEW"), "Primary"),
         (home.join(".maka/skills/duplicate"), "Primary"),
     ] {
         skill(&path, name, "", "unused");
@@ -120,6 +119,16 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
         "",
         &"😀".repeat(24_001),
     );
+    let large_path = project.join(".maka/skills/large/SKILL.md");
+    let large_document = fs::read_to_string(&large_path).unwrap();
+    fs::write(
+        large_path,
+        large_document.replace(
+            "description: local instructions",
+            &format!("description: {}", "Detailed ".repeat(80)),
+        ),
+    )
+    .unwrap();
     skill(
         &project.join(".maka/skills/invalid"),
         "Invalid",
@@ -143,20 +152,13 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
         review.content_sha256,
         maka_agent_facts::artifact::content_digest(&original)
     );
-    assert!(
-        review
-            .document
-            .issues
-            .iter()
-            .any(|issue| issue.code == IssueCode::DuplicateName)
-    );
     assert_eq!(
         snapshot
             .inventory
             .iter()
             .filter(|skill| skill.shadowed_by.as_deref() == Some("project:maka:review"))
             .count(),
-        1
+        2
     );
     fs::write(
         project.join(".maka/skills/review/SKILL.md"),
@@ -182,7 +184,11 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
         preferences: &preferences,
         host: &host,
     };
-    let loaded = catalog.load(" ReViEw ").unwrap();
+    let loaded = catalog.load(" PrImArY ").unwrap();
+    assert_eq!(
+        catalog.load("review").unwrap().skill.location.reference,
+        "user:agents:alias"
+    );
     let search = catalog.search(" \u{feff}rEvIeW\t", Some(1));
     assert_eq!(search.query, "review");
     assert_eq!(search.matches[0].skill.reference, "project:maka:review");
@@ -294,7 +300,7 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
         ..catalog
     };
     assert_eq!(
-        catalog.load("review").unwrap_err(),
+        catalog.load("primary").unwrap_err(),
         SkillFailureReason::Disabled
     );
     assert_eq!(
@@ -573,4 +579,79 @@ async fn linked_resources_freeze_with_the_skill_and_preserve_paging_and_containm
             .content
             .starts_with("Original")
     );
+}
+
+#[tokio::test]
+async fn same_named_skills_select_whole_directories_and_fall_back_after_removal() {
+    use maka_agent_facts::read::ReadInput;
+    let temporary = tempfile::tempdir().unwrap();
+    let project = temporary.path().join("project");
+    let home = temporary.path().join("home");
+    let editions = [
+        (
+            project.join(".maka/skills/project-maka"),
+            "project maka",
+            "project maka resource",
+        ),
+        (
+            project.join(".agents/skills/project-agents"),
+            "project agents",
+            "project agents resource",
+        ),
+        (
+            home.join(".maka/skills/user-maka"),
+            "user maka",
+            "user maka resource",
+        ),
+        (
+            home.join(".agents/skills/user-agents"),
+            "user agents",
+            "user agents resource",
+        ),
+    ];
+    for (path, body, resource) in &editions {
+        skill(path, "shared-review", "", body);
+        fs::create_dir_all(path.join("references")).unwrap();
+        fs::write(path.join("references/guide.md"), resource).unwrap();
+    }
+    let owner = owner();
+    let project_files = view(&owner, &project).await;
+    let home_files = view(&owner, &home).await;
+    let sources = sources(Some(&project_files), Some(&home_files));
+    let preferences = Preferences::Available(BTreeMap::new());
+    let host = HostCapabilities::default();
+    for (index, (path, body, resource)) in editions.iter().enumerate() {
+        let snapshot = scan(&sources, &CancellationToken::new()).await.unwrap();
+        let catalog = Catalog {
+            discovery: &snapshot,
+            preferences: &preferences,
+            host: &host,
+        };
+        assert_eq!(snapshot.inventory.len(), editions.len() - index);
+        assert_eq!(catalog.available().count(), 1);
+        let loaded = catalog.load("shared-review").unwrap();
+        assert_eq!(loaded.instructions, *body);
+        let (_, page) = loaded
+            .skill
+            .resources
+            .page(
+                &loaded.skill.location.reference,
+                &ReadInput {
+                    path: "references/guide.md".into(),
+                    offset: None,
+                    limit: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(page.content, *resource);
+        assert!(
+            snapshot
+                .inventory
+                .iter()
+                .filter(|entry| entry.location.path != *path)
+                .all(|entry| entry.shadowed_by.as_deref()
+                    == Some(loaded.skill.location.reference.as_str()))
+        );
+        fs::remove_dir_all(path).unwrap();
+    }
 }
