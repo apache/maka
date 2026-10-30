@@ -27,6 +27,12 @@ Code is the authority. Every capability claim below is stated as the method or
 constant that backs it, so a reader can re-derive the table from the tree when
 this page drifts.
 
+Last checked against `main` at `85a1031c1` (2026-10-30). That pass re-read the
+bridges after apache/maka#6074 and apache/maka#6156 and corrected the
+allowlist, typing, attachment, message-limit and WeChat iLink statements; it
+was a code reading, not a live re-run. The live walk-throughs described under
+[Setup](#setup) predate it.
+
 Related:
 
 - [IM 扫码接入 runtime architecture](architecture/bot-onboarding-runtime.zh-CN.md) —
@@ -89,13 +95,15 @@ needs to branch on platform.
 | --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
 | Send text (`sendMessage`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Streaming reply (`startReplyStream`) | ✅ | — | — | — | — | — | — | — |
-| Typing indicator (`sendTypingIndicator`) | ✅ | — | ✅ | — | — | — | — | ✅ |
+| Typing indicator (`sendTypingIndicator`) | ✅ | — | ✅ | — | ✅ | — | ✅ | ✅ |
+| Typing cancel (`cancelTypingIndicator`) | — | — | — | — | ✅ | — | ✅ | — |
 | Reply threading (`replyToMessageId`) | ✅ | ✅ | ✅ | — | ✅ | — | — | ✅ |
 | Ephemeral auto-delete (`ephemeralTtlMs`) | ✅ | — | — | — | — | — | — | — |
-| Inbound attachment kind | ✅ | — | — | — | — | — | ✅ | — |
+| Inbound attachment kind | ✅ | — | — | — | ✅ | — | ✅ | — |
 | Outbound file attachments | — | — | — | — | — | — | — | — |
 | Send retry/backoff | ✅ | — | ✅ | ✅ | — | — | — | ✅ |
-| User allowlist enforced | ✅ | — | — | — | ✅ | ✅ | — | — |
+| User allowlist enforced | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Allowlist field in settings UI | ✅ | — | — | — | ✅ | — | — | — |
 | Scheduled-task delivery | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 
 **An empty cell means Maka does not implement the capability on that platform.
@@ -110,22 +118,61 @@ Notes on individual rows:
 - **Streaming reply** is Telegram-only. `BotRegistry.startReplyStream` returns
   `null` for every other platform, and callers fall back to a single terminal
   message.
-- **Typing indicator** is one-shot and decorative. It returns `false` rather
-  than throwing on unsupported platforms, and Telegram clears it after roughly
-  five seconds, so sustained indication requires repeated calls.
+- **Typing indicator** is decorative. It returns `false` rather than throwing on
+  unsupported platforms. Telegram, Discord and QQ send a one-shot signal —
+  Telegram clears it after roughly five seconds, so sustained indication
+  requires repeated calls — and have no cancel. Feishu has no native typing
+  API: the bridge adds a `Typing` reaction to the chat's latest inbound message
+  and removes it on `cancelTypingIndicator`, so it needs a received message to
+  attach to. WeChat implements it only on the iLink route (`getconfig` for a
+  typing ticket, then `sendtyping` start/stop); the local-bridge route returns
+  `false`. `BotRegistry.cancelTypingIndicator` returns `false` for bridges
+  without a cancel.
 - **Reply threading** applies to the first chunk only. A long reply split
   across several messages threads its head under the user's message and sends
   the remainder as ordinary sequential messages, so one answer does not fork
   into N replies under the same parent (see `BotSendOptions` in `types.ts`).
 - **Outbound file attachments are not supported on any platform.** `SendCapable`
-  carries text only. Telegram and WeChat classify *inbound* attachments into a
-  `BotAttachmentKind` (`photo`, `voice`, `sticker`, `document`, `video`,
+  carries text only. Telegram, Feishu and WeChat classify *inbound* attachments
+  into a `BotAttachmentKind` (`photo`, `voice`, `sticker`, `document`, `video`,
   `audio`, `animation`, `unknown`) so the handler can react to them; the other
-  six bridges do not surface attachment metadata at all.
+  five bridges do not surface attachment metadata at all. Feishu maps the first
+  resource of a message (`feishuMessageToEvent`); WeChat's iLink route reports
+  any media item as `unknown`.
+- **User allowlist** is enforced for every bridge by
+  `BaseBotAdapter.emitIncomingMessage`, which drops a message whose sender is
+  not in a non-empty `allowedUserIds`. The settings UI is narrower — see
+  [Known limitations](#known-limitations).
 - **Scheduled-task delivery** is gated by `BOT_DELIVERY_PROVIDERS`. Feishu and
   WeCom are excluded from that list, and `scheduled-task-coordinator.ts`
   rejects any bot-channel task whose platform fails `isBotDeliveryProvider`, so
   scheduled tasks cannot target them.
+
+## Message handling modes
+
+Where an inbound message goes is the `BotMessageHandling` setting
+(`packages/core/src/bot-chat-settings.ts`), the same three values on every
+channel:
+
+| Value | Label in the app | Destination |
+| --- | --- | --- |
+| `task` | Separate task | Ordinary bot task sessions. The default. |
+| `workhub` | WorkHub | The WorkHub remote bridge. |
+| `assistant` | Personal assistant | The desktop personal assistant, shared with desktop and web. |
+
+`BotChatSettings.messageHandling` is the global default; a channel's own
+`messageHandling` overrides it, and `resolveBotMessageHandling` falls back to
+`task` when neither is set.
+
+Assistant mode is deliberately narrow: the channel must allow **exactly one**
+user, and group chats are rejected (`assistant-im-bridge.ts` in
+`apps/desktop/src/main/`). An empty or multi-entry allowlist denies access
+rather than opening the assistant to everyone. The WeChat and Feishu specifics —
+reply contexts, delivery receipts, the `Typing` reaction, card splitting — are
+documented in
+[WeChat personal assistant transport](../apps/desktop/README.md#wechat-personal-assistant-transport)
+and
+[Feishu personal assistant transport](../apps/desktop/README.md#feishu-personal-assistant-transport).
 
 ## Transport and connection
 
@@ -223,9 +270,13 @@ section should be narrowed rather than removed.
 | --- | --- | --- |
 | telegram | 4000 UTF-16 units per message | Split into chunks, first chunk threaded |
 | discord | 2000 characters per message | Split into chunks |
+| feishu (personal assistant) | 12,000 bytes of JSON-encoded text per message | Split into chunks, first message ID kept |
 
-Other bridges do not declare an explicit chunking constant; they send the text
-as one message and surface any platform-side rejection as a send error.
+The Feishu split applies only to sends that carry a `clientMessageId`, which
+only personal-assistant delivery sets (`feishuAssistantMessages`); task and
+WorkHub replies on Feishu go out as a single message. Other bridges do not
+declare an explicit chunking constant; they send the text as one message and
+surface any platform-side rejection as a send error.
 
 Telegram's limit is measured in UTF-16 code units rather than JavaScript string
 length, because Telegram counts entities that way — see
@@ -239,10 +290,14 @@ longer schedule would silently no-op.
 
 1. **Streaming replies are Telegram-only.** Every other platform delivers the
    answer as one terminal message.
-2. **The user allowlist is enforced by three bridges.** `allowedUserIds` is
-   checked in Telegram, Feishu and WeCom. Discord, QQ, DingTalk, Slack and
-   WeChat do not consult it — configuring an allowlist on those channels does
-   not restrict who can talk to the bot. See the security section.
+2. **The allowlist can be edited in the settings UI for Telegram and Feishu
+   only.** Enforcement covers all eight bridges, but `botCredentialFields` in
+   `bot-chat-detail.tsx` renders the allowed-users field for those two
+   channels alone. WeChat's list is filled by QR onboarding, which binds the
+   scanning user (`bot-onboarding-main.ts`; Feishu QR onboarding does the same
+   when the scan returns a user ID). Slack, Discord, DingTalk, WeCom and QQ
+   have no UI for it, so in practice they stay open to anyone who can reach
+   the bot. See the security section.
 3. **Scheduled tasks cannot target Feishu or WeCom** (`BOT_DELIVERY_PROVIDERS`).
 4. **No platform can send files.** Text out only.
 5. **WeChat requires a local companion bridge that Maka does not ship.** The
@@ -271,12 +326,13 @@ longer schedule would silently no-op.
 
 ## Security considerations
 
-**Allowlist gaps.** Where `allowedUserIds` is enforced, an unauthorized inbound
+**Allowlist behavior.** A non-empty `allowedUserIds` is enforced on every
+channel by `BaseBotAdapter.emitIncomingMessage`. An unauthorized inbound
 message is dropped silently — no acknowledgement is sent back, so a scanner
-cannot use bounce behavior to enumerate the bot's policy (`types.ts` on
-`allowedUserIds`). On the five bridges that do not enforce it, any user who can
-reach the bot can drive it; restrict access at the platform level instead
-(private server, closed workspace, internal-only app).
+cannot use bounce behavior to enumerate the bot's policy. An empty list allows
+everyone, and five channels have no UI to set it (see
+[Known limitations](#known-limitations)); on those, restrict access at the
+platform level instead (private server, closed workspace, internal-only app).
 
 **Allowlist IDs are strings.** Telegram user IDs are 64-bit and lose precision
 as JavaScript numbers, so IDs are stored and compared as strings.
@@ -321,8 +377,9 @@ channel reports `operational`.
 
 ### Telegram
 
-The simplest channel to set up, and the most capable one: Telegram is the only
-platform where every optional capability in the matrix is implemented.
+The simplest channel to set up, and the most capable one: Telegram implements
+every capability in the matrix except outbound files, which no platform has,
+and an explicit typing cancel.
 
 **1. Create the bot.** Message [@BotFather](https://t.me/BotFather) and send
 `/newbot`. It asks for a display name and then a username, which must be
@@ -644,9 +701,10 @@ selects `Domain.Lark` only on that exact string and falls back to
 endpoint.
 
 Optionally set `allowedUserIds` to the open IDs (`ou_…`) permitted to use the
-bot. Feishu is one of the three platforms that enforce this list. Note that the
-Lark SDK's own policy gate only covers DMs, so the bridge re-checks the
-allowlist locally to catch group messages too.
+bot. Feishu is one of the two channels whose settings page exposes this list,
+and QR onboarding pre-fills it with the scanning user's open ID when the scan
+returns one. The list is handed to the Lark SDK's policy gate, which covers DMs
+only, so the bridge also re-checks it locally to catch group messages.
 
 **7. Verify.** The channel should reach `operational`. If it does not, the
 reason string on the status distinguishes the failure:
@@ -740,17 +798,16 @@ routes and picks between them from the value of `webhookUrl`:
 | Receive | `POST /ilink/bot/getupdates`, long-poll with a cursor | `GET /messages/stream?since=<epoch_seconds>`, SSE |
 | Send | `POST /ilink/bot/sendmessage` | `POST /send` with `{wxid, text}` |
 | Auth | bot token | `Authorization: Bearer <token>` |
+| Groups | dropped — DM-only | dropped unless the bot is mentioned |
+| Typing indicator | yes | no |
 | Onboarding | QR sign-in, see [the onboarding doc](architecture/bot-onboarding-runtime.zh-CN.md) | QR served by the bridge itself |
 
 **Maka does not ship the local bridge.** It defines the HTTP contract and
 nothing else — there is no bundled process, no submodule and no install step.
 Running personal WeChat this way means supplying a third-party process that
 implements the shape below. The `wxid` field in the send body is the tell: that
-is the identifier unofficial WeChat protocol libraries use.
-
-The client requirement is **WeChat 8.0.70 or newer on iOS or Android**, and the
-in-app hint notes that the bridge's *send* capability needs a `wxp_act_`
-activation code, so a bridge can legitimately be receive-only.
+is the identifier unofficial WeChat protocol libraries use. A bridge can
+legitimately be receive-only: its `/health` `send_status` says so (below).
 
 **The contract a local bridge must satisfy:**
 
@@ -797,12 +854,20 @@ refused by design.
 > delivery through WeChat itself remains unverified, as does the iLink route,
 > whose token is only obtainable through the in-app QR flow.
 
-> **iLink replies are sent without a conversation context.** The iLink send
-> body hardcodes `context_token: ''`, and `mapWechatIlinkMessage` does not keep
-> the `context_token` an inbound iLink message carries, so a reply can never
-> refer back to the message it answers. Whether iLink rejects or misroutes such
-> replies has not been tested; treat iLink replies as unproven until it is.
-> (First identified in apache/maka#5115.)
+**iLink is DM-only.** `mapWechatIlinkMessage` drops any message that carries a
+`group_id`, so group chats never reach the bot on this route; every chat ID is
+the sender's user ID. It also drops `message_type` 2, the type the bridge
+itself sends replies as, so the bot does not answer its own messages.
+
+**iLink replies carry the sender's conversation context.** The bridge keeps the
+`context_token` from each inbound iLink message, per user and capped at the
+1000 most recent users, persists that map to disk (owner-only file), and sends
+the stored token with every reply and typing request. A stored token can still
+expire on the server side, and persisting it does not extend its validity —
+see
+[WeChat personal assistant transport](../apps/desktop/README.md#wechat-personal-assistant-transport).
+The missing context was first identified in apache/maka#5115 and fixed on
+`main` by apache/maka#6156.
 
 > **The Official Account fields are collected but unused.** The settings UI
 > exposes an Official Account App ID and App Secret, described there as being
