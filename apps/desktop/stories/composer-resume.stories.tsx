@@ -60,12 +60,15 @@ const meta = {
   title: 'Composer/Resume Offer',
   parameters: { layout: 'fullscreen' },
   render: (args) => (
-    // Same harness shape as the other bare-Composer stories. Those stories —
-    // this one included — render the card at its floor width because the
-    // storybook preview never loads the app root's `--maka-reading-measure`
-    // token (maka-tokens.css). That preview gap is main's to close, not this
-    // story's to paper over; the play functions assert on roles, not layout.
+    // Same harness shape as the other bare-Composer stories, with the
+    // full-width frame SkillDraftHarness uses: a row-flex harness otherwise
+    // shrink-wraps the composer form to its padding and the card's
+    // min(var(--maka-reading-measure), 100%) width collapses to zero.
+    // (The preview does load the token — it resolves to 800px here; the
+    // collapse is the harness's shrink-wrap, not a missing token.)
+    // The play functions assert on roles, not layout.
     <div style={{ display: 'flex', alignItems: 'flex-end', height: 320, padding: 24 }}>
+      <div style={{ width: '100%' }}>
       <Composer
         {...args}
         activeSession={activeSession}
@@ -73,6 +76,7 @@ const meta = {
         onSend={fn()}
         onStop={fn()}
       />
+      </div>
     </div>
   ),
 } satisfies Meta<typeof Composer>;
