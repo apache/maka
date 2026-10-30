@@ -25,6 +25,7 @@ import {
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
 import { tr } from '../../../../products/maka/workbench/app/locale';
+import type { StagedFile } from 'maka/host';
 import {
   batch,
   cleanup,
@@ -195,7 +196,9 @@ type ConversationProps = {
     send: boolean,
   ): Promise<boolean>;
   /** Text for an empty draft once it loads, taken once (a fork made to edit or regenerate). */
-  takePrefill?(): { text: string; send: boolean } | null;
+  takePrefill?(
+    available: boolean,
+  ): { text: string; send: boolean; files?: StagedFile[]; first?: boolean } | null;
   commands(): void;
   visible(): boolean;
   foreground(): boolean;
@@ -530,12 +533,12 @@ export function Conversation(props: ConversationProps) {
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
         // The model's own text stays in Trajectory for the Bot, unless the finished
-        // Turn sent nothing with SendUser: then its final answer is the reply, so the
-        // user is never left without one.
+        // Turn is confirmed to have sent nothing with SendUser: then its final answer
+        // is the reply. While that is unknown, or if reading it failed, it stays hidden.
         if (
           botChat &&
           row.role === 'assistant' &&
-          !(row.finalOutput && turn && !turn.active && bot.forTurn(turn.turnId).length === 0)
+          !(row.finalOutput && turn && !turn.active && bot.confirmedEmpty(turn.turnId))
         )
           continue;
         if (entry.processTurnId && turn && !turnExpanded(turn)) continue;
@@ -559,6 +562,14 @@ export function Conversation(props: ConversationProps) {
       working(undefined);
     }
     return result;
+  });
+  // Ask the Host, once the Bot has no known reply for a finished Turn, whether it
+  // really sent none; only a confirmed answer lets the final text through.
+  effect(() => {
+    if (!bot.isBot()) return;
+    for (const turn of projection().turns.values())
+      if (!turn.active && bot.forTurn(turn.turnId).length === 0)
+        untracked(() => bot.confirm(turn.turnId));
   });
   let previouslyVisible = new Set<string>();
   effect(() => {
@@ -646,6 +657,7 @@ export function Conversation(props: ConversationProps) {
   // revision being sent. Edits made meanwhile show at once and are saved after.
   let holding = false;
   let heldDraft: (AttachmentEdit & { text: string }) | null = null;
+  const autoSend = signal<{ text: string; first?: boolean } | null>(null);
   const attachments = createAttachmentDraft({
     sessionId,
     client,
@@ -1515,6 +1527,14 @@ export function Conversation(props: ConversationProps) {
       heldDraft = edit;
       return;
     }
+    const first = autoSend();
+    if (first?.first) {
+      const firstText = first.text;
+      heldDraft = edit.text !== firstText ? edit : null;
+      pendingDraft = { ...edit, text: firstText };
+      startSave();
+      return;
+    }
     pendingDraft = edit;
     startSave();
   };
@@ -1728,8 +1748,11 @@ export function Conversation(props: ConversationProps) {
       return tr('Sending waits for the original receipt; it will not be replayed.');
     return '';
   };
-  const send = async (text: string, expectedBackend?: BackendIdentity) => {
-    if (!alive || (!text.trim() && attachments.files().length === 0)) return;
+  const send = async (text: string, expectedBackend?: BackendIdentity, first?: boolean) => {
+    if (!alive) return;
+    if (!text.trim() && attachments.files().length === 0) {
+      return;
+    }
     if (sendBlockedReason()) {
       notice.set(
         uiMessage(
@@ -1738,7 +1761,7 @@ export function Conversation(props: ConversationProps) {
       );
       return;
     }
-    if (draft() !== text) changeDraft(text);
+    if (!first && draft() !== text) changeDraft(text);
     const epoch = editEpoch;
     const files = [...attachments.files()];
     sending.set(true);
@@ -1747,7 +1770,9 @@ export function Conversation(props: ConversationProps) {
     try {
       const model = await selection(expectedBackend);
       if (!alive || model === null) return;
-      if (!(await projectMcp.check()) || !alive) return;
+      if (!(await projectMcp.check()) || !alive) {
+        return;
+      }
       await flushDraft();
       if (!alive) return;
       if (savingFailed()) throw new UiError('The draft could not be saved; it has not been sent.');
@@ -2217,13 +2242,13 @@ export function Conversation(props: ConversationProps) {
 
   // A fork made to regenerate a reply sends its prefilled text once sending is possible,
   // unless the draft was changed first.
-  const autoSend = signal<string | null>(null);
   effect(() => {
-    const text = autoSend();
-    if (text === null || sendBlockedReason()) return;
+    const pending = autoSend();
+    if (pending === null || sendBlockedReason()) return;
     untracked(() => {
       autoSend.set(null);
-      if (draft() === text) void send(text);
+      if (pending.first || draft() === pending.text)
+        void send(pending.text, undefined, pending.first);
     });
   });
   cleanup(() => {
@@ -2257,11 +2282,22 @@ export function Conversation(props: ConversationProps) {
         draft.set(stored.text);
         attachments.restore(stored.attachments);
         draftReady.set(true);
-        const prefill = props.takePrefill?.() ?? null;
-        if (prefill && stored.text === '' && stored.attachments.length === 0) {
-          changeDraft(prefill.text);
-          props.focusComposer();
-          if (prefill.send) autoSend.set(prefill.text);
+        const prefill =
+          props.takePrefill?.(stored.text === '' && stored.attachments.length === 0) ?? null;
+        if (prefill) {
+          try {
+            if (stored.text === '' && stored.attachments.length === 0) {
+              changeDraft(prefill.text);
+              for (const file of prefill.files ?? [])
+                attachments.observeIntake(client.beginStagedUpload(file), () => {});
+              props.focusComposer();
+              if (prefill.send) {
+                autoSend.set({ text: prefill.text, first: prefill.first });
+              }
+            }
+          } finally {
+            for (const file of prefill.files ?? []) file.dispose();
+          }
         }
         void attachments.start();
         const operations = await pendingSends(client);

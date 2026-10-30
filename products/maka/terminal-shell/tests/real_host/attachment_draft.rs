@@ -19,7 +19,7 @@
 
 use super::*;
 use maka_packages::Package;
-use maka_ui_support::{budget::NativeBudget, file::read_selected};
+use maka_ui_support::file::read_selected;
 use std::collections::BTreeMap;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -29,7 +29,7 @@ async fn a_late_original_upload_read_cannot_restore_a_removed_draft_attachment()
         let client = fixture.client().await;
         let path = fixture.directory.path().join("selected.txt");
         std::fs::write(&path, b"original selected content").unwrap();
-        let selected = read_selected(&path, &NativeBudget::default()).unwrap();
+        let selected = read_selected(&path).unwrap();
         let upload = client
             .upload_attachment(Uuid::new_v4(), &fixture.session, EDITOR, selected)
             .await

@@ -287,7 +287,7 @@ impl Owner {
                 preview: running.preview(),
                 compacting: true,
                 invocation: invocation.clone(),
-                basis,
+                basis: Arc::new(basis),
                 cancellation: running.cancellation(),
                 failure: None,
             },

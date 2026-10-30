@@ -33,7 +33,19 @@ use serde_json::json;
 async fn fixture(
     path: &std::path::Path,
 ) -> (EventLog, ActivationCheckpoint, Vec<NativeApprovalPending>) {
+    let (log, checkpoint, pending, _) = fixture_with_changes(path).await;
+    (log, checkpoint, pending)
+}
+async fn fixture_with_changes(
+    path: &std::path::Path,
+) -> (
+    EventLog,
+    ActivationCheckpoint,
+    Vec<NativeApprovalPending>,
+    tokio::sync::watch::Receiver<()>,
+) {
     let log = EventLog::open(path).await.unwrap();
+    let changes = log.subscribe_native_approval_changes();
     log.create_session("session", "session", &json!({}), 1)
         .await
         .unwrap();
@@ -154,7 +166,7 @@ async fn fixture(
         engine: json!({}),
         native_basis: json!({}),
     };
-    (log, checkpoint, pending)
+    (log, checkpoint, pending, changes)
 }
 async fn answer(log: &EventLog) {
     log.commit_interaction_outcome(
@@ -778,4 +790,144 @@ async fn settled_cursor_survives_capture_window_until_actual_next_model_request(
     assert!(prefix.events.iter().any(|stored|matches!(&stored.event.fact,Fact::ModelInterrupted{step_id,..} if step_id=="next-model")));
     assert_eq!(prefix.events.iter().filter(|stored|matches!(&stored.event.fact,Fact::ToolSettled{operation_id,..} if operation_id=="step:call")).count(),1);
     log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn activation_hints_follow_parked_approval_changes_not_ordinary_commits() {
+    let directory = tempfile::tempdir().unwrap();
+    let (ordinary, checkpoint, _, changes) =
+        fixture_with_changes(&directory.path().join("ordinary")).await;
+    ordinary
+        .append(
+            &EventWrite::plain(RuntimeEvent::new(
+                checkpoint.invocation,
+                Fact::ToolSettled {
+                    operation_id: "step:call".into(),
+                    outcome: maka_agent_facts::event::ToolOutcome::Failed {
+                        message: "ordinary failure".into(),
+                    },
+                },
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!changes.has_changed().unwrap());
+    assert_eq!(
+        ordinary.ready_native_approval_sessions().await.unwrap(),
+        Vec::<String>::new()
+    );
+    ordinary.close().await.unwrap();
+    let (log, checkpoint, pending, mut changes) =
+        fixture_with_changes(&directory.path().join("db")).await;
+    // The fixture commits a model completion, T1 and its unanswered interaction.
+    assert!(!changes.has_changed().unwrap());
+    let ParkResult::Parked(receipt) = log
+        .park_native_approvals(checkpoint.clone(), pending.clone())
+        .await
+        .unwrap()
+    else {
+        panic!("eligible frontier must park")
+    };
+    assert!(changes.has_changed().unwrap());
+    changes.borrow_and_update();
+    assert_eq!(
+        log.ready_native_approval_sessions().await.unwrap(),
+        Vec::<String>::new()
+    );
+    answer(&log).await;
+    assert!(changes.has_changed().unwrap());
+    changes.borrow_and_update();
+    assert_eq!(
+        log.ready_native_approval_sessions().await.unwrap(),
+        ["session"]
+    );
+    let claimed = log
+        .claim_native_approvals(&receipt, "claim", "epoch")
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert!(!changes.has_changed().unwrap());
+    assert_eq!(
+        log.ready_native_approval_sessions().await.unwrap(),
+        Vec::<String>::new()
+    );
+    assert!(
+        log.release_native_approval_claim(&receipt, "step:call", "claim", "epoch")
+            .await
+            .unwrap()
+    );
+    assert!(changes.has_changed().unwrap());
+    changes.borrow_and_update();
+    assert_eq!(
+        log.ready_native_approval_sessions().await.unwrap(),
+        ["session"]
+    );
+    log.append(
+        &EventWrite::plain(RuntimeEvent::new(
+            checkpoint.invocation,
+            Fact::ToolSettled {
+                operation_id: "step:call".into(),
+                outcome: maka_agent_facts::event::ToolOutcome::Failed {
+                    message: "denied".into(),
+                },
+            },
+        ))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(changes.has_changed().unwrap());
+    assert!(log.native_approvals_settled(&receipt).await.unwrap());
+    log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn closure_and_stop_wake_an_already_registered_park_observer() {
+    for stop in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (log, checkpoint, pending) = fixture(&directory.path().join("db")).await;
+        let ParkResult::Parked(_) = log
+            .park_native_approvals(checkpoint.clone(), pending)
+            .await
+            .unwrap()
+        else {
+            panic!("eligible frontier must park")
+        };
+        let mut changes = log.subscribe_native_approval_changes();
+        assert_eq!(
+            log.ready_native_approval_sessions().await.unwrap(),
+            Vec::<String>::new()
+        );
+        if stop {
+            assert!(
+                log.stop_native_approvals(&checkpoint.invocation, 4)
+                    .await
+                    .unwrap()
+            );
+        } else {
+            assert_eq!(
+                log.close_run_interactions(
+                    &checkpoint.invocation,
+                    maka_agent_facts::interaction::ClosureReason::ProducerCancelled,
+                    4
+                )
+                .await
+                .unwrap(),
+                1
+            );
+        }
+        changes.changed().await.unwrap();
+        assert_eq!(
+            log.ready_native_approval_sessions().await.unwrap(),
+            ["session"]
+        );
+        let saved = log
+            .native_approval_checkpoint("session")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.revoked, stop);
+        log.close().await.unwrap();
+    }
 }

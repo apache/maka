@@ -77,6 +77,10 @@ type ModelsPage = {
 
 type ModelMenuHandle = { instance: number; back(): void; dismiss(): void };
 type ModelTarget = { sessionId: string; instance: number | null };
+type ModelOwner = Pick<
+  ConversationHandle,
+  'sessionId' | 'backend' | 'modelDetails' | 'refreshModel'
+>;
 const modelRowHeight = platform.isTerminal ? 48 : 40;
 // Notes under the model list start where the rows' text does.
 const listFill = () => (platform.isTerminal ? C.surface : C.background);
@@ -85,7 +89,7 @@ const listTextInset = {
 };
 
 export function ModelSelect(props: {
-  owner: ConversationHandle;
+  owner: ModelOwner;
   instance(): number | null;
   current(): boolean;
   toggle(target: ModelTarget): void;
@@ -224,7 +228,7 @@ export function ModelSelect(props: {
 }
 
 function ModelMenu(props: {
-  owner: ConversationHandle;
+  owner: ModelOwner;
   instance: number;
   current(): boolean;
   close(instance: number): boolean;

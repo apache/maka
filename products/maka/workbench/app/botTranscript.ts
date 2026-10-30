@@ -19,69 +19,22 @@
 
 import { signal } from 'nsh';
 import type { createHost } from './host';
+import { createBotTranscriptCore } from './botTranscriptCore';
 
-type Host = Pick<ReturnType<typeof createHost>, 'query' | 'subscribe'>;
-export type BotTranscriptMessage = {
-  sequence: number;
-  messageId: string;
-  index: number;
-  text: string;
-  at: number;
-  turnId?: string;
-};
+export type { BotTranscriptMessage } from './botTranscriptCore';
 
-/**
- * What the Bot deliberately told its user, grouped by the Turn that sent it. Only the
- * Bot Session subscribes; other Sessions make one head lookup and stop.
- */
-export function createBotTranscript(host: Host, sessionId: string) {
-  const isBot = signal(false);
-  const byTurn = signal<ReadonlyMap<string, BotTranscriptMessage[]>>(new Map());
-  let alive = true;
-  let stream: { close(): Promise<void> } | null = null;
-  let cursor = 0;
-  const catchUp = async (through: number) => {
-    while (alive && cursor < through) {
-      const page = await host.query('agent', 'botOutbox', { after: cursor });
-      if (!alive || page.sessionId !== sessionId || page.messages.length === 0) return;
-      const next = new Map(byTurn());
-      for (const message of page.messages) {
-        cursor = message.sequence;
-        if (!message.turnId) continue;
-        next.set(message.turnId, [...(next.get(message.turnId) ?? []), message]);
-      }
-      byTurn.set(next);
-      if (page.nextAfter === null || page.nextAfter === undefined) return;
-    }
-  };
-  void (async () => {
-    try {
-      const head = await host.query('agent', 'botOutbox', { limit: 0 });
-      if (!alive || head.sessionId !== sessionId) return;
-      isBot.set(true);
-      const opened = await host.subscribe('agent', 'watchBotOutbox', { limit: 0 });
-      if (!alive) {
-        await opened.close();
-        return;
-      }
-      stream = opened;
-      for (;;) {
-        const latest = await opened.next();
-        if (!alive || latest === null) return;
-        if (latest.sessionId === sessionId) await catchUp(latest.through);
-      }
-    } catch {
-      // Not the Bot Session, or the Bot mode is off: the conversation stays ordinary.
-    }
-  })();
+/** Reactive view of the Bot's transcript; see `createBotTranscriptCore`. */
+export function createBotTranscript(
+  host: Pick<ReturnType<typeof createHost>, 'query' | 'subscribe'>,
+  sessionId: string,
+) {
+  const version = signal(0);
+  const core = createBotTranscriptCore(host as never, sessionId, () => version.set(version() + 1));
   return {
-    isBot: () => isBot(),
-    forTurn: (turnId: string) => byTurn().get(turnId) ?? [],
-    close() {
-      alive = false;
-      const previous = stream;
-      stream = null;
-      if (previous) void previous.close().catch(() => {});
-    },
+    isBot: () => (version(), core.isBot()),
+    forTurn: (turnId: string) => (version(), core.forTurn(turnId)),
+    confirmedEmpty: (turnId: string) => (version(), core.confirmedEmpty(turnId)),
+    confirm: (turnId: string) => void core.confirm(turnId),
+    close: () => core.close(),
   };
 }

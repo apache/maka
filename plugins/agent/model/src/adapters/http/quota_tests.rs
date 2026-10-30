@@ -91,19 +91,28 @@ impl Transport for QuotaTransport {
 }
 
 #[tokio::test(start_paused = true)]
-async fn compatible_gateway_quota_and_throttle_semantics_do_not_depend_on_origin() {
+async fn compatible_gateway_quota_and_scoped_zai_codes_preserve_retry_advice() {
     use crate::{ProviderFailureReason, ProviderKind};
     use serde_json::json;
-    for (base, kind) in [
+    for (base, kind, numeric_reason) in [
         (
             "https://gateway.fixture.invalid/team",
             ProviderKind::OpenaiCompatible {
                 name: "provider".into(),
             },
+            ProviderFailureReason::RateLimit,
         ),
         (
             "https://another.fixture.invalid/messages",
             ProviderKind::Anthropic,
+            ProviderFailureReason::RateLimit,
+        ),
+        (
+            "https://api.z.ai/api/coding/paas/v4",
+            ProviderKind::OpenaiCompatible {
+                name: "provider".into(),
+            },
+            ProviderFailureReason::QuotaExhausted,
         ),
     ] {
         for (code, message, reason) in [
@@ -112,11 +121,7 @@ async fn compatible_gateway_quota_and_throttle_semantics_do_not_depend_on_origin
                 "account capacity exhausted; reset time is unspecified",
                 ProviderFailureReason::QuotaExhausted,
             ),
-            (
-                "1308",
-                "Usage limit reached for tokens per minute",
-                ProviderFailureReason::RateLimit,
-            ),
+            ("1308", "Usage limit reached for this plan", numeric_reason),
             (
                 "token_quota_exceeded",
                 "Usage limit for this short window; try again",

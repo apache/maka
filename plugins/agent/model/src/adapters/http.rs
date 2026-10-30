@@ -144,6 +144,7 @@ async fn run_inner(
     shared: Arc<Shared>,
     response_body: &mut Option<Arc<dyn http::Body>>,
 ) -> Result<(), ModelError> {
+    let quota_scope = error::QuotaScope::endpoint(&request.provider.base_url);
     let mut prepared = tokio::select! {
         biased;
         _ = context.cancellation.cancelled() => return Err(ModelError::Cancelled),
@@ -164,6 +165,7 @@ async fn run_inner(
             .remove("stream_options");
     }
     let mut events = events::Events::new(prepared.anthropic);
+    events.evidence.quota_scope = quota_scope;
     let mut retried = remembered;
     loop {
         let response = dispatch(

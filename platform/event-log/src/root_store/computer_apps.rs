@@ -579,13 +579,17 @@ impl SessionStore {
                             })
                         })
                         .await?;
-                    let local_count = crate::interactions::lifecycle::close_in_transaction(
-                        &mut tx,
-                        Some(&invocation),
-                        &outcome,
-                    )
-                    .await?;
+                    let (local_count, approval_ready) =
+                        crate::interactions::lifecycle::close_notified_in_transaction(
+                            &mut tx,
+                            Some(&invocation),
+                            &outcome,
+                        )
+                        .await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    if approval_ready {
+                        notice.native_approvals();
+                    }
                     if local_count > 0 {
                         notice.metadata();
                     }

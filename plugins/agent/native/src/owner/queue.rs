@@ -89,8 +89,8 @@ impl Owner {
     fn start_native_approval_wake(self: &Arc<Self>) {
         let owner = self.clone();
         self.producers.spawn(async move {
-            let mut changes = owner.store.subscribe_changes();
-            let mut controls = owner.store.subscribe_control_changes();
+            let mut changes = owner.store.subscribe_native_approval_changes();
+            let mut controls = owner.store.subscribe_native_approval_control_changes();
             let mut reconcile = true;
             loop {
                 changes.borrow_and_update();
@@ -122,7 +122,7 @@ impl Owner {
         });
     }
 
-    async fn schedule_native_approvals(self: &Arc<Self>) -> Result<(), RunError> {
+    pub(super) async fn schedule_native_approvals(self: &Arc<Self>) -> Result<(), RunError> {
         for session in self.store.ready_native_approval_sessions().await? {
             if !self.owns(&session) {
                 continue;
@@ -137,13 +137,18 @@ impl Owner {
             {
                 continue;
             }
-            let Ok(admission) = self.runs.try_ordered(&session) else {
-                continue;
-            };
             let cancellation = self.stop.child_token();
             runs.preparing.insert(session.clone(), cancellation.clone());
             let owner = self.clone();
             self.workers.spawn(async move {
+                let admission = tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => {
+                        owner.runs.state().await.preparing.remove(&session);
+                        return;
+                    }
+                    admission = owner.runs.ordered(&session) => admission,
+                };
                 let preparation = QueuePreparation {
                     admission,
                     cancellation,
@@ -345,7 +350,7 @@ impl Owner {
         self: &Arc<Self>,
         runs: &mut Runs,
         running: &RunningInvocation,
-        basis: MessageBasis,
+        basis: Arc<MessageBasis>,
     ) {
         if let Some(model) = &basis.model {
             self.title_after_message(running.invocation().clone(), model.clone());
@@ -417,7 +422,7 @@ impl Owner {
         self: &Arc<Self>,
         session: &str,
         cancellation: &CancellationToken,
-    ) -> Result<Option<(RunningInvocation, MessageBasis)>, RunError> {
+    ) -> Result<Option<(RunningInvocation, Arc<MessageBasis>)>, RunError> {
         loop {
             if cancellation.is_cancelled() {
                 return Ok(None);
@@ -448,12 +453,13 @@ impl Owner {
         self: &Arc<Self>,
         checkpoint: maka_event_log::native_approvals::NativeApprovalCheckpoint,
         cancellation: &CancellationToken,
-    ) -> Result<Option<(RunningInvocation, MessageBasis)>, RunError> {
+    ) -> Result<Option<(RunningInvocation, Arc<MessageBasis>)>, RunError> {
         let invocation = checkpoint.checkpoint.invocation.clone();
         let basis: MessageBasis =
             serde_json::from_value(checkpoint.checkpoint.native_basis.clone()).map_err(
                 |error| RunError::InvalidInput(format!("invalid native approval basis: {error}")),
             )?;
+        let basis = Arc::new(basis);
         let store = self.store.session(&invocation.session_id).await?;
         let mut configuration = store
             .invocation_configuration(&invocation)
@@ -539,10 +545,7 @@ impl Owner {
                 supports_vision: prepared.supports_vision,
                 request_fingerprint: Some(basis.fingerprint.clone()),
                 configuration: configuration.clone(),
-                native_activation_basis: Some(
-                    serde_json::to_value(&basis)
-                        .map_err(|error| RunError::InvalidInput(error.to_string()))?,
-                ),
+                native_activation_basis: Some(basis.clone()),
                 work: (),
             };
             Ok(maka_agent_engine::ResumeContinuation { settings, tools })
@@ -572,7 +575,7 @@ impl Owner {
         session: &str,
         entry: &PendingMessageAdmission,
         cancellation: &CancellationToken,
-    ) -> Result<Option<(RunningInvocation, MessageBasis)>, RunError> {
+    ) -> Result<Option<(RunningInvocation, Arc<MessageBasis>)>, RunError> {
         if entry.execution.owner != self.prefix || !self.owns(session) {
             return Err(RunError::InvalidInput("agent_queue_owner_invalid".into()));
         }
@@ -642,7 +645,7 @@ impl Owner {
         &self,
         entry: &PendingMessageAdmission,
         invocation: Invocation,
-    ) -> Result<(PreparedRun, MessageBasis), String> {
+    ) -> Result<(PreparedRun, Arc<MessageBasis>), String> {
         let mut basis: MessageBasis = serde_json::from_value(entry.execution.basis.clone())
             .map_err(|_| "agent_message_basis_invalid")?;
         self.validate_background(&basis).await?;
@@ -705,6 +708,7 @@ impl Owner {
             }
             _ => return Err("agent_message_basis_invalid".into()),
         };
+        let basis = Arc::new(basis);
         Ok((
             self.input(invocation, backend, basis.clone(), entry.source.clone())
                 .await?,
@@ -715,7 +719,7 @@ impl Owner {
         &self,
         invocation: Invocation,
         backend: PreparedBackend,
-        basis: MessageBasis,
+        basis: Arc<MessageBasis>,
         delivered: RootSourceMessage,
     ) -> Result<PreparedRun, String> {
         let system_prompt = match (
@@ -808,10 +812,8 @@ impl Owner {
                     provider_options: prepared.options,
                     main_output_limit: prepared.main_output_limit,
                     supports_vision: prepared.supports_vision,
-                    native_activation_basis: Some(
-                        serde_json::to_value(&basis).map_err(|_| "agent_message_basis_invalid")?,
-                    ),
-                    request_fingerprint: Some(basis.fingerprint),
+                    native_activation_basis: Some(basis.clone()),
+                    request_fingerprint: Some(basis.fingerprint.clone()),
                     configuration,
                     work: RunWork::Message {
                         message: delivered.message.content.clone(),
@@ -839,7 +841,7 @@ impl Owner {
                     },
                     binding: backend,
                     configuration,
-                    request_fingerprint: Some(basis.fingerprint),
+                    request_fingerprint: Some(basis.fingerprint.clone()),
                     source_messages: vec![delivered],
                 }))
             }

@@ -154,6 +154,8 @@ jobs:
       - run: just check
         env:
           NEXTEST_PROFILE: ci
+      - name: Desktop conversation lifecycle
+        run: cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test integration -E 'test(terminal::desktop_new_session)' -j 1
       - name: Report storage after checks
         if: ${{ always() && steps.mbx.outcome == 'success' }}
         run: |

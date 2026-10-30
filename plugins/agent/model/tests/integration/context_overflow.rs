@@ -423,7 +423,15 @@ async fn equivalent_http_and_sse_errors_share_categories_without_promoting_trans
             )
             .await;
             assert!(
-                matches!(error, ModelError::Http { status: 400, .. }),
+                match &error {
+                    ModelError::ImageInputRejected {
+                        status: Some(400),
+                        code: Some(actual),
+                        ..
+                    } => code == "invalid_image" && actual == code,
+                    ModelError::Http { status: 400, .. } => code != "invalid_image",
+                    _ => false,
+                },
                 "payload/image evidence cannot authorize token compaction: {error}"
             );
         }
