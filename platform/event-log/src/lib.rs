@@ -55,6 +55,7 @@ pub mod recovery;
 pub mod root;
 pub mod root_store;
 pub use root_store::{RootStore, SessionStore};
+pub mod model_retries;
 pub mod native_approvals;
 pub mod native_computer;
 pub mod recall;
@@ -473,9 +474,9 @@ impl EventLog {
         self.commits.subscribe_session(session)
     }
 
-    /// Register before reading approval state. This hint never grants execution authority.
-    pub fn subscribe_native_approval_changes(&self) -> tokio::sync::watch::Receiver<()> {
-        self.commits.subscribe_native_approvals()
+    /// Register before reading activation state. This hint never grants execution authority.
+    pub fn subscribe_activation_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.commits.subscribe_activations()
     }
 
     /// Register before reading catalog state. Hints include metadata writes;
@@ -494,11 +495,7 @@ fn sequence_number(value: i64) -> Result<u64, StoreError> {
 #[cfg(test)]
 extern crate self as maka_event_log;
 #[cfg(test)]
-mod compact_presentation_tests;
-#[cfg(test)]
 mod executor_identity_tests;
-#[cfg(test)]
-mod row_directory_tests;
 #[cfg(test)]
 mod session_copy_tests;
 #[cfg(test)]
@@ -508,5 +505,3 @@ mod test_store;
 mod transcript_cache;
 #[cfg(test)]
 mod transcript_index_tests;
-#[cfg(test)]
-mod transcript_tools_tests;

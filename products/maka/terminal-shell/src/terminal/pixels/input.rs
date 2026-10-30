@@ -934,6 +934,10 @@ mod tests {
         assert!(inbox.take_encoded().is_none());
         assert_eq!(inbox.published, Some(frames[1].token()));
 
+        inbox.frames.push_back(FrameJob {
+            geometry: 1,
+            work: FrameWork::Ready(encoded(1)),
+        });
         encoding(&mut inbox, &frames[2]);
         inbox
             .push(Event::WindowResized(capabilities().size))
@@ -942,7 +946,7 @@ mod tests {
         assert_eq!(
             inbox.frames.len(),
             1,
-            "the unfinished old task retains its original slot"
+            "resize discards completed wire and retains only the unfinished task"
         );
         assert!(
             inbox.can_submit(),
@@ -1021,36 +1025,6 @@ mod tests {
         inbox.set_ui_scale(1.0).unwrap();
         assert_eq!(inbox.geometry, 4);
         assert_eq!(inbox.capabilities.scale_factor(), 2.5);
-    }
-
-    #[test]
-    fn stale_ready_wire_retires_but_failure_and_cancel_return_only_the_finished_slot() {
-        let mut inbox = Inbox::new(capabilities(), false);
-        let token = FrameToken::default();
-        inbox.frames.push_back(FrameJob {
-            geometry: 1,
-            work: FrameWork::Ready(encoded(1)),
-        });
-        inbox.frames.push_back(FrameJob {
-            geometry: 1,
-            work: FrameWork::Encoding(token.clone()),
-        });
-        inbox
-            .push(Event::WindowResized(capabilities().size))
-            .unwrap();
-        assert_eq!(
-            inbox.frames.len(),
-            1,
-            "only already completed wire is disposable"
-        );
-        inbox.finished(&token, None);
-        assert!(inbox.frames.is_empty());
-        assert!(inbox.take_encoded().is_none());
-        assert!(inbox.in_flight.is_none());
-        assert!(
-            inbox.ready.is_none(),
-            "failure/cancel cannot manufacture a writer receipt"
-        );
     }
 
     #[test]

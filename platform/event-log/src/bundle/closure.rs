@@ -102,11 +102,24 @@ impl Closure {
                 Fact::ModelRequested {
                     source_scope,
                     source_high_water,
+                    source_capture,
                     ..
                 } => {
                     selected.scope(db, source_scope, *source_high_water).await?;
                     selected
-                        .archives(db, source_scope, *source_high_water, sequence)
+                        .archives(
+                            db,
+                            source_scope,
+                            *source_high_water,
+                            source_capture
+                                .publication_watermark
+                                .checked_add(1)
+                                .ok_or_else(|| {
+                                    StoreError::InvalidTransition(
+                                        "request publication watermark overflow".into(),
+                                    )
+                                })?,
+                        )
                         .await?;
                 }
                 Fact::ContextCheckpointRecorded { checkpoint } => {

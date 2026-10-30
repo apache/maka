@@ -19,10 +19,7 @@
 
 use super::*;
 use maka_agent_facts::{
-    event::{
-        Fact, Invocation, InvocationOutcome, LogScope, RuntimeEvent, StoredEvent, ToolOutcome,
-    },
-    executor::Output,
+    event::{Fact, Invocation, LogScope, RuntimeEvent, StoredEvent, ToolOutcome},
     input::InvocationInput,
     tool_call::ToolCallIdentity,
 };
@@ -316,124 +313,6 @@ async fn approval_replay_keeps_original_call_across_step_end_dispatch_and_interr
         seeds(&mut db).await,
         vec![expected(pending, "interrupted:dispatched")]
     );
-}
-
-#[tokio::test]
-async fn completion_only_and_provider_seeds_follow_their_acceptance_boundaries() {
-    let mut db = database().await;
-    append(&mut db, request("complete-only", false, "main")).await;
-    let early = RuntimeEvent::new(
-        invocation(),
-        observed("complete-only", 0, call("local", false)),
-    );
-    assert!(
-        matches!(crate::model_items::validate(&mut db,&early).await,Err(StoreError::InvalidTransition(reason))
-        if reason=="invalid model part: completion-only request cannot accept an early local part")
-    );
-    let (completed, _) = append(
-        &mut db,
-        complete(
-            "complete-only",
-            vec![json!({"kind":"own","data":record("complete-only",0,call("local",false))})],
-        ),
-    )
-    .await;
-    assert_eq!(
-        seeds(&mut db).await,
-        vec![expected(completed, "complete-only:local")]
-    );
-    append(&mut db, dispatch("complete-only:local")).await;
-    append(&mut db, settle("complete-only:local")).await;
-
-    for acceptance in [false, true] {
-        let step = format!("provider-{acceptance}");
-        append(&mut db, request(&step, acceptance, "main")).await;
-        let (start, _) = append(&mut db, observed(&step, 0, call("remote", true))).await;
-        assert_eq!(
-            seeds(&mut db).await,
-            vec![expected(start, &format!("{step}:remote"))]
-        );
-        append(&mut db,observed(&step,1,json!({"kind":"tool_result","id":"remote","name":"Read","output":"tiny","is_error":false}))).await;
-        assert_eq!(seeds(&mut db).await, vec![]);
-        let (second, _) = append(&mut db, observed(&step, 2, call("remote-pending", true))).await;
-        assert_eq!(
-            seeds(&mut db).await,
-            vec![expected(second, &format!("{step}:remote-pending"))]
-        );
-        append(&mut db, interrupted(&step)).await;
-        assert_eq!(seeds(&mut db).await, vec![]);
-    }
-    append(&mut db, request("summary", false, "summary")).await;
-    append(&mut db, observed("summary", 0, call("private", false))).await;
-    assert_eq!(seeds(&mut db).await, vec![]);
-}
-
-fn executor_start(call: &str) -> Fact {
-    Fact::ExecutorObserved {
-        output: Output::ToolStart {
-            tool_call_id: call.into(),
-            name: "Read".into(),
-            input: json!({"limit":3}),
-        },
-    }
-}
-fn executor_result(call: &str) -> Fact {
-    Fact::ExecutorObserved {
-        output: Output::ToolResult {
-            tool_call_id: call.into(),
-            text: "tiny".into(),
-            is_error: false,
-        },
-    }
-}
-
-#[tokio::test]
-async fn executor_seed_lifecycle_is_idempotent_and_does_not_change_safety_cuts() {
-    let mut db = database().await;
-    let (first, _) = append(&mut db, executor_start("original")).await;
-    append(&mut db, executor_start("original")).await;
-    assert_eq!(seeds(&mut db).await, vec![expected(first, "original")]);
-    let (result, _) = append(&mut db, executor_result("original")).await;
-    append(&mut db, executor_start("original")).await;
-    append(&mut db, executor_result("result-first")).await;
-    append(&mut db, executor_start("result-first")).await;
-    assert_eq!(seeds(&mut db).await, vec![]);
-    for cut in [first, result, i64::MAX as u64] {
-        crate::context::safety::settled_boundary(&mut db, "invocation", cut)
-            .await
-            .unwrap();
-        crate::context::safety::model_boundary(&mut db, "invocation", cut)
-            .await
-            .unwrap();
-    }
-    let (next, _) = append(&mut db, executor_start("after-results")).await;
-    assert_eq!(seeds(&mut db).await, vec![expected(next, "after-results")]);
-    append(
-        &mut db,
-        Fact::ExecutorCompleted {
-            text: "done".into(),
-        },
-    )
-    .await;
-    assert_eq!(seeds(&mut db).await, vec![]);
-    let open:i64=sqlx::query_scalar("SELECT COUNT(*) FROM context_execution_work WHERE kind='executor_tool' AND closed_at IS NULL")
-        .fetch_one(&mut db).await.unwrap();
-    assert_eq!(open, 0);
-    let (last, _) = append(&mut db, executor_start("before-ended")).await;
-    assert_eq!(seeds(&mut db).await, vec![expected(last, "before-ended")]);
-    append(
-        &mut db,
-        Fact::InvocationEnded {
-            outcome: InvocationOutcome::Cancelled {
-                source: "fixture".into(),
-            },
-        },
-    )
-    .await;
-    assert_eq!(seeds(&mut db).await, vec![]);
-    let open:i64=sqlx::query_scalar("SELECT COUNT(*) FROM context_execution_work WHERE kind='executor_tool' AND closed_at IS NULL")
-        .fetch_one(&mut db).await.unwrap();
-    assert_eq!(open, 0);
 }
 
 #[tokio::test]

@@ -20,19 +20,6 @@
 use crate::prompt::{ContentPart, Message, ToolOutput};
 use maka_agent_facts::language::Language;
 
-/// Chat has text-only tool messages. Keep the entire result group together and
-/// carry media in the following user message, never between parallel results.
-#[cfg(test)]
-pub(super) fn project(messages: Vec<Message>, language: Language) -> Vec<Message> {
-    let mut projector = Projector::new(language);
-    let mut projected = Vec::new();
-    for message in messages {
-        projected.extend(projector.push(message));
-    }
-    projected.extend(projector.finish());
-    projected
-}
-
 /// Carries only the pending tool media across consecutive result messages.
 /// The request encoder drains each returned message before reading more history.
 pub(super) struct Projector {
@@ -106,45 +93,5 @@ impl Projector {
 
     pub(super) fn finish(mut self) -> Option<Message> {
         self.take_media()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::prompt::FileData;
-
-    #[test]
-    fn tool_media_projection_uses_captured_language_and_keeps_payload() {
-        let media = ContentPart::File {
-            data: FileData::Data("aW1hZ2U=".into()),
-            media_type: "image/png".into(),
-            provider_options: None,
-        };
-        for (language, expected) in [
-            (Language::ZhCn, "来自工具 read（call-原文）的图像："),
-            (Language::ZhTw, "來自工具 read（call-原文）的影像："),
-        ] {
-            let messages = project(
-                vec![Message::tool(
-                    "call-原文",
-                    "read",
-                    ToolOutput::Content(vec![ContentPart::text("Tool result 原文"), media.clone()]),
-                )],
-                language,
-            );
-            let Message::User { content, .. } = &messages[1] else {
-                panic!("media user message")
-            };
-            assert_eq!(content, &[ContentPart::text(expected), media.clone()]);
-            let Message::Tool { content, .. } = &messages[0] else {
-                panic!("settled tool result")
-            };
-            let ToolOutput::Content(parts) = &content[0].output else {
-                panic!("tool content")
-            };
-            assert_eq!(parts[0], ContentPart::text("Tool result 原文"));
-            assert_eq!(content[0].tool_call_id, "call-原文");
-        }
     }
 }

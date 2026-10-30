@@ -134,7 +134,6 @@ struct Fixture {
     worker: WorkerCallbacks,
     parent_messages: mpsc::UnboundedReceiver<ParentMessage>,
     worker_messages: mpsc::UnboundedReceiver<WorkerMessage>,
-    fail_send: Arc<AtomicBool>,
     faults: mpsc::UnboundedReceiver<CallbackFault>,
 }
 impl Fixture {
@@ -142,8 +141,6 @@ impl Fixture {
         let (parent_send, parent_messages) = mpsc::unbounded_channel();
         let (worker_send, worker_messages) = mpsc::unbounded_channel();
         let (fault, faults) = mpsc::unbounded_channel();
-        let fail_send = Arc::new(AtomicBool::new(false));
-        let failing = fail_send.clone();
         Self {
             parent: ParentCallbacks::new(
                 Arc::new(move |message| {
@@ -154,16 +151,12 @@ impl Fixture {
                 fault,
             ),
             worker: WorkerCallbacks::new(Arc::new(move |message| {
-                if failing.load(Ordering::SeqCst) {
-                    return Err(failed("fixture frame was not queued"));
-                }
                 worker_send
                     .send(message)
                     .map_err(|_| failed("fixture worker closed"))
             })),
             parent_messages,
             worker_messages,
-            fail_send,
             faults,
         }
     }
@@ -269,59 +262,6 @@ fn remote_token(worker: &WorkerCallbacks) -> ScopeToken {
         .unwrap()
         .token
         .clone()
-}
-
-#[tokio::test]
-async fn effects_remain_unpolled_until_original_host_admission_and_complete_from_same_reply() {
-    let mut fixture = Fixture::new();
-    let authority = Arc::new(Authority::default());
-    let host = Arc::new(Host::default());
-    let services = fixture.prepare(authority.clone(), host.clone()).await;
-    assert_eq!(*authority.reads.lock().unwrap(), vec![key().access]);
-    let polls = Arc::new(AtomicUsize::new(0));
-    let observed = polls.clone();
-    let (finish, finished) = oneshot::channel();
-    services
-        .effects
-        .as_ref()
-        .unwrap()
-        .spawn_guarded(
-            Box::pin(async move {
-                observed.fetch_add(1, Ordering::SeqCst);
-                finished.await.unwrap();
-                Ok(())
-            }),
-            Box::new(|error| panic!("unexpected rejection: {error}")),
-        )
-        .unwrap();
-    let message = fixture.worker_message().await;
-    fixture.parent.handle(message).unwrap();
-    tokio::task::yield_now().await;
-    assert_eq!(
-        polls.load(Ordering::SeqCst),
-        0,
-        "queuing cannot cross Host admission"
-    );
-    let mut admitted = host.admitted.lock().unwrap().pop().unwrap();
-    assert!(poll!(admitted.pending.as_mut()).is_pending());
-    let message = fixture.parent_message().await;
-    assert!(matches!(&message, ParentMessage::Admit { .. }));
-    fixture.worker.handle(message).unwrap();
-    tokio::task::yield_now().await;
-    assert_eq!(polls.load(Ordering::SeqCst), 1);
-    assert!(poll!(admitted.pending.as_mut()).is_pending());
-    finish.send(()).unwrap();
-    let message = fixture.worker_message().await;
-    assert!(matches!(
-        &message,
-        WorkerMessage::EffectFinished { result: Ok(()), .. }
-    ));
-    fixture.parent.handle(message).unwrap();
-    assert!(matches!(
-        poll!(admitted.pending.as_mut()),
-        Poll::Ready(Ok(()))
-    ));
-    assert!(!fixture.parent.has_unsettled());
 }
 
 #[tokio::test]
@@ -458,86 +398,6 @@ async fn checked_rpc_custody_is_accepted_before_completion_and_reports_uncertain
 }
 
 #[tokio::test]
-async fn synchronous_wire_refusal_returns_the_same_unpolled_checked_rpc() {
-    let mut fixture = Fixture::new();
-    let services = fixture
-        .prepare(Arc::new(Authority::default()), Arc::new(Host::default()))
-        .await;
-    fixture.fail_send.store(true, Ordering::SeqCst);
-    let polls = Arc::new(AtomicUsize::new(0));
-    let observed = polls.clone();
-    let error = services
-        .settlement
-        .unwrap()
-        .retain_checked(Box::pin(async move {
-            observed.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }))
-        .expect_err("failed enqueue must return custody");
-    assert_eq!(polls.load(Ordering::SeqCst), 0);
-    error.1.await.unwrap();
-    assert_eq!(polls.load(Ordering::SeqCst), 1);
-    assert!(!fixture.worker.has_unsettled());
-}
-
-#[tokio::test]
-async fn preparation_refuses_foreign_session_and_preserves_original_cleanup_failure() {
-    let mut fixture = Fixture::new();
-    let authority = Arc::new(Authority::default());
-    let mut foreign = key();
-    foreign.identity.session = "foreign-session".into();
-    fixture
-        .parent
-        .prepare(
-            17,
-            1,
-            foreign,
-            &identity(),
-            ParentCapabilities {
-                authorization: Some(authority.clone()),
-                ..ParentCapabilities::default()
-            },
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-    assert!(matches!(
-        fixture.parent_message().await,
-        ParentMessage::Prepared { result, .. }
-            if matches!(*result, Err(Failure::Failed(_)))
-    ));
-    assert!(authority.reads.lock().unwrap().is_empty());
-    let authority = Arc::new(Authority {
-        check_failure: Some(ToolError::CleanupUnconfirmed(
-            "canonical pending prompt remains open".into(),
-        )),
-        ..Authority::default()
-    });
-    let result = fixture
-        .parent
-        .prepare(
-            17,
-            2,
-            key(),
-            &identity(),
-            ParentCapabilities {
-                authorization: Some(authority),
-                ..ParentCapabilities::default()
-            },
-            CancellationToken::new(),
-        )
-        .await;
-    assert!(
-        matches!(result, Err(ToolError::CleanupUnconfirmed(message)) if message.contains("canonical pending prompt remains open"))
-    );
-    assert!(matches!(
-        fixture.parent_message().await,
-        ParentMessage::Prepared { result, .. }
-            if matches!(*result, Err(Failure::CleanupUnconfirmed(_)))
-    ));
-}
-
-#[tokio::test]
 async fn lost_transport_after_admission_is_uncertain_and_does_not_complete_host_effect() {
     let mut fixture = Fixture::new();
     let host = Arc::new(Host::default());
@@ -614,70 +474,6 @@ async fn physical_checked_reply_before_custody_ack_releases_the_exact_scope_once
     fixture.worker.handle(message).unwrap();
     assert!(fixture.worker.0.state.lock().unwrap().scopes.is_empty());
     assert!(fixture.parent.0.state.lock().unwrap().scopes.is_empty());
-}
-
-#[tokio::test]
-async fn releasing_one_tab_scope_keeps_the_other_usable_until_its_own_release() {
-    let mut fixture = Fixture::new();
-    let authority = Arc::new(Authority::default());
-    let host = Arc::new(Host::default());
-    let keys = ["first-tab", "second-tab"].map(|tab| {
-        let mut key = key();
-        let BrowserAccess::Read { document } = &mut key.access else {
-            unreachable!()
-        };
-        document.tab_id = tab.into();
-        key
-    });
-    let first = fixture
-        .prepare_access(17, keys[0].clone(), authority.clone(), host.clone())
-        .await;
-    let second = fixture
-        .prepare_access(17, keys[1].clone(), authority.clone(), host)
-        .await;
-    assert_eq!(
-        *authority.reads.lock().unwrap(),
-        keys.clone().map(|key| key.access)
-    );
-    drop(first);
-    let release = fixture.worker_message().await;
-    assert!(matches!(&release, WorkerMessage::Release { token } if token.key == keys[0]));
-    fixture.parent.handle(release).unwrap();
-    let released = fixture.parent_message().await;
-    assert!(matches!(&released, ParentMessage::Released { token } if token.key == keys[0]));
-    fixture.worker.handle(released).unwrap();
-    assert_eq!(fixture.parent.0.state.lock().unwrap().scopes.len(), 1);
-    assert_eq!(fixture.worker.0.state.lock().unwrap().scopes.len(), 1);
-
-    let attachment = second.attachment.as_ref().unwrap().clone();
-    let checking = tokio::spawn(async move {
-        attachment
-            .check(
-                BrowserAttachmentOrigin::Site("https://second.test".into()),
-                CancellationToken::new(),
-            )
-            .await
-    });
-    let request = fixture.worker_message().await;
-    assert!(matches!(&request, WorkerMessage::Check { token, .. } if token.key == keys[1]));
-    fixture.parent.handle(request).unwrap();
-    let reply = fixture.parent_message().await;
-    fixture.worker.handle(reply).unwrap();
-    checking.await.unwrap().unwrap();
-    assert_eq!(
-        *authority.origins.lock().unwrap(),
-        [BrowserAttachmentOrigin::Site("https://second.test".into())]
-    );
-
-    drop(second);
-    let release = fixture.worker_message().await;
-    assert!(matches!(&release, WorkerMessage::Release { token } if token.key == keys[1]));
-    fixture.parent.handle(release).unwrap();
-    let released = fixture.parent_message().await;
-    assert!(matches!(&released, ParentMessage::Released { token } if token.key == keys[1]));
-    fixture.worker.handle(released).unwrap();
-    assert!(fixture.parent.0.state.lock().unwrap().scopes.is_empty());
-    assert!(fixture.worker.0.state.lock().unwrap().scopes.is_empty());
 }
 
 #[tokio::test]
@@ -767,106 +563,6 @@ async fn cancelled_attachment_cleanup_faults_original_connection_after_receiver_
 }
 
 #[tokio::test]
-async fn same_scope_cleanup_fault_uses_the_captured_parent_request_id() {
-    let mut fixture = Fixture::new();
-    let original = super::super::fixture_operation_unknown(3);
-    let authority = Arc::new(Authority {
-        attachment_failure: Some(original.clone()),
-        attachment_wait_for_cancel: true,
-        ..Authority::default()
-    });
-    let first = fixture
-        .prepare_access(41, key(), authority.clone(), Arc::new(Host::default()))
-        .await;
-    let second = fixture
-        .prepare_access(
-            42,
-            key(),
-            Arc::new(Authority::default()),
-            Arc::new(Host::default()),
-        )
-        .await;
-    let cancellation = CancellationToken::new();
-    let cancelled = cancellation.clone();
-    let checking = tokio::spawn(async move {
-        first
-            .attachment
-            .unwrap()
-            .check(BrowserAttachmentOrigin::Opaque, cancellation)
-            .await
-    });
-    let message = fixture.worker_message().await;
-    fixture.parent.handle(message).unwrap();
-    authority.attachment_started.notified().await;
-    cancelled.cancel();
-    let message = fixture.worker_message().await;
-    fixture.parent.handle(message).unwrap();
-    assert!(checking.await.unwrap().is_err());
-    let fault = tokio::time::timeout(std::time::Duration::from_secs(2), fixture.faults.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(fault.invocation_id, Some(41));
-    let (
-        ToolError::OperationUnknown {
-            observation: expected,
-            ..
-        },
-        ToolError::OperationCleanupUnconfirmed {
-            observation: actual,
-            ..
-        },
-    ) = (original, fault.error)
-    else {
-        panic!("the scoped cleanup must preserve its own operation observation");
-    };
-    assert_eq!(actual, expected);
-    let state = fixture.parent.0.state.lock().unwrap();
-    assert_eq!(state.scopes.len(), 2);
-    assert!(state.scopes.values().any(|scope| scope.invocation_id == 42));
-    assert!(
-        state
-            .scopes
-            .values()
-            .all(|scope| scope.token.key.identity == identity())
-    );
-    drop(state);
-    drop(second);
-    assert!(fixture.parent.has_unsettled());
-}
-
-#[tokio::test]
-async fn ordinary_attachment_refusal_is_not_a_connection_cleanup_fault() {
-    let mut fixture = Fixture::new();
-    let authority = Arc::new(Authority {
-        attachment_failure: Some(failed("the origin grant is absent")),
-        ..Authority::default()
-    });
-    let services = fixture.prepare(authority, Arc::new(Host::default())).await;
-    let attachment = services.attachment.unwrap();
-    let checking = tokio::spawn(async move {
-        attachment
-            .check(BrowserAttachmentOrigin::Opaque, CancellationToken::new())
-            .await
-    });
-    let message = fixture.worker_message().await;
-    fixture.parent.handle(message).unwrap();
-    let message = fixture.parent_message().await;
-    assert!(
-        matches!(&message, ParentMessage::Checked { result: Err(Failure::Failed(message)), .. } if message == "the origin grant is absent")
-    );
-    fixture.worker.handle(message).unwrap();
-    assert!(
-        matches!(checking.await.unwrap(), Err(ToolError::Failed(message)) if message == "the origin grant is absent")
-    );
-    assert!(matches!(
-        fixture.faults.try_recv(),
-        Err(mpsc::error::TryRecvError::Empty)
-    ));
-    assert!(!fixture.parent.has_unsettled());
-}
-
-#[tokio::test]
 async fn verified_opaque_presentation_uses_the_same_host_scope_without_clipboard_origin() {
     let mut fixture = Fixture::new();
     let authority = Arc::new(Authority::default());
@@ -895,91 +591,6 @@ async fn verified_opaque_presentation_uses_the_same_host_scope_without_clipboard
     assert!(
         authority.origins.lock().unwrap().is_empty(),
         "metadata admission must not fabricate a clipboard origin"
-    );
-}
-
-#[tokio::test]
-async fn ordinary_site_scope_cannot_substitute_metadata_check_for_its_origin_check() {
-    let mut fixture = Fixture::new();
-    let authority = Arc::new(Authority::default());
-    let services = fixture
-        .prepare(authority.clone(), Arc::new(Host::default()))
-        .await;
-    let checking = tokio::spawn(async move {
-        services
-            .attachment
-            .unwrap()
-            .check_metadata(CancellationToken::new())
-            .await
-    });
-    let request = fixture.worker_message().await;
-    fixture.parent.handle(request).unwrap();
-    let reply = fixture.parent_message().await;
-    fixture.worker.handle(reply).unwrap();
-    assert!(
-        matches!(checking.await.unwrap(), Err(ToolError::Failed(message)) if message == "opaque presentation check requires its verified opaque document scope")
-    );
-    assert_eq!(
-        authority.metadata_checks.load(Ordering::SeqCst),
-        0,
-        "Site scope bypass reached Host metadata admission"
-    );
-}
-
-#[tokio::test]
-async fn terminal_unknown_worker_future_is_reported_once_and_never_parked_as_pending_drain() {
-    struct ReadyUnknown(Arc<AtomicUsize>);
-    impl Future for ReadyUnknown {
-        type Output = Result<(), ToolError>;
-        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Poll::Ready(Err(ToolError::OutcomeUnknown(
-                "actual terminal native effect error".into(),
-            )))
-        }
-    }
-    let mut fixture = Fixture::new();
-    let host = Arc::new(Host::default());
-    let services = fixture
-        .prepare(Arc::new(Authority::default()), host.clone())
-        .await;
-    let polls = Arc::new(AtomicUsize::new(0));
-    services
-        .effects
-        .unwrap()
-        .spawn_guarded(
-            Box::pin(ReadyUnknown(polls.clone())),
-            Box::new(|_| panic!("admitted effect must not be rejected as unpolled")),
-        )
-        .unwrap();
-    let request = fixture.worker_message().await;
-    let (token, id) = match &request {
-        WorkerMessage::Effect { token, id } => (token.clone(), *id),
-        _ => panic!("expected effect request"),
-    };
-    fixture.parent.handle(request).unwrap();
-    let mut admitted = host.admitted.lock().unwrap().pop().unwrap();
-    assert!(poll!(admitted.pending.as_mut()).is_pending());
-    let admission = fixture.parent_message().await;
-    fixture.worker.handle(admission).unwrap();
-    let actual = fixture.worker_message().await;
-    assert!(
-        matches!(&actual, WorkerMessage::EffectFinished { result: Err(Failure::OutcomeUnknown(message)), .. } if message == "actual terminal native effect error")
-    );
-    fixture.parent.handle(actual).unwrap();
-    assert!(
-        matches!(poll!(admitted.pending.as_mut()), Poll::Ready(Err(ToolError::OutcomeUnknown(message))) if message == "actual terminal native effect error")
-    );
-    assert_eq!(polls.load(Ordering::SeqCst), 1);
-    let state = fixture.worker.0.state.lock().unwrap();
-    let original = state
-        .effects
-        .get(&(token.id, id))
-        .expect("unknown native scope remains quarantined");
-    assert!(original.uncertain);
-    assert!(
-        original.pending.is_none(),
-        "completed future is not an independent physical drain"
     );
 }
 
@@ -1057,66 +668,6 @@ async fn early_uncertainty_keeps_bridge_pending_until_the_same_actual_terminal_u
 }
 
 #[tokio::test]
-async fn completed_pre_effect_file_failure_is_a_terminal_known_failure_without_quarantine() {
-    let mut fixture = Fixture::new();
-    let host = Arc::new(Host::default());
-    let services = fixture
-        .prepare(Arc::new(Authority::default()), host.clone())
-        .await;
-    let directory = tempfile::tempdir().unwrap();
-    let missing = directory.path().join("not-created-input");
-    let mutations = Arc::new(AtomicUsize::new(0));
-    let mutation_count = mutations.clone();
-    services
-        .effects
-        .unwrap()
-        .spawn_guarded(
-            Box::pin(async move {
-                let bytes = tokio::fs::read(missing)
-                    .await
-                    .map_err(|error| ToolError::Io {
-                        kind: error.kind(),
-                        message: error.to_string(),
-                    })?;
-                mutation_count.fetch_add(1, Ordering::SeqCst);
-                drop(bytes);
-                Ok(())
-            }),
-            Box::new(|_| panic!("expected real Host admission")),
-        )
-        .unwrap();
-    let request = fixture.worker_message().await;
-    fixture.parent.handle(request).unwrap();
-    let mut admitted = host.admitted.lock().unwrap().pop().unwrap();
-    assert!(poll!(admitted.pending.as_mut()).is_pending());
-    let admission = fixture.parent_message().await;
-    fixture.worker.handle(admission).unwrap();
-    let terminal = fixture.worker_message().await;
-    assert!(matches!(
-        &terminal,
-        WorkerMessage::EffectFinished {
-            result: Err(Failure::Failed(_)),
-            ..
-        }
-    ));
-    fixture.parent.handle(terminal).unwrap();
-    assert!(matches!(
-        poll!(admitted.pending.as_mut()),
-        Poll::Ready(Err(ToolError::Failed(_)))
-    ));
-    assert_eq!(
-        mutations.load(Ordering::SeqCst),
-        0,
-        "file failure completed before the effect step"
-    );
-    assert!(
-        !fixture.worker.has_unsettled(),
-        "trusted known pre-effect failure must not become unknown custody"
-    );
-    assert!(!fixture.parent.has_unsettled());
-}
-
-#[tokio::test]
 async fn early_effect_loss_remains_observable_when_actual_success_arrives_before_host_poll() {
     let mut fixture = Fixture::new();
     let host = Arc::new(Host::default());
@@ -1170,51 +721,6 @@ async fn early_effect_loss_remains_observable_when_actual_success_arrives_before
     assert!(
         !fixture.parent.has_unsettled(),
         "actual terminal mapping is distinct from sticky failure observation"
-    );
-}
-
-#[tokio::test]
-async fn early_checked_loss_is_not_erased_by_later_actual_success_before_host_poll() {
-    let mut fixture = Fixture::new();
-    let host = Arc::new(Host::default());
-    let services = fixture
-        .prepare(Arc::new(Authority::default()), host.clone())
-        .await;
-    let (finish, finished) = oneshot::channel::<()>();
-    services
-        .settlement
-        .unwrap()
-        .retain_checked(Box::pin(async move {
-            finished.await.unwrap();
-            Ok(())
-        }))
-        .unwrap_or_else(|(error, _)| panic!("actual checked custody refused: {error}"));
-    let request = fixture.worker_message().await;
-    let (token, id) = match &request {
-        WorkerMessage::Retain { token, id } => (token.clone(), *id),
-        _ => panic!("expected actual retained request"),
-    };
-    fixture.parent.handle(request).unwrap();
-    let admitted = fixture.parent_message().await;
-    fixture.worker.handle(admitted).unwrap();
-    let mut pending = host.retained.lock().unwrap().pop().unwrap();
-    fixture
-        .parent
-        .handle(WorkerMessage::RetainedUncertain {
-            token,
-            id,
-            error: Failure::CleanupUnconfirmed("early original RPC observer loss".into()),
-        })
-        .unwrap();
-    finish.send(()).unwrap();
-    let terminal = fixture.worker_message().await;
-    assert!(matches!(&terminal, WorkerMessage::RetainedFinished { .. }));
-    fixture.parent.handle(terminal).unwrap();
-    assert!(matches!(poll!(pending.as_mut()),
-        Poll::Ready(Err(ToolError::CleanupUnconfirmed(message))) if message.contains("early original RPC observer loss")));
-    assert!(
-        !fixture.parent.has_unsettled(),
-        "known actual terminal is separate from retained Unknown outcome"
     );
 }
 

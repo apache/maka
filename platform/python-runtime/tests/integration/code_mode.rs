@@ -87,7 +87,8 @@ async fn selected_python_runs_through_exec_grammar_catalog_and_durable_journal()
                 reason:ModelFinishReason::ToolCalls,usage:Default::default(),provider_options:None,
             },std::time::SystemTime::now()).unwrap();
             let facts=[
-                Fact::ModelRequested {context_breakdown:None,item_acceptance:false,step_id:step.into(),model_id:"fixture".into(),source_scope:LogScope::Root,source_high_water:0,source_digest:String::new(),effective_source_digest:None,input_digest:String::new(),route_identity:String::new(),checkpoint_event_id:None,purpose:maka_agent_facts::context::ModelPurpose::Main,context:None},
+                Fact::ModelRequested {
+                source_capture: maka_agent_facts::event::SourceCapture { publication_watermark: 0, prior_unknown: false },context_breakdown:None,item_acceptance:false,step_id:step.into(),model_id:"fixture".into(),source_scope:LogScope::Root,source_high_water:0,source_digest:String::new(),effective_source_digest:None,input_digest:String::new(),route_identity:String::new(),checkpoint_event_id:None,purpose:maka_agent_facts::context::ModelPurpose::Main,context:None},
                 Fact::ModelCompleted {step_id:step.into(),output:writer.completed().unwrap().completion()},
             ];
             log.append_batch(&facts.map(|fact|EventWrite::plain(RuntimeEvent::new(invocation.clone(),fact)).unwrap())).await.unwrap();

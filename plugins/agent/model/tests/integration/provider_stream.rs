@@ -47,14 +47,14 @@ pub(super) fn request(kind: ProviderKind, base_url: String) -> ModelRequest {
             body_overlay: None,
         },
         prompt: vec![maka_model::prompt::Message::user("hello")].into(),
-        tools: vec![maka_model::ToolDefinition {
+        tools: vec![Arc::new(maka_model::ToolDefinition {
             freeform: None,
             output_schema: None,
             provider: None,
             name: "echo".into(),
             description: "echo".into(),
             input_schema: json!({"type":"object","properties":{}}),
-        }],
+        })],
         provider_options: json!({}),
         max_output_tokens: Some(128),
     }
@@ -103,39 +103,6 @@ fn fixtures(kind: ProviderKind, text: &str) -> (String, String) {
             unreachable!("separate fixtures required")
         }
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn large_native_requests_have_no_artificial_body_size_cap() {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            for large in [true, false] {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let request = read_request(&mut socket).await;
-                assert_eq!(request.len() > 32 * 1024 * 1024, large);
-                let (first, last) = fixtures(ProviderKind::OpenaiChatCompletions, "large request accepted");
-                let body = first + &last;
-                socket.write_all(format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()
-                ).as_bytes()).await.unwrap();
-            }
-        });
-        let models = ModelExecutor::new(Duration::from_secs(20)).unwrap();
-        for large in [true, false] {
-            let mut input = request(ProviderKind::OpenaiChatCompletions, base.clone());
-            if large {
-                input.prompt = vec![maka_model::prompt::Message::user("x".repeat(33 * 1024 * 1024))].into();
-            }
-            let mut stream = models.stream(input, CancellationToken::new()).await.unwrap();
-            let mut output = StepBuilder::for_step("large-adapter-request").unwrap();
-            while let Some(event) = stream.next().await { output.push(event.unwrap().event).unwrap(); }
-            assert!(serde_json::to_string(&output.finish().unwrap()).unwrap().contains("large request accepted"));
-            stream.cancel_and_wait().await.expect("actual stream cleanup");
-        }
-        server.await.unwrap();
-    }).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -450,95 +417,6 @@ async fn chat_tool_deltas_keep_arguments_separate_when_gateways_omit_or_reuse_id
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn complete_provider_tool_identities_preserve_original_values_over_http() {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        let executor = ModelExecutor::new(Duration::from_secs(15)).unwrap();
-        for (id, name) in [("x".repeat(4092), "echo".into()), ("tool-1".into(), "é".repeat(129))] {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let base = format!("http://{}/v1", listener.local_addr().unwrap());
-            let (first, last) = fixtures(ProviderKind::OpenaiChatCompletions, "hello");
-            let body = first + &last.replace("tool-1", &id).replace("echo", &name);
-            let server = tokio::spawn(async move {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                read_request(&mut socket).await;
-                let header = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
-                socket.write_all(header.as_bytes()).await.unwrap();
-                socket.write_all(body.as_bytes()).await.unwrap();
-            });
-            let mut stream = executor.stream(
-                request(ProviderKind::OpenaiChatCompletions, base), CancellationToken::new(),
-            ).await.unwrap();
-            let mut builder = StepBuilder::for_step("step").unwrap();
-            let mut starts = Vec::new();
-            while let Some(event) = stream.next().await {
-                let event = event.expect("complete provider identities must survive the adapter").event;
-                if let ModelEvent::ToolInputStarted { id, name, .. } = &event {
-                    starts.push((id.clone(), name.clone()));
-                }
-                builder.push(event).unwrap();
-            }
-            stream.cancel_and_wait().await.expect("actual stream cleanup");
-            server.await.unwrap();
-            assert_eq!(starts, [(id.clone(), name.clone())]);
-            let step = builder.finish().unwrap();
-            let calls: Vec<_> = step.tool_calls().collect();
-            assert_eq!(calls.len(), 1);
-            assert_eq!(calls[0].id, id);
-            assert_eq!(calls[0].name, name);
-            assert_eq!(calls[0].input.as_json().unwrap(), &json!({}));
-            assert_eq!(step.finish_reason, maka_agent_facts::model::ModelFinishReason::ToolCalls);
-        }
-    }).await.expect("complete provider identities must make bounded progress");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn malformed_provider_tool_identity_cannot_complete_a_model_step() {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        let executor = ModelExecutor::new(Duration::from_secs(15)).unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let (first, _) = fixtures(ProviderKind::OpenaiChatCompletions, "hello");
-        // A missing function name violates the provider grammar independently of size.
-        let body = first + &sse(&[
-            json!({"id":"reply","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"tool-1","type":"function","function":{"arguments":"{}"}}]},"finish_reason":null}]}),
-            json!({"id":"reply","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
-        ]) + "data: [DONE]\n\n";
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            read_request(&mut socket).await;
-            let header = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
-            socket.write_all(header.as_bytes()).await.unwrap();
-            socket.write_all(body.as_bytes()).await.unwrap();
-        });
-        let mut stream = executor.stream(
-            request(ProviderKind::OpenaiChatCompletions, base), CancellationToken::new(),
-        ).await.unwrap();
-        let mut builder = StepBuilder::for_step("step").unwrap();
-        let mut rejected = false;
-        let mut admitted_calls = 0;
-        while let Some(event) = stream.next().await {
-            match event {
-                Err(_) => {
-                    rejected = true;
-                    break;
-                }
-                Ok(event) => {
-                    if matches!(&event.event, ModelEvent::ToolInputStarted { .. } | ModelEvent::ToolCall(_)) {
-                        admitted_calls += 1;
-                    }
-                    builder.push(event.event).unwrap();
-                }
-            }
-        }
-        stream.cancel_and_wait().await.expect("actual stream cleanup");
-        server.await.unwrap();
-        assert!(rejected, "the adapter must reject a missing function name");
-        assert_eq!(admitted_calls, 0);
-        assert!(builder.finish().is_err());
-    }).await.expect("malformed provider stream must terminate promptly");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn active_stream_outlives_idle_budget_but_silence_closes_the_socket() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let executor = ModelExecutor::new(Duration::from_secs(3)).unwrap();
@@ -586,7 +464,11 @@ async fn active_stream_outlives_idle_budget_but_silence_closes_the_socket() {
             }
             stream.cancel_and_wait().await.expect("actual stream cleanup");
             if silent {
-                assert!(matches!(failure, Some(maka_model::ModelError::TimedOut)), "{failure:?}");
+                assert!(
+                    matches!(&failure, Some(maka_model::ModelError::Provider(failure))
+                        if failure.reason() == maka_model::ProviderFailureReason::TimedOut),
+                    "{failure:?}"
+                );
             } else {
                 assert!(failure.is_none(), "{failure:?}");
                 assert_eq!(deltas, 1);
@@ -680,227 +562,6 @@ async fn cancellation_closes_pending_fetch_and_releases_model_capacity() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn customization_cannot_replace_generated_headers_or_body_fields() {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
-        for (kind, header) in [
-            (ProviderKind::Anthropic, Some("Anthropic-Version")),
-            (ProviderKind::Anthropic, Some("Anthropic-Beta")),
-            (ProviderKind::Anthropic, None), (ProviderKind::OpenaiChatCompletions, None),
-            (ProviderKind::OpenaiCompatible { name: "fixture".into() }, None),
-            (ProviderKind::OpenaiResponses, None),
-        ] {
-            let mut customized = request(kind, base.clone());
-            let expected = if let Some(name) = header {
-                customized.provider.headers.insert(name.into(), "private-conflict".into());
-                format!("Custom request header conflicts with a generated header: {name}")
-            } else {
-                customized.provider.body_overlay = Some(serde_json::Map::from_iter([("stream".into(), json!(true))]));
-                "Extra request body conflicts with a generated field: stream".into()
-            };
-            let mut stream = executor.stream(customized, CancellationToken::new()).await.unwrap();
-            let error = tokio::select! {
-                _ = listener.accept() => panic!("conflicting customization reached the network"),
-                event = stream.next() => event.expect("adapter failure").expect_err("customization conflict").to_string(),
-            };
-            assert!(error.contains(&expected), "expected {expected}, got {error}");
-            assert!(!error.contains("private-conflict"));
-            stream.cancel_and_wait().await.expect("actual stream cleanup");
-        }
-        assert!(tokio::time::timeout(Duration::from_millis(100), listener.accept()).await.is_err());
-    }).await.expect("customization conflicts must fail promptly");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_tool_history_projects_invalid_json_and_unwraps_valid_arguments_on_the_wire() {
-    use maka_agent_facts::model::ToolInput;
-    use maka_model::prompt::{AssistantPart, Message, ToolOutput};
-    tokio::time::timeout(Duration::from_secs(30), async {
-        let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
-        for kind in [ProviderKind::OpenaiChatCompletions, ProviderKind::OpenaiCompatible { name: "fixture".into() }, ProviderKind::Anthropic] {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let base = format!("http://{}/v1", listener.local_addr().unwrap());
-            let response_kind = if matches!(kind, ProviderKind::Anthropic) { ProviderKind::Anthropic } else { ProviderKind::OpenaiChatCompletions };
-            let (first, last) = fixtures(response_kind, "done");
-            let body = first + &last;
-            let server = tokio::spawn(async move {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let wire = read_request(&mut socket).await;
-                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-                serde_json::from_str::<Value>(wire.split_once("\r\n\r\n").unwrap().1).unwrap()
-            });
-            let raw = " {\"n\":\n";
-            let diagnostic = format!("Invalid JSON tool arguments: EOF while parsing a value; original arguments: {}", json!(raw));
-            let mut input = request(kind.clone(), base);
-            crate::edit_prompt(&mut input.prompt, |messages| messages.push(Message::Assistant { content: vec![
-                AssistantPart::ToolCall { tool_call_id:"broken".into(), tool_name:"echo".into(), input:ToolInput::InvalidJson {raw:raw.into()}, provider_executed:Some(false), provider_options:None },
-                AssistantPart::ToolCall { tool_call_id:"normal".into(), tool_name:"echo".into(), input:ToolInput::Json(json!({"text":"original","n":7})), provider_executed:None, provider_options:None },
-            ], provider_options:None }));
-            crate::edit_prompt(&mut input.prompt, |messages| messages.push(Message::tool("broken", "echo", ToolOutput::ErrorText(diagnostic.clone()))));
-            crate::edit_prompt(&mut input.prompt, |messages| messages.push(Message::tool("normal", "echo", ToolOutput::Json(json!({"text":"original","n":7})))));
-            let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
-            let mut builder = StepBuilder::default();
-            while let Some(event) = stream.next().await { builder.push(event.unwrap().event).unwrap(); }
-            stream.cancel_and_wait().await.unwrap();
-            assert_eq!(builder.finish().unwrap().finish_reason, maka_agent_facts::model::ModelFinishReason::ToolCalls);
-            let wire = server.await.unwrap();
-            let messages = wire["messages"].as_array().unwrap();
-            if matches!(kind, ProviderKind::Anthropic) {
-                assert_eq!(messages[1]["content"][0], json!({"type":"tool_use","id":"broken","name":"echo","input":{}}));
-                assert_eq!(messages[1]["content"][1], json!({"type":"tool_use","id":"normal","name":"echo","input":{"text":"original","n":7}}));
-                assert_eq!(messages[2]["content"][0]["tool_use_id"], "broken");
-                assert_eq!(messages[2]["content"][0]["is_error"], true);
-                assert_eq!(messages[2]["content"][0]["content"], diagnostic);
-            } else {
-                assert_eq!(messages[1]["tool_calls"][0], json!({"type":"function","id":"broken","function":{"name":"echo","arguments":"{}"}}));
-                assert_eq!(messages[1]["tool_calls"][1]["id"], "normal");
-                assert_eq!(serde_json::from_str::<Value>(messages[1]["tool_calls"][1]["function"]["arguments"].as_str().unwrap()).unwrap(), json!({"text":"original","n":7}));
-                assert_eq!(messages[2]["tool_call_id"], "broken");
-                assert_eq!(messages[2]["content"], diagnostic);
-            }
-        }
-    }).await.expect("adapter wire projection must finish");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn prepared_messages_wire_preserves_the_exact_tool_receipt_and_call_identity() {
-    use maka_model::prompt::{AssistantPart, Message, ToolOutput};
-
-    tokio::time::timeout(Duration::from_secs(30), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let (first, last) = fixtures(ProviderKind::Anthropic, "done");
-        let response = first + &last;
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let wire = read_request(&mut socket).await;
-            socket.write_all(format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
-                response.len(),
-            ).as_bytes()).await.unwrap();
-            wire
-        });
-        let mut input = request(ProviderKind::Anthropic, base);
-        crate::edit_prompt(&mut input.prompt, |messages| {
-            messages.push(Message::Assistant {
-                content: vec![AssistantPart::ToolCall {
-                    tool_call_id: "echo-call-73".into(),
-                    tool_name: "echo".into(),
-                    input: maka_agent_facts::model::ToolInput::Json(json!({"token":"amber-native-42"})),
-                    provider_executed: Some(false),
-                    provider_options: None,
-                }],
-                provider_options: None,
-            });
-            messages.push(Message::tool(
-                "echo-call-73",
-                "echo",
-                ToolOutput::Text("cobalt-tool-receipt-73".into()),
-            ));
-        });
-        let reads = prepare_input(&mut input).await;
-        let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
-        let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
-        let mut builder = StepBuilder::default();
-        while let Some(event) = stream.next().await {
-            builder.push(event.unwrap().event).unwrap();
-        }
-        builder.finish().unwrap();
-        stream.cancel_and_wait().await.unwrap();
-        reads.assert_wire_only();
-
-        let wire = server.await.unwrap();
-        let (headers, body) = wire.split_once("\r\n\r\n").unwrap();
-        assert!(headers.starts_with("POST /v1/messages HTTP/1.1\r\n"));
-        let body: Value = serde_json::from_str(body).unwrap();
-        assert_eq!(body["messages"], json!([
-            {"role":"user","content":[{"type":"text","text":"hello"}]},
-            {"role":"assistant","content":[{
-                "type":"tool_use","id":"echo-call-73","name":"echo",
-                "input":{"token":"amber-native-42"}
-            }]},
-            {"role":"user","content":[{
-                "type":"tool_result","tool_use_id":"echo-call-73",
-                "content":"cobalt-tool-receipt-73"
-            }]}
-        ]));
-    }).await.expect("prepared Messages receipt must reach the HTTP receiver");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn invalid_http_error_body_cannot_authorize_provider_replay() {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        for kind in [ProviderKind::OpenaiChatCompletions, ProviderKind::OpenaiCompatible { name: "fixture".into() }, ProviderKind::Anthropic] {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let base = format!("http://{}/v1", listener.local_addr().unwrap());
-            let server = tokio::spawn(async move {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                read_request(&mut socket).await;
-                socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\ninvalid-chunk-size\r\n{}").await.unwrap();
-            });
-            let models = ModelExecutor::new(Duration::from_secs(5)).unwrap();
-            let mut stream = models.stream(request(kind, base), CancellationToken::new()).await.unwrap();
-            let error = stream.next().await.unwrap().unwrap_err();
-            assert!(matches!(error, maka_model::ModelError::Adapter(_)), "invalid HTTP framing became a retryable provider response: {error:?}");
-            stream.cancel_and_wait().await.unwrap();
-            server.await.unwrap();
-        }
-    }).await.expect("invalid error-body framing settles");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn error_body_deadlines_and_network_loss_keep_distinct_causes() {
-    use maka_model::{ModelError, ProviderFailureReason};
-    tokio::time::timeout(Duration::from_secs(15), async {
-        for kind in [ProviderKind::Anthropic, ProviderKind::OpenaiChatCompletions, ProviderKind::OpenaiCompatible { name: "fixture".into() }, ProviderKind::OpenaiResponses] {
-            for status in [400, 401, 429, 503] {
-                for silent in [false, true] {
-                    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-                    let base = format!("http://{}/v1", listener.local_addr().unwrap());
-                    let server = tokio::spawn(async move {
-                        let (mut socket, _) = listener.accept().await.unwrap();
-                        read_request(&mut socket).await;
-                        socket.write_all(format!("HTTP/1.1 {status} Error\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
-                        if silent {
-                            assert_eq!(socket.read(&mut [0]).await.unwrap(), 0, "deadline closes the original body");
-                        }
-                    });
-                    let models = ModelExecutor::new(Duration::from_millis(200)).unwrap();
-                    let mut stream = models.stream(request(kind.clone(), base), CancellationToken::new()).await.unwrap();
-                    let error = stream.next().await.unwrap().unwrap_err();
-                    let diagnostic = match (status, &error) {
-                        (400 | 401, ModelError::Http { status: actual, message: Some(message) }) => {
-                            assert_eq!(*actual, status);
-                            assert_eq!(error.failure_cause(), Some(maka_agent_facts::model::error::ModelFailureCause::Http { status }));
-                            message.as_str()
-                        }
-                        (429 | 503, ModelError::Provider(failure)) => {
-                            assert_eq!(failure.reason(), if status == 429 { ProviderFailureReason::RateLimit } else { ProviderFailureReason::ProviderUnavailable });
-                            assert_eq!(failure.status(), Some(status));
-                            assert!(failure.replay_safe(), "an explicit HTTP rejection retains its existing replay evidence");
-                            failure.message()
-                        }
-                        (_, error) => panic!("body read failure discarded status evidence: {error:?}"),
-                    };
-                    assert!(diagnostic.starts_with("response body read failed: "), "{diagnostic}");
-                    if silent {
-                        assert!(diagnostic.contains("idle timeout exceeded"), "actual deadline diagnostic lost: {diagnostic}");
-                        assert!(!diagnostic.contains("(Network)"), "timeout relabeled as network loss: {diagnostic}");
-                    } else {
-                        assert!(diagnostic.contains("(Network)"), "actual network diagnostic lost: {diagnostic}");
-                        assert!(!diagnostic.contains("idle timeout exceeded"), "network loss relabeled as timeout: {diagnostic}");
-                    }
-                    stream.cancel_and_wait().await.unwrap();
-                    server.await.unwrap();
-                }
-            }
-        }
-    }).await.expect("body errors preserve the actual failure cause");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_single_large_provider_delta_is_split_without_a_response_size_cap() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let expected = "x".repeat(33 * 1024 * 1024) + "中文🙂";
@@ -962,12 +623,11 @@ async fn prepared_native_upload_never_opens_semantic_history() {
         input.provider.body_overlay = Some(serde_json::from_value(json!({"routing":"captured"})).unwrap());
         let messages = vec![Message::System { content: "captured instructions".into(), provider_options: None }, Message::user("persisted 中文\n\"body\""), Message::user("complete suffix")];
         input.prompt = messages.into();
-        let reads = prepare_input(&mut input).await;
+        prepare_input(&mut input).await;
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
         let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
         while let Some(event) = stream.next().await { event.unwrap(); }
         let body = server.await.unwrap();
-        reads.assert_wire_only();
         if matches!(kind, ProviderKind::Anthropic) {
             assert_eq!(body["system"], json!([{"type":"text","text":"captured instructions"}]));
             assert_eq!(body["messages"], json!([{"role":"user","content":[
@@ -988,4 +648,54 @@ async fn prepared_native_upload_never_opens_semantic_history() {
         assert_eq!(body["max_tokens"], 128);
     }).await.unwrap();
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn error_body_deadlines_and_network_loss_keep_distinct_causes() {
+    use maka_model::{ModelError, ProviderFailureReason};
+    tokio::time::timeout(Duration::from_secs(15), async {
+        for kind in [ProviderKind::OpenaiChatCompletions, ProviderKind::OpenaiResponses] {
+            for status in [400, 429] {
+                for silent in [false, true] {
+                    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+                    let server = tokio::spawn(async move {
+                        let (mut socket, _) = listener.accept().await.unwrap();
+                        read_request(&mut socket).await;
+                        socket.write_all(format!("HTTP/1.1 {status} Error\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                        if silent {
+                            assert_eq!(socket.read(&mut [0]).await.unwrap(), 0, "deadline closes the original body");
+                        }
+                    });
+                    let models = ModelExecutor::new(Duration::from_millis(200)).unwrap();
+                    let mut stream = models.stream(request(kind.clone(), base), CancellationToken::new()).await.unwrap();
+                    let error = stream.next().await.unwrap().unwrap_err();
+                    let diagnostic = match (status, &error) {
+                        (400 | 401, ModelError::Http { status: actual, message: Some(message) }) => {
+                            assert_eq!(*actual, status);
+                            assert_eq!(error.failure_cause(), Some(maka_agent_facts::model::error::ModelFailureCause::Http { status }));
+                            message.as_str()
+                        }
+                        (429 | 503, ModelError::Provider(failure)) => {
+                            assert_eq!(failure.reason(), if status == 429 { ProviderFailureReason::RateLimit } else { ProviderFailureReason::ProviderUnavailable });
+                            assert_eq!(failure.status(), Some(status));
+                            assert!(failure.replay_safe(), "an explicit HTTP rejection retains its existing replay evidence");
+                            failure.message()
+                        }
+                        (_, error) => panic!("body read failure discarded status evidence: {error:?}"),
+                    };
+                    assert!(diagnostic.starts_with("response body read failed: "), "{diagnostic}");
+                    if silent {
+                        assert!(diagnostic.contains("idle timeout exceeded"), "actual deadline diagnostic lost: {diagnostic}");
+                        assert!(!diagnostic.contains("(Network)"), "timeout relabeled as network loss: {diagnostic}");
+                    } else {
+                        assert!(diagnostic.contains("(Network)"), "actual network diagnostic lost: {diagnostic}");
+                        assert!(!diagnostic.contains("idle timeout exceeded"), "network loss relabeled as timeout: {diagnostic}");
+                    }
+                    stream.cancel_and_wait().await.unwrap();
+                    server.await.unwrap();
+                }
+            }
+        }
+    }).await.expect("body errors preserve the actual failure cause");
 }

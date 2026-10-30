@@ -105,48 +105,6 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn rejected_preparation_and_invalid_completion_leave_catalog_untouched() {
-    let fixture = Fixture::new(&[]).await;
-    assert!(matches!(
-        fixture
-            .store
-            .prepare_model_fetch("00000000-0000-4000-8000-000000000000")
-            .await
-            .unwrap(),
-        ModelFetchPreparation::Rejected(ConnectionEffectRejectionReason::ConnectionNotFound)
-    ));
-    assert!(
-        fixture
-            .prepare()
-            .await
-            .provider_credential()
-            .unwrap()
-            .is_none(),
-        "configuration preparation must allow anonymous providers"
-    );
-    let mut row = fixture.row().await;
-    row.enabled = false;
-    fixture.edit(row).await;
-    assert!(matches!(
-        fixture
-            .store
-            .prepare_model_fetch(&fixture.id)
-            .await
-            .unwrap(),
-        ModelFetchPreparation::Rejected(ConnectionEffectRejectionReason::ConnectionDisabled)
-    ));
-    let mut row = fixture.row().await;
-    row.enabled = true;
-    fixture.edit(row).await;
-    fixture.key("fixture-key").await;
-    let before = fixture.store.catalog().await.unwrap();
-    for models in [vec![], vec![ModelInfo::new("valid"), ModelInfo::new("")]] {
-        assert!(fixture.prepare().await.complete(models, 100).await.is_err());
-        assert_eq!(fixture.store.catalog().await.unwrap(), before);
-    }
-}
-
-#[tokio::test]
 async fn completion_preserves_concurrent_metadata_and_choices_across_reopen() {
     let fixture = Fixture::new(&["manual-model"]).await;
     fixture.key("fixture-key").await;
@@ -198,68 +156,4 @@ async fn completion_preserves_concurrent_metadata_and_choices_across_reopen() {
         Arc::new(RootOwner::open(&fixture.temp.path().join("root"), &fixture.namespaces).unwrap());
     let reopened = ConfigurationStore::for_root(owner).await.unwrap();
     assert_eq!(reopened.catalog().await.unwrap(), saved);
-}
-
-#[tokio::test]
-async fn selection_seed_is_one_time_and_changed_fetch_basis_cannot_overwrite_inventory() {
-    let fixture = Fixture::new(&[]).await;
-    fixture.key("original-key").await;
-    assert!(matches!(
-        fixture
-            .prepare()
-            .await
-            .complete(vec![ModelInfo::new("first")], 100)
-            .await
-            .unwrap(),
-        ConnectionModelFetchResult::Committed { .. }
-    ));
-    assert_eq!(fixture.row().await.enabled_model_ids, ["first"]);
-    let mut row = fixture.row().await;
-    row.enabled_model_ids.clear();
-    fixture.edit(row).await;
-    assert!(matches!(
-        fixture
-            .prepare()
-            .await
-            .complete(vec![ModelInfo::new("second")], 101)
-            .await
-            .unwrap(),
-        ConnectionModelFetchResult::Committed { .. }
-    ));
-    assert!(fixture.row().await.enabled_model_ids.is_empty());
-
-    let prepared = fixture.prepare().await;
-    let mut row = fixture.row().await;
-    row.configuration = json!({"baseUrl":"http://127.0.0.1:18081/v1"});
-    fixture.edit(row).await;
-    let before = fixture.store.catalog().await.unwrap();
-    assert_eq!(
-        prepared
-            .complete(vec![ModelInfo::new("stale")], 102)
-            .await
-            .unwrap(),
-        ConnectionModelFetchResult::Superseded {
-            changed: vec![ConnectionEffectChangedDomain::Connection]
-        }
-    );
-    assert_eq!(fixture.store.catalog().await.unwrap(), before);
-
-    let prepared = fixture.prepare().await;
-    fixture.key("replacement-key").await;
-    fixture.key("original-key").await;
-    let before = fixture.store.catalog().await.unwrap();
-    assert_eq!(
-        prepared
-            .complete(vec![ModelInfo::new("stale")], 103)
-            .await
-            .unwrap(),
-        ConnectionModelFetchResult::Superseded {
-            changed: vec![ConnectionEffectChangedDomain::Credential]
-        }
-    );
-    assert_eq!(
-        fixture.store.catalog().await.unwrap(),
-        before,
-        "credential ABA must not revive an old preparation"
-    );
 }

@@ -40,6 +40,11 @@ pub struct ModelResumePoint {
     pub finish_turn: bool,
 }
 
+pub(super) struct RetryContinuation {
+    pub point: ModelResumePoint,
+    pub consumption: maka_agent_facts::model_retry::ModelRetryConsumption,
+}
+
 pub(super) enum StepExit {
     Terminal(maka_agent_facts::event::InvocationOutcome),
     Parked(maka_event_log::native_approvals::ParkedActivationReceipt),
@@ -69,6 +74,7 @@ pub(super) async fn run(
         prior_unknown,
         inspected_through,
         effects,
+        None,
         None,
     )
     .await
@@ -100,6 +106,35 @@ pub(super) async fn resume(
         point.inspected_through,
         effects,
         Some(point),
+        None,
+    )
+    .await
+}
+
+pub(super) async fn resume_retry(
+    inner: &Arc<RunContext>,
+    input: &mut RunSettings,
+    work: crate::runner::ModelWork,
+    continuation: RetryContinuation,
+    cancellation: &CancellationToken,
+    handoff: &crate::HandoffGate,
+    effects: &maka_event_log::root_store::InvocationEffects,
+) -> Result<StepExit, RunError> {
+    let RetryContinuation { point, consumption } = continuation;
+    let opening_id = point.opening_id.clone();
+    run_from(
+        inner,
+        input,
+        work,
+        &opening_id,
+        cancellation,
+        point.replay_base,
+        handoff,
+        point.prior_unknown,
+        point.inspected_through,
+        effects,
+        Some(point),
+        Some(consumption),
     )
     .await
 }
@@ -117,12 +152,17 @@ async fn run_from(
     mut inspected_through: u64,
     effects: &maka_event_log::root_store::InvocationEffects,
     resume: Option<ModelResumePoint>,
+    mut retry: Option<maka_agent_facts::model_retry::ModelRetryConsumption>,
 ) -> Result<StepExit, RunError> {
     let crate::runner::ModelWork {
         tools: catalog,
         restored,
     } = work;
-    let lane = maka_model::Conversation::default();
+    let lane = retry
+        .as_ref()
+        .map_or_else(maka_model::Conversation::default, |consumption| {
+            maka_model::Conversation::with_retry_transport_phase(consumption.plan.transport_phase)
+        });
     let mut tools = RunTools::new(
         input.configuration.language,
         inner.log.clone(),
@@ -161,200 +201,257 @@ async fn run_from(
             compaction = budget;
         }
         loop {
-            crate::interactions::wait_until_clear(&inner.log, &input.invocation, cancellation)
-                .await?;
-            inner.log.commit_pending_steering(&input.invocation).await?;
-            if let Some(pause) = handoff
-                .boundary(cancellation, |intent| async {
-                    if let Err(error) = auto_context::drain(&mut pending).await {
-                        handoff_cleanup = Some(error);
-                        return None;
-                    }
-                    // Live cells retain the current step's capabilities and effects.
-                    // A handoff can seal only after those independent jobs settle.
-                    if !tools.code_idle() || !effects.is_idle() {
-                        return None;
-                    }
-                    let context = model_attempt::read_source(inner, input, false, cancellation)
+            let (initial_high_water, high_water, result, request_tools, surface) =
+                if let Some(consumption) = retry.take() {
+                    let plan = consumption.plan.clone();
+                    let frozen = crate::frozen_request::rehydrate_frozen_request(
+                        inner,
+                        &plan.failure_event_id,
+                        input,
+                        &tools,
+                        cancellation,
+                    )
+                    .await?;
+                    let initial_high_water = frozen.source.evidence.high_water;
+                    let (high_water, result) = model_attempt::execute_frozen_main(
+                        inner,
+                        &frozen,
+                        lane.clone(),
+                        continuation_base,
+                        consumption,
+                        cancellation,
+                    )
+                    .await;
+                    *input = frozen.input;
+                    (
+                        initial_high_water,
+                        high_water,
+                        result,
+                        frozen.tools,
+                        frozen.surface,
+                    )
+                } else {
+                    crate::interactions::wait_until_clear(
+                        &inner.log,
+                        &input.invocation,
+                        cancellation,
+                    )
+                    .await?;
+                    inner.log.commit_pending_steering(&input.invocation).await?;
+                    if let Some(pause) = handoff
+                        .boundary(cancellation, |intent| async {
+                            if let Err(error) = auto_context::drain(&mut pending).await {
+                                handoff_cleanup = Some(error);
+                                return None;
+                            }
+                            // Live cells retain the current step's capabilities and effects.
+                            // A handoff can seal only after those independent jobs settle.
+                            if !tools.code_idle() || !effects.is_idle() {
+                                return None;
+                            }
+                            let context =
+                                model_attempt::read_source(inner, input, false, cancellation)
+                                    .await
+                                    .ok()?;
+                            // Read the live source, but project from the successor's point of
+                            // view: manual replay cuts distinguish current from inherited work.
+                            let prompt = model_attempt::prompt(
+                                inner,
+                                input,
+                                &context,
+                                cancellation,
+                                continuation_base,
+                                &intent.successor_invocation_id,
+                                prior_unknown,
+                                model_attempt::rendered_system(input),
+                                maka_agent_facts::context::ModelPurpose::Main,
+                            )
+                            .await
+                            .ok()?;
+                            let checkpoint = match tools.checkpoint() {
+                                Ok(checkpoint) => checkpoint,
+                                Err(error) => {
+                                    handoff_cleanup = Some(match prompt.close().await {
+                                        Err(cleanup) => crate::cleanup::preparation_failed(cleanup),
+                                        Ok(()) => error.into(),
+                                    });
+                                    return None;
+                                }
+                            };
+                            let replay = crate::continuation::replay(
+                                input,
+                                prompt,
+                                tools.replay_selected(&checkpoint.loaded),
+                                cancellation,
+                            )
+                            .await
+                            .ok()?;
+                            let pause = maka_agent_facts::handoff::HandoffPause {
+                                intent,
+                                execution: Box::new(maka_agent_facts::handoff::HandoffExecution {
+                                    replay,
+                                    context: input.context.clone(),
+                                    provider_options: input.provider_options.clone(),
+                                    main_output_limit: input.main_output_limit,
+                                    supports_vision: input.supports_vision,
+                                    tools: checkpoint,
+                                    compaction,
+                                    replay_base: continuation_base,
+                                }),
+                            };
+                            inner
+                                .log
+                                .check_handoff(&input.invocation, &pause)
+                                .await
+                                .ok()?;
+                            Some(pause)
+                        })
                         .await
-                        .ok()?;
-                    // Read the live source, but project from the successor's point of
-                    // view: manual replay cuts distinguish current from inherited work.
-                    let prompt = model_attempt::prompt(
+                    {
+                        return Ok(StepExit::Terminal(
+                            maka_agent_facts::event::InvocationOutcome::HandoffPaused { pause },
+                        ));
+                    }
+                    if let Some(error) = handoff_cleanup.take() {
+                        return Err(error);
+                    }
+                    if cancellation.is_cancelled() {
+                        return Err(RunError::Cancelled);
+                    }
+                    input.refresh_model(cancellation).await?;
+                    if tools.code_idle()
+                        && effects.is_idle()
+                        && pending
+                            .as_ref()
+                            .is_some_and(auto_context::Pending::is_finished)
+                        && pending
+                            .take()
+                            .expect("finished candidate")
+                            .adopt(inner, &input.invocation, cancellation)
+                            .await?
+                    {
+                        compaction = CompactionBudget::Reshaped;
+                    }
+                    let mut context =
+                        model_attempt::read_source(inner, input, prior_unknown, cancellation)
+                            .await?;
+                    tools.set_model(input.provider.tool_context());
+                    let (mut request_tools, mut surface) = capture_surface(
+                        inner,
+                        input,
+                        &tools,
+                        &context,
+                        prior_unknown,
+                        cancellation,
+                    )
+                    .await?;
+                    let mut prompt = model_attempt::prompt(
                         inner,
                         input,
                         &context,
                         cancellation,
                         continuation_base,
-                        &intent.successor_invocation_id,
+                        &input.invocation.invocation_id,
                         prior_unknown,
-                        model_attempt::rendered_system(input),
+                        surface.system(),
                         maka_agent_facts::context::ModelPurpose::Main,
                     )
-                    .await
-                    .ok()?;
-                    let checkpoint = match tools.checkpoint() {
-                        Ok(checkpoint) => checkpoint,
-                        Err(error) => {
-                            handoff_cleanup = Some(match prompt.close().await {
-                                Err(cleanup) => crate::cleanup::preparation_failed(cleanup),
-                                Ok(()) => error.into(),
-                            });
-                            return None;
-                        }
-                    };
-                    let replay = crate::continuation::replay(
-                        input,
-                        prompt,
-                        tools.replay_selected(&checkpoint.loaded),
-                        cancellation,
-                    )
-                    .await
-                    .ok()?;
-                    let pause = maka_agent_facts::handoff::HandoffPause {
-                        intent,
-                        execution: Box::new(maka_agent_facts::handoff::HandoffExecution {
-                            replay,
-                            context: input.context.clone(),
-                            provider_options: input.provider_options.clone(),
-                            main_output_limit: input.main_output_limit,
-                            supports_vision: input.supports_vision,
-                            tools: checkpoint,
-                            compaction,
-                            replay_base: continuation_base,
-                        }),
-                    };
-                    inner
-                        .log
-                        .check_handoff(&input.invocation, &pause)
-                        .await
-                        .ok()?;
-                    Some(pause)
-                })
-                .await
-            {
-                return Ok(StepExit::Terminal(
-                    maka_agent_facts::event::InvocationOutcome::HandoffPaused { pause },
-                ));
-            }
-            if let Some(error) = handoff_cleanup.take() {
-                return Err(error);
-            }
-            if cancellation.is_cancelled() {
-                return Err(RunError::Cancelled);
-            }
-            input.refresh_model(cancellation).await?;
-            if tools.code_idle()
-                && effects.is_idle()
-                && pending
-                    .as_ref()
-                    .is_some_and(auto_context::Pending::is_finished)
-                && pending
-                    .take()
-                    .expect("finished candidate")
-                    .adopt(inner, &input.invocation, cancellation)
-                    .await?
-            {
-                compaction = CompactionBudget::Reshaped;
-            }
-            let mut context =
-                model_attempt::read_source(inner, input, prior_unknown, cancellation).await?;
-            tools.set_model(input.provider.tool_context());
-            let (mut request_tools, mut surface) =
-                capture_surface(inner, input, &tools, &context, prior_unknown, cancellation)
                     .await?;
-            let mut prompt = model_attempt::prompt(
-                inner,
-                input,
-                &context,
-                cancellation,
-                continuation_base,
-                &input.invocation.invocation_id,
-                prior_unknown,
-                surface.system(),
-                maka_agent_facts::context::ModelPurpose::Main,
-            )
-            .await?;
-            let needs_compaction = crate::context_input::needs_compaction(input, &prompt);
-            if tools.code_idle()
-                && effects.is_idle()
-                && !prior_unknown
-                && ((needs_compaction && pending.is_some())
-                    || (compaction == CompactionBudget::Available
-                        && pending.is_none()
-                        && (needs_compaction || auto_context::due(input, &context))))
-            {
-                prompt
-                    .close()
-                    .await
-                    .map_err(crate::cleanup::preparation_failed)?;
-                drop(prompt);
-                drop(context);
-                drop(request_tools);
-                drop(surface);
-                compaction = CompactionBudget::Failed;
-                let candidate = match pending.take() {
-                    Some(candidate) => Some(candidate),
-                    None => {
-                        auto_context::start(
+                    let needs_compaction = crate::context_input::needs_compaction(input, &prompt);
+                    if tools.code_idle()
+                        && effects.is_idle()
+                        && !prior_unknown
+                        && ((needs_compaction && pending.is_some())
+                            || (compaction == CompactionBudget::Available
+                                && pending.is_none()
+                                && (needs_compaction || auto_context::due(input, &context))))
+                    {
+                        prompt
+                            .close()
+                            .await
+                            .map_err(crate::cleanup::preparation_failed)?;
+                        drop(prompt);
+                        drop(context);
+                        drop(request_tools);
+                        drop(surface);
+                        compaction = CompactionBudget::Failed;
+                        let candidate = match pending.take() {
+                            Some(candidate) => Some(candidate),
+                            None => {
+                                auto_context::start(
+                                    inner,
+                                    input,
+                                    opening_id,
+                                    main_progress,
+                                    cancellation,
+                                    continuation_base,
+                                )
+                                .await?
+                            }
+                        };
+                        if let Some(candidate) = candidate {
+                            if !needs_compaction {
+                                pending = Some(candidate);
+                            } else if candidate
+                                .adopt(inner, &input.invocation, cancellation)
+                                .await?
+                            {
+                                compaction = CompactionBudget::Reshaped;
+                            }
+                        }
+                        // Compaction makes its own logical requests. The next Main
+                        // must observe any provider change made meanwhile.
+                        input.refresh_model(cancellation).await?;
+                        context =
+                            model_attempt::read_source(inner, input, prior_unknown, cancellation)
+                                .await?;
+                        tools.set_model(input.provider.tool_context());
+                        (request_tools, surface) = capture_surface(
                             inner,
                             input,
-                            opening_id,
-                            main_progress,
+                            &tools,
+                            &context,
+                            prior_unknown,
+                            cancellation,
+                        )
+                        .await?;
+                        prompt = model_attempt::prompt(
+                            inner,
+                            input,
+                            &context,
                             cancellation,
                             continuation_base,
+                            &input.invocation.invocation_id,
+                            prior_unknown,
+                            surface.system(),
+                            maka_agent_facts::context::ModelPurpose::Main,
                         )
-                        .await?
-                    }
-                };
-                if let Some(candidate) = candidate {
-                    if !needs_compaction {
-                        pending = Some(candidate);
-                    } else if candidate
-                        .adopt(inner, &input.invocation, cancellation)
-                        .await?
-                    {
-                        compaction = CompactionBudget::Reshaped;
-                    }
-                }
-                // Compaction makes its own logical requests. The next Main
-                // must observe any provider change made meanwhile.
-                input.refresh_model(cancellation).await?;
-                context =
-                    model_attempt::read_source(inner, input, prior_unknown, cancellation).await?;
-                tools.set_model(input.provider.tool_context());
-                (request_tools, surface) =
-                    capture_surface(inner, input, &tools, &context, prior_unknown, cancellation)
                         .await?;
-                prompt = model_attempt::prompt(
-                    inner,
-                    input,
-                    &context,
-                    cancellation,
-                    continuation_base,
-                    &input.invocation.invocation_id,
-                    prior_unknown,
-                    surface.system(),
-                    maka_agent_facts::context::ModelPurpose::Main,
-                )
-                .await?;
-            }
-            let initial_high_water = context.source_evidence.high_water;
-            let (high_water, result) = model_attempt::execute_main(
-                inner,
-                input,
-                context,
-                prompt,
-                model_attempt::Main {
-                    lane: lane.clone(),
-                    continuation_base,
-                    surface: surface.clone(),
-                    tools: &request_tools,
-                    prior_unknown,
-                },
-                cancellation,
-            )
-            .await;
+                    }
+                    let initial_high_water = context.source_evidence.high_water;
+                    let (high_water, result) = model_attempt::execute_main(
+                        inner,
+                        input,
+                        context,
+                        prompt,
+                        model_attempt::Main {
+                            lane: lane.clone(),
+                            continuation_base,
+                            surface: surface.clone(),
+                            tools: &request_tools,
+                            prior_unknown,
+                        },
+                        cancellation,
+                    )
+                    .await;
+                    (
+                        initial_high_water,
+                        high_water,
+                        result,
+                        request_tools,
+                        surface,
+                    )
+                };
             // Recovery advances this source only after retaining complete Main
             // items. They renew compaction just like a completed response, even
             // if the resumed request itself immediately exceeds context.
@@ -364,6 +461,29 @@ async fn run_from(
             }
             let mut output = match result {
                 Ok(model_attempt::Outcome::Response(output)) => output,
+                Ok(model_attempt::Outcome::ParkRetry(plan)) => {
+                    auto_context::drain(&mut pending).await?;
+                    if !tools.code_idle() || !effects.is_idle() {
+                        return Err(RunError::ReconciliationRequired(
+                            "model retry cannot park while execution remains active".into(),
+                        ));
+                    }
+                    let point = ModelResumePoint {
+                        opening_id: opening_id.to_owned(),
+                        context: input.context.clone(),
+                        provider_options: input.provider_options.clone(),
+                        main_output_limit: input.main_output_limit,
+                        supports_vision: input.supports_vision,
+                        tools: tools.checkpoint()?,
+                        compaction,
+                        replay_base: continuation_base,
+                        prior_unknown,
+                        inspected_through,
+                        main_progress,
+                        finish_turn: false,
+                    };
+                    return retry_frontier(inner, input, point, plan, cancellation).await;
+                }
                 Ok(model_attempt::Outcome::FinishedByTool) => {
                     crate::interactions::wait_until_clear(
                         &inner.log,
@@ -565,6 +685,54 @@ async fn run_from(
     result
 }
 
+async fn retry_frontier(
+    inner: &RunContext,
+    input: &RunSettings,
+    point: ModelResumePoint,
+    plan: maka_agent_facts::model_retry::RetryPlan,
+    cancellation: &CancellationToken,
+) -> Result<StepExit, RunError> {
+    use maka_event_log::{StoreError, native_approvals::ParkResult};
+    let native_basis = input.native_activation_basis.as_ref().ok_or_else(|| {
+        RunError::ReconciliationRequired("model retry has no native activation basis".into())
+    })?;
+    if cancellation.is_cancelled() {
+        return Err(RunError::Cancelled);
+    }
+    let mut changes = inner
+        .log
+        .subscribe_session_commits(&input.invocation.session_id)?;
+    let checkpoint = maka_agent_facts::native_approval::ActivationCheckpoint {
+        id: uuid::Uuid::new_v4().to_string(),
+        invocation: input.invocation.clone(),
+        through: inner.log.committed_sequence().await?,
+        engine: serde_json::to_value(point)
+            .map_err(|error| RunError::Internal(error.to_string()))?,
+        native_basis: native_basis
+            .checkpoint_value()
+            .map_err(RunError::Checkpoint)?,
+        suspension: maka_agent_facts::native_approval::ActivationSuspension::ModelRetry { plan },
+    };
+    let receipt = match inner.log.park_model_retry(checkpoint.clone()).await {
+        Ok(ParkResult::Parked(receipt)) => Some(receipt),
+        Ok(ParkResult::Changed) => None,
+        Err(StoreError::CommitUnknown(_) | StoreError::OperationUnknown) => loop {
+            match inner.log.confirm_model_retry_park(&checkpoint).await {
+                Ok(receipt) => break receipt,
+                Err(_) => {
+                    if changes.changed().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                }
+            }
+        },
+        Err(error) => return Err(error.into()),
+    };
+    receipt.map(StepExit::Parked).ok_or_else(|| {
+        RunError::ReconciliationRequired("model retry checkpoint frontier changed".into())
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn approval_frontier(
     inner: &Arc<RunContext>,
@@ -645,6 +813,8 @@ async fn approval_frontier(
                     native_basis: native_basis
                         .checkpoint_value()
                         .map_err(RunError::Checkpoint)?,
+                    suspension:
+                        maka_agent_facts::native_approval::ActivationSuspension::NativeApprovals,
                 };
                 match inner
                     .log

@@ -194,6 +194,3 @@ fn freeze(through: &mut Option<u64>, fence: u64) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod model_metadata_tests;

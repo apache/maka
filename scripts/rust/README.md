@@ -48,151 +48,20 @@ against a loopback SSE fixture, verifies canonical output, and retains per-proce
 and system telemetry. Background-agent capacity probes distinguish requested
 sessions, actual active executions, confirmed completions and unknown outcomes.
 
-Terminal behavior uses the current [terminal-shell real Host tests](../../products/maka/terminal-shell/tests/real_host/mod.rs), including the production PTY lifecycle. Run them through `cargo test -p maka-cli --no-default-features --test integration terminal::`. Compare retained release artifacts with the same renderer, terminal protocol, viewport and workload; report input latency separately from frame encoding and output delivery.
+Terminal behavior uses the [terminal-shell tests](../../products/maka/terminal-shell/tests/real_host/mod.rs). Run them with `cargo nextest run -p maka-cli --test integration -E 'test(terminal::)'`. These cover current component and product interactions; compare release rendering separately with a fixed terminal protocol, viewport and workload.
 
-Long-task comparisons use retained release test executables from both revisions,
-with the same benchmark fixtures. Build `maka-event-log --test integration` and
-`maka-agent-engine --test integration` using `cargo test --release --no-run`, then run:
+For long-history performance, build the retained [Engine fixture](../../plugins/agent/engine/tests/integration/long_task_perf.rs) in release mode and compare identical fixture sources and dependency features:
 
 ```sh
-python3 scripts/rust/benchmark-long-task.py --kind engine \
+cargo test --release -p maka-agent-engine --test integration --no-run
+python3 scripts/rust/benchmark-long-task.py \
   --baseline /tmp/engine-before --candidate /tmp/engine-after \
   --sizes 250,1000 --runs 5 --output /tmp/maka-long-task
 ```
 
-Use `--kind prune` for the archive test executables and `--checkpoint` for an
-Engine run after real context compaction. The script alternates revisions and
-checks equal completed work, preserving raw logs, errors, medians and ranges.
-Record the target and dependency features as well as the build profile. Feature
-unification can make standalone tests use a different hashing backend from a
-product build. Older `sha2` 0.10 Engine baselines on supported ARM64 platforms
-need `--features sha2/asm` to match the product backend. Current hashing selects
-supported CPU instructions at runtime and retains a software fallback.
+`--checkpoint` measures requests after actual context compaction. The script alternates revisions, verifies equal completed work, and retains raw samples, medians and ranges. Fixture setup is excluded from request/completion timings. This measures Engine APIs and the controlled HTTP provider, not Host IPC, rendering, inference or energy.
 
-Fixture setup is excluded; Engine timings cover request delivery and completion,
-not Host IPC. The [Engine fixture](../../plugins/agent/engine/tests/integration/long_task_perf.rs)
-and [prune fixture](../../platform/event-log/tests/integration/archive/performance.rs) expose
-workload settings for sparse tools, dense tools and projection sizes. Run without
-competing builds; collect CPU profiles separately from timing comparisons.
-
-For 1,000 / 10,000 / 100,000-turn scale probes, set `MAKA_ENGINE_PERF_FIXTURE_DIR`
-to a disposable directory under the system temporary directory and
-`MAKA_ENGINE_PERF_FIXTURE_TAG` to an explicit revision label. The Engine fixture
-uses real append validation and compacts every 1,000 turns. It caches closed
-SQLite snapshots using all workload settings and a hash of its own source;
-changing the fixture invalidates the cache. Run `--kind engine --checkpoint
---sizes 1000,10000,100000` against retained executables with identical fixture
-source. Seeding is deliberately separate from request latency and can take much
-longer than the measured run.
-
-For history and cancellation, set `MAKA_RESPONSIVENESS_FIXTURES` to a
-comma-separated list of those disposable `.sqlite` snapshots and use
-`--kind responsive`. This checks a real bounded history
-page and cancellation before admission, 10 ms after admission, and after model
-HTTP receipt. `long_history_window` measures the direct first page after opening
-the copied store; initial directory installation during that open is excluded and
-must be measured separately. Retained `long_history_preparation` records describe
-the earlier prepare-then-read probe and keep their original meaning. Before-admission cases cover ordinary and manual-message preflight:
-start must remain pending at the 10 ms stimulus, then cancel without an opening
-or model request. Use a sufficiently large fixture; early admission fails the probe.
-The after-admission trigger does not guarantee preparation is still running;
-inspect the model request count. Stop timing ends when start returns cancellation
-or the admitted Engine completes cleanup with a durable cancelled outcome. It
-excludes closing the EventLog and draining abandoned read snapshots.
-It measures the store/Engine APIs, not GUI or
-Host IPC latency. Context/prune reads interrupt abandoned SQLite work through a
-progress handler and await transaction cleanup before reuse. Separate behavior
-tests cover reclaiming both readers and transaction recovery; arbitrary
-synchronous Rust computation is not immediately interruptible.
-
-`--kind transcript --sizes 128,512` uses retained release
-`maka-event-log --lib` executables to check many model steps
-inside one invocation. It verifies every assistant message from each
-fresh copy; this workload complements many-turn Engine fixtures.
-
-`--kind executor --sizes 128,512` uses the same transcript executable for
-sequential external tools. It compares every persisted message with canonical
-replay, including progress, results, and final invocation state.
-
-For repeated compression in one live Host session, retain the release
-`maka-agent-native --lib` test executable and run:
-
-```sh
-MAKA_COMPACTION_CYCLES=10 MAKA_COMPACTION_PROMPT_BYTES=65536 \
-  "$NATIVE" owner::tests::scale::compaction::real_host_same_session_compaction \
-  --ignored --exact --nocapture --test-threads=1
-```
-
-Each cycle sends new input and performs a real manual compaction through Host
-receipts. A final request verifies adoption of the latest checkpoint; paginated
-history verifies the original messages. The `MAKA_AGENT_COMPACTION` JSON reports
-actual requests/checkpoints, verified bytes and per-operation latency/CPU.
-Operation timings exclude setup, evidence reads and shutdown, but include the
-in-process controlled HTTP model. Request JSON sizes are normalized serialization
-sizes; peak RSS covers the whole process. This probe uses four Tokio workers and
-does not measure IPC, rendering, automatic compaction, inference or energy.
-
-For actual Executor attachment capture, use the same release native test executable:
-
-```sh
-MAKA_ARTIFACT_PROBE_BYTES=51847623 \
-  "$NATIVE" owner::tests::executor::executor_attachments_use_only_owned_immutable_uploads_and_original_receipts \
-  --exact --nocapture --test-threads=1
-```
-
-The setting changes the first uploaded file; sixteen smaller files retain order,
-byte/digest, authority and original-operation replay checks. `MAKA_ARTIFACT_PROBE`
-reports actual work, SQLite version, observed completion latency/CPU and cleanup.
-Stage timings exclude upload but include Host preparation, synchronous service
-reads/hash and observation; the service-entry observation can include the entire
-service call. Peak RSS includes the driver. Compare identical fixtures/features
-with at least five alternating runs per size and profile separately; this is not
-an isolated SQLite, IPC, rendering, inference or energy measurement.
-
-For actual service-tool execution on Unix, use the same release native test executable,
-with one case per process:
-
-```sh
-MAKA_TOOL_STORM_CALLS=64 MAKA_TOOL_STORM_PAYLOAD_BYTES=128 \
-  MAKA_TOOL_STORM_BACKEND=native \
-  "$NATIVE" owner::tests::service_tools::storm::real_service_tool_storm \
-  --ignored --exact --nocapture --test-threads=1
-```
-
-This case executes sequential mutations. Use `real_service_query_fanout` in the
-same module for read-only calls in one model step, or backend `javascript` for
-the actual JavaScript service. Fanout count does not imply simultaneous handlers.
-The `MAKA_AGENT_TOOL_STORM` JSON records `calls`, `payload_bytes`, `query`,
-`backend`, `summary_requests` and `wall_ms`. Each run checks exact tool results,
-complete public history, checkpoint/summary consistency and completed cleanup. Wall time
-includes the controlled HTTP responder; inference and rendering are outside this
-probe.
-
-For real image uploads on Unix, use the same release native test executable:
-
-```sh
-MAKA_IMAGE_COUNT=2 MAKA_IMAGE_SIDE=512 \
-  "$NATIVE" owner::tests::scale::image_upload::real_image_upload_vision_scale \
-  --ignored --exact --nocapture --test-threads=1
-```
-
-Choose `MAKA_IMAGE_PROTOCOL=openai-compatible` (default), `openai-chat-completions`,
-`anthropic`, or `responses` to exercise the actual protocol. Compatible requests
-with `MAKA_IMAGE_RETRY=true` receive one explicit `stream_options` rejection;
-both HTTP attempts must contain every original image.
-
-Each process generates distinct valid RGBA PNGs, fully decodes them for validation,
-then uploads sequential file snapshots through the Host. The probe checks durable
-upload receipts, original artifact bytes and canonical references, exact ordered
-images in the actual provider HTTP request, complete public history and cleanup.
-Only exact image delivery passes: an accepted upload or completed answer with a
-text replacement does not. `MAKA_AGENT_IMAGE_SCALE` records actual encoded sizes,
-pixel dimensions, stage timings, process peak RSS and failure evidence. Generation
-and validation are reported separately from upload and turn timing; their memory
-still contributes to process peak RSS. The HTTP responder and checks run in the
-same process. This does not measure product pixel decoding, IPC, rendering, real
-model inference or energy. Expand image count and dimensions independently, and
-preserve failing cases when an existing boundary prevents exact delivery.
+For larger histories, set `MAKA_ENGINE_PERF_FIXTURE_DIR` to a disposable directory and `MAKA_ENGINE_PERF_FIXTURE_TAG` to a revision label. Closed snapshots are keyed by workload settings and fixture source; preserve both when comparing retained executables. Seeding is separate from request latency and may take much longer. Run without competing builds and collect CPU profiles separately.
 
 ## Windows State Root ownership
 

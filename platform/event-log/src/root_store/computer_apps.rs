@@ -588,7 +588,7 @@ impl SessionStore {
                         .await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     if approval_ready {
-                        notice.native_approvals();
+                        notice.activations();
                     }
                     if local_count > 0 {
                         notice.metadata();

@@ -41,7 +41,37 @@ async fn foreign_openings_and_pauses_remain_evidence_without_local_recovery_or_r
     }
     let paused = opening("paused", None);
     append(&log, &paused).await;
-    let (pause, base) = super::handoff_consumers::seal(&log, &paused).await;
+    let context = log
+        .context_before_run(&paused.invocation, 100, 65536)
+        .await
+        .unwrap();
+    let base = SessionBase {
+        high_water: context.source_evidence.high_water,
+        digest: context.source_evidence.digest,
+    };
+    let pause = maka_agent_facts::handoff::HandoffPause {
+        intent: maka_agent_facts::handoff::HandoffIntent {
+            handoff_id: "handoff".into(),
+            host_epoch: "host".into(),
+            root_run_id: paused.invocation.run_id.clone(),
+            successor_run_id: "successor".into(),
+            successor_invocation_id: "successor-invocation".into(),
+            claim_id: "successor-claim".into(),
+        },
+        execution: super::handoff::execution(),
+    };
+    append(
+        &log,
+        &RuntimeEvent::new(
+            paused.invocation.clone(),
+            Fact::InvocationEnded {
+                outcome: InvocationOutcome::HandoffPaused {
+                    pause: pause.clone(),
+                },
+            },
+        ),
+    )
+    .await;
     let inherited = claim(&log, &pause.intent.claim_id, &paused, base).await;
     let Fact::InvocationOpened { configuration, .. } = &paused.fact else {
         unreachable!()

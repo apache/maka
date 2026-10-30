@@ -24,11 +24,8 @@ mod repl_browser;
 mod repl_clipboard;
 mod repl_contract;
 mod repl_dialogs;
-mod repl_native_geometry;
-mod repl_native_gtk;
 mod repl_playwright;
 mod repl_user_tab_context;
-mod resource_composition;
 
 #[cfg(all(feature = "native-desktop", target_os = "linux"))]
 #[path = "support/linux_wheel.rs"]

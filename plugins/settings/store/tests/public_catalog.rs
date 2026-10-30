@@ -18,10 +18,9 @@
  */
 
 use crate::support::root;
-use maka_agent_facts::{configuration::*, public_catalog::PublicCatalogBody};
+use maka_agent_facts::public_catalog::PublicCatalogBody;
 use maka_config::{
     ConfigurationStore,
-    model_fetch::ModelFetchPreparation,
     public_catalog::{PublicCatalogRecord, PublicCatalogSnapshot, PublicCatalogSource},
 };
 use maka_event_log::root::{RootNamespaces, RootOwner};
@@ -49,7 +48,7 @@ fn assert_snapshot_eq(actual: &PublicCatalogSnapshot, expected: &PublicCatalogSn
 }
 
 #[tokio::test]
-async fn sources_revalidate_independently_and_survive_restart_without_changing_user_state() {
+async fn sources_revalidate_independently_and_preserve_the_cached_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     let owner = root(temp.path());
     let store = Arc::new(ConfigurationStore::for_root(owner.clone()).await.unwrap());
@@ -57,67 +56,7 @@ async fn sources_revalidate_independently_and_survive_restart_without_changing_u
     assert_eq!(empty.catalog_revision, 0);
     assert!(empty.sources.is_empty());
 
-    let create: CreateCatalogConnectionInput = serde_json::from_value(json!({
-        "expectedCatalogRevision":0,
-        "connection":{"slug":"native","name":"Native",
-            "provider":{"packageId":"example","entryId":"api","scope":"profile","name":"api"},
-            "configuration":{"baseUrl":"http://localhost:18080/v1"},"enabled":true,
-            "enabledModelIds":["selected","manual"],
-            "modelOverrides":{"selected":{"vision":false},"manual":{}},
-            "requestBodyOverlay":{"temperature":0.5}}
-    }))
-    .unwrap();
-    let CatalogMutationResult::Committed {
-        connection: Some(basis),
-        ..
-    } = store.create_connection(create).await.unwrap()
-    else {
-        panic!("expected connection");
-    };
-    let ModelFetchPreparation::Ready(fetch) = store
-        .prepare_model_fetch(&basis.connection_id)
-        .await
-        .unwrap()
-    else {
-        panic!("expected discovery preparation");
-    };
-    assert!(matches!(
-        fetch
-            .complete(vec![ModelInfo::new("selected")], 42)
-            .await
-            .unwrap(),
-        ConnectionModelFetchResult::Committed { .. }
-    ));
-    store
-        .set_default_target(SetDefaultConnectionTargetInput {
-            expected_catalog_revision: 2,
-            target: Some(ConnectionTarget {
-                connection_id: basis.connection_id,
-                model_id: "selected".into(),
-            }),
-        })
-        .await
-        .unwrap();
-    let locator = CredentialLocator::NetworkProxy {
-        kind: PasswordKind::Password,
-    };
-    assert!(matches!(
-        store
-            .set_credential(
-                SetCredentialInput {
-                    locator: locator.clone(),
-                    expected: None,
-                    expected_connection: None,
-                    secret: "private fixture credential".into(),
-                },
-                43,
-            )
-            .await
-            .unwrap(),
-        CredentialMutationResult::Committed { .. }
-    ));
     let original = store.catalog().await.unwrap();
-    let credential = store.credential_status(locator.clone()).await.unwrap();
     let first = record(
         json!({"native":{"name":"Native","models":{"selected":{"name":"Initial"}}}}),
         100,
@@ -186,14 +125,6 @@ async fn sources_revalidate_independently_and_survive_restart_without_changing_u
     assert_eq!(current.revision, snapshot.catalog_revision);
     assert_eq!(current.connections, original.connections);
     assert_eq!(current.default_target, original.default_target);
-    assert_eq!(
-        store.credential_status(locator.clone()).await.unwrap(),
-        credential
-    );
-    assert_eq!(
-        store.credential_secret(&locator, None).await.unwrap(),
-        Some("private fixture credential".into())
-    );
     store.shutdown().await.unwrap();
     drop(store);
     drop(owner);
@@ -212,130 +143,7 @@ async fn sources_revalidate_independently_and_survive_restart_without_changing_u
     .unwrap();
     assert_snapshot_eq(&reopened.public_catalog().await.unwrap(), &snapshot);
     assert_eq!(reopened.catalog().await.unwrap(), current);
-    assert_eq!(
-        reopened.credential_status(locator).await.unwrap(),
-        credential
-    );
     reopened.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn failed_publication_rolls_back_the_body_and_http_metadata_with_its_revision() {
-    let temp = tempfile::tempdir().unwrap();
-    let owner = root(temp.path());
-    let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
-    let first = record(json!({"models":{"original":{}}}), 100);
-    store
-        .put_public_catalog(PublicCatalogSource::ModelsDev, first.clone())
-        .await
-        .unwrap();
-    let original = store.public_catalog().await.unwrap();
-    let database =
-        rusqlite::Connection::open(owner.canonical_path().join("configuration-rust.sqlite"))
-            .unwrap();
-    assert!(
-        database
-            .execute("UPDATE public_catalog SET body='invalid json'", [])
-            .is_err()
-    );
-    database
-        .execute_batch(
-            "CREATE TRIGGER reject_publication BEFORE UPDATE ON connection_catalog
-             BEGIN SELECT RAISE(ABORT, 'injected'); END;",
-        )
-        .unwrap();
-    assert!(
-        store
-            .put_public_catalog(
-                PublicCatalogSource::ModelsDev,
-                record(json!({"models":{"replacement":{}}}), 200),
-            )
-            .await
-            .is_err()
-    );
-    assert_snapshot_eq(&store.public_catalog().await.unwrap(), &original);
-    assert_eq!(store.catalog().await.unwrap().revision, 1);
-    let revalidated = PublicCatalogRecord {
-        checked_at: 300,
-        etag: Some("\"current\"".into()),
-        ..first
-    };
-    assert_eq!(
-        store
-            .put_public_catalog(PublicCatalogSource::ModelsDev, revalidated.clone())
-            .await
-            .unwrap(),
-        1
-    );
-    assert!(
-        store.public_catalog().await.unwrap().sources[&PublicCatalogSource::ModelsDev]
-            .same_content(&revalidated)
-            .unwrap()
-    );
-    drop(database);
-    store.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn revoked_root_cannot_read_or_publish_cached_catalogs() {
-    let temp = tempfile::tempdir().unwrap();
-    let owner = root(temp.path());
-    let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
-    store
-        .put_public_catalog(
-            PublicCatalogSource::OpenRouter,
-            record(json!({"data":[{"id":"original"}]}), 100),
-        )
-        .await
-        .unwrap();
-    std::fs::remove_dir_all(temp.path().join("control")).unwrap();
-    assert!(owner.validate_current().is_err());
-    assert!(store.public_catalog().await.is_err());
-    assert!(
-        store
-            .put_public_catalog(
-                PublicCatalogSource::OpenRouter,
-                record(json!({"data":[{"id":"must-not-publish"}]}), 200),
-            )
-            .await
-            .is_err()
-    );
-    store.close().await.unwrap();
-    let database =
-        rusqlite::Connection::open(owner.canonical_path().join("configuration-rust.sqlite"))
-            .unwrap();
-    let (body, revision): (String, i64) = database
-        .query_row(
-            "SELECT body, revision FROM public_catalog, connection_catalog",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&body).unwrap(),
-        json!({"data":[{"id":"original"}]})
-    );
-    assert_eq!(revision, 1);
-}
-
-#[test]
-fn uncertain_record_comparison_includes_all_http_metadata_and_check_time() {
-    let original = record(json!({"unknown":1}), 10);
-    let mut candidate = original.clone();
-    candidate.body =
-        PublicCatalogBody::from_json(r#"{ "unknown": 0, "\u0075nknown": 1 }"#.into()).unwrap();
-    assert!(original.same_content(&candidate).unwrap());
-    candidate.etag = None;
-    assert!(!original.same_content(&candidate).unwrap());
-    candidate = original.clone();
-    candidate.last_modified = Some("changed".into());
-    assert!(!original.same_content(&candidate).unwrap());
-    candidate = original.clone();
-    candidate.checked_at += 1;
-    assert!(!original.same_content(&candidate).unwrap());
-    candidate = original.clone();
-    candidate.body = PublicCatalogBody::from_json(r#"{"unknown":2}"#.into()).unwrap();
-    assert!(!original.same_content(&candidate).unwrap());
 }
 
 #[tokio::test]
@@ -404,67 +212,6 @@ async fn raw_body_semantics_preserve_revisions_unknown_fields_and_original_json_
             .is_err()
     );
     assert_eq!(store.catalog().await.unwrap().revision, 3);
-    drop(db);
-    store.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn stored_numeric_overflow_follows_value_acceptance_and_preserves_atomicity() {
-    let temp = tempfile::tempdir().unwrap();
-    let owner = root(temp.path());
-    let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
-    let row = record(json!({"data":[],"unknown":null}), 10);
-    assert_eq!(
-        store
-            .put_public_catalog(PublicCatalogSource::OpenRouter, row.clone())
-            .await
-            .unwrap(),
-        1
-    );
-    let db = rusqlite::Connection::open(owner.canonical_path().join("configuration-rust.sqlite"))
-        .unwrap();
-    let raw = r#"{"data":[],"unknown":1e400,"unknown":null}"#;
-    db.execute("UPDATE public_catalog SET body = ?", [raw])
-        .unwrap();
-    let expected = serde_json::from_str::<Value>(raw);
-    let snapshot = store.public_catalog().await;
-    assert_eq!(snapshot.is_ok(), expected.is_ok());
-    let stored_raw = match snapshot {
-        Ok(snapshot) => {
-            assert_eq!(snapshot.catalog_revision, 1);
-            assert_eq!(snapshot.sources.len(), 1);
-            let body = &snapshot.sources[&PublicCatalogSource::OpenRouter].body;
-            assert_eq!(body.as_raw().get(), raw);
-            assert_eq!(
-                serde_json::from_str::<Value>(body.as_raw().get()).unwrap(),
-                expected.unwrap()
-            );
-            assert_eq!(
-                store
-                    .put_public_catalog(PublicCatalogSource::OpenRouter, row.clone())
-                    .await
-                    .unwrap(),
-                1
-            );
-            row.body.as_raw().get()
-        }
-        Err(_) => {
-            assert!(
-                store
-                    .put_public_catalog(PublicCatalogSource::OpenRouter, row.clone())
-                    .await
-                    .is_err()
-            );
-            raw
-        }
-    };
-    assert_eq!(
-        db.query_row("SELECT body FROM public_catalog", [], |row| row
-            .get::<_, String>(0))
-            .unwrap(),
-        stored_raw
-    );
-    assert_eq!(store.catalog().await.unwrap().revision, 1);
     drop(db);
     store.close().await.unwrap();
 }

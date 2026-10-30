@@ -422,11 +422,42 @@ impl RootStore {
 }
 
 impl RootStore {
-    pub async fn reconcile_native_approval_controls(&self) -> Result<(), StoreError> {
+    pub async fn reconcile_activation_controls(&self) -> Result<(), StoreError> {
         self.require_open()?;
         for partition in &self.partitions {
-            partition.reconcile_native_approval_controls().await?;
+            partition.reconcile_activation_controls().await?;
         }
         Ok(())
+    }
+}
+
+impl RootStore {
+    pub async fn due_model_retry_sessions(
+        &self,
+        now_unix_ms: u64,
+    ) -> Result<Vec<String>, StoreError> {
+        self.require_open()?;
+        let mut candidates = Vec::new();
+        for partition in &self.partitions {
+            candidates.extend(partition.due_model_retry_candidates(now_unix_ms).await?);
+        }
+        candidates.sort();
+        Ok(candidates
+            .into_iter()
+            .map(|(_, _, session)| session)
+            .collect())
+    }
+    pub async fn next_model_retry_deadline(
+        &self,
+        now_unix_ms: u64,
+    ) -> Result<Option<u64>, StoreError> {
+        self.require_open()?;
+        let mut deadline = None;
+        for partition in &self.partitions {
+            if let Some(next) = partition.next_model_retry_deadline(now_unix_ms).await? {
+                deadline = Some(deadline.map_or(next, |saved: u64| saved.min(next)));
+            }
+        }
+        Ok(deadline)
     }
 }

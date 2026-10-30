@@ -22,7 +22,6 @@ use super::*;
 enum Service {
     Counter {
         handler: Option<Arc<Counter>>,
-        echo: bool,
         query: bool,
     },
     Questions,
@@ -37,13 +36,11 @@ enum Service {
     Protocol,
     Skills(Skills),
     Images(images::Source),
-    Web(Option<Arc<dyn Handler>>),
-    Computer(Arc<dyn Handler>),
+    Web,
     Jev,
 }
 struct Skills {
     path: std::path::PathBuf,
-    bundled: bool,
     standard: bool,
     preparation: Option<Preparation>,
 }
@@ -55,7 +52,6 @@ struct Preparation {
 pub(in crate::owner::tests) struct Setup {
     service: Service,
     tool_name: Option<&'static str>,
-    title: Option<maka_agent_facts::display::Text>,
     granted: bool,
     pub(in crate::owner::tests) nestable: bool,
     pub(in crate::owner::tests) confirmation: contract::ToolConfirmation,
@@ -66,7 +62,6 @@ impl Setup {
         Self {
             service,
             tool_name: None,
-            title: None,
             granted: true,
             nestable: false,
             confirmation: contract::ToolConfirmation::Preapproved,
@@ -76,17 +71,9 @@ impl Setup {
         self.tool_name = Some(name);
         self
     }
-    pub(in crate::owner::tests) fn titled(
-        mut self,
-        title: maka_agent_facts::display::Text,
-    ) -> Self {
-        self.title = Some(title);
-        self
-    }
     pub(super) fn javascript() -> Self {
         Self::new(Service::Counter {
             handler: None,
-            echo: false,
             query: false,
         })
     }
@@ -95,7 +82,6 @@ impl Setup {
             granted,
             ..Self::new(Service::Counter {
                 handler: Some(counter),
-                echo: false,
                 query: false,
             })
         }
@@ -105,13 +91,6 @@ impl Setup {
             panic!("counter fixture")
         };
         *value = query;
-        self
-    }
-    pub(super) fn with_echo(mut self) -> Self {
-        let Service::Counter { echo, .. } = &mut self.service else {
-            panic!("counter fixture")
-        };
-        *echo = true;
         self
     }
     pub(in crate::owner::tests) fn forms() -> Self {
@@ -129,7 +108,6 @@ impl Setup {
     pub(in crate::owner::tests) fn skills(path: std::path::PathBuf) -> Self {
         Self::new(Service::Skills(Skills {
             path,
-            bundled: false,
             standard: false,
             preparation: None,
         }))
@@ -141,20 +119,12 @@ impl Setup {
         skills.standard = true;
         self
     }
-    pub(in crate::owner::tests) fn with_bundled_skills(mut self) -> Self {
-        let Service::Skills(skills) = &mut self.service else {
-            panic!("skills fixture")
-        };
-        skills.bundled = true;
-        self
-    }
     pub(in crate::owner::tests) fn skill_preparation(
         path: std::path::PathBuf,
         tools: bool,
     ) -> Self {
         Self::new(Service::Skills(Skills {
             path,
-            bundled: false,
             standard: false,
             preparation: Some(Preparation {
                 tools,
@@ -195,14 +165,7 @@ impl Setup {
         Self::new(Service::Jev)
     }
     pub(in crate::owner::tests) fn web() -> Self {
-        Self::new(Service::Web(None))
-    }
-    #[cfg(target_os = "macos")]
-    pub(in crate::owner::tests) fn isolated_processes() -> Self {
-        Self::new(Service::Processes {
-            health: false,
-            isolated: true,
-        })
+        Self::new(Service::Web)
     }
     pub(in crate::owner::tests) fn processes() -> Self {
         Self::new(Service::Processes {
@@ -227,29 +190,8 @@ impl Setup {
         self.granted = false;
         self
     }
-    pub(in crate::owner::tests) fn computer(handler: Arc<dyn Handler>) -> Self {
-        Self::new(Service::Computer(handler))
-    }
-    pub(in crate::owner::tests) fn captured(mut self, handler: Arc<dyn Handler>) -> Self {
-        let Service::Web(capture) = &mut self.service else {
-            panic!("web capture fixture")
-        };
-        *capture = Some(handler);
-        self
-    }
-    pub(super) fn export(&self) -> &str {
-        self.service.export()
-    }
     pub(in crate::owner::tests) fn selections(&self) -> Vec<contract::ServiceTool> {
-        let mut selections = self.primary_selections();
-        if self.service.capture().is_some() {
-            selections.extend(self.primary_selections().into_iter().map(|mut tool| {
-                tool.import = "other_service".into();
-                tool.name.push_str("Other");
-                tool
-            }));
-        }
-        selections
+        self.primary_selections()
     }
     fn primary_selections(&self) -> Vec<contract::ServiceTool> {
         let methods: Vec<_> = match &self.service {
@@ -265,8 +207,7 @@ impl Setup {
                 ("edit", "AdjustDocument"),
                 ("applyPatch", "PatchDocument"),
             ],
-            Service::Computer(_) => vec![("evaluate", "cua_repl"), ("reset", "cua_reset")],
-            Service::Web(_) => vec![("fetch", "WebFetch"), ("search", "WebSearch")],
+            Service::Web => vec![("fetch", "WebFetch"), ("search", "WebSearch")],
             Service::Skills(skills) => {
                 if skills.preparation.is_some() {
                     vec![("search", "FindGuide"), ("load", "LoadGuide")]
@@ -296,7 +237,6 @@ impl Setup {
                 selection.name = name.into();
                 match &self.service {
                     Service::FileEditors => selection.presentation = None,
-                    Service::Computer(_) => selection.result = contract::ToolResult::Computer,
                     Service::Skills(_) => selection.input = contract::ToolInput::Skill,
                     Service::Processes { .. } => {
                         selection.input = if method == "execute" {
@@ -316,7 +256,7 @@ impl Setup {
     }
     pub(in crate::owner::tests) fn selection(&self) -> contract::ServiceTool {
         let (name, description) = match self.service {
-            Service::Web(_) => ("WebFetch", "Increment the explicitly selected counter."),
+            Service::Web => ("WebFetch", "Increment the explicitly selected counter."),
             Service::File(_) | Service::FileEditors => {
                 ("WorkspaceFile", "Use the selected workspace files.")
             }
@@ -330,7 +270,7 @@ impl Setup {
         };
         contract::ServiceTool {
             nestable: self.nestable,
-            input: if matches!(self.service, Service::Web(_)) {
+            input: if matches!(self.service, Service::Web) {
                 contract::ToolInput::Web
             } else {
                 contract::ToolInput::Json
@@ -347,10 +287,10 @@ impl Setup {
                 Service::FileEditors => Some("maka.workspace.Files@1/readText".into()),
                 _ => None,
             },
-            title: self.title.clone(),
+            title: None,
             confirmation: self.confirmation,
             result: if matches!(self.service, Service::File("readImage"))
-                || matches!(&self.service,Service::Images(source) if source.is_image())
+                || matches!(&self.service, Service::Images(_))
             {
                 contract::ToolResult::Image
             } else {
@@ -373,9 +313,7 @@ impl Setup {
                 cardinality: Cardinality::One,
             },
         );
-        if self.service.capture().is_some() {
-            imports.insert("other_service".into(), imports["service"].clone());
-        }
+
         let provider = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
             manifest.application =
                 Some(maka_plugin_core::package::CheckedDeclaration::new(declaration).unwrap());
@@ -391,10 +329,7 @@ impl Setup {
                 export: self.service.export().into(),
             }],
         );
-        if self.service.capture().is_some() {
-            node.bindings
-                .insert("other_service".into(), node.bindings["service"].clone());
-        }
+
         packages[0] = provider;
         let mut exports = json!({(self.service.export()):{"contract":self.service.contract(),"availability":"required"}});
         if matches!(self.service, Service::Processes { .. }) {
@@ -405,20 +340,11 @@ impl Setup {
         }}})).unwrap())]);
         match &self.service {
             Service::Images(source) => {
-                if let Some(code) = source.javascript() {
-                    files.insert("images.mjs".into(), code.into_bytes());
-                }
+                files.insert("images.mjs".into(), source.javascript().into_bytes());
             }
-            Service::Counter {
-                handler: None,
-                echo,
-                ..
-            } => {
-                let methods = if *echo {
-                    "write({amount,note=''}){return {effects:effects+=amount,payload:note};},read({note=''}){return {effects,payload:note};}"
-                } else {
-                    "write({amount}){return {effects:effects+=amount};},read(){return {effects};}"
-                };
+            Service::Counter { handler: None, .. } => {
+                let methods =
+                    "write({amount}){return {effects:effects+=amount};},read(){return {effects};}";
                 files.insert("counter.mjs".into(),format!(r#"let effects=0; export function activate(){{return {{Counter:{{contract:{},service:['counter']}}}};}} export const counter={{{methods}}};"#,serde_json::to_string(&counter_contract()).unwrap()).into_bytes());
             }
             _ => {}
@@ -530,13 +456,6 @@ impl Setup {
 }
 
 impl Service {
-    fn capture(&self) -> Option<&Arc<dyn Handler>> {
-        match self {
-            Self::Web(handler) => handler.as_ref(),
-            Self::Computer(handler) => Some(handler),
-            _ => None,
-        }
-    }
     fn contract(&self) -> Contract {
         match self {
             Self::Counter { .. } => counter_contract(),
@@ -548,8 +467,7 @@ impl Service {
             Self::Protocol => maka_workspace_api::protocol::contract(),
             Self::Skills(_) => maka_skills_api::contract(),
             Self::Images(source) => source.contract(),
-            Self::Web(_) => maka_web_api::contract(),
-            Self::Computer(_) => maka_workspace_api::computer::contract(),
+            Self::Web => maka_web_api::contract(),
             Self::Jev => maka_workspace_api::jev::contract(),
         }
     }
@@ -564,8 +482,7 @@ impl Service {
             Self::Protocol => maka_workspace_api::protocol::EXPORT,
             Self::Skills(_) => maka_skills_api::EXPORT,
             Self::Images(_) => "Images",
-            Self::Web(_) => maka_web_api::EXPORT,
-            Self::Computer(_) => maka_workspace_api::computer::EXPORT,
+            Self::Web => maka_web_api::EXPORT,
             Self::Jev => maka_workspace_api::jev::EXPORT,
         }
     }
@@ -581,8 +498,8 @@ impl Service {
             Self::Protocol => "write",
             Self::Skills(_) => "search",
             Self::Images(_) => "produce",
-            Self::Web(_) => "fetch",
-            Self::Computer(_) | Self::Jev => "evaluate",
+            Self::Web => "fetch",
+            Self::Jev => "evaluate",
         }
     }
     fn implementation(&self) -> Value {
@@ -598,18 +515,18 @@ impl Service {
             #[cfg(target_os = "macos")]
             Self::Protocol => maka_workspace_api::protocol::IMPLEMENTATION,
             Self::Skills(_) => maka_skills_api::IMPLEMENTATION,
-            Self::Images(source) => return source.implementation(),
-            Self::Web(_) => maka_web_api::IMPLEMENTATION,
-            Self::Computer(_) => maka_workspace_api::computer::IMPLEMENTATION,
+            Self::Images(_) => {
+                return json!({"kind":"javascript","module":"images.mjs","realm":"shared"});
+            }
+            Self::Web => maka_web_api::IMPLEMENTATION,
             Self::Jev => maka_workspace_api::jev::IMPLEMENTATION,
         };
         json!({"kind":"native","implementation":name})
     }
     fn schema(&self) -> Value {
         match self {
-            Self::Computer(_) => maka_workspace_api::computer::configuration_schema(),
             Self::Jev => maka_workspace_api::jev::configuration_schema(),
-            Self::Web(_) => maka_web_api::configuration_schema(),
+            Self::Web => maka_web_api::configuration_schema(),
             Self::Skills(_) => maka_skills_api::configuration_schema(),
             Self::Processes { .. } => maka_workspace_api::processes::configuration_schema(),
             #[cfg(target_os = "macos")]
@@ -619,10 +536,9 @@ impl Service {
     }
     fn configuration(&self, roots: Value) -> Value {
         match self {
-            Self::Computer(_) => json!({"desktop":"local"}),
-            Self::Web(_) | Self::Jev => json!({"network":"allowed"}),
+            Self::Web | Self::Jev => json!({"network":"allowed"}),
             Self::Skills(skills) => {
-                json!({"bundled":skills.bundled,"home":skills.standard.then_some(&skills.path),"projectRoots":if skills.standard{roots}else{json!([])},
+                json!({"bundled":false,"home":skills.standard.then_some(&skills.path),"projectRoots":if skills.standard{roots}else{json!([])},
                 "sources":if skills.standard{json!([])}else{json!([{"id":"fixture","label":"Fixture","path":skills.path}])},"manage":false,"preferences":false})
             }
             Self::Processes { isolated, .. } => {
@@ -641,46 +557,13 @@ impl Service {
                 preparation: Some(_),
                 ..
             }) => &["prepare", "search"],
-            Self::Web(_) => &["capture"],
-            Self::Computer(_) => &["state"],
+            Self::Web => &["capture"],
             #[cfg(target_os = "macos")]
             Self::Protocol => &["run", "input"],
             _ => &[],
         }
     }
     fn provide(&self, registry: &mut NativeRegistry) {
-        if let Some(handler) = self.capture() {
-            let handler = handler.clone();
-            let contract = self.contract();
-            let export = self.export().to_owned();
-            let implementation = self.implementation()["implementation"]
-                .as_str()
-                .unwrap()
-                .to_owned();
-            registry
-                .insert(
-                    implementation,
-                    Arc::new(move |_, _| {
-                        let handler = handler.clone();
-                        let contract = contract.clone();
-                        let export = export.clone();
-                        Box::pin(async move {
-                            NativeActivation {
-                                exports: Ok(BTreeMap::from([(
-                                    export,
-                                    Published {
-                                        contract,
-                                        value: handler,
-                                    },
-                                )])),
-                                owner: Arc::new(()),
-                            }
-                        })
-                    }),
-                )
-                .unwrap();
-            return;
-        }
         match self {
             Self::Counter {
                 handler: Some(counter),
@@ -708,7 +591,7 @@ impl Service {
                     )
                     .unwrap();
             }
-            Self::Counter { handler: None, .. } | Self::Computer(_) => {}
+            Self::Counter { handler: None, .. } => {}
             Self::Questions => maka_interactions_native::questions::provide(registry).unwrap(),
             Self::Forms => maka_interactions_native::forms::provide(registry).unwrap(),
             Self::File(_) | Self::FileEditors => maka_files_native::provide(registry).unwrap(),
@@ -720,8 +603,8 @@ impl Service {
             }
             #[cfg(target_os = "macos")]
             Self::Protocol => maka_processes_native::provide(registry).unwrap(),
-            Self::Images(source) => source.provide(registry),
-            Self::Web(_) => maka_web::provide(registry).unwrap(),
+            Self::Images(_) => {}
+            Self::Web => maka_web::provide(registry).unwrap(),
             Self::Jev => maka_jev_native::provide(registry).unwrap(),
             Self::Skills(Skills {
                 preparation:

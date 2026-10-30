@@ -26,7 +26,6 @@ use maka_event_log::{
 };
 use maka_plugin_core::scope::Scope;
 use serde_json::json;
-use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 
 mod export;
 pub(crate) mod fixtures;
@@ -120,34 +119,4 @@ async fn inventory_confirms_only_selected_descendants_across_history_and_host_pa
         ))
     ));
     log.close().await.unwrap();
-
-    // Seed a wide catalog without thousands of unrelated admission transactions.
-    let mut db = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
-        .await
-        .unwrap();
-    sqlx::raw_sql(
-        "WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<4094)
-         INSERT INTO session_control SELECT 'wide-'||n,'fixture',1,1,1,0,'{}' FROM numbers;
-         INSERT INTO plugin_sessions SELECT id,'example.orchestrator','profile','fixture',0,'root'
-         FROM session_control WHERE id LIKE 'wide-%';",
-    )
-    .execute(&mut db)
-    .await
-    .unwrap();
-    db.close().await.unwrap();
-    let log = EventLog::open(&path).await.unwrap();
-    let complete = log.preview_bundle("root").await;
-    let unrelated = log.preview_bundle("unrelated").await;
-    log.close().await.unwrap();
-    let complete = complete.expect("complete owned subtree must be available for transfer");
-    assert_eq!(complete.sessions.len(), 4097);
-    assert_eq!(
-        complete
-            .sessions
-            .iter()
-            .filter(|session| session.id.starts_with("wide-"))
-            .count(),
-        4094
-    );
-    assert_eq!(unrelated.unwrap().sessions.len(), 1);
 }

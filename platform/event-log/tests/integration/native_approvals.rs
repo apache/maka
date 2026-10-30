@@ -45,7 +45,7 @@ async fn fixture_with_changes(
     tokio::sync::watch::Receiver<()>,
 ) {
     let log = EventLog::open(path).await.unwrap();
-    let changes = log.subscribe_native_approval_changes();
+    let changes = log.subscribe_activation_changes();
     log.create_session("session", "session", &json!({}), 1)
         .await
         .unwrap();
@@ -69,6 +69,10 @@ async fn fixture_with_changes(
     let prefix = log.prefix(100, 100000).await.unwrap();
     log.append_batch(&[
         write(Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             purpose: maka_agent_facts::context::ModelPurpose::Main,
@@ -160,6 +164,7 @@ async fn fixture_with_changes(
         native: json!({}),
     }];
     let checkpoint = ActivationCheckpoint {
+        suspension: maka_agent_facts::native_approval::ActivationSuspension::NativeApprovals,
         id: "checkpoint".into(),
         invocation,
         through: sequence,
@@ -755,6 +760,10 @@ async fn settled_cursor_survives_capture_window_until_actual_next_model_request(
     let request = EventWrite::plain(RuntimeEvent::new(
         checkpoint.invocation.clone(),
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             purpose: maka_agent_facts::context::ModelPurpose::Main,
@@ -894,7 +903,7 @@ async fn closure_and_stop_wake_an_already_registered_park_observer() {
         else {
             panic!("eligible frontier must park")
         };
-        let mut changes = log.subscribe_native_approval_changes();
+        let mut changes = log.subscribe_activation_changes();
         assert_eq!(
             log.ready_native_approval_sessions().await.unwrap(),
             Vec::<String>::new()

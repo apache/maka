@@ -48,17 +48,16 @@ pub(crate) async fn output(
     output: ToolSuccess,
 ) -> (EventWrite, u64) {
     let source = log
-        .capture_model_context(
-            &invocation.session_id,
-            Some(&invocation.invocation_id),
-            100_000,
-            64 * 1024 * 1024,
-        )
+        .read_model_view(&invocation.session_id, Some(&invocation.invocation_id))
         .await
         .unwrap();
     let event = |fact| EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap();
     log.append(
         &event(Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: source.selection.captured_through,
+                prior_unknown: false,
+            },
             context_breakdown: Some(maka_agent_facts::context::PreparedContextBreakdown {
                 system: maka_agent_facts::context::ContextBucket {
                     content_bytes: 3,

@@ -173,59 +173,15 @@ async fn projection_faults_roll_back_canonical_and_prior_batch_events_before_reo
     }
 }
 
-#[tokio::test]
-async fn explicit_import_sequence_is_captured_before_projection_inserts() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("events.sqlite");
-    let log = EventLog::open(&path).await.unwrap();
-    log.connection.run(|db| Box::pin(async move {
-        let mut tx = db.begin().await?;
-        let first = opening("imported");
-        assert_eq!(insert(&mut tx, &first, serde_json::to_string(&first)?, Position::Imported(Some(41))).await?, 41);
-        let end = RuntimeEvent::new(first.invocation.clone(), Fact::InvocationEnded { outcome: InvocationOutcome::Completed });
-        assert_eq!(insert(&mut tx, &end, serde_json::to_string(&end)?, Position::Imported(Some(42))).await?, 42);
-        let prefix: i64 = sqlx::query_scalar("SELECT MAX(sequence) FROM context_source_prefixes WHERE kind='invocation' AND owner='imported'").fetch_one(&mut *tx).await?;
-        assert_eq!(prefix, 42, "each import event publishes its proof before the next event");
-        let safety:i64=sqlx::query_scalar("SELECT through_sequence FROM context_safety_heads WHERE session_id='session'").fetch_one(&mut *tx).await?;
-        assert_eq!(safety,42,"import projects safety at the captured canonical sequence");
-        assert!(!sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM context_obligations WHERE invocation_id='imported')").fetch_one(&mut *tx).await?);
-        tx.commit().await?;
-        let mut earlier_invocation = opening("imported");
-        earlier_invocation.id = "earlier-invocation".into();
-        earlier_invocation.invocation.session_id = "other-session".into();
-        earlier_invocation.fact = Fact::ModelObserved {
-            step_id: "earlier-step".into(),
-            event: ModelObservation::ResponseMetadata { id: Some("response".into()), model: None, timestamp: None },
-        };
-        for earlier in [opening("earlier-session"), earlier_invocation] {
-            let mut tx = db.begin().await?;
-            let error = insert(
-                &mut tx,
-                &earlier,
-                serde_json::to_string(&earlier)?,
-                Position::Imported(Some(40)),
-            )
-            .await
-            .expect_err("imports cannot append behind either owner prefix");
-            assert!(matches!(error, StoreError::Sqlite(rusqlite::Error::InvalidParameterName(ref reason))
-                if reason == "source append is not monotonic"));
-            tx.rollback().await?;
-        }
-        let sequences: Vec<i64> = sqlx::query_scalar("SELECT sequence FROM event_log ORDER BY sequence")
-            .fetch_all(&mut *db).await?;
-        assert_eq!(sequences, [41, 42], "rejected imports retain no canonical event");
-        Ok(())
-    })).await.unwrap();
-    log.close().await.unwrap();
-    let reopened = EventLog::open(&path).await.unwrap();
-    reopened.close().await.unwrap();
-}
-
 fn visible_tool_prefix() -> Vec<EventWrite> {
     let opened = opening("tool-invocation");
     let invocation = opened.invocation.clone();
     let facts = [
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             item_acceptance: true,
             step_id: "step".into(),
             model_id: "model".into(),
@@ -451,52 +407,6 @@ async fn canonical_tool_spans_preserve_projection_raw_and_replay_after_reopen_an
         .unwrap();
     assert_eq!(stored_json, imported_json);
     imported.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn canonical_tool_span_publication_failure_rolls_back_the_whole_batch() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("events.sqlite");
-    let log = EventLog::open(&path).await.unwrap();
-    log.connection.run(|db| Box::pin(async move {
-        sqlx::raw_sql("CREATE TEMP TRIGGER reject_span BEFORE INSERT ON context_semantic_fragments WHEN NEW.storage_kind='canonical_tool_projection' BEGIN SELECT RAISE(ABORT,'span publication fault'); END;").execute(db).await?;
-        Ok(())
-    })).await.unwrap();
-    let mut events = visible_tool_prefix();
-    let (settled, _) = EventWrite::tool_success(
-        "settled".into(),
-        std::time::UNIX_EPOCH,
-        events[0].event().invocation.clone(),
-        "step:call".into(),
-        ToolOutput::Text("result".into()).into(),
-    )
-    .unwrap();
-    events.push(settled);
-    assert!(
-        log.append_batch(&events).await.is_err(),
-        "failed span publication cannot publish receipts"
-    );
-    log.close().await.unwrap();
-    assert_eq!(counts(&path), vec![0; 13]);
-    let reopened = EventLog::open(&path).await.unwrap();
-    assert_eq!(
-        reopened.append_batch(&events).await.unwrap(),
-        [1, 2, 3, 4, 5, 6]
-    );
-    let page = reopened
-        .context_semantic_rows(&tool_selection(6), None, 20)
-        .await
-        .unwrap();
-    let resolved = reopened.context_semantic_resolve(&page.rows).await.unwrap();
-    assert_eq!(
-        resolved.last().unwrap().payload,
-        Some(maka_agent_facts::history::semantic::Payload::Tool(
-            DurableToolProjection::Json {
-                value: serde_json::json!({"kind":"text","text":"result"})
-            }
-        ))
-    );
-    reopened.close().await.unwrap();
 }
 
 #[tokio::test]

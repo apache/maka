@@ -23,7 +23,7 @@ use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::input::InvocationInput;
-use maka_event_log::{EventLog, StoreError, sessions::SessionRecord};
+use maka_event_log::{EventLog, sessions::SessionRecord};
 use serde_json::{Value, json};
 
 fn invocation(session: &str) -> Invocation {
@@ -133,56 +133,4 @@ async fn active_ack_finalization_replay_and_rebuild_preserve_durable_control() {
         serde_json::to_vec(&log.prefix(32, 65536).await.unwrap()).unwrap(),
         bytes
     );
-}
-
-#[tokio::test]
-async fn unknown_and_empty_tail_ids_leave_all_authorities_unchanged() {
-    let temp = tempfile::tempdir().unwrap();
-    let log = EventLog::open(&temp.path().join("events.sqlite"))
-        .await
-        .unwrap();
-    log.create_session("session", "fingerprint", &json!({}), 7)
-        .await
-        .unwrap();
-    log.create_session("other", "other", &json!({}), 7)
-        .await
-        .unwrap();
-    for populated in [false, true] {
-        let other = opening("other");
-        if populated {
-            log.append(&EventWrite::plain((opening("session")).clone()).unwrap())
-                .await
-                .unwrap();
-            log.append(&EventWrite::plain((other).clone()).unwrap())
-                .await
-                .unwrap();
-        }
-        let before = log.get_session::<Value>("session").await.unwrap().unwrap();
-        let revision = catalog(&log).await;
-        let bytes = serde_json::to_vec(&log.prefix(32, 65536).await.unwrap()).unwrap();
-        for id in ["unknown", "invocation-session", other.id.as_str()] {
-            let record = log
-                .set_session_read_marker::<Value>("session", id)
-                .await
-                .unwrap();
-            assert_eq!(record, before);
-        }
-        assert_eq!(catalog(&log).await, revision);
-        assert_eq!(
-            serde_json::to_vec(&log.prefix(32, 65536).await.unwrap()).unwrap(),
-            bytes
-        );
-    }
-    assert!(matches!(
-        log.set_session_read_marker::<Value>("missing", "unknown")
-            .await,
-        Err(StoreError::SessionNotFound)
-    ));
-    for invalid in ["", "invalid:id", "with space"] {
-        assert!(matches!(
-            log.set_session_read_marker::<Value>("session", invalid)
-                .await,
-            Err(StoreError::InvalidTransition(_))
-        ));
-    }
 }

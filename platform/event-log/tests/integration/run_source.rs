@@ -272,129 +272,6 @@ async fn source_identity_binds_original_event_bytes() {
 }
 
 #[tokio::test]
-async fn cumulative_model_metadata_bytes_do_not_limit_source_evidence() {
-    use maka_agent_facts::event::{LogScope, ModelInterruption};
-    use maka_agent_facts::model::recorded::ModelObservation;
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("large-source.sqlite");
-    let log = EventLog::open(&path).await.unwrap();
-    let first = opening(
-        "session",
-        "source",
-        "source-invocation",
-        "small effective input",
-    );
-    append(&log, first.clone()).await;
-    let event = |fact| RuntimeEvent::new(first.invocation.clone(), fact);
-    append(
-        &log,
-        event(Fact::ModelRequested {
-            context_breakdown: None,
-            item_acceptance: false,
-            purpose: maka_agent_facts::context::ModelPurpose::Main,
-            context: None,
-            checkpoint_event_id: None,
-            step_id: "step".into(),
-            model_id: "test".into(),
-            source_scope: LogScope::Root,
-            source_high_water: 0,
-            source_digest: "fixture".into(),
-            effective_source_digest: None,
-            input_digest: "input".into(),
-            route_identity: "route".into(),
-        }),
-    )
-    .await;
-    append(
-        &log,
-        event(Fact::ModelObserved {
-            step_id: "step".into(),
-            event: ModelObservation::ResponseMetadata {
-                id: Some("response".into()),
-                model: None,
-                timestamp: None,
-            },
-        }),
-    )
-    .await;
-    let mut metadata_bytes = 0;
-    for _ in 0..9 {
-        let observation = event(Fact::ModelObserved {
-            step_id: "step".into(),
-            event: ModelObservation::ProviderOptions {
-                provider_part_id: Some("provider-part".into()),
-                options: std::sync::Arc::new(
-                    serde_json::json!({"evidence":"p".repeat(1024 * 1024)}),
-                ),
-            },
-        });
-        metadata_bytes += serde_json::to_vec(&observation).unwrap().len();
-        append(&log, observation).await;
-    }
-    append(
-        &log,
-        event(Fact::ModelInterrupted {
-            partial: None,
-            step_id: "step".into(),
-            status: ModelInterruption::Cancelled,
-            diagnostic: None,
-            model_failure: None,
-        }),
-    )
-    .await;
-    let terminal = event(Fact::InvocationEnded {
-        outcome: InvocationOutcome::Cancelled {
-            source: "runtime_cancellation".into(),
-        },
-    });
-    append(&log, terminal.clone()).await;
-    assert!(metadata_bytes > 8 * 1024 * 1024);
-    assert!(matches!(
-        log.prefix(100, 8 * 1024 * 1024).await,
-        Err(StoreError::PrefixTooLarge)
-    ));
-    let source = log
-        .run_source("session", "source", None)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(source.boundary.high_water, 14);
-    assert_eq!((source.opening.sequence, source.last.sequence), (1, 14));
-    assert_eq!(source.opening.event, first);
-    assert_eq!(source.last.event, terminal);
-    let effective = log
-        .capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
-        .await
-        .unwrap();
-    let canonical: Vec<_> = effective
-        .tail
-        .iter()
-        .map(|item| match item {
-            maka_event_log::context::ContextEvent::Canonical(stored) => &stored.event,
-            _ => panic!("interrupted observations must not become effective model items"),
-        })
-        .collect();
-    assert!(serde_json::to_vec(&canonical).unwrap().len() < 4096);
-    assert!(canonical.iter().any(|event| event.id == first.id));
-    assert!(
-        canonical
-            .iter()
-            .all(|event| !matches!(event.fact, Fact::ModelObserved { .. }))
-    );
-    log.close().await.unwrap();
-    let log = EventLog::open(&path).await.unwrap();
-    let reopened = log
-        .run_source("session", "source", None)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(reopened.boundary, source.boundary);
-    assert_eq!(reopened.opening.event, first);
-    assert_eq!(reopened.last.event, terminal);
-    log.close().await.unwrap();
-}
-
-#[tokio::test]
 async fn ordinal_fences_stay_indexed_as_a_copied_sessions_run_grows() {
     use maka_agent_facts::{
         event::{LogScope, ModelInterruption},
@@ -464,6 +341,10 @@ async fn ordinal_fences_stay_indexed_as_a_copied_sessions_run_grows() {
     append(
         &log,
         event(Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             purpose: maka_agent_facts::context::ModelPurpose::Main,

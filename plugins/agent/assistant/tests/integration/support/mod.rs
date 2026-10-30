@@ -18,9 +18,7 @@
  */
 
 use futures_util::future::BoxFuture;
-use maka_agent_facts::event::Invocation;
-use maka_agent_ports::execution::Receipt;
-use maka_assistant::plan::{Artifact, Command, Request, Snapshot, Step};
+use maka_assistant::plan::{Artifact, Step};
 use maka_capabilities::storage::Mutation;
 use maka_capabilities::storage::Namespace;
 use maka_capabilities::storage::Page;
@@ -102,25 +100,5 @@ pub fn draft() -> Artifact {
                 complexity: None,
             })
             .into(),
-    }
-}
-pub fn request(id: &str, revision: u64, command: Command) -> Request {
-    Request {
-        operation_id: id.into(),
-        expected_revision: revision,
-        command,
-    }
-}
-pub fn host_receipt(state: &Snapshot, run: &str) -> Receipt {
-    let execution = state.execution.as_ref().unwrap();
-    Receipt {
-        invocation: Invocation {
-            session_id: "session".into(),
-            turn_id: format!("turn_{run}"),
-            run_id: run.into(),
-            invocation_id: format!("invocation_{run}"),
-        },
-        message_id: format!("message_{run}"),
-        content_digest: execution.request.digest().unwrap(),
     }
 }

@@ -88,17 +88,6 @@ impl ArenaRecipes {
             + std::mem::size_of::<ListSource<MessageRecipe>>()
             + 2 * std::mem::size_of::<usize>()
     }
-    #[cfg(test)]
-    pub fn new(arena: CaptureArena, owner: Arc<dyn Send + Sync>) -> Self {
-        Self(
-            Arc::new(Store {
-                arena,
-                _owner: owner,
-                cancellation: None,
-            }),
-            false,
-        )
-    }
     pub fn cancellable(
         arena: CaptureArena,
         owner: Arc<dyn Send + Sync>,

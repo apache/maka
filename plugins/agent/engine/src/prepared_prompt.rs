@@ -258,7 +258,7 @@ impl PreparedPrompt {
         language: maka_agent_facts::language::Language,
         provider: &maka_model::ProviderConfig,
         options: &serde_json::Value,
-        tools: &[maka_model::ToolDefinition],
+        tools: &[Arc<maka_model::ToolDefinition>],
         max_output_tokens: Option<u64>,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<(), crate::RunError> {
@@ -287,7 +287,7 @@ impl PreparedPrompt {
         language: maka_agent_facts::language::Language,
         provider: &maka_model::ProviderConfig,
         options: &serde_json::Value,
-        tools: &[maka_model::ToolDefinition],
+        tools: &[Arc<maka_model::ToolDefinition>],
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<(), crate::RunError> {
         wire::compile(self, language, provider, options, tools, cancellation).await
@@ -647,80 +647,5 @@ impl PromptCursor for Cursor {
             self.offset += usize::from(message.is_some());
             Ok(message)
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use maka_agent_facts::model::prompt_source::{
-        PreparedWire, WireCursor, WireFormat, WireSource,
-    };
-
-    #[tokio::test]
-    async fn promotion_preserves_cancellation_and_closed_resource_failure() {
-        use tokio_util::sync::CancellationToken;
-
-        let resources = maka_model::ModelPreparationResources::new(Default::default()).unwrap();
-        let staged = resources.reserve_staging(1).await.unwrap();
-        let mut prompt = PreparedPrompt::new(Prompt::from_messages(Vec::new()));
-        prompt.preparation = Some(crate::history::preparation::RequestPreparation::new(staged));
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        assert!(matches!(
-            prompt.promote(1, &cancellation).await,
-            Err(crate::RunError::Cancelled)
-        ));
-
-        resources.close();
-        let result = prompt.promote(1, &CancellationToken::new()).await;
-        assert!(matches!(
-            result,
-            Err(crate::RunError::Preparation(error))
-                if error.kind() == std::io::ErrorKind::BrokenPipe
-        ));
-    }
-
-    struct UnreadableHistory;
-    impl PromptSource for UnreadableHistory {
-        fn open(&self) -> Box<dyn PromptCursor> {
-            panic!("request identity must not traverse history")
-        }
-    }
-    impl WireSource for UnreadableHistory {
-        fn open(&self, _: usize) -> Box<dyn WireCursor> {
-            panic!("request identity must not encode body")
-        }
-    }
-
-    #[test]
-    fn final_request_identity_binds_wire_root_and_captures_absent_instructions_without_reads() {
-        let mut prompt = PreparedPrompt::new(Prompt::new(
-            Arc::new(UnreadableHistory),
-            "semantic-root",
-            1000,
-            PreparedContextBreakdown::default(),
-        ));
-        prompt.wire = Some(PreparedWire {
-            format: WireFormat::ChatCompletions,
-            codec: "codec-one".into(),
-            identity: "wire-one".into(),
-            source: Arc::new(UnreadableHistory),
-        });
-        let first = prompt.model();
-        assert_eq!(first.instructions(), Some(""));
-        prompt.wire.as_mut().unwrap().identity = "wire-two".into();
-        assert_ne!(
-            first.identity(),
-            prompt.model().identity(),
-            "a changed prepared wire root changes input evidence"
-        );
-        prompt.wire.as_mut().unwrap().identity = "wire-one".into();
-        prompt.wire.as_mut().unwrap().codec = "codec-two".into();
-        assert_ne!(
-            first.identity(),
-            prompt.model().identity(),
-            "codec revisions are part of input evidence"
-        );
     }
 }

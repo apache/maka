@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use maka_agent_facts::model::ModelPart;
 use maka_agent_facts::model::ModelStep;
@@ -349,14 +349,14 @@ async fn full_request_byte_count_matches_upload_and_stops_oversized_headers() {
         "fixture".into(),
         json!("quoted \" and Unicode 图片"),
     )]));
-    input.tools.push(maka_model::ToolDefinition {
+    input.tools.push(Arc::new(maka_model::ToolDefinition {
         provider: None,
         name: "read_fixture".into(),
         description: "read an image region".into(),
         input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
         freeform: None,
         output_schema: None,
-    });
+    }));
     let bytes = input.encoded_request_bytes().await.unwrap();
     input.provider.image_input = Some(maka_agent_facts::configuration::ImageInput {
         request_bytes: Some(bytes - 1),

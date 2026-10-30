@@ -75,7 +75,7 @@ struct NativeApprovalData {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum NativeApprovalCapture {
-    Ordinary,
+    Ordinary {},
     Web {
         basis: maka_web_api::contract::Basis,
     },
@@ -94,7 +94,7 @@ impl NativeApprovalData {
                 (data.selected.selection.input, &data.capture),
                 (
                     ToolInput::Json | ToolInput::Shell,
-                    NativeApprovalCapture::Ordinary
+                    NativeApprovalCapture::Ordinary {}
                 ) | (ToolInput::Web, NativeApprovalCapture::Web { .. })
                     | (ToolInput::Skill, NativeApprovalCapture::Skill { .. })
             )
@@ -467,7 +467,7 @@ impl maka_agent_engine::NativeApprovalExecutor for ApprovalExecutor {
                 NativeApprovalCapture::Skill { tool_names } => {
                     service.tool_names = Arc::new(tool_names)
                 }
-                NativeApprovalCapture::Ordinary => {}
+                NativeApprovalCapture::Ordinary {} => {}
             }
             let store = Arc::new(maka_agent_authority::permissions::execution(
                 &service.store,
@@ -676,7 +676,7 @@ impl ToolPreparer for Service {
                         ToolInput::Skill => NativeApprovalCapture::Skill {
                             tool_names: captured_names,
                         },
-                        ToolInput::Json | ToolInput::Shell => NativeApprovalCapture::Ordinary,
+                        ToolInput::Json | ToolInput::Shell => NativeApprovalCapture::Ordinary {},
                     },
                 };
                 PreparedEffect::native_approval(

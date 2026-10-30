@@ -24,7 +24,7 @@ use maka_agent_facts::model::ModelSource;
 use maka_agent_facts::tools::ProviderTool;
 use maka_model::{Conversation, ModelExecutor, ProviderKind, StepBuilder};
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tokio::{io::AsyncWriteExt, net::TcpListener};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
@@ -123,8 +123,8 @@ async fn scenario() {
             }
         });
         let mut input = request(kind, base);
-        input.tools[0].name = "Research".into(); // No Host or adapter special-casing of WebSearch.
-        input.tools[0].provider = Some(ProviderTool {
+        Arc::make_mut(&mut input.tools[0]).name = "Research".into(); // No Host or adapter special-casing of WebSearch.
+        Arc::make_mut(&mut input.tools[0]).provider = Some(ProviderTool {
             id: if openai {
                 "openai.web_search"
             } else {
@@ -202,7 +202,7 @@ async fn scenario() {
             kind,
             format!("http://{}/v1", listener.local_addr().unwrap()),
         );
-        input.tools[0].provider = Some(ProviderTool {
+        Arc::make_mut(&mut input.tools[0]).provider = Some(ProviderTool {
             id: id.into(),
             args: json!({}),
         });
@@ -248,8 +248,8 @@ async fn anthropic_hosted_result_replays_from_canonical_parts_with_opaque_conten
         let mut history = Vec::new();
         for _ in 0..2 {
             let mut input = request(ProviderKind::Anthropic, base.clone());
-            input.tools[0].name = "Research".into();
-            input.tools[0].provider = Some(ProviderTool { id: "anthropic.web_search_20250305".into(), args: json!({"maxUses":8}) });
+            Arc::make_mut(&mut input.tools[0]).name = "Research".into();
+            Arc::make_mut(&mut input.tools[0]).provider = Some(ProviderTool { id: "anthropic.web_search_20250305".into(), args: json!({"maxUses":8}) });
             crate::edit_prompt(&mut input.prompt, |messages| messages.extend(history.clone()));
             let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
             let mut builder = StepBuilder::default();

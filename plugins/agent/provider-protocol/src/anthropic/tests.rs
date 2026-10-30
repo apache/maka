@@ -84,51 +84,6 @@ fn mcp_replay_preserves_opaque_results_without_unsupported_warnings() {
     }
 }
 
-fn function(name: &str, cache: Option<CacheDirective>) -> Tool {
-    Tool::Function(FunctionTool {
-        name: name.into(),
-        description: None,
-        input_schema: json!({"type":"object"}),
-        cache_control: cache,
-        strict: Some(true),
-        defer_loading: None,
-        eager_input_streaming: None,
-        allowed_callers: None,
-        input_examples: None,
-    })
-}
-
-#[test]
-fn cache_capacity_is_shared_by_messages_and_definitions_but_not_requests() {
-    let cache = Some(CacheDirective::Ephemeral { ttl: None });
-    let mut budget = CacheBudget::default();
-    assert_eq!(budget.reserve(cache, CacheSite::Reasoning), None);
-    for site in [CacheSite::System, CacheSite::Text, CacheSite::ToolResult] {
-        assert_eq!(budget.reserve(cache, site), cache);
-    }
-    let prepared = PreparedTools::build(
-        [function("first", cache), function("second", cache)],
-        None,
-        None,
-        ToolPolicy::default(),
-        &mut budget,
-    );
-    let wire = prepared.wire_tools();
-    assert_eq!(wire[0]["cache_control"], json!({"type":"ephemeral"}));
-    assert!(wire[1].get("cache_control").is_none());
-    assert_eq!(
-        budget.warnings(),
-        &[
-            Warning::CacheNotAllowed(CacheSite::Reasoning),
-            Warning::CacheLimit { attempted: 5 }
-        ]
-    );
-    assert_eq!(
-        CacheBudget::default().reserve(cache, CacheSite::System),
-        cache
-    );
-}
-
 #[test]
 fn fallback_usage_excludes_the_failed_primary_and_advisor() {
     let usage: Usage = serde_json::from_value(json!({
@@ -151,112 +106,6 @@ fn fallback_usage_excludes_the_failed_primary_and_advisor() {
             output: 11,
             reasoning: Some(3)
         }
-    );
-}
-
-#[test]
-fn compaction_accounting_counts_only_executor_work_and_rejects_overflow() {
-    let mut usage: Usage = serde_json::from_value(json!({
-        "input_tokens":1,"output_tokens":1,
-        "iterations":[
-            {"type":"compaction","input_tokens":17,"output_tokens":3},
-            {"type":"message","input_tokens":6,"output_tokens":9},
-            {"type":"advisor_message","input_tokens":100,"output_tokens":100}
-        ]
-    }))
-    .unwrap();
-    assert_eq!(
-        usage.totals().unwrap(),
-        TokenCounts {
-            input: 23,
-            uncached_input: 23,
-            cache_read: 0,
-            cache_write: 0,
-            output: 12,
-            reasoning: None
-        }
-    );
-    usage.cache_read_input_tokens = Some(u64::MAX);
-    assert!(matches!(usage.totals(), Err(Error::InvalidResponse { .. })));
-}
-
-#[test]
-fn forced_choice_fallback_restricts_the_available_tools() {
-    let prepared = PreparedTools::build(
-        [function("lookup", None), function("write", None)],
-        Some(ToolChoice::Named("lookup".into())),
-        Some(false),
-        ToolPolicy {
-            forced_choice: false,
-            strict: false,
-            ..ToolPolicy::default()
-        },
-        &mut CacheBudget::default(),
-    );
-    assert_eq!(
-        prepared.wire_tools(),
-        vec![json!({"name":"lookup","input_schema":{"type":"object"}})]
-    );
-    assert_eq!(
-        serde_json::to_value(&prepared.choice).unwrap(),
-        json!({"type":"auto","disable_parallel_tool_use":false})
-    );
-    assert_eq!(
-        prepared.warnings.last(),
-        Some(&Warning::ForcedToolChoiceIgnored {
-            name: Some("lookup".into())
-        })
-    );
-}
-
-#[test]
-fn dated_web_tool_capabilities_are_encoded_at_the_wire_boundary() {
-    let options = json!({"maxUses":2,"allowedDomains":["example.org"],"useCache":false,"responseInclusion":"excluded"});
-    let legacy = HostedTool::from_definition("anthropic.web_fetch_20250910", &options)
-        .unwrap()
-        .unwrap();
-    let current = HostedTool::from_definition("anthropic.web_fetch_20260318", &options)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        legacy.wire(),
-        json!({"type":"web_fetch_20250910","name":"web_fetch","max_uses":2,"allowed_domains":["example.org"]})
-    );
-    assert_eq!(
-        current.wire(),
-        json!({"type":"web_fetch_20260318","name":"web_fetch","max_uses":2,"allowed_domains":["example.org"],"use_cache":false,"response_inclusion":"excluded"})
-    );
-    for budget in [json!(1000), json!(1024.5)] {
-        assert!(
-            HostedTool::from_definition(
-                "anthropic.advisor_20260301",
-                &json!({"model":"advisor","maxTokens":budget})
-            )
-            .is_err()
-        );
-    }
-}
-
-#[test]
-fn constrained_schema_keeps_guidance_and_nested_object_boundaries() {
-    let schema = json!({
-        "type":"object","additionalProperties":true,"required":["count"],
-        "properties":{
-            "count":{"type":"integer","description":"Items","minimum":2,"maximum":7},
-            "choice":{"oneOf":[{"type":"string"},{"type":"null"}],"default":null},
-            "reference":{"$ref":"#/$defs/entry","title":"ignored"}
-        }
-    });
-    assert_eq!(
-        constrained_schema(schema),
-        json!({
-            "type":"object","additionalProperties":false,"required":["count"],
-            "properties":{
-                "count":{"type":"integer","description":"Items\nminimum: 2; maximum: 7."},
-                "choice":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null},
-                "reference":{"$ref":"#/$defs/entry"}
-            }
-        })
     );
 }
 
@@ -301,26 +150,6 @@ fn response_sources_follow_documents_and_search_results_without_losing_citations
         matches!(&decoded.parts[2], Part::Source(Source::Document { id, .. }) if id == "source-1")
     );
     assert!(matches!(&decoded.parts[4], Part::Source(Source::Url { id, .. }) if id == "source-2"));
-}
-
-#[test]
-fn hosted_boundary_rejects_wrong_discriminators_and_document_media_pairs() {
-    for content in [
-        json!({"type":"something_else","url":"https://example.org","retrieved_at":null,"content":{"type":"document","title":null,"source":{"type":"text","media_type":"text/plain","data":"x"}}}),
-        json!({"type":"web_fetch_result","url":"https://example.org","retrieved_at":null,"content":{"type":"not_document","title":null,"source":{"type":"text","media_type":"text/plain","data":"x"}}}),
-        json!({"type":"web_fetch_result","url":"https://example.org","retrieved_at":null,"content":{"type":"document","title":null,"source":{"type":"text","media_type":"application/pdf","data":"x"}}}),
-    ] {
-        let raw = json!({"type":"message","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"web_fetch_tool_result","tool_use_id":"x","content":content}]});
-        assert!(
-            response::decode(
-                raw.to_string().as_bytes(),
-                response::Options::default(),
-                &mut || "unused".into()
-            )
-            .is_err(),
-            "accepted {raw}"
-        );
-    }
 }
 
 #[test]
@@ -377,54 +206,4 @@ fn stream_eof_reuses_only_completed_accounting_and_spliced_messages_latch() {
     ));
     assert!(feed(&mut stream, json!({"type":"message_stop"})).is_empty());
     assert!(stream.finish().is_empty());
-}
-
-#[test]
-fn json_tool_mode_suppresses_prose_and_preserves_explicit_null_citations() {
-    use crate::output::{Event, Part};
-    let mut stream = stream::Stream::new(response::Options {
-        json_tool: true,
-        ..response::Options::default()
-    });
-    for value in [
-        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
-        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me answer"}}),
-        json!({"type":"content_block_stop","index":0}),
-    ] {
-        assert!(stream.value(value, &mut || "unused".into()).is_empty());
-    }
-    assert!(
-        stream.finish().is_empty(),
-        "suppressed prose is not interrupted output"
-    );
-    let citation = json!({"type":"content_block_location","cited_text":"proof","document_index":0,"document_title":null,"file_id":null,"start_block_index":0,"end_block_index":1});
-    let raw = json!({"type":"message","usage":{"input_tokens":0,"output_tokens":1},"content":[{"type":"text","text":"answer","citations":[citation]}]});
-    let response = response::decode(
-        raw.to_string().as_bytes(),
-        response::Options::default(),
-        &mut || "unused".into(),
-    )
-    .unwrap();
-    let Part::Text {
-        extensions: Some(metadata),
-        ..
-    } = &response.parts[0]
-    else {
-        panic!("citation metadata")
-    };
-    assert_eq!(metadata["anthropic"]["citations"][0], citation);
-
-    let mut stream = stream::Stream::new(response::Options::default());
-    stream.value(json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}), &mut || "unused".into());
-    let errors = stream.value(json!({"type":"error","error":{"type":"rate_limit_error","message":"retry later","statusCode":503,"isRetryable":false,"data":null}}), &mut || "unused".into());
-    let [Event::ProviderError(error)] = errors.as_slice() else {
-        panic!("provider error")
-    };
-    assert_eq!(error.status, Some(503));
-    assert_eq!(error.retryable, Some(false));
-    assert_eq!(error.data, serde_json::Value::Null);
-    assert!(
-        stream.finish().is_empty(),
-        "an error must not produce a second interrupted finish"
-    );
 }

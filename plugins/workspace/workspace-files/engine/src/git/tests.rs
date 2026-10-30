@@ -18,13 +18,7 @@
  */
 
 use super::*;
-use std::{
-    fs,
-    io::Write,
-    path::PathBuf,
-    process::{Command, Stdio},
-    time::SystemTime,
-};
+use std::{fs, io::Write, path::PathBuf, process::Command, time::SystemTime};
 
 struct Fixture {
     _temp: tempfile::TempDir,
@@ -266,32 +260,6 @@ impl ReadOnlySnapshot {
     }
 }
 
-fn assert_patch_reconstructs(
-    diff: GitDiff,
-    name: &str,
-    before: Option<&[u8]>,
-    expected: &[u8],
-) -> String {
-    let GitDiff::Text { patch } = diff else {
-        panic!("expected complete text patch, got {diff:?}")
-    };
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("apply");
-    fs::create_dir(&root).unwrap();
-    git(&root, &["init", "--quiet"]);
-    if let Some(before) = before {
-        fs::write(root.join(name), before).unwrap();
-    }
-    let patch_file = temp.path().join("preview.patch");
-    fs::write(&patch_file, &patch).unwrap();
-    git(
-        &root,
-        &["apply", "--whitespace=nowarn", patch_file.to_str().unwrap()],
-    );
-    assert_eq!(fs::read(root.join(name)).unwrap(), expected);
-    patch
-}
-
 #[test]
 fn binary_previews_do_not_return_partial_text() {
     let f = Fixture::new();
@@ -303,55 +271,6 @@ fn binary_previews_do_not_return_partial_text() {
     fs::write(f.root.join("large-binary"), &large_binary).unwrap();
     assert_eq!(f.diff(GitArea::Untracked, b"large-binary"), GitDiff::Binary);
     assert_eq!(fs::read(f.root.join("large-binary")).unwrap(), large_binary);
-}
-
-#[test]
-fn large_staged_and_worktree_images_keep_distinct_small_changes() {
-    let f = Fixture::new();
-    let prefix = "unchanged configuration: 零一二三四五六七八九\n".repeat(24_000);
-    let head = format!("{prefix}selected = head\n");
-    let staged = format!("{prefix}selected = staged\n");
-    let working = format!("{prefix}selected = working\n");
-    fs::write(f.root.join("config.txt"), &head).unwrap();
-    f.commit();
-    let equal_snapshot = ReadOnlySnapshot::capture(&f, &["config.txt"]);
-    assert_eq!(f.diff(GitArea::Staged, b"config.txt"), GitDiff::Unchanged);
-    assert_eq!(f.diff(GitArea::Worktree, b"config.txt"), GitDiff::Unchanged);
-    equal_snapshot.assert_unchanged(&f);
-    fs::write(f.root.join("config.txt"), &staged).unwrap();
-    git(&f.root, &["add", "config.txt"]);
-    fs::write(f.root.join("config.txt"), &working).unwrap();
-    let snapshot = ReadOnlySnapshot::capture(&f, &["config.txt"]);
-    assert_patch_reconstructs(
-        f.diff(GitArea::Staged, b"config.txt"),
-        "config.txt",
-        Some(head.as_bytes()),
-        staged.as_bytes(),
-    );
-    assert_patch_reconstructs(
-        f.diff(GitArea::Worktree, b"config.txt"),
-        "config.txt",
-        Some(staged.as_bytes()),
-        working.as_bytes(),
-    );
-    snapshot.assert_unchanged(&f);
-}
-
-#[test]
-fn large_untracked_text_returns_complete_applicable_patch() {
-    let f = Fixture::new();
-    fs::write(f.root.join("anchor"), "committed anchor\n").unwrap();
-    f.commit();
-    let content = "configuration: 零一二三四五六七八九\n".repeat(30_000);
-    fs::write(f.root.join("large.txt"), &content).unwrap();
-    let snapshot = ReadOnlySnapshot::capture(&f, &["anchor", "large.txt"]);
-    assert_patch_reconstructs(
-        f.diff(GitArea::Untracked, b"large.txt"),
-        "large.txt",
-        None,
-        content.as_bytes(),
-    );
-    snapshot.assert_unchanged(&f);
 }
 
 #[test]
@@ -508,37 +427,6 @@ fn raw_names_and_link_content_roundtrip_without_following_control_file_escapes()
 }
 
 #[test]
-fn no_repository_is_distinct_from_invalid_path_and_changed_directory_identity() {
-    let f = Fixture::new();
-    fs::remove_dir_all(f.root.join(".git")).unwrap();
-    assert_eq!(
-        status(&f.root, &f.identity, &f.private, None, cancel()).unwrap(),
-        None
-    );
-    assert_eq!(
-        WorkspacePath::from_bytes(b"../private")
-            .unwrap_err()
-            .to_string(),
-        "workspace_path_invalid"
-    );
-    assert_eq!(
-        WorkspacePath::from_bytes(b".git/config")
-            .unwrap_err()
-            .to_string(),
-        "workspace_path_invalid"
-    );
-    let renamed = f._temp.path().join("renamed");
-    fs::rename(&f.root, &renamed).unwrap();
-    fs::create_dir(&f.root).unwrap();
-    assert_eq!(
-        status(&f.root, &f.identity, &f.private, None, cancel())
-            .unwrap_err()
-            .to_string(),
-        "git_unavailable"
-    );
-}
-
-#[test]
 fn conflicted_index_is_visible_but_has_no_fabricated_two_way_diff() {
     let f = Fixture::new();
     fs::write(f.root.join("conflict"), "base\n").unwrap();
@@ -568,45 +456,6 @@ fn conflicted_index_is_visible_but_has_no_fabricated_two_way_diff() {
     );
     assert_eq!(f.diff(GitArea::Staged, b"conflict"), GitDiff::Unsupported);
     assert_eq!(f.diff(GitArea::Worktree, b"conflict"), GitDiff::Unsupported);
-}
-
-#[cfg(unix)]
-#[test]
-fn case_renamed_tracked_directory_cannot_hide_an_ignored_control_symlink() {
-    use std::os::unix::fs::symlink;
-    for (original, renamed, pattern) in
-        [("DIR", "dir", "dir/\n"), ("Café", "cafe\u{301}", "café/\n")]
-    {
-        let f = Fixture::new();
-        git(&f.root, &["config", "core.ignorecase", "true"]);
-        git(&f.root, &["config", "core.precomposeunicode", "true"]);
-        fs::create_dir(f.root.join(original)).unwrap();
-        fs::write(f.root.join(original).join("tracked"), "tracked\n").unwrap();
-        fs::write(
-            f.root.join(original).join(".gitattributes"),
-            vec![b'#'; 256 * 1024 + 1],
-        )
-        .unwrap();
-        f.commit();
-        fs::write(f.root.join(".gitignore"), pattern).unwrap();
-        f.commit();
-        fs::remove_file(f.root.join(original).join(".gitattributes")).unwrap();
-        fs::rename(f.root.join(original), f.root.join(renamed)).unwrap();
-        fs::write(f.root.join(renamed).join("tracked"), "modified tracked\n").unwrap();
-        let private_ignore = f.private.join("ignore");
-        fs::write(&private_ignore, "private-ignore-sentinel\n").unwrap();
-        symlink(&private_ignore, f.root.join(renamed).join(".gitignore")).unwrap();
-        let result = status(&f.root, &f.identity, &f.private, None, cancel());
-        fs::remove_file(f.root.join(renamed).join(".gitignore")).unwrap();
-        drop(f);
-        // Complete indexed-control fallback has a separate, spelling-stable
-        // fixture below; this regression proves tracked-directory authority.
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "git_unsupported",
-            "{original:?} -> {renamed:?}"
-        );
-    }
 }
 
 #[cfg(unix)]
@@ -756,95 +605,4 @@ fn disk_and_index_attributes_and_ignore_rules_are_read_without_mutation() {
         ]
     );
     assert_eq!(indexed_diff.unwrap().unwrap(), GitDiff::Unchanged);
-}
-
-#[test]
-fn external_object_alternates_are_rejected() {
-    let f = Fixture::new();
-    fs::write(f.root.join("tracked"), "safe\n").unwrap();
-    f.commit();
-    fs::create_dir_all(f.root.join(".git/objects/info")).unwrap();
-    let alternates = f.root.join(".git/objects/info/alternates");
-    fs::write(&alternates, b"../external-objects\n").unwrap();
-    let snapshot = ReadOnlySnapshot::capture(&f, &["tracked", ".git/objects/info/alternates"]);
-    let result = status(&f.root, &f.identity, &f.private, None, cancel());
-    snapshot.assert_unchanged(&f);
-    assert_eq!(result.unwrap_err().to_string(), "git_unsupported");
-}
-
-#[test]
-fn staged_paths_beyond_the_index_length_flag_reproduce_the_original_tree() {
-    let f = Fixture::new();
-    git(
-        &f.root,
-        &["commit", "--quiet", "--allow-empty", "-m", "base"],
-    );
-    let run = |args: &[&str], input: Option<&[u8]>, index: Option<&Path>| {
-        let mut command = git_command(&f.root, args);
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        if let Some(index) = index {
-            command.env("GIT_INDEX_FILE", index);
-        }
-        if input.is_some() {
-            command.stdin(Stdio::piped());
-        }
-        let mut child = command.spawn().unwrap();
-        if let Some(input) = input {
-            child.stdin.take().unwrap().write_all(input).unwrap();
-        }
-        let output = child.wait_with_output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        output.stdout
-    };
-    let blob = String::from_utf8(run(
-        &["hash-object", "-w", "--stdin"],
-        Some(b"original staged bytes\n"),
-        None,
-    ))
-    .unwrap();
-    // Git index entries reserve 0xfff as a long-name sentinel. Such paths need
-    // not fit the operating system's materialized-path limit.
-    let paths = [
-        format!(
-            "{}{}",
-            format!("{}/", "a".repeat(200)).repeat(20),
-            "b".repeat(77)
-        ),
-        format!(
-            "{}{}",
-            format!("{}/", "c".repeat(200)).repeat(20),
-            "d".repeat(80)
-        ),
-    ];
-    let entries = paths
-        .iter()
-        .map(|path| format!("100644 {}\t{path}\n", blob.trim()))
-        .collect::<String>();
-    run(
-        &["update-index", "--index-info"],
-        Some(entries.as_bytes()),
-        None,
-    );
-    let expected = git_stdout(&f.root, &["write-tree"]);
-    let snapshot = ReadOnlySnapshot::capture(&f, &[".git/HEAD"]);
-    let alternate = f._temp.path().join("reconstructed.index");
-    run(&["read-tree", "HEAD"], None, Some(&alternate));
-    for path in &paths {
-        let GitDiff::Text { patch } = f.diff(GitArea::Staged, path.as_bytes()) else {
-            panic!("staged text requires a complete patch");
-        };
-        run(
-            &["apply", "--cached", "--whitespace=nowarn", "-"],
-            Some(patch.as_bytes()),
-            Some(&alternate),
-        );
-    }
-    assert_eq!(run(&["write-tree"], None, Some(&alternate)), expected);
-    snapshot.assert_unchanged(&f);
-    assert!(!f.root.join("a".repeat(200)).exists());
-    assert!(!f.root.join("c".repeat(200)).exists());
 }

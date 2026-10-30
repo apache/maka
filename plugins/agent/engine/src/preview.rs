@@ -101,6 +101,13 @@ impl Finalizer {
         )
     }
 
+    pub(crate) fn confirmed_event_id(&self) -> Option<String> {
+        match &*self.state.lock().expect("attempt state lock poisoned") {
+            State::Confirmed { event_id, .. } => Some(event_id.clone()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn terminal_confirmed(&self) -> bool {
         matches!(
             &*self.state.lock().expect("attempt state lock poisoned"),

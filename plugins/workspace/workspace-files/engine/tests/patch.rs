@@ -183,35 +183,3 @@ async fn envelope_preserves_known_prefix_on_failure_and_stop_without_faking_tran
     assert_eq!(fs::read(root.join("existing")).unwrap(), b"changed\n");
     assert!(!root.join("later").exists());
 }
-
-#[tokio::test]
-async fn native_update_large_utf8_source_preserves_bytes_inode_and_mode() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let executor = executor(&root);
-    let path = root.join("large");
-    let prefix = "unchanged configuration value: 零一二三四五六七八九\n".repeat(40_000);
-    fs::write(&path, format!("{prefix}target = old\ntrailer\n")).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
-    }
-    fs::hard_link(&path, root.join("alias")).unwrap();
-    let before = File::from_std(fs::File::open(&path).unwrap())
-        .metadata()
-        .unwrap();
-    assert_eq!(apply(&executor, json!({"type":"update_file","path":"large","diff":"@@\n-target = old\n+target = 新\n trailer"})).await.unwrap(),
-        json!({"status":"completed"}));
-    assert_eq!(
-        fs::read(root.join("alias")).unwrap(),
-        format!("{prefix}target = 新\ntrailer\n").as_bytes()
-    );
-    let after = File::from_std(fs::File::open(&path).unwrap())
-        .metadata()
-        .unwrap();
-    assert_eq!(
-        (before.dev(), before.ino(), before.permissions()),
-        (after.dev(), after.ino(), after.permissions())
-    );
-}

@@ -27,39 +27,6 @@ use tokio::net::TcpStream;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Default)]
-pub struct SlowEffect {
-    pub entered: Arc<Notify>,
-    pub cancelled: Arc<Notify>,
-    pub release: Arc<Notify>,
-    pub count: Arc<AtomicUsize>,
-}
-impl ToolExecutor for SlowEffect {
-    fn names(&self) -> Vec<String> {
-        vec!["slow".into()]
-    }
-    fn invoke(&self, _: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
-        let effect = self.clone();
-        Box::pin(async move {
-            effect.count.fetch_add(1, Ordering::SeqCst);
-            effect.entered.notify_one();
-            cancellation.cancelled().await;
-            effect.cancelled.notify_one();
-            effect.release.notified().await;
-            Ok(input)
-        })
-    }
-}
-pub async fn respond(socket: &mut TcpStream, first: bool) {
-    let delta = if first {
-        json!({"tool_calls":[{"index":0,"id":"exec-slow","type":"function","function":{
-            "name":"exec","arguments":json!({"code":"await tools.slow({value:42});"}).to_string()
-        }}]})
-    } else {
-        json!({"content":"done"})
-    };
-    write_delta(socket, delta, if first { "tool_calls" } else { "stop" }).await;
-}
 pub async fn tool(socket: &mut TcpStream, name: &str, input: Value) {
     write_delta(
         socket,

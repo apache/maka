@@ -21,4 +21,4 @@
 
 [简体中文](README.zh-CN.md)
 
-Native resources used by the NSH workbench: aggregate allocation permits, immutable file and clipboard-image snapshots, and startup locale resolution. This crate does not execute UI plugins or define a scene protocol. Plugin UI runs directly in the shared NSH workbench.
+Native resources used by the NSH workbench: immutable file-backed snapshots of selected files and clipboard images, and startup locale resolution. This crate does not execute UI plugins or define a scene protocol. Plugin UI runs directly in the shared NSH workbench.

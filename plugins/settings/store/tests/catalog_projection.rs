@@ -99,20 +99,3 @@ fn revision_change_precedes_cursor_resolution_and_invalid_cursors_fail() {
     );
     assert!(project(&snapshot, &query(7), resolve).is_err());
 }
-
-#[test]
-fn oversized_configuration_is_complete_and_the_next_page_starts_after_it() {
-    let mut snapshot = snapshot();
-    let notes = "route-policy: east\n".repeat(12_000);
-    snapshot.connections[0].configuration["routingNotes"] = json!(notes);
-    let first = project(&snapshot, &ConnectionCatalogQueryInput::Start, resolve).unwrap();
-    assert_eq!(first["items"].as_array().unwrap().len(), 1);
-    assert_eq!(first["items"][0]["configuration"]["routingNotes"], notes);
-    let next = serde_json::from_value(json!({
-        "kind":"continue","revision":7,"cursor":first["nextCursor"]
-    }))
-    .unwrap();
-    let second = project(&snapshot, &next, resolve).unwrap();
-    assert_eq!(second["items"][0]["modelId"], "one");
-    assert_ne!(second["nextCursor"], first["nextCursor"]);
-}

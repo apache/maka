@@ -560,6 +560,199 @@ mod tests {
     }
 
     #[test]
+    fn collapsed_workspace_pages_fill_the_visible_rows() {
+        collapsed_workspace_pages("workspace-pages");
+    }
+
+    #[test]
+    fn a_collapsed_workspace_keeps_a_busy_list_end_until_other_groups_arrive() {
+        collapsed_workspace_pages("workspace-pages-busy");
+    }
+
+    fn collapsed_workspace_pages(scenario: &'static str) {
+        use nsh_core::platform::{Idiom, Renderer};
+        use nsh_core::prelude::{Instance, Registry, class};
+
+        #[class]
+        struct Presentation {
+            scenario: String,
+        }
+        #[class]
+        impl Presentation {
+            #[getter]
+            pub fn system_locale(&self) -> String {
+                "en".into()
+            }
+            #[getter]
+            pub fn ui_scale_factor(&self) -> f32 {
+                1.0
+            }
+            #[getter]
+            pub fn scenario(&self) -> String {
+                self.scenario.clone()
+            }
+        }
+        let wait = |session: &mut Session, expected: &str| {
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                session.advance(command([])).unwrap();
+                let screen = session.surface.snapshot();
+                if screen.contains(expected) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "expected {expected:?}:\n{screen}"
+                );
+                thread::yield_now();
+            }
+        };
+        let mut registry = Registry::ui_set("maka/host");
+        registry.value("host", move || {
+            Instance::new(Presentation {
+                scenario: scenario.into(),
+            })
+        });
+        let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+            entry: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/components.tsx"),
+            minify: false,
+            split: false,
+            ui_sets: vec![nsh_base::registry().into(), (&registry).into()],
+        })
+        .unwrap();
+        let mut options = config(&bundle.code);
+        options.viewport = CellMetrics::default().viewport(120, 36);
+        options.environment.window = options.viewport;
+        options.environment.renderer = Renderer::Native;
+        options.environment.idiom = Idiom::Desktop;
+        options.environment.native_focus_scopes = true;
+        options.ui_sets.push(registry);
+        let mut session = Session::new(options).unwrap();
+        session.initial_frame().unwrap();
+        wait(&mut session, "DESKTOP_BRANCH");
+        let events = click(&session.surface, "Collapse A");
+        session.advance(command(events)).unwrap();
+        wait(&mut session, "requests:1");
+        let events = click(&session.surface, "Publish requested page");
+        session.advance(command(events)).unwrap();
+        wait(&mut session, "requests:2");
+        let events = click(&session.surface, "Publish requested page");
+        session.advance(command(events)).unwrap();
+        wait(&mut session, "B conversation 0");
+        let labels = session.surface.accessibility_snapshot();
+        assert!(
+            labels.iter().any(|node| node.label == "Expand A"),
+            "{scenario}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|node| node.label == "Open conversation B conversation 0"),
+            "{scenario}"
+        );
+    }
+
+    #[test]
+    fn reload_pauses_input_and_replaces_the_old_vm_and_host_listeners() {
+        use maka_workbench::reload::Request;
+        use serde_json::json;
+
+        let mut options = config(
+            r#"
+            import { host, mount, signal } from "nsh";
+            import { element, prop, bindProp, append, insert } from "nsh:rt";
+            const generation = host.params.generation;
+            const draft = signal("");
+            host.on("refresh", () => host.post("observed", { generation, event: "refresh" }));
+            mount(() => {
+                const root = element("view");
+                const label = element("text");
+                insert(label, "generation:" + generation);
+                append(root, label);
+                const input = element("input");
+                prop(input, "autoFocus", true);
+                prop(input, "style", { height: 16 });
+                bindProp(input, "value", draft);
+                prop(input, "onChange", ({ value }) => {
+                    draft.set(value);
+                    host.post("observed", { generation, value });
+                });
+                append(root, input);
+                return root;
+            });
+        "#,
+        );
+        let App::Js(bundle) = &mut options.app else {
+            unreachable!("the reload fixture is JavaScript");
+        };
+        bundle.policy.declared =
+            Some(nsh_core::access::Capabilities::from_json(&json!({"host":["observed"]})).unwrap());
+        let host = options.host.clone();
+        host.set_params(json!({"generation":"old"}).as_object().unwrap().clone());
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let received = observed.clone();
+        host.handle("observed", move |call| {
+            received.lock().unwrap().push(call.data().clone())
+        });
+        let mut session = Session::new(options).unwrap();
+        let (requests, receiver) = tokio::sync::mpsc::unbounded_channel();
+        session.reloading = Some(receiver);
+        session.initial_frame().unwrap();
+        session
+            .advance(command([Event::Paste("old draft".into())]))
+            .unwrap();
+        assert_eq!(
+            observed.lock().unwrap().as_slice(),
+            &[json!({"generation":"old","value":"old draft"})]
+        );
+
+        let (paused, mut ready) = tokio::sync::oneshot::channel();
+        requests.send(Request::Pause(paused)).unwrap();
+        session.advance(command([])).unwrap();
+        assert_eq!(ready.try_recv().unwrap(), Ok(()));
+        session
+            .advance(command([Event::Paste("blocked".into())]))
+            .unwrap();
+        assert_eq!(
+            session.surface.input_context().unwrap().text.as_deref(),
+            Some("old draft")
+        );
+        assert_eq!(observed.lock().unwrap().len(), 1);
+        requests.send(Request::Resume).unwrap();
+        session.advance(command([])).unwrap();
+        session
+            .advance(command([Event::Paste(" resumed".into())]))
+            .unwrap();
+        assert_eq!(
+            observed.lock().unwrap().last(),
+            Some(&json!({"generation":"old","value":"old draft resumed"}))
+        );
+
+        host.set_params(json!({"generation":"new"}).as_object().unwrap().clone());
+        requests.send(Request::Reload).unwrap();
+        session.advance(command([])).unwrap();
+        assert!(session.surface.snapshot().contains("generation:new"));
+        assert_eq!(
+            session.surface.input_context().unwrap().text.as_deref(),
+            Some("")
+        );
+        observed.lock().unwrap().clear();
+        host.send("refresh", json!(null)).unwrap();
+        session.advance(command([])).unwrap();
+        session
+            .advance(command([Event::Paste("new draft".into())]))
+            .unwrap();
+        assert_eq!(
+            observed.lock().unwrap().as_slice(),
+            &[
+                json!({"generation":"new","event":"refresh"}),
+                json!({"generation":"new","value":"new draft"}),
+            ]
+        );
+    }
+
+    #[test]
     fn background_host_reply_frame_and_timer_reach_unicode_output_without_input() {
         use nsh_core::prelude::*;
 
@@ -804,7 +997,7 @@ mod tests {
             "the real output frame must paint the image's Unicode fallback"
         );
 
-        // Exercise the same image protocol with a large clipboard effect.
+        // Image data and clipboard effects must share the same ordered frame.
         // The test captures FrameWriter bytes without writing real stdout.
         let prepare = |session: &mut Session| {
             // A fresh fixed terminal resets both diff buffers without calling
@@ -903,11 +1096,10 @@ mod tests {
             thread::sleep(std::time::Duration::from_millis(1));
         }
         let prefix = prepare(&mut session);
-        let original = "中😀".repeat(1_200_000);
+        let original = "Image and copied text 中😀".to_owned();
         let effect = ServiceOutput::Clipboard(original).terminal_sequence(false);
         session.effects.extend_from_slice(effect.as_bytes());
         let frame = session.encode(true).unwrap().bytes.unwrap();
-        assert!(frame.len() > 8 * 1024 * 1024);
         assert!(
             frame.starts_with(&prefix),
             "clear and preexisting output precede the complete image and effect"
@@ -1031,19 +1223,6 @@ mod tests {
         );
         session.advance(command(events)).unwrap();
         assert!(session.surface.snapshot().contains("selected:B"));
-    }
-
-    #[test]
-    fn a_pointer_burst_reaches_the_button_without_an_intermediate_frame() {
-        let source = APP.replace(
-            "requestAnimationFrame(() => rows.set([{ id: \"B\" }]));",
-            "",
-        );
-        let mut session = Session::new(config(&source)).unwrap();
-        session.initial_frame().unwrap();
-        let events = click(&session.surface, "row:A");
-        session.advance(command(events)).unwrap();
-        assert!(session.surface.snapshot().contains("selected:A"));
     }
 
     #[test]

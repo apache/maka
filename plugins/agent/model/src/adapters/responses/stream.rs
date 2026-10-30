@@ -163,14 +163,16 @@ async fn run(
     url.set_path(&format!("{}/responses", url.path().trim_end_matches('/')));
     let headers = headers(&request)?;
     let mut decoder = Decoder::new(plaintext, &request.tools);
-    if let Some(lane) = lane.filter(|_| {
+    let lane = lane.filter(|_| {
         request.provider.headers.is_empty()
             && request
                 .provider
                 .body_overlay
                 .as_ref()
                 .is_none_or(|value| value.is_empty())
-    }) {
+    });
+    drop(request);
+    if let Some(lane) = lane {
         let exchange = Exchange::new(lane, cancellation.clone(), network.clone(), transport);
         match wait(
             idle_timeout,
@@ -509,6 +511,199 @@ mod upload_settlement_tests {
             Box::pin(async { Err(ModelError::Adapter("unused fixture transport".into())) })
         }
     }
+    #[derive(Clone, Copy)]
+    enum ResponseEnd {
+        Completed,
+        Cancelled,
+        Disconnected,
+        CleanupUnknown,
+    }
+    struct HeldResponse {
+        reading: Notify,
+        release: Notify,
+        closed: AtomicBool,
+        end: ResponseEnd,
+    }
+    impl http::Body for HeldResponse {
+        fn next(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, http::Error>> {
+            Box::pin(async move {
+                self.reading.notify_one();
+                self.release.notified().await;
+                match self.end {
+                    ResponseEnd::Completed | ResponseEnd::CleanupUnknown => Ok(Some(
+                        b"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n".to_vec(),
+                    )),
+                    ResponseEnd::Disconnected => Err(http::Error::Failed("connection lost".into())),
+                    ResponseEnd::Cancelled => unreachable!("cancelled read must be abandoned"),
+                }
+            })
+        }
+        fn cancel(&self) {}
+        fn close(&self) -> BoxFuture<'_, Result<(), http::Error>> {
+            Box::pin(async move {
+                self.closed.store(true, Ordering::SeqCst);
+                if matches!(self.end, ResponseEnd::CleanupUnknown) {
+                    Err(http::Error::CleanupUnconfirmed)
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+    struct Uploaded {
+        response: Arc<HeldResponse>,
+        owner: std::sync::Weak<()>,
+    }
+    impl Transport for Uploaded {
+        fn identity(&self) -> u64 {
+            0
+        }
+        fn request(
+            &self,
+            input: http::Request,
+            _: CancellationToken,
+        ) -> BoxFuture<'_, Result<http::Response, ModelError>> {
+            use futures_util::StreamExt;
+            Box::pin(async move {
+                assert!(
+                    self.owner.upgrade().is_some(),
+                    "upload must retain its source owner"
+                );
+                let replay = input.body.replay().expect("Responses upload is replayable");
+                let mut original = input.body.into_stream();
+                let mut bytes = Vec::new();
+                while let Some(chunk) = original.next().await {
+                    bytes.extend_from_slice(&chunk.unwrap());
+                }
+                drop(original);
+                assert!(
+                    self.owner.upgrade().is_some(),
+                    "replay must retain its source owner"
+                );
+                let mut replay = replay.into_stream();
+                let mut replayed = Vec::new();
+                while let Some(chunk) = replay.next().await {
+                    replayed.extend_from_slice(&chunk.unwrap());
+                }
+                drop(replay);
+                assert_eq!(bytes, replayed);
+                let body: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(body["model"], "fixture");
+                assert_eq!(body["input"][0]["content"][0]["text"], "hello");
+                Ok(http::Response {
+                    head: http::Head {
+                        status: 200,
+                        url: input.url,
+                        headers: vec![("content-type".into(), b"text/event-stream".to_vec())],
+                    },
+                    body: self.response.clone(),
+                })
+            })
+        }
+        fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, ModelError>> {
+            Box::pin(async { Err(ModelError::Adapter("unused fixture transport".into())) })
+        }
+    }
+    struct Sink;
+    impl Events for Sink {
+        fn emit(
+            &self,
+            _: maka_agent_ports::model::Emission,
+        ) -> BoxFuture<'_, Result<(), ModelError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn settled_upload_releases_request_owner_while_response_is_pending() {
+        use maka_agent_facts::{
+            language::Language,
+            model::{
+                prompt::Message,
+                prompt_source::{Prompt, PromptInstructions},
+            },
+        };
+        for end in [
+            ResponseEnd::Completed,
+            ResponseEnd::Cancelled,
+            ResponseEnd::Disconnected,
+            ResponseEnd::CleanupUnknown,
+        ] {
+            let owner = Arc::new(());
+            let weak = Arc::downgrade(&owner);
+            let response = Arc::new(HeldResponse {
+                reading: Notify::new(),
+                release: Notify::new(),
+                closed: AtomicBool::new(false),
+                end,
+            });
+            let network = Arc::new(Uploaded {
+                response: response.clone(),
+                owner: weak.clone(),
+            });
+            let request = ModelRequest {
+                language: Language::En,
+                provider: maka_agent_ports::model::Provider {
+                    kind: ProviderKind::OpenaiResponses,
+                    model: "fixture".into(),
+                    base_url: "https://fixture.invalid/v1".into(),
+                    auth: ProviderAuth::ApiKey("fixture-key".into()),
+                    headers: BTreeMap::new(),
+                    body_overlay: None,
+                },
+                prompt: Prompt::from_messages(vec![Message::user("hello")])
+                    .with_instruction_source(PromptInstructions::empty().with_owner(owner)),
+                tools: vec![],
+                provider_options: serde_json::json!({}),
+                max_output_tokens: None,
+            };
+            let cancellation = CancellationToken::new();
+            let mut task = tokio::spawn(run(
+                request,
+                0,
+                Context {
+                    events: Arc::new(Sink),
+                    cancellation: cancellation.clone(),
+                    idle_timeout: Duration::from_secs(10),
+                    transport: network,
+                },
+                None,
+                Arc::new(Shared::default()),
+            ));
+            tokio::select! {
+                _ = response.reading.notified() => {}
+                result = &mut task => panic!("adapter ended before held response: {result:?}"),
+            }
+            assert!(
+                !task.is_finished(),
+                "provider response must still be pending"
+            );
+            assert!(
+                weak.upgrade().is_none(),
+                "settled uploads must not leave their owner in the original request"
+            );
+            if matches!(end, ResponseEnd::Cancelled) {
+                cancellation.cancel();
+            } else {
+                response.release.notify_one();
+            }
+            let result = task.await.unwrap();
+            match end {
+                ResponseEnd::Completed => assert!(result.is_ok(), "{result:?}"),
+                ResponseEnd::Cancelled => assert!(matches!(result, Err(ModelError::Cancelled))),
+                ResponseEnd::Disconnected => assert!(matches!(
+                    result,
+                    Err(ModelError::Provider(failure))
+                        if failure.reason() == ProviderFailureReason::Network && failure.replay_safe()
+                )),
+                ResponseEnd::CleanupUnknown => {
+                    assert!(matches!(result, Err(ModelError::CleanupUnconfirmed)))
+                }
+            }
+            assert!(response.closed.load(Ordering::SeqCst));
+        }
+    }
+
     #[tokio::test]
     async fn cancellation_and_idle_timeout_wait_for_upload_settlement() {
         for (timeout, unknown) in [(false, false), (true, false), (false, true), (true, true)] {

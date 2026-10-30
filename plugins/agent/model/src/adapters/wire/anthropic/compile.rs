@@ -239,19 +239,6 @@ impl Compiler {
             finished: false,
         })
     }
-    #[cfg(test)]
-    async fn compile(
-        &self,
-        message: MessageRecipe,
-        budget: Arc<dyn SourceBudget>,
-    ) -> Result<Vec<SourceItem>, ModelError> {
-        let mut cursor = self.open(message, budget).await?;
-        let mut items = Vec::new();
-        while let Some(item) = cursor.next().await? {
-            items.push(item)
-        }
-        Ok(items)
-    }
     async fn provider_name(
         &self,
         name: TextSource,

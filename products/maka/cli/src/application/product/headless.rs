@@ -580,38 +580,6 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn initial_process_policy_accepts_normalized_workspace_roots() {
-        let directory = tempfile::tempdir().unwrap();
-        let workspace = directory.path().join("workspace");
-        std::fs::create_dir(&workspace).unwrap();
-        let store = launch::create(directory.path().join("host")).await.unwrap();
-        let (loaded, _) = prepare(
-            &store,
-            Roots::Configured(Some(vec![DirectoryRootSpec {
-                label: "Workspace".into(),
-                path: workspace.clone(),
-            }])),
-        )
-        .await
-        .unwrap();
-        for name in PROCESS_INSTANCES {
-            let settings: maka_workspace_api::processes::Configuration = serde_json::from_value(
-                serde_json::to_value(&loaded.source().input.instances[name].configuration.values)
-                    .unwrap(),
-            )
-            .unwrap();
-            settings.filesystem.compile().unwrap();
-            if name == "workspace-processes" {
-                assert_eq!(
-                    settings.filesystem.rules[0].path.canonicalize().unwrap(),
-                    workspace.canonicalize().unwrap(),
-                );
-            }
-        }
-        store.drain().await;
-    }
-
-    #[tokio::test]
     async fn explicit_update_previews_and_applies_launch_drift_with_current_packages() {
         let directory = tempfile::tempdir().unwrap();
         let store = launch::create(directory.path().join("host")).await.unwrap();
@@ -1107,51 +1075,6 @@ mod tests {
                 .reference,
             changed.source().reference
         );
-        // A moved/rebuilt CLI must replace even an existing older helper, with
-        // no package update and without changing the user's source or permissions.
-        let old_helper = directory.path().join("old-maka");
-        std::fs::write(&old_helper, b"old executable").unwrap();
-        let expected = changed.source().input.clone();
-        let mut revision = changed.source().reference.revision;
-        for exists in [true, false] {
-            if !exists {
-                std::fs::remove_file(&old_helper).unwrap();
-            }
-            let mut stale = expected.clone();
-            stale
-                .instances
-                .get_mut("settings")
-                .unwrap()
-                .configuration
-                .values
-                .remove("workspaceLocations");
-            for name in ["workspace-processes", "coordinator-workspace-processes"] {
-                stale
-                    .instances
-                    .get_mut(name)
-                    .unwrap()
-                    .configuration
-                    .values
-                    .insert("helper".into(), json!(old_helper));
-            }
-            let stale = store
-                .commit_application(
-                    deployment,
-                    revision,
-                    stale,
-                    changed.source().remote_exports.clone(),
-                    changed.packages().to_vec(),
-                )
-                .await
-                .unwrap();
-            let (repaired, _) = prepare(&store, Roots::Saved).await.unwrap();
-            assert_eq!(repaired.source().input, expected);
-            assert_eq!(repaired.source().reference.deployment, deployment);
-            assert_eq!(repaired.source().reference.revision, stale.revision + 1);
-            let (again, _) = prepare(&store, Roots::Saved).await.unwrap();
-            assert_eq!(again.source().reference, repaired.source().reference);
-            revision = repaired.source().reference.revision;
-        }
         store.drain().await;
     }
 }

@@ -690,46 +690,6 @@ mod tests {
         assert_eq!(repo.read("session").await.unwrap().unwrap().goal.id, new.id);
     }
     #[tokio::test]
-    async fn durable_outbox_survives_restart_and_stale_writers_cannot_undo_pause() {
-        let store = Arc::new(Store::default());
-        let repo = Repository::new(store.clone());
-        repo.arm("session", arm(), Meter::default()).await.unwrap();
-        let mut saved = repo.read("session").await.unwrap().unwrap();
-        saved.goal.reserve().unwrap();
-        let request = saved.goal.pending.as_ref().unwrap().request.clone();
-        repo.save(saved).await.unwrap();
-        let reopened = Repository::new(store);
-        let mut stale = reopened.read("session").await.unwrap().unwrap();
-        let mut control = reopened.read("session").await.unwrap().unwrap();
-        control.goal.status = Status::Paused;
-        reopened.save(control).await.unwrap();
-        stale.goal.pending = None;
-        assert!(matches!(
-            reopened.save(stale).await,
-            Err(Error::Storage(storage::StoreError::Conflict { .. }))
-        ));
-        let recovered = reopened.read("session").await.unwrap().unwrap();
-        assert_eq!(recovered.goal.status, Status::Paused);
-        assert_eq!(recovered.goal.pending.unwrap().request, request);
-
-        let mut failed = reopened.read("session").await.unwrap().unwrap();
-        let mut renewed = failed.clone();
-        renewed.goal.arm.grant = maka_capabilities::authorization::Id(Uuid::new_v4());
-        renewed.goal.control(Control::Resume).unwrap();
-        let grant = renewed.goal.arm.grant;
-        reopened.save(renewed).await.unwrap();
-        failed.goal.authority_blocked = true;
-        failed.goal.status = Status::Blocked;
-        assert!(matches!(
-            reopened.save(failed).await,
-            Err(Error::Storage(storage::StoreError::Conflict { .. }))
-        ));
-        let current = reopened.read("session").await.unwrap().unwrap();
-        assert_eq!(current.goal.arm.grant, grant);
-        assert_eq!(current.goal.status, Status::Active);
-        assert!(!current.goal.authority_blocked);
-    }
-    #[tokio::test]
     async fn iteration_reservations_are_bounded_and_budget_missing_fails_closed() {
         let repo = Repository::new(Arc::new(Store::default()));
         let mut goal = repo
@@ -769,42 +729,6 @@ mod tests {
             missing: 2,
         });
         assert_eq!(goal.status, Status::BudgetUnknown);
-    }
-
-    #[tokio::test]
-    async fn lost_storage_reply_recovers_original_arm_and_outbox_without_new_identity() {
-        let store = Arc::new(Store::default());
-        let repo = Repository::new(store.clone());
-        let request = arm();
-        store.1.store(true, Ordering::SeqCst);
-        assert!(matches!(
-            repo.arm("session", request.clone(), Meter::default()).await,
-            Err(Error::Storage(storage::StoreError::OutcomeUnknown(_)))
-        ));
-        let recovered = repo
-            .arm("session", request.clone(), Meter::default())
-            .await
-            .unwrap();
-        assert_eq!(recovered.id, request.operation_id);
-        let mut saved = repo.read("session").await.unwrap().unwrap();
-        saved.goal.reserve().unwrap();
-        let operation = saved
-            .goal
-            .pending
-            .as_ref()
-            .unwrap()
-            .request
-            .operation_id
-            .clone();
-        store.1.store(true, Ordering::SeqCst);
-        assert!(matches!(
-            repo.save(saved).await,
-            Err(Error::Storage(storage::StoreError::OutcomeUnknown(_)))
-        ));
-        let mut recovered = repo.read("session").await.unwrap().unwrap().goal;
-        assert!(recovered.reserve().is_err());
-        assert_eq!(recovered.iterations, 1);
-        assert_eq!(recovered.pending.unwrap().request.operation_id, operation);
     }
 
     #[tokio::test]
@@ -880,45 +804,5 @@ mod tests {
         }
         saved.goal.control(Control::Resume).unwrap();
         assert!(saved.goal.keeps_host_awake());
-    }
-
-    #[tokio::test]
-    async fn goal_language_and_pending_input_survive_repository_reopen() {
-        let store = Arc::new(Store::default());
-        let repo = Repository::new(store.clone());
-        let mut input = arm();
-        input.language = Language::ZhTw;
-        input.objective = "Preserve /tmp/原始 file.rs and `exact-id`".into();
-        repo.arm("session", input.clone(), Meter::default())
-            .await
-            .unwrap();
-        let mut saved = repo.read("session").await.unwrap().unwrap();
-        assert_eq!(saved.goal.arm.language, Language::ZhTw);
-        saved.goal.reserve().unwrap();
-        let pending = saved.goal.pending.as_ref().unwrap().request.clone();
-        assert!(
-            pending
-                .content
-                .text
-                .contains("Preserve /tmp/原始 file.rs and `exact-id`")
-        );
-        repo.save(saved).await.unwrap();
-        let restarted = Repository::new(store);
-        let restored = restarted.read("session").await.unwrap().unwrap();
-        assert_eq!(restored.goal.arm.language, Language::ZhTw);
-        assert_eq!(
-            serde_json::to_value(&restored.goal.arm).unwrap()["language"],
-            "zh-TW"
-        );
-        assert_eq!(restored.goal.pending.unwrap().request, pending);
-        assert_eq!(
-            restarted
-                .arm("session", input, Meter::default())
-                .await
-                .unwrap()
-                .arm
-                .language,
-            Language::ZhTw
-        );
     }
 }

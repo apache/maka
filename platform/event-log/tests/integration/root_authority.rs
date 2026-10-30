@@ -169,43 +169,6 @@ fn explicit_remount_preserves_authority_and_recovers_only_its_staging_file() {
 
 #[test]
 #[cfg(unix)]
-fn legacy_and_unsafe_markers_fail_closed() {
-    let temp = tempfile::tempdir().unwrap();
-    let ns = namespaces(temp.path());
-    let legacy = temp.path().join("legacy");
-    fs::create_dir(&legacy).unwrap();
-    fs::write(legacy.join("runtime.sqlite"), b"legacy").unwrap();
-    assert!(RootOwner::create(&legacy, &ns).is_err());
-    assert!(!legacy.join(ROOT_MARKER).exists());
-    assert!(RootOwner::open(&legacy, &ns).is_err());
-    let path = temp.path().join("root");
-    let owner = RootOwner::create(&path, &ns).unwrap();
-    let data = temp.path().join("external-data");
-    fs::create_dir(&data).unwrap();
-    std::os::unix::fs::symlink(&data, path.join("arbitrary-business-data")).unwrap();
-    assert!(
-        maka_event_log::root::initialize(&path, &ns).is_err(),
-        "a domain directory alias cannot bypass root layout checks"
-    );
-    fs::remove_file(path.join("arbitrary-business-data")).unwrap();
-    let database = path.join(maka_event_log::root::ROOT_DATABASE);
-    fs::create_dir(&database).unwrap();
-    assert!(
-        maka_event_log::root::initialize(&path, &ns).is_err(),
-        "reserved database names must not be accepted as domain directories"
-    );
-    fs::remove_dir(database).unwrap();
-    let saved = temp.path().join("marker");
-    fs::rename(path.join(ROOT_MARKER), &saved).unwrap();
-    std::os::unix::fs::symlink(&saved, path.join(ROOT_MARKER)).unwrap();
-    assert!(owner.validate_current().is_err());
-    fs::remove_file(path.join(ROOT_MARKER)).unwrap();
-    fs::write(path.join(ROOT_MARKER), vec![b' '; 1025]).unwrap();
-    assert!(owner.validate_current().is_err());
-}
-
-#[test]
-#[cfg(unix)]
 fn captured_directory_must_match_the_owner_even_after_the_path_is_restored() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("root");

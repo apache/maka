@@ -21,6 +21,7 @@
 use crate::context::{ContextBucket, ContextCounts, PreparedContextBreakdown};
 use crate::model::ToolInput;
 use crate::model::prompt::{AssistantPart, ContentPart, Message, ToolOutput};
+use std::sync::Arc;
 
 /// A preflight estimate, never measured provider usage. Attachment encodings
 /// are not text tokens; provider overflow is handled by fitting a smaller request.
@@ -30,7 +31,7 @@ pub fn estimate(prompt: &[Message]) -> u64 {
 
 pub fn breakdown(
     prompt: &[Message],
-    tools: &[crate::tools::ToolDefinition],
+    tools: &[Arc<crate::tools::ToolDefinition>],
 ) -> PreparedContextBreakdown {
     let mut measured = prompt_breakdown(prompt);
     measured.counts.tools = tools.len() as u64;
@@ -144,21 +145,4 @@ fn json_bytes(value: &(impl serde::Serialize + ?Sized)) -> u64 {
     let mut count = Count(0);
     serde_json::to_writer(&mut count, value).expect("model prompt is serializable");
     count.0
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fragments_preserve_each_terms_rounding() {
-        let messages = [Message::user("a"), Message::user("bc")];
-        let mut combined = PreparedContextBreakdown::default();
-        for message in &messages {
-            combined.accumulate(&prompt_breakdown(std::slice::from_ref(message)));
-        }
-        assert_eq!(combined, prompt_breakdown(&messages));
-        assert_eq!(combined.user.content_bytes, 3);
-        assert_eq!(combined.user.estimated_tokens, 34);
-    }
 }

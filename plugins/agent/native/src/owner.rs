@@ -241,7 +241,7 @@ impl Owner {
             self.store
                 .session(session)
                 .await?
-                .native_approval_checkpoint(session)
+                .activation_checkpoint(session)
                 .await
         }
         .await
@@ -1064,42 +1064,27 @@ impl Owner {
     ) -> Result<maka_tools::ToolCatalog, String> {
         let catalog = self.mcp_projects.catalog(basis.mcp_revision.as_deref())?;
         let selected = plan::select(&catalog.tools, basis, &catalog.planning);
-        let selected = if basis.graph.is_some() {
-            selected
-        } else {
-            selected.excluding(crate::workhub::tasks::graph::NAMES)
-        };
         // SendUser is granted by Bot identity, independent of the tool list.
         let bot = self.bot.is(session);
-        let selected = match basis.allowed_tools.as_deref() {
-            None => selected.clone(),
-            Some(allowed) => {
-                let names = selected.names();
-                let excluded: Vec<_> = names
-                    .iter()
-                    .filter(|name| !allowed.contains(name) && !(bot && *name == bot::SEND_USER))
-                    .map(String::as_str)
-                    .collect();
-                selected.excluding(&excluded)
-            }
-        };
-        let selected = if bot {
-            selected
-        } else {
-            selected.excluding(&[bot::SEND_USER])
-        };
-        let selected = match editing {
-            None => selected,
-            Some(editing) => {
-                let excluded: Vec<_> = self
-                    .editing_tools
-                    .iter()
-                    .filter(|(_, style)| *style != editing)
-                    .map(|(name, _)| name.as_str())
-                    .collect();
-                selected.excluding(&excluded)
-            }
-        };
+        let excluded: Vec<_> = selected
+            .definitions()
+            .map(|definition| definition.name.as_str())
+            .filter(|name| {
+                let speaks = *name == bot::SEND_USER;
+                (speaks && !bot)
+                    || (basis.graph.is_none() && crate::workhub::tasks::graph::NAMES.contains(name))
+                    || (!(speaks && bot)
+                        && basis.allowed_tools.as_ref().is_some_and(|allowed| {
+                            !allowed.iter().any(|allowed| allowed.as_str() == *name)
+                        }))
+                    || editing.is_some_and(|editing| {
+                        self.editing_tools
+                            .iter()
+                            .any(|(tool, style)| tool.as_str() == *name && *style != editing)
+                    })
+            })
+            .collect();
+        let selected = selected.excluding(&excluded);
         let selected = if discovery {
             selected.with_discovery()
         } else {
@@ -1187,7 +1172,7 @@ impl Owner {
                 .session(&id)
                 .await
                 .map_err(|error| error.to_string())?
-                .native_approval_checkpoint(&id)
+                .activation_checkpoint(&id)
                 .await
                 .map_err(|_| "agent_execution_unavailable")?
                 .map(|parked| parked.checkpoint.invocation),
@@ -1275,7 +1260,7 @@ impl Owner {
                             .session(&id)
                             .await
                             .map_err(|error| error.to_string())?
-                            .native_approval_checkpoint(&id)
+                            .activation_checkpoint(&id)
                             .await
                             .map_err(|_| "agent_execution_unavailable")?
                             .map(|parked| parked.checkpoint.invocation),
