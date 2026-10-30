@@ -99,6 +99,7 @@ async fn exact_receipt_resumes_original_input_and_deduplicates_after_prerequisit
             expected: ConnectionVersionBasis { connection_id: selected.connection_id, revision: selected.revision },
         }).await.unwrap(), CatalogMutationResult::Committed { .. }));
         fixture.store.set_session_archived::<StoredSessionConfiguration>(&session, true, now()).await.unwrap();
+        #[cfg(unix)]
         std::fs::rename(&fixture.workspace, fixture.workspace.with_extension("removed")).unwrap();
         let accepted = fixture.owner.resume(serde_json::from_value(input).unwrap(), &reference).await.unwrap();
         let accepted = serde_json::to_value(accepted).unwrap();
@@ -182,20 +183,24 @@ async fn resume_rejects_stale_foreign_busy_and_completed_sources_without_new_wor
                 .unwrap(),
             json!({"kind":"parked","reason":"source_not_resumable"})
         );
-        // Replacing the directory at the same path must not authorize replay.
-        std::fs::rename(
-            &fixture.workspace,
-            fixture.workspace.with_extension("original"),
-        )
-        .unwrap();
-        std::fs::create_dir(&fixture.workspace).unwrap();
-        assert_eq!(
-            fixture
-                .mutation(2, "resume", input, Uuid::new_v4())
-                .await
-                .unwrap(),
-            json!({"kind":"parked","reason":"workspace_changed"})
-        );
+        // Windows retains a workspace handle that prevents directory replacement.
+        #[cfg(unix)]
+        {
+            // Replacing the directory at the same path must not authorize replay.
+            std::fs::rename(
+                &fixture.workspace,
+                fixture.workspace.with_extension("original"),
+            )
+            .unwrap();
+            std::fs::create_dir(&fixture.workspace).unwrap();
+            assert_eq!(
+                fixture
+                    .mutation(2, "resume", input, Uuid::new_v4())
+                    .await
+                    .unwrap(),
+                json!({"kind":"parked","reason":"workspace_changed"})
+            );
+        }
         assert!(
             tokio::time::timeout(Duration::from_millis(30), listener.accept())
                 .await
@@ -322,6 +327,23 @@ async fn resume_refuses_unsettled_effect_outside_its_selected_lineage() {
         .await;
         let session = fixture.create("Unresolved prior effect").await;
         let source = cancelled(&fixture, &listener, &session).await;
+        let source_configuration = fixture
+            .session(&session)
+            .await
+            .invocation_configuration(
+                &fixture
+                    .session(&session)
+                    .await
+                    .invocation_boundary(&session, source["invocationId"].as_str().unwrap())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .invocation,
+            )
+            .await
+            .unwrap()
+            .unwrap();
         // Canonical crash-cut fixture: a later sealed invocation has a dispatched
         // effect without a settlement. No production recovery override is used.
         let invocation = Invocation {
@@ -332,7 +354,7 @@ async fn resume_refuses_unsettled_effect_outside_its_selected_lineage() {
         };
         for fact in [
             Fact::InvocationOpened {
-                configuration: None,
+                configuration: Some(Box::new(source_configuration)),
                 input: InvocationInput::Message {
                     content: "Unresolved later work".into(),
                     source_messages: vec![],
@@ -364,6 +386,16 @@ async fn resume_refuses_unsettled_effect_outside_its_selected_lineage() {
                 .await
                 .unwrap();
         }
+        assert_eq!(
+            fixture
+                .query(
+                    "resumable",
+                    json!({"sessionId":session,"model":fixture.selection().await})
+                )
+                .await
+                .unwrap(),
+            json!({"kind":"unavailable","reason":"safety_check_failed"})
+        );
         let resumed = fixture
             .mutation(
                 2,
@@ -484,4 +516,104 @@ async fn work_answer_pages_preserve_exact_unicode_nul_and_owner_after_later_work
         assert_eq!(fixture.query("work",json!({"sessionId":other,"target":target})).await.unwrap(),json!({"kind":"missing"}));
         fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
+}
+
+#[tokio::test]
+async fn resumable_observes_without_admission_and_resume_rechecks_the_observed_source() {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = Fixture::new(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+        )
+        .await;
+        let session = fixture.create("Resumable observation").await;
+        let query = json!({"sessionId":session,"model":fixture.selection().await});
+        assert_eq!(
+            fixture.query("resumable", query.clone()).await.unwrap(),
+            json!({"kind":"unavailable","reason":"source_missing"})
+        );
+        let source = cancelled(&fixture, &listener, &session).await;
+        let store = fixture.session(&session).await;
+        let before = store.committed_sequence().await.unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                fixture.query("resumable", query.clone()).await.unwrap(),
+                json!({"kind":"ready","source":source})
+            );
+        }
+        assert_eq!(
+            store.committed_sequence().await.unwrap(),
+            before,
+            "observation must not admit a turn or reserve a continuation"
+        );
+        let input = resume_input(&fixture, &source).await;
+        let operation = Uuid::new_v4();
+        let resumed = fixture
+            .mutation(2, "resume", input.clone(), operation)
+            .await
+            .unwrap();
+        assert_eq!(resumed["kind"], "started");
+        assert_ne!(resumed["execution"]["turnId"], source["turnId"]);
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let replay = request(&mut socket).await;
+        assert!(
+            replay["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| message["content"] == "Hello")
+        );
+        assert_eq!(
+            fixture.query("resumable", query.clone()).await.unwrap(),
+            json!({"kind":"unavailable","reason":"busy"})
+        );
+        response(&mut socket).await;
+        fixture.drained().await;
+        assert_eq!(
+            fixture
+                .mutation(2, "resume", input.clone(), operation)
+                .await
+                .unwrap(),
+            resumed
+        );
+        assert_eq!(
+            fixture
+                .mutation(2, "resume", input, Uuid::new_v4())
+                .await
+                .unwrap(),
+            json!({"kind":"parked","reason":"already_continued"})
+        );
+        assert_eq!(
+            fixture.query("resumable", query.clone()).await.unwrap(),
+            json!({"kind":"unavailable","reason":"source_not_resumable"})
+        );
+        // The latest completed run hides older interrupted work from the composer.
+        let source = cancelled(&fixture, &listener, &session).await;
+        fixture
+            .store
+            .set_session_archived::<StoredSessionConfiguration>(&session, true, now())
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.query("resumable", query).await.unwrap(),
+            json!({"kind":"unavailable","reason":"archived"})
+        );
+        assert_eq!(
+            fixture
+                .mutation(
+                    2,
+                    "resume",
+                    resume_input(&fixture, &source).await,
+                    Uuid::new_v4()
+                )
+                .await
+                .unwrap(),
+            json!({"kind":"parked","reason":"archived"})
+        );
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }

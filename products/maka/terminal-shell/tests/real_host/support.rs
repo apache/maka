@@ -325,6 +325,9 @@ impl Fixture {
         };
         let has_files = images || file_tool.is_some();
         let directory = tempfile::tempdir().unwrap();
+        // Elevated Windows tokens give tempfile directories the Administrators owner.
+        #[cfg(windows)]
+        std::fs::remove_dir(directory.path()).unwrap();
         private_directory(directory.path()).unwrap();
         let workspace = directory.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
@@ -699,6 +702,7 @@ impl Fixture {
                                 "stopComputerApp",
                                 "execution",
                                 "resume",
+                                "resumable",
                                 "diagnostics",
                                 "queue",
                                 "queueMessage",
@@ -1712,9 +1716,13 @@ impl ReplyGate {
             None,
         )
     }
-    #[cfg(feature = "desktop-tests")]
     pub fn start(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "send", "mutation", false, None)
+    }
+    pub fn resume(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(
+            directory, target, "agent", "resume", "mutation", false, None,
+        )
     }
     pub fn global_instructions(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(

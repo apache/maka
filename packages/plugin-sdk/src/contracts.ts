@@ -17013,6 +17013,159 @@ export const contracts = {
           },
           resources: {},
         },
+        resumable: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentResumableRead',
+            description:
+              'Observe the latest run using the model selected for a possible continuation.',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              model: {
+                $ref: '#/$defs/ModelSelection',
+              },
+              thinkingLevel: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/ThinkingLevel',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'model'],
+            $defs: {
+              ModelSelection: {
+                description:
+                  'Exact public selection observed by a caller, checked once at run admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 1,
+                    maximum: 9007199254740991,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['connectionId', 'revision', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentResumable',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  source: {
+                    $ref: '#/$defs/AgentExecution',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'source'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unavailable',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentResumeParkReason',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+            $defs: {
+              AgentExecution: {
+                description:
+                  'Canonical physical execution receipt, independent of the current Session tip.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    type: 'string',
+                  },
+                  invocationId: {
+                    type: 'string',
+                  },
+                  highWater: {
+                    description: 'Run-local event count, not the root-global transcript cursor.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  state: {
+                    $ref: '#/$defs/AgentExecutionState',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId', 'invocationId', 'highWater', 'state'],
+              },
+              AgentExecutionState: {
+                type: 'string',
+                enum: [
+                  'admitted',
+                  'running',
+                  'waiting',
+                  'paused',
+                  'completed',
+                  'failed',
+                  'cancelled',
+                ],
+              },
+              AgentResumeParkReason: {
+                type: 'string',
+                enum: [
+                  'closed',
+                  'archived',
+                  'busy',
+                  'source_missing',
+                  'source_changed',
+                  'source_not_resumable',
+                  'already_continued',
+                  'workspace_changed',
+                  'safety_check_failed',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         resume: {
           mode: 'mutation',
           input: {

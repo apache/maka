@@ -103,7 +103,7 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
                 .unwrap();
             let invocation = observed["run"]["invocationId"].as_str().unwrap().to_owned();
             assert_ne!(previous.as_ref(), Some(&invocation));
-            wait_enabled_node(&mut view, "Stop response").await;
+            wait_enabled_node(&mut view, "Pause response").await;
             if index == 0 {
                 view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
             } else {

@@ -22,6 +22,8 @@ import type {
   AgentChecklist,
   AgentFileCandidates,
   AgentQueue,
+  AgentExecution,
+  AgentResumable,
   AgentQueueAction,
   AgentQueueMessageResult,
   AgentQueueMutationResult,
@@ -219,6 +221,9 @@ export interface ComposerSession<Element = unknown> {
   unconfirmed(): string[];
   invocation(): string | null;
   stopping(): boolean;
+  resumable(): AgentResumable | null;
+  resuming(): boolean;
+  resume(source: AgentExecution, backend: ComposerBackend): Promise<void>;
   metrics(): string;
   changeDraft(text: string): void;
   submit(event: { text: string }): void;

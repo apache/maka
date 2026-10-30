@@ -30,7 +30,11 @@ import { DraftAttachments } from '../../../../products/maka/workbench/app/Attach
 import { Checklist } from '../../../../products/maka/workbench/app/Checklist';
 import { QueueDock } from '../../../../products/maka/workbench/app/QueueDock';
 import { SessionPermissionsSelect } from '../../../../products/maka/workbench/app/SessionPermissionsSelect';
-import type { ComposerViewInput } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import type { AgentExecution } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
+import type {
+  ComposerBackend,
+  ComposerViewInput,
+} from '../../../../packages/plugin-sdk/src/composer-view.js';
 import {
   C,
   bodyTextStyle,
@@ -146,7 +150,36 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           !pending()?.files().length)));
   const sendLabel = () =>
     props.session()?.invocation() != null ? tr('Queue message') : tr('Send message');
-  const primaryStops = () => props.session()?.invocation() != null && cannotSend();
+  const hasContent = () =>
+    !!props.session()?.draft().trim() || !!props.session()?.attachments.files().length;
+  const primaryStops = () => props.session()?.invocation() != null && !hasContent();
+  const resumeSource = () => {
+    const value = props.session()?.resumable();
+    return !props.session()?.invocation() && !hasContent() && value?.kind === 'ready'
+      ? value.source
+      : null;
+  };
+  const primaryLabel = () =>
+    primaryStops() ? tr('Pause response') : resumeSource() ? tr('Continue response') : sendLabel();
+  const primaryDisabled = () =>
+    primaryStops()
+      ? props.session()!.stopping()
+      : !!props.blocked?.() ||
+        !!props.session()?.resuming() ||
+        (resumeSource() ? !!blocked() || !props.session()!.editable() : cannotSend());
+  const continueRendered = ({
+    owner,
+    source,
+    backend,
+  }: {
+    owner: string;
+    source: AgentExecution;
+    backend: ComposerBackend;
+  }) => {
+    const session = props.session();
+    if (session?.sessionId === owner && props.active() && !primaryDisabled())
+      void session.resume(source, backend);
+  };
   let unbind = () => {};
   cleanup(() => unbind());
   const cardRoot = signal<ViewRef | null>(null);
@@ -659,28 +692,34 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               <View style={[{ flex: 1 }, { pointerEvents: 'none' }]} />
             </If>
             <Button
-              accessibilityLabel={primaryStops() ? tr('Stop response') : sendLabel()}
+              accessibilityLabel={primaryLabel()}
               tooltip={textTooltip(() =>
-                primaryStops() ? tr('Stop response · Esc') : `${sendLabel()} · Enter`,
+                primaryStops() ? `${tr('Pause response')} · Esc` : `${primaryLabel()} · Enter`,
               )}
-              disabled={primaryStops() ? props.session()!.stopping() : cannotSend()}
+              disabled={primaryDisabled()}
               onPress={
                 primaryStops()
                   ? inputAction(props.session()!.stop, props.session()!.invocation())
-                  : props.session()
-                    ? inputAction(completion.send, {
+                  : resumeSource()
+                    ? inputAction(continueRendered, {
                         owner: props.session()!.sessionId,
-                        text: props.session()!.draft(),
+                        source: resumeSource()!,
                         backend: props.session()!.backend(),
-                        attachments: props.session()!.attachments.ids(),
                       })
-                    : pending()
-                      ? inputAction(sendPending, {
-                          owner: pending()!,
-                          text: pending()!.draft(),
-                          expected: pending()!.confirmation(),
+                    : props.session()
+                      ? inputAction(completion.send, {
+                          owner: props.session()!.sessionId,
+                          text: props.session()!.draft(),
+                          backend: props.session()!.backend(),
+                          attachments: props.session()!.attachments.ids(),
                         })
-                      : undefined
+                      : pending()
+                        ? inputAction(sendPending, {
+                            owner: pending()!,
+                            text: pending()!.draft(),
+                            expected: pending()!.confirmation(),
+                          })
+                        : undefined
               }
               style={{
                 width: 32,
@@ -696,12 +735,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               disabledStyle={{ backgroundColor: C.line }}
             >
               <Icon
-                name={primaryStops() ? 'stop' : 'send'}
-                color={
-                  (primaryStops() ? props.session()!.stopping() : cannotSend())
-                    ? C.muted
-                    : C.background
-                }
+                name={primaryStops() ? 'pause' : resumeSource() ? 'play' : 'send'}
+                color={primaryDisabled() ? C.muted : C.background}
               />
             </Button>
           </View>

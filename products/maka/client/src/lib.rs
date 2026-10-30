@@ -54,6 +54,7 @@ const CONTROL_METHODS: &[&str] = &[
     "trustProjectMcp",
     "selectBackend",
     "compact",
+    "resume",
     "setCompactionPrompt",
     "markRead",
     "stop",

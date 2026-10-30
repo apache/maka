@@ -884,6 +884,11 @@ impl Handler for Agent {
                     )
                 }
                 "execution" => encode(owner.execution(decode(input)?).await?),
+                "resumable" => encode(
+                    owner
+                        .resumable(decode(input)?, &context.scope().cancellation)
+                        .await?,
+                ),
                 "compactionPrompt" => encode(owner.compaction_prompt(decode(input)?).await?),
                 "compact" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;

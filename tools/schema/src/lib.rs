@@ -259,6 +259,8 @@ pub fn catalog() -> Value {
         root::<maka_agent_api::contract::Stop>(&mut g),
         root::<maka_agent_api::contract::ExecutionRead>(&mut g),
         root::<maka_agent_api::contract::ExecutionResult>(&mut g),
+        root::<maka_agent_api::contract::ResumableRead>(&mut g),
+        root::<maka_agent_api::contract::Resumable>(&mut g),
         root::<maka_agent_api::contract::Resume>(&mut g),
         root::<maka_agent_api::contract::ResumeResult>(&mut g),
         root::<maka_agent_api::contract::UploadAttachment>(&mut g),

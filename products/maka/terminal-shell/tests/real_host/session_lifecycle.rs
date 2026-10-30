@@ -135,7 +135,7 @@ async fn real_session_lifecycle_keeps_original_revisions_history_and_separate_dr
         request.finish().await;
         fixture.idle(&client, &fixture.session).await;
         wait_view_state(&mut view, |view, _| !view.accessibility_snapshot().iter()
-            .any(|node| node.label == "Stop response")).await;
+            .any(|node| node.label == "Pause response")).await;
 
         // Both dismiss paths restore the original sidebar action button.
         open_session_browser(&mut view).await;

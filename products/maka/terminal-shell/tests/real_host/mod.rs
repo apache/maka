@@ -37,6 +37,7 @@ mod panel_resize;
 mod plugin_settings;
 mod queue;
 mod request_metrics;
+mod resumable;
 mod send_hold;
 mod session_lifecycle;
 mod settings;
