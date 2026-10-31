@@ -290,3 +290,30 @@ async fn composer_details_switch_without_expanding_updates_or_losing_queue_edits
             .any(|node| node.label == "Message composer")
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plan_proposal_opens_for_approval_and_then_shows_its_progress() {
+    let mut view = component("composer-plan").await;
+    // A proposal awaiting approval opens the plan without a click.
+    wait_view(&mut view, |screen| {
+        screen.contains("PLAN_STEP_ONE_DETAIL") && screen.contains("PLAN_RISK")
+    })
+    .await;
+    support::evidence("composer-plan-proposal", &view.snapshot());
+    support::evidence_cells("composer-plan-proposal", &view);
+    support::click_button(&mut view, "Planning mode").await;
+    wait_view(&mut view, |screen| screen.contains("mode:plan")).await;
+    support::click_button(&mut view, "Approve and execute").await;
+    wait_view(&mut view, |screen| {
+        screen.contains("plan:approve:proposal-one:1") && screen.contains("1/2")
+    })
+    .await;
+    assert!(
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Approve and execute")
+    );
+    support::evidence("composer-plan-running", &view.snapshot());
+    support::evidence_cells("composer-plan-running", &view);
+}
