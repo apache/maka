@@ -44,6 +44,8 @@ Start it with the launcher:
 
 `--root` selects the business Host Root and defaults to `~/.maka/application/host`. The launcher initializes a missing Root with the standard read-only business Host or reopens its saved deployment, verifies discovery against the connected Host endpoint, source and epoch, and supplies `MAKA_HOST_ROOT`, `MAKA_HOST_ENDPOINT` and `MAKA_HOST_EPOCH` to the shell, with its own path in `MAKA_LAUNCHER`. The shell admits itself to that Host as the terminal shell does and keeps its client data under the Root.
 
+Opened directly, from Finder, the Dock or a file manager, the shell has none of these variables. It then runs `maka desktop` from the directory it was staged in, beside `Maka.app` on macOS or beside the shell elsewhere, and exits; that launcher opens the window for the default Root.
+
 Closing the window, the quit menu item and the quit key all close the window; the shell then detaches from the Host and exits. The launcher detaches as well, so the Host finishes the work it accepted and stops once no client is left. Cancelling the launcher stops only its shell.
 
 The window opens on the display, at the position and size, and in the full-screen or maximized state it had when it last closed, as recorded in `clients/desktop-window.json` in the Root. If that display is gone it opens centered on the main display; if too little of its top edge would be on the display to grab, it opens centered there.
