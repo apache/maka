@@ -19,77 +19,25 @@
 
 import { createText, UiError, errorText } from './text';
 import { tr } from './locale';
-import {
-  batch,
-  cleanup,
-  createAnimatedValue,
-  inputAction,
-  LayoutAnimation,
-  reduceMotion,
-  signal,
-  Text,
-  View,
-  List,
-} from 'nsh';
-import { Button } from 'nsh/base';
-import { windowSize } from 'nsh';
+import { batch, cleanup, signal, Text, View, List } from 'nsh';
 import type { ComposerChecklistSource } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { Subscription } from './history';
 import type { AgentChecklist, AgentTodoItem } from '../../../../packages/plugin-sdk/src/index.js';
-import { C, bodyTextStyle, captionTextStyle, controlStyle } from './ui';
+import { C, bodyTextStyle } from './ui';
 import { Icon } from './Icon';
 import { ChoiceIndicator } from './ChoiceIndicator';
 
-/** One single-line item: a line of body text and 8 above and below. */
 const itemHeight = bodyTextStyle.lineHeight + 16;
 
-/**
- * The next layout change springs: the dock and the column above it settle
- * with one small overshoot instead of jumping.
- */
-const springNext = () => {
-  if (reduceMotion()) return;
-  LayoutAnimation.configureNext({
-    duration: 420,
-    create: { type: 'easeOut', property: 'opacity', duration: 160 },
-    update: { type: 'spring', springDamping: 0.6 },
-    delete: { type: 'easeOut', property: 'opacity', duration: 120 },
-  });
-};
-
-/**
- * The conversation's todo dock. On the desktop, `tuck` is the corner radius of
- * the composer below: the dock takes its top corners and sits on the composer,
- * which squares its own top corners while `joined` reports the dock shown, so
- * the two read as one card divided by the composer's top border.
- */
-export function Checklist(props: {
-  sessionId: string;
-  source: ComposerChecklistSource;
-  tuck?: number;
-  joined?: (shown: boolean) => void;
-}) {
-  const sessionId = props.sessionId;
-  const source = props.source;
-  // How far the dock sits below its place: it rises from behind the composer
-  // when it appears during the conversation, not when the conversation opens.
-  const rise = createAnimatedValue(0);
-  let riseOnMount = false;
+export function createChecklist(source: ComposerChecklistSource, height: () => number) {
   const snapshot = signal<AgentChecklist | null>(null);
   const items = signal<AgentTodoItem[]>([]);
   const nextOffset = signal<AgentChecklist['nextOffset']>(null);
-  const expanded = signal(false);
   const loading = signal(false);
   const error = createText();
   let alive = true;
   let generation = 0;
   let stream: Subscription | null = null;
-  const setExpanded = (action: { sessionId: string; open: boolean }) => {
-    const page = snapshot();
-    if (!alive || action.sessionId !== sessionId || !page?.enabled || page.total === 0) return;
-    if (props.tuck !== undefined) springNext();
-    expanded.set(action.open);
-  };
   const loadMore = async () => {
     const page = snapshot();
     const offset = nextOffset();
@@ -114,7 +62,6 @@ export function Checklist(props: {
   };
   cleanup(() => {
     alive = false;
-    props.joined?.(false);
     const previous = stream;
     stream = null;
     if (previous) void previous.close().catch(() => {});
@@ -133,14 +80,7 @@ export function Checklist(props: {
         if (page === null) throw new UiError('Checklist updates ended. Reopen the conversation.');
         if (snapshot() && page.revision === snapshot()!.revision) continue;
         generation += 1;
-        const shown = (value: AgentChecklist | null) => !!value?.enabled && value.total > 0;
-        const before = snapshot();
-        if (props.tuck !== undefined && before !== null && shown(page) !== shown(before)) {
-          springNext();
-          riseOnMount = shown(page);
-        }
         batch(() => {
-          props.joined?.(shown(page));
           snapshot.set(page);
           items.set(page.items);
           nextOffset.set(page.nextOffset);
@@ -157,122 +97,75 @@ export function Checklist(props: {
   })().catch((reason) => {
     if (alive) error.set(errorText(reason));
   });
-  return (
-    <If when={snapshot()?.enabled && snapshot()!.total > 0}>
-      <View
-        accessibilityLabel={tr('Conversation todo dock')}
-        ref={() => {
-          if (!riseOnMount || reduceMotion()) return;
-          riseOnMount = false;
-          rise.set(48);
-          void rise.spring(0, { stiffness: 360, damping: 17 });
-        }}
-        style={
-          props.tuck === undefined
-            ? { backgroundColor: C.surface, borderRadius: 8 }
-            : {
-                backgroundColor: C.raised,
-                borderWidth: 1,
-                borderColor: C.line,
-                borderTopLeftRadius: props.tuck,
-                borderTopRightRadius: props.tuck,
-                borderBottomLeftRadius: 0,
-                borderBottomRightRadius: 0,
-                overflow: 'hidden',
-                // The composer's top border draws the line between the two.
-                marginBottom: -1,
-                transform: [{ translateY: rise }],
-              }
-        }
-      >
-        <Button
-          accessibilityLabel={tr('Toggle conversation todo')}
-          selected={expanded()}
-          onPress={inputAction(setExpanded, { sessionId, open: !expanded() })}
+  return {
+    shown: () => !!error() || (!!snapshot()?.enabled && snapshot()!.total > 0),
+    summary: () => (snapshot()?.total ? `${snapshot()!.completed}/${snapshot()!.total}` : ''),
+    preview: () =>
+      error() ||
+      snapshot()?.current?.content ||
+      (snapshot()?.completed === snapshot()?.total
+        ? tr('All items complete')
+        : tr('No active item')),
+    problem: () => !!error(),
+    content: () => (
+      <View style={{ minHeight: 0, flexShrink: 1 }}>
+        <List
+          each={items()}
+          onLoadMore={() => void loadMore()}
+          footer={() => (
+            <If when={error()}>
+              <Text style={[{ paddingHorizontal: 16, color: C.danger }]}>{error()}</Text>
+            </If>
+          )}
+          estimatedItemSize={itemHeight}
+          keyExtractor={(_, index) => String(index)}
           style={{
-            ...controlStyle,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 8,
-            ...(props.tuck === undefined ? {} : { borderRadius: 0, paddingHorizontal: 16 }),
+            minHeight: 0,
+            flexShrink: 1,
+            height: error() ? height() : Math.min(items().length * itemHeight, height()),
           }}
-          hoverStyle={{ backgroundColor: props.tuck === undefined ? C.raised : C.line }}
-          focusStyle={{ backgroundColor: C.line }}
-          activeStyle={{ backgroundColor: props.tuck === undefined ? C.raised : C.line }}
         >
-          <Icon name={expanded() ? 'down' : 'right'} color={C.secondary} />
-          <Text style={{ ...captionTextStyle, color: C.text }}>
-            {tr('Todo')} {snapshot()!.completed}/{snapshot()!.total}
-          </Text>
-          <Text style={[{ ...captionTextStyle, flex: 1, color: C.muted }, { numberOfLines: 1 }]}>
-            {snapshot()!.current?.content ??
-              (snapshot()!.completed === snapshot()!.total
-                ? tr('All items complete')
-                : tr('No active item'))}
-          </Text>
-        </Button>
-        <If when={expanded()}>
-          <List
-            each={items()}
-            onLoadMore={() => void loadMore()}
-            estimatedItemSize={itemHeight}
-            keyExtractor={(_, index) => String(index)}
-            style={{
-              height: Math.min(
-                items().length * itemHeight,
-                Math.max(itemHeight, windowSize().height / 4),
-              ),
-            }}
-          >
-            {(item) => (
-              <View
-                style={{
-                  minHeight: itemHeight,
-                  paddingHorizontal: props.tuck === undefined ? 12 : 16,
-                  paddingVertical: 8,
-                  flexDirection: 'row',
-                  alignItems: 'flex-start',
-                  gap: 8,
-                }}
-              >
-                {/* As tall as the first line, so the mark centres on it. */}
-                <View style={{ height: bodyTextStyle.lineHeight, justifyContent: 'center' }}>
-                  <If
-                    when={item().status === 'in_progress'}
-                    else={
-                      <ChoiceIndicator kind="checkbox" checked={item().status === 'completed'} />
-                    }
-                  >
-                    <Icon name="activity" color={C.accent} />
-                  </If>
-                </View>
-                <Text
-                  style={[
-                    {
-                      ...bodyTextStyle,
-                      flex: 1,
-                      color:
-                        item().status === 'in_progress'
-                          ? C.accent
-                          : item().status === 'completed'
-                            ? C.muted
-                            : C.secondary,
-                    },
-                    { userSelect: 'text' },
-                  ]}
+          {(item) => (
+            <View
+              style={{
+                minHeight: itemHeight,
+                paddingHorizontal: 16,
+                paddingVertical: 8,
+                flexDirection: 'row',
+                alignItems: 'flex-start',
+                gap: 8,
+              }}
+            >
+              {/* As tall as the first line, so the mark centres on it. */}
+              <View style={{ height: bodyTextStyle.lineHeight, justifyContent: 'center' }}>
+                <If
+                  when={item().status === 'in_progress'}
+                  else={<ChoiceIndicator kind="checkbox" checked={item().status === 'completed'} />}
                 >
-                  {item().content}
-                </Text>
+                  <Icon name="activity" color={C.accent} />
+                </If>
               </View>
-            )}
-          </List>
-          <If when={error()}>
-            <Text style={[{ paddingHorizontal: 16, color: C.danger }, { numberOfLines: 1 }]}>
-              {error()}
-            </Text>
-          </If>
-        </If>
+              <Text
+                style={[
+                  {
+                    ...bodyTextStyle,
+                    flex: 1,
+                    color:
+                      item().status === 'in_progress'
+                        ? C.accent
+                        : item().status === 'completed'
+                          ? C.muted
+                          : C.secondary,
+                  },
+                  { userSelect: 'text' },
+                ]}
+              >
+                {item().content}
+              </Text>
+            </View>
+          )}
+        </List>
       </View>
-    </If>
-  );
+    ),
+  };
 }

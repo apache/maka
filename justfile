@@ -63,12 +63,13 @@ lint: setup
     cargo clippy --config 'build.warnings="deny"' --locked --workspace --all-targets
     node node_modules/@biomejs/biome/bin/biome lint .
 
-# Verify generated contracts and TypeScript consumers.
+# Verify generated contracts, TypeScript consumers and the workbench UI sources.
 [group('Checks')]
 typecheck: setup
     npm --workspace @maka-agent/plugin-sdk run schema:check
     npm --workspace @maka-agent/plugin-sdk run typecheck
     npm --workspace @maka-agent/product run typecheck
+    dir="$(mktemp -d)/ui-types" && cargo run --locked -q -p maka-workbench --example ui_types -- "$dir" && node node_modules/typescript/bin/tsc -p "$dir/tsconfig.json"
 
 # Run Rust behavior tests; pass nextest filters after the recipe name.
 [group('Checks')]

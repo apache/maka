@@ -26,7 +26,6 @@ use maka_agent_facts::continuation::SessionBase;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::input::InvocationInput;
 use maka_agent_facts::model::prompt_source::source::MessageRole;
-use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
@@ -192,35 +191,7 @@ pub(super) async fn inspect(
             } else {
                 loaded_basis
             };
-            let definitions = tools.replay_selected(selected);
-            // Resume validates names from the full explicit inventory, including tools
-            // not yet advertised through lazy discovery.
-            let mut available: std::collections::HashSet<_> = catalog.names().into_iter().collect();
-            available.extend(definitions.iter().map(|definition| definition.name.clone()));
-            // A handoff replays settled facts, including rejected calls to unavailable
-            // tools. It never executes them again; the registered catalog is checked above.
-            if !matches!(input.work, crate::RunWork::Handoff { .. }) {
-                let available: std::collections::HashSet<[u8; 32]> = available
-                    .iter()
-                    .map(|name| Sha256::digest(name.as_bytes()).into())
-                    .collect();
-                let recipes = prompt
-                    .recipes()
-                    .ok_or_else(|| invalid("continuation lacks a frozen logical directory"))?;
-                let mut cursor = recipes.open_metadata(0);
-                while let Some(message) = cursor.next().await.map_err(RunError::Preparation)? {
-                    if cancellation.is_cancelled() {
-                        return Err(RunError::Cancelled);
-                    }
-                    let mut names = message.local_tool_names.open(0);
-                    while let Some(name) = names.next().await.map_err(RunError::Preparation)? {
-                        if !available.contains(&name.identity) {
-                            return Err(invalid("continuation requires an unavailable tool"));
-                        }
-                    }
-                }
-            }
-            definitions
+            tools.replay_selected(selected)
         } else {
             Vec::new()
         };

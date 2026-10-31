@@ -35,6 +35,7 @@ pub use effects::BrowserLeaseChildReceipt;
 mod family;
 mod gates;
 mod lifecycle;
+mod material;
 pub use execution::{
     InvocationEffectLease, InvocationEffects, SessionExecutionLease, SessionExecutionScope,
 };
@@ -223,6 +224,11 @@ impl RootStore {
             // auxiliary work as live after a process restart.
             store.recover_host_effects().await?;
             store.recover_auxiliary_models().await?;
+            store
+                .lifecycle
+                .as_mut()
+                .expect("Root lifecycle is installed before recovery")
+                .start_maintenance()?;
             Ok::<(), StoreError>(())
         }
         .await;
