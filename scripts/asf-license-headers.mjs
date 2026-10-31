@@ -214,7 +214,7 @@ export const exclusionRules = [
     id: 'asf-release-documents',
     justification:
       'These files are the license, notice, and incubation disclosure themselves. ASF policy fixes their contents, so a header inside them would be circular.',
-    matches: isOneOf('DISCLAIMER-WIP', 'LICENSE', 'NOTICE'),
+    matches: isOneOf('DISCLAIMER', 'LICENSE', 'NOTICE'),
   },
   {
     id: 'third-party-license-texts',

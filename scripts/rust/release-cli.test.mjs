@@ -56,7 +56,7 @@ test('prepared release binds its source and recovers partial publication and mis
       }),
       LICENSE: 'Apache License, Version 2.0\n',
       NOTICE: 'Apache Maka\n',
-      'DISCLAIMER-WIP': 'Apache Maka is undergoing incubation.\n',
+      DISCLAIMER: 'Apache Maka is undergoing incubation.\n',
     }))
       await writeFile(join(sourceRoot, file), content);
     const archive = root + '-src.tar.gz';
@@ -105,6 +105,7 @@ test('prepared release binds its source and recovers partial publication and mis
     assert.deepEqual(
       files,
       [
+        'package/DISCLAIMER',
         'package/LICENSE',
         'package/NOTICE',
         'package/README.md',
@@ -112,6 +113,10 @@ test('prepared release binds its source and recovers partial publication and mis
         'package/bin/maka.mjs',
         'package/package.json',
       ].sort(),
+    );
+    assert.equal(
+      execFileSync('tar', ['-xOf', packed, 'package/DISCLAIMER'], { encoding: 'utf8' }),
+      await readFile(join(sourceRoot, 'DISCLAIMER'), 'utf8'),
     );
     assert.equal(
       execFileSync('tar', ['-xOf', packed, 'package/bin/maka.mjs'], { encoding: 'utf8' }),
@@ -126,6 +131,7 @@ test('prepared release binds its source and recovers partial publication and mis
     );
     assert.match(manifest.description, /Unofficial experimental.*not an ASF release/);
     const readme = execFileSync('tar', ['-xOf', packed, 'package/README.md'], { encoding: 'utf8' });
+    assert.ok(readme.includes(await readFile(join(sourceRoot, 'DISCLAIMER'), 'utf8')));
     assert.match(
       readme,
       /not an official Apache Software Foundation release and is not approved, endorsed or supported by the ASF/,
@@ -304,7 +310,7 @@ test('source identity failures cannot reach dependency installation or compilati
     const files = {
       LICENSE: 'Apache-2.0\n',
       NOTICE: 'Apache Maka\n',
-      'DISCLAIMER-WIP': 'Apache Maka is undergoing incubation.\n',
+      DISCLAIMER: 'Apache Maka is undergoing incubation.\n',
       'package.json': JSON.stringify({ name: 'maka', version: '1.2.3', license: 'Apache-2.0' }),
       'package-lock.json': JSON.stringify({
         version: '1.2.3',
