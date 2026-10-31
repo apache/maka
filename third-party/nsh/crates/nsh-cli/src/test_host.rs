@@ -92,6 +92,7 @@ pub(crate) fn host_target(target: Target) -> nsh_testing::HostTarget {
         Target::Linux => ("linux", Platform::Linux, true),
         Target::Web => ("web", Platform::Web, true),
         Target::Gpui => ("gpui", desktop, true),
+        Target::Tui => unreachable!("starter rejects terminal test hosts"),
     };
     let mut host = nsh_testing::HostTarget::default();
     host.name = name.to_owned();

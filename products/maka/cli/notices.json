@@ -925,7 +925,7 @@
     "third-party/nsh/crates/nsh-cli/src/templates/tsconfig/5.json": "5d6ee953f0366848a5cbe9fe9d0a6b31637d14e8dfb20761e7730c9228753b1a",
     "third-party/nsh/crates/nsh-cli/src/test.rs": "46b59fb772a08b1aea6aa46a94a1468f4dfe1231352a7cbbd611d22b6a64dfe0",
     "third-party/nsh/crates/nsh-cli/src/test_android.rs": "6f3ca5c6caf8e46d48fa7d3046e82a9d1d5f50efd1a6a68a08f3c0472295c48c",
-    "third-party/nsh/crates/nsh-cli/src/test_host.rs": "8ca3cc5d23d12ba63db4edc5293d92244b5e50a37c904d7815fc06e9df731661",
+    "third-party/nsh/crates/nsh-cli/src/test_host.rs": "a9a8260ffaf68f7516489c3024d4d476e578a7f782549c26202e9d4f91fdb3a8",
     "third-party/nsh/crates/nsh-cli/src/test_ios.rs": "001f75d6f862a31d2352e09c51317f100ae6ddab8d983761315c25760b258f01",
     "third-party/nsh/crates/nsh-cli/src/test_web.rs": "b657afd25fd7f33f734cd8ac597bb580a0f341a0453828b1d73f3b71b74436bd",
     "third-party/nsh/crates/nsh-cli/src/tui.rs": "edadbdd4996dce76cf87b4e8eb4e4101fa6ed338f2ebb7f0725a6c61d2bde6c0",
