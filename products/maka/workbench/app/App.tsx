@@ -40,7 +40,7 @@ import { PluginPanel } from './plugins/PluginPanel';
 import { initializeAppearance } from './appearance';
 import { currentLocale, tr } from './locale';
 import { errorText, renderText } from './text';
-import { bodyTextStyle, C, controlStyle } from './ui';
+import { bodyTextStyle, C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
 
 type Configuration = {
   navigation: UiTarget;
@@ -184,10 +184,16 @@ function App(
       return false;
     }
   };
+  const connectionDetails = signal(false);
+  const connectionDiagnostic = () => {
+    const reason = runtime.updateError();
+    return reason instanceof Error ? reason.message : String(reason);
+  };
   const shell: ConversationShell = {
     sessionId: selected,
     visible: () => !settingsOpened() && !(plugins.panel() && !canDockPreview()),
     blocked,
+    connectionLost: () => runtime.updateError() !== null,
     openSession,
     openSettings(model) {
       if (!alive || blocked()) return;
@@ -230,6 +236,7 @@ function App(
       sessionId: pane.id,
       visible: shell.visible,
       blocked,
+      connectionLost: () => runtime.updateError() !== null,
       openSession: (id) => openSide(pane, id),
       openSettings: shell.openSettings,
       sidebarShown: () => true,
@@ -254,18 +261,6 @@ function App(
   );
   return (
     <View style={{ flex: 1, minHeight: 0, backgroundColor: C.background }}>
-      <If when={runtime.updateError() !== null || notice() !== null}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, padding: 8 }}>
-          <Text style={[{ ...bodyTextStyle, flex: 1, color: C.warning }, { userSelect: 'text' }]}>
-            {renderText(errorText(notice() ?? runtime.updateError()))}
-          </Text>
-          <If when={runtime.updateError() !== null}>
-            <Button onPress={runtime.retryUpdates} style={controlStyle}>
-              <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
-            </Button>
-          </If>
-        </View>
-      </If>
       <Workbench
         expanded={sidebarExpanded}
         previewShown={previewShown}
@@ -304,6 +299,50 @@ function App(
           },
         })}
       </Workbench>
+      <If when={runtime.updateError() !== null || notice() !== null}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            paddingHorizontal: 16,
+            paddingVertical: 4,
+            backgroundColor: C.surface,
+          }}
+        >
+          <Text style={[{ ...bodyTextStyle, flex: 1, color: C.warning }, { userSelect: 'text' }]}>
+            {runtime.updateError() !== null
+              ? tr('Connection interrupted. Reconnect to continue; your draft is kept.')
+              : renderText(errorText(notice()))}
+            {connectionDetails() && runtime.updateError() !== null
+              ? `\n${connectionDiagnostic()}`
+              : ''}
+          </Text>
+          <If when={runtime.updateError() !== null}>
+            <Button
+              accessibilityLabel={tr('Details')}
+              onPress={() => connectionDetails.set(!connectionDetails())}
+              style={controlStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+              activeStyle={{ backgroundColor: C.line }}
+            >
+              <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Details')}</Text>
+            </Button>
+            <Button
+              accessibilityLabel={tr('Retry')}
+              onPress={runtime.retryUpdates}
+              style={controlStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+              activeStyle={{ backgroundColor: C.line }}
+            >
+              <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+            </Button>
+          </If>
+        </View>
+      </If>
+
       {runtime.renderView(configuration.preview, conversationPreviewView, {
         shell,
         surface: 'overlays' as const,

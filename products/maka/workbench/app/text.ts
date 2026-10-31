@@ -55,9 +55,16 @@ export class UiError extends Error {
 }
 
 export function errorText(reason: unknown): UiText {
-  return reason instanceof UiError
-    ? reason.text
-    : reason instanceof Error
-      ? reason.message
-      : String(reason);
+  if (reason instanceof UiError) return reason.text;
+  const detail = reason instanceof Error ? reason.message : String(reason);
+  switch (detail) {
+    case 'agent_store_unavailable':
+      return message('Conversation data is temporarily unavailable. Try reconnecting.');
+    case 'agent_catalog_unavailable':
+      return message('Conversation list is temporarily unavailable. Try reconnecting.');
+    case 'database connection closed before accepting the operation':
+      return message('Connection interrupted. Reconnect to continue; your draft is kept.');
+    default:
+      return detail;
+  }
 }

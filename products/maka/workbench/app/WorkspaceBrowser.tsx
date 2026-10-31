@@ -62,6 +62,7 @@ import { controlsLeft, ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrom
 
 export type WorkspaceBrowserProps = {
   docked(): boolean;
+  connectionLost(): boolean;
   browsing: Browsing;
   selected(): string | null;
   switching(): boolean;
@@ -703,9 +704,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 const current = session();
                 if (!current) return '';
                 return [
-                  current.activity === 'working' || current.activity === 'waiting'
-                    ? sessionStatusCaption[current.activity]
-                    : '',
+                  props.connectionLost() || browser.error()
+                    ? ''
+                    : current.activity === 'working' || current.activity === 'waiting'
+                      ? sessionStatusCaption[current.activity]
+                      : '',
                   current.branch && !hasForkPrefix(current.title) ? tr('Fork') : '',
                   current.pinned
                     ? current.workspace.path.split('/').filter(Boolean).at(-1) ||
@@ -854,11 +857,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                               { numberOfLines: 1 },
                             ]}
                           >
-                            {session()?.activity === 'working'
-                              ? `${sessionStatusCaption.working} · `
-                              : session()?.activity === 'waiting'
-                                ? `${sessionStatusCaption.waiting} · `
-                                : ''}
+                            {props.connectionLost() || browser.error()
+                              ? ''
+                              : session()?.activity === 'working'
+                                ? `${sessionStatusCaption.working} · `
+                                : session()?.activity === 'waiting'
+                                  ? `${sessionStatusCaption.waiting} · `
+                                  : ''}
                             {/* Forks renamed or titled before the prefix still read as forks. */}
                             {session()?.branch && !hasForkPrefix(session()!.title)
                               ? `${tr('Fork')} · `
@@ -929,7 +934,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           </Button>
         </If>
       </If>
-      <If when={browser.error() || browser.projectError()}>
+      <If when={!props.connectionLost() && (browser.error() || browser.projectError())}>
         <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
           {browser.error() || browser.projectError()}
         </Text>

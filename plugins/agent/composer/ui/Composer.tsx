@@ -155,7 +155,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     props.session()?.invocation() != null ? tr('Queue message') : tr('Send message');
   const hasContent = () =>
     !!props.session()?.draft().trim() || !!props.session()?.attachments.files().length;
-  const primaryStops = () => props.session()?.invocation() != null && !hasContent();
+  const primaryStops = () =>
+    props.session()?.connected() === true && props.session()?.invocation() != null && !hasContent();
   const resumeSource = () => {
     const value = props.session()?.resumable();
     return !props.session()?.invocation() && !hasContent() && value?.kind === 'ready'
@@ -368,7 +369,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                 <ComposerDetails session={owner} />
                 <If when={owner.recoverable()}>
                   <Button
-                    disabled={owner.recovering()}
+                    disabled={!owner.connected() || owner.recovering()}
                     onPress={inputAction(owner.recover, null)}
                     style={controlStyle}
                     hoverStyle={{ backgroundColor: C.raised }}
@@ -384,7 +385,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                 <Each of={owner.unconfirmed()} key={(id: string) => id}>
                   {(id) => (
                     <Button
-                      disabled={owner.recovering()}
+                      disabled={!owner.connected() || owner.recovering()}
                       onPress={inputAction(owner.abandon, id())}
                       style={controlStyle}
                       hoverStyle={{ backgroundColor: C.raised }}
@@ -766,9 +767,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
         {/* The terminal reserves the warning row so the composer never jumps; the
             desktop shows it only when there is a warning, so no empty band sits
             under the box. */}
-        <If when={platform.isTerminal || blocked()}>
+        <If when={platform.isTerminal || (props.session()?.connected() && blocked())}>
           <View style={{ minHeight: 24, paddingTop: 8 }}>
-            <If when={blocked()}>
+            <If when={props.session()?.connected() && blocked()}>
               <Text style={{ color: C.warning, fontSize: 12, lineHeight: 16 }}>{blocked()}</Text>
             </If>
           </View>

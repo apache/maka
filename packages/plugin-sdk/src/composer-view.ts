@@ -253,6 +253,7 @@ export interface ComposerSession<Element = unknown> {
   recoverable(): boolean;
   recovering(): boolean;
   unconfirmed(): string[];
+  connected(): boolean;
   invocation(): string | null;
   stopping(): boolean;
   resumable(): AgentResumable | null;

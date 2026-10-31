@@ -29,6 +29,7 @@ export interface ConversationShell {
   sessionId(): string | null;
   visible(): boolean;
   blocked(): boolean;
+  connectionLost(): boolean;
   openSession(sessionId: string | null): Promise<boolean>;
   openSettings(model?: ModelSelection): void;
   sidebarShown(): boolean;

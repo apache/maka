@@ -39,7 +39,7 @@ import { tr } from './locale';
 import { C, captionTextStyle, controlStyle, textTooltip } from './ui';
 
 export function ComposerDetails(props: {
-  session: Pick<ComposerSession, 'checklist' | 'computerAccess' | 'plan' | 'queue'>;
+  session: Pick<ComposerSession, 'checklist' | 'computerAccess' | 'plan' | 'queue' | 'connected'>;
 }) {
   const session = props.session;
   const height = () => windowSize().height / 4;
@@ -47,14 +47,13 @@ export function ComposerDetails(props: {
     plan: createPlanPanel(session.plan),
     todo: createChecklist(session.checklist, height),
     computer: createComputerAppControls(session.computerAccess, height),
-    queue: createQueueDock(session.queue, height),
+    queue: createQueueDock(session.queue, height, session.connected),
   };
   type Panel = keyof typeof panels;
   const keys: Panel[] = ['plan', 'todo', 'computer', 'queue'];
   const available = computed(() => keys.filter((key) => panels[key].shown()));
-  // A lone panel's preview sits beside its tab, so its content need not repeat it.
-  const previewed = () => available().length === 1;
   const selected = signal<Panel | null>(null);
+  const previewed = () => available().length === 1 && selected() === null;
   const labels = {
     plan: () => tr('Plan'),
     todo: () => tr('Todo'),
@@ -145,7 +144,10 @@ export function ComposerDetails(props: {
               );
             }}
           </Each>
-          <Each of={available().length === 1 ? available() : []} key={(key) => key}>
+          <Each
+            of={available().length === 1 && selected() === null ? available() : []}
+            key={(key) => key}
+          >
             {(key) => (
               <Text
                 style={[

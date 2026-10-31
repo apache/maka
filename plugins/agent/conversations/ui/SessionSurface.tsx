@@ -436,6 +436,10 @@ export function createConversationUi(
   };
   const returned = (reply: any) => {
     const receipt = reply?.receipt;
+    if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'unknown')
+      throw new UiError(
+        'The action outcome is unknown. Check the current state before trying again.',
+      );
     if (receipt?.kind !== 'recorded' || receipt.outcome?.kind !== 'returned')
       throw new UiError('Confirmation is still unknown. Recover the original action below.');
     const value = receipt.outcome.value;
@@ -1061,6 +1065,7 @@ export function createConversationUi(
       !(shell()?.visible() ?? false) ||
       overlay() ||
       !owner ||
+      !owner.connected() ||
       selected() !== sessionId ||
       owner.sessionId !== sessionId ||
       owner.invocation() !== invocationId
@@ -1167,7 +1172,8 @@ export function createConversationUi(
     if (closeCommand(context)) handle()?.focusActivity(context.turnId);
   };
   const commandStop = (context: ActionContext & { invocationId: string | null }) => {
-    if (closeCommand(context)) void handle()?.stop(context.invocationId).catch(report);
+    if (closeCommand(context) && handle()?.connected())
+      void handle()?.stop(context.invocationId).catch(report);
   };
   const commandPlan = (context: ActionContext) => {
     if (!closeCommand(context)) return;
@@ -1460,7 +1466,9 @@ export function createConversationUi(
     browserFocus.set(false);
     return true;
   };
+  const connectionLost = () => shell()?.connectionLost() ?? false;
   const browserProps: WorkspaceBrowserProps = {
+    connectionLost,
     docked: navigationDocked,
     browsing,
     selected,
@@ -1695,6 +1703,7 @@ export function createConversationUi(
               {(id) => (
                 <Conversation
                   client={host.session(id())}
+                  connectionLost={connectionLost}
                   botSession={botSession}
                   visible={() =>
                     selected() === id() && overlay() === null && (shell()?.visible() ?? false)
@@ -1798,7 +1807,12 @@ export function createConversationUi(
                                 requestId={entry().requestId}
                                 control={control}
                                 focusComposer={focusComposer}
-                                confirming={() => busy() || !controlsKnown()}
+                                confirming={() =>
+                                  connectionLost() ||
+                                  !owner.connected() ||
+                                  busy() ||
+                                  !controlsKnown()
+                                }
                               />
                             )}
                           </Each>
@@ -1806,7 +1820,7 @@ export function createConversationUi(
                       );
                     }}
                   </Each>
-                  <If when={status()}>
+                  <If when={!connectionLost() && status()}>
                     <View
                       style={{
                         flexDirection: 'row',
@@ -1845,11 +1859,13 @@ export function createConversationUi(
                   </If>
                   <If
                     when={
-                      error() ||
-                      working() ||
-                      !controlsKnown() ||
-                      controls().length ||
-                      forkNotice()?.id === selected()
+                      !connectionLost() &&
+                      (handle()?.connected() ?? true) &&
+                      (error() ||
+                        working() ||
+                        !controlsKnown() ||
+                        controls().length ||
+                        forkNotice()?.id === selected())
                     }
                   >
                     <Scroll
@@ -2139,7 +2155,7 @@ export function createConversationUi(
       if (id === 'bot') return true;
       if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
         return handle() !== null;
-      if (id === 'stop') return handle()?.invocation() != null;
+      if (id === 'stop') return !!handle()?.connected() && handle()?.invocation() != null;
       if (id === 'plan') {
         const owner = handle();
         if (!owner) return pending() !== null && plansEnabled() !== false;
@@ -2282,6 +2298,7 @@ function projectComposerSession(
     recoverable: owner.recoverable,
     recovering: owner.recovering,
     unconfirmed: owner.unconfirmed,
+    connected: owner.connected,
     invocation: owner.invocation,
     stopping: owner.stopping,
     resumable: owner.resumable,

@@ -225,6 +225,7 @@ type ConversationProps = {
     available: boolean,
   ): { text: string; send: boolean; files?: StagedFile[]; first?: boolean } | null;
   commands(): void;
+  connectionLost(): boolean;
   visible(): boolean;
   foreground(): boolean;
   browser(): BrowserHeader;
@@ -2027,10 +2028,11 @@ export function Conversation(props: ConversationProps) {
       return;
     void send(text, expectedBackend);
   };
+  const connected = () => transcriptStatus() === 'live' && !props.connectionLost();
   const queueSession: ComposerQueue = {
     sessionId,
     snapshot: queued,
-    running: () => invocation() !== null && !stopping(),
+    running: () => connected() && invocation() !== null && !stopping(),
     async read(messageId, expectedRevision) {
       if (!alive) throw new UiError('This conversation is closed.');
       return host.query('agent', 'queueMessage', { sessionId, messageId, expectedRevision });
@@ -2071,9 +2073,10 @@ export function Conversation(props: ConversationProps) {
       pendingMessages().length === 0 &&
       (queued()?.entries.length ?? 0) === 0 &&
       toolActivity().length === 0,
-    error,
-    notice,
-    recoverable: () => !sending() && draftReady() && (!receiptsKnown() || unresolved().length > 0),
+    connected,
+    error: () => (connected() ? error() : ''),
+    notice: () => (connected() ? notice() : ''),
+    recoverable: () => connected() && !sending() && draftReady() && unresolved().length > 0,
     recovering: () => recovering() || sending(),
     unconfirmed: () =>
       unresolved()
@@ -2495,22 +2498,29 @@ export function Conversation(props: ConversationProps) {
         files={props.files}
         filesOpener={props.filesOpener}
       />
-      <If when={transcriptStatus() === 'failed'}>
-        <Button
-          accessibilityLabel={ready() ? tr('Reconnect updates') : tr('Retry loading conversation')}
-          onPress={inputAction(retryTranscript, sessionId)}
+      <If when={transcriptStatus() === 'failed' && !props.connectionLost()}>
+        <View
           style={{
-            ...controlStyle,
-            alignSelf: 'flex-start',
-            backgroundColor: C.raised,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            paddingHorizontal: 16,
+            paddingVertical: 8,
+            borderBottomWidth: 1,
+            borderBottomColor: C.line,
           }}
-          hoverStyle={{ backgroundColor: C.surface }}
-          focusStyle={{ backgroundColor: C.line }}
         >
-          <Text style={{ ...captionTextStyle, color: C.accent }}>
-            {ready() ? tr('Reconnect updates') : tr('Retry loading conversation')}
+          <Text style={{ ...captionTextStyle, color: C.muted, flex: 1 }}>
+            {tr('Reconnecting updates… Your draft is kept.')}
           </Text>
-        </Button>
+          <Button
+            accessibilityLabel={tr('Reconnect updates')}
+            onPress={inputAction(retryTranscript, sessionId)}
+            style={controlStyle}
+          >
+            <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+          </Button>
+        </View>
       </If>
       <View
         style={{
