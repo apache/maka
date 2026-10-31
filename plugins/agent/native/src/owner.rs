@@ -755,8 +755,7 @@ impl Owner {
             names
                 .iter()
                 .any(|name| name == bot::SEND_USER || name == bot::SLEEP)
-        })
-        {
+        }) {
             return Ok(Created::Rejected {
                 reason: Rejection::ToolsUnavailable,
             });
@@ -1320,6 +1319,7 @@ impl Owner {
                     .await?,
                 &snapshot,
                 language,
+                session.configuration.tools.as_deref(),
             ),
             model,
             executor,
