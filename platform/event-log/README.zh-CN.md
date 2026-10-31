@@ -21,6 +21,26 @@
 
 [English](README.md)
 
+仅历史 checkpoint 使用 `RootStore::history_checkpoints` 和
+[`checkpoints`](src/checkpoints.rs) 中的类型。原生 Bundle 与版本化 Manifest
+先验证并持久保存在私有 Root 内，再创建或条件更新独立的 checkpoint Head。
+Head 与发布回执在 Session 所在分区的同一事务提交；Host 操作日志可能位于
+另一分区，响应结果未知时必须先查询原发布回执。实时 Session revision 和
+日常持久化行为保持原语义。
+
+原操作固定输入与已准备材料。启动恢复会中断未完成捕获，并用原材料继续已
+准备的发布，不重新捕获更新后的历史。准备事务失败后无需重启即可中断捕获；
+提交结果未知时保留已经准备的材料。损坏的准备对象留下明确的 unavailable
+回执；临时文件清理与业务成功分开记录。观察者取消后，物理 worker 仍持有
+Root 直到工作结束。精确读取只支持当前 retained checkpoint revision，不会
+替换成最新版本；历史成功回执也不授予已被替代版本的读取能力。
+
+该内部能力当前要求 Unix 文件及目录持久化语义，其他平台在请求 claim 前
+拒绝发布。它不提供自动触发、协议入口、Workspace 文件快照、执行授权或恢复
+启动；原生历史格式不兼容旧 TS compatibility bundle。不可变对象暂时保守
+保留，只清理明确归属的临时文件，因此磁盘使用并非自动有界；retention/GC
+属于后续工作。
+
 存储通过当前 SQL 迁移初始化；不支持的内部布局和记录格式会被拒绝。规范事实及其接受、所有权、恢复和预算索引共享原事务；transcript 与 Recall 读模型属于可丢弃的 observation 缓存。
 
 管理 SQLite 事件存储和 State Root 租约，持久化应用配置与包、操作回执、会话、轮次及恢复记录。独占所有权见 `root`，已提交的组合见 `applications`，中断恢复见 `recovery`。服务激活前必须先取得 Root 的持久化所有权；业务策略属于插件，规范事实由这里记录。
