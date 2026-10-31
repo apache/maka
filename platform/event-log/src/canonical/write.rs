@@ -17,21 +17,23 @@
  * under the License.
  */
 
-//! Immutable material and its event slot are published in the original transaction.
+//! Prepare immutable material for an event reference in the original transaction.
 use super::{recipe::Projection, source};
 use crate::StoreError;
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::SqliteWorkerConnection;
-pub(crate) async fn publish(
+pub(crate) async fn prepare(
     worker: &mut SqliteWorkerConnection<'_>,
-    sequence: u64,
     projection: &Projection<'_>,
-) -> Result<(), StoreError> {
+) -> Result<i64, StoreError> {
     let original = projection.json.as_bytes();
     let digest = Sha256::digest(original);
     let inserted=sqlx::query("INSERT INTO event_bodies(digest,raw_bytes,sqlite_json_bytes,payload) VALUES(?1,?2,?3,?4) ON CONFLICT(digest) DO NOTHING")
         .bind(digest.as_slice()).bind(original.len() as i64).bind(projection.sqlite_json_bytes() as i64).bind(original)
         .execute(&mut *worker).await?;
+    if inserted.rows_affected() == 1 {
+        return Ok(inserted.last_insert_rowid());
+    }
     let (id, bytes): (i64, i64) =
         sqlx::query_as("SELECT id,raw_bytes FROM event_bodies WHERE digest=?")
             .bind(digest.as_slice())
@@ -40,7 +42,7 @@ pub(crate) async fn publish(
     if bytes != original.len() as i64 {
         return Err(StoreError::EventConflict);
     }
-    if inserted.rows_affected() == 0 {
+    {
         // SAFETY: the worker callback exclusively owns this original handle.
         // The borrowed wrapper and its BLOB readers close before returning.
         let raw = unsafe { rusqlite::Connection::from_handle(worker.as_raw_handle().as_ptr()) }?;
@@ -64,11 +66,5 @@ pub(crate) async fn publish(
         })?;
         drop(raw);
     }
-    sqlx::query("INSERT INTO event_body_slots(event_sequence,header_offset,body_id) VALUES(?,?,?)")
-        .bind(sequence as i64)
-        .bind(projection.offset as i64)
-        .bind(id)
-        .execute(&mut *worker)
-        .await?;
-    Ok(())
+    Ok(id)
 }

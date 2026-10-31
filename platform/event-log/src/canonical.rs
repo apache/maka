@@ -29,4 +29,4 @@ pub(crate) use recipe::projection;
 pub(crate) use source::{
     SPAN_COLUMNS, SpanMetadata, with_span, with_span_metadata, with_span_on_row,
 };
-pub(crate) use write::publish;
+pub(crate) use write::prepare;

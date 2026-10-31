@@ -335,7 +335,7 @@ async fn shared_tool_projection_survives_collection_of_one_canonical_owner() {
     }
     let inspect = rusqlite::Connection::open(&path).unwrap();
     let counts = || {
-        inspect.query_row("SELECT (SELECT COUNT(*) FROM event_bodies),(SELECT COUNT(*) FROM event_body_slots)", [], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))).unwrap()
+        inspect.query_row("SELECT (SELECT COUNT(*) FROM event_bodies),(SELECT COUNT(*) FROM event_log WHERE body_id IS NOT NULL)", [], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))).unwrap()
     };
     assert_eq!(counts(), (1, 2));
     let stored_bytes: i64 = inspect

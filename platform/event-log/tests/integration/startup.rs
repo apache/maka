@@ -158,7 +158,7 @@ async fn catalog_migration_preserves_existing_history_and_backfills_cached_activ
     }
     let checksums = migration_checksums(&Connection::open(&path).unwrap());
     assert_eq!(&checksums[..old_checksums.len()], old_checksums);
-    assert_eq!(checksums.last().unwrap().0, 13);
+    assert_eq!(checksums.last().unwrap().0, 14);
 }
 
 #[tokio::test]

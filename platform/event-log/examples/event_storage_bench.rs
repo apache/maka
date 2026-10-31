@@ -285,6 +285,49 @@ impl Samples {
         output.into()
     }
 }
+async fn record_prefix(
+    session: &SessionStore,
+    manifest: &serde_json::Value,
+    samples: &mut Samples,
+    measured: bool,
+) -> Result<()> {
+    let start = Instant::now();
+    let prefix = session
+        .scoped_prefix(
+            LogScope::Session { id: "bench".into() },
+            usize::MAX,
+            usize::MAX,
+        )
+        .await?;
+    if measured {
+        samples.add("prefix_read", start);
+    }
+    if prefix.digest
+        != manifest["prefix_digest"]
+            .as_str()
+            .ok_or("missing prefix digest")?
+    {
+        return Err("event proof changed".into());
+    }
+    if prefix.events.len()
+        != manifest["canonical_events"]
+            .as_u64()
+            .ok_or("missing event count")? as usize
+    {
+        return Err("event count changed".into());
+    }
+    if digest(&serde_json::to_vec(&prefix.events)?)
+        != manifest["events_digest"]
+            .as_str()
+            .ok_or("missing event content digest")?
+    {
+        return Err("event content changed".into());
+    }
+    if measured {
+        samples.add("prefix_all", start);
+    }
+    Ok(())
+}
 fn io_stats() -> serde_json::Value {
     match std::fs::read_to_string("/proc/self/io") {
         Ok(value) => json!({"value":value}),
@@ -333,6 +376,10 @@ async fn main() -> Result<()> {
         return Err("body pattern must be repeated or entropy".into());
     }
     let iterations: usize = value("--iterations", "10").parse()?;
+    let operation = value("--operation", "all");
+    if !matches!(operation.as_str(), "all" | "prefix") {
+        return Err("operation must be all or prefix".into());
+    }
     if events == 0 || iterations == 0 {
         return Err("events and iterations must be positive".into());
     }
@@ -469,6 +516,10 @@ async fn main() -> Result<()> {
     let mut child_pages = 0u64;
     // The first pass validates descriptors and warms application/SQLite caches.
     for iteration in 0..=iterations {
+        if iteration > 0 && operation == "prefix" {
+            record_prefix(&session, &manifest, &mut samples, true).await?;
+            continue;
+        }
         let start = Instant::now();
         let metadata = session.read_model_view("bench", None).await?;
         std::hint::black_box(metadata.source_evidence.digest);
@@ -682,38 +733,7 @@ async fn main() -> Result<()> {
         if iteration > 0 {
             samples.add("descriptor_leaves_all", start);
         }
-        let start = Instant::now();
-        let prefix = session
-            .scoped_prefix(
-                LogScope::Session { id: "bench".into() },
-                usize::MAX,
-                usize::MAX,
-            )
-            .await?;
-        if prefix.digest
-            != manifest["prefix_digest"]
-                .as_str()
-                .ok_or("missing prefix digest")?
-        {
-            return Err("event proof changed".into());
-        }
-        if prefix.events.len()
-            != manifest["canonical_events"]
-                .as_u64()
-                .ok_or("missing event count")? as usize
-        {
-            return Err("event count changed".into());
-        }
-        if digest(&serde_json::to_vec(&prefix.events)?)
-            != manifest["events_digest"]
-                .as_str()
-                .ok_or("missing event content digest")?
-        {
-            return Err("event content changed".into());
-        }
-        if iteration > 0 {
-            samples.add("prefix_all", start);
-        }
+        record_prefix(&session, &manifest, &mut samples, iteration > 0).await?;
         let start = Instant::now();
         let inventory = root.preview_bundle("bench").await?;
         let (_, export) = root
@@ -746,7 +766,7 @@ async fn main() -> Result<()> {
     }
     println!(
         "{}",
-        json!({"mode":mode,"fixture":manifest,"iterations":iterations,"profile":if cfg!(debug_assertions){"debug"}else{"release"},"samples":samples.report(),"completed_rows":completed_rows,"completed_bytes":completed_bytes,"directory_pages":directory_pages,"child_pages":child_pages,"peak_charged_bytes":PEAK.load(Ordering::Relaxed),"charged_allocations":ALLOCATIONS.load(Ordering::Relaxed),"errors":0,"database_bytes_after_close":database_bytes,"io_before":before_io,"io_after":after_io,"sqlite_resources":resources,"usage_before":before_usage,"usage_after":usage(),"timestamp":SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()})
+        json!({"mode":mode,"fixture":manifest,"operation":operation,"iterations":iterations,"profile":if cfg!(debug_assertions){"debug"}else{"release"},"samples":samples.report(),"completed_rows":completed_rows,"completed_bytes":completed_bytes,"directory_pages":directory_pages,"child_pages":child_pages,"peak_charged_bytes":PEAK.load(Ordering::Relaxed),"charged_allocations":ALLOCATIONS.load(Ordering::Relaxed),"errors":0,"database_bytes_after_close":database_bytes,"io_before":before_io,"io_after":after_io,"sqlite_resources":resources,"usage_before":before_usage,"usage_after":usage(),"timestamp":SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()})
     );
     Ok(())
 }

@@ -83,7 +83,7 @@ mod tests {
         let previous = sqlx::migrate::Migrator {
             migrations: all
                 .iter()
-                .filter(|m| m.version < 13)
+                .filter(|m| m.version < 14)
                 .cloned()
                 .collect::<Vec<_>>()
                 .into(),
@@ -153,6 +153,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bodies, 1);
+        // The parent cannot disappear while referenced, and a valid alternate
+        // body cannot redirect an already published event.
+        assert!(
+            sqlx::query("DELETE FROM event_bodies")
+                .execute(&mut db)
+                .await
+                .is_err()
+        );
+        sqlx::query("INSERT INTO event_bodies(id,digest,raw_bytes,sqlite_json_bytes,payload) SELECT id+100,zeroblob(32),raw_bytes,sqlite_json_bytes,payload FROM event_bodies")
+            .execute(&mut db).await.unwrap();
+        let error = sqlx::query("UPDATE event_log SET body_id=body_id+100 WHERE sequence=1")
+            .execute(&mut db)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("references are immutable"),
+            "{error}"
+        );
+        sqlx::query("DELETE FROM event_bodies WHERE digest=zeroblob(32)")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        {
+            let mut tx = db.begin().await.unwrap();
+            sqlx::query("DELETE FROM event_log WHERE sequence IN (1,2)")
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            let bodies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_bodies")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            assert_eq!(bodies, 0);
+            tx.rollback().await.unwrap();
+        }
         let expected: i64 = sqlx::query_scalar(
             "SELECT length(CAST(json_extract(?,'$.fact.outcome.model_projection') AS BLOB))",
         )
@@ -216,12 +251,7 @@ mod tests {
         assert!(sqlx::query("UPDATE event_log SET event_header=NULL,canonical_bytes=NULL,retained_json='{}',body_digest='digest' WHERE sequence=1").execute(&mut db).await.is_err());
         for (sequence, remaining) in [(1, 1), (2, 0)] {
             let mut tx = db.begin().await.unwrap();
-            sqlx::query("DELETE FROM event_body_slots WHERE event_sequence=?")
-                .bind(sequence)
-                .execute(&mut *tx)
-                .await
-                .unwrap();
-            sqlx::query("UPDATE event_log SET event_header=NULL,canonical_bytes=NULL,retained_json='{}',body_digest='digest' WHERE sequence=?").bind(sequence).execute(&mut *tx).await.unwrap();
+            sqlx::query("UPDATE event_log SET event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL,retained_json='{}',body_digest='digest' WHERE sequence=?").bind(sequence).execute(&mut *tx).await.unwrap();
             tx.commit().await.unwrap();
             let bodies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_bodies")
                 .fetch_one(&mut db)

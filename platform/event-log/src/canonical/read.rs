@@ -26,14 +26,13 @@ use std::{borrow::Cow, io};
 // Full-event queries bind their selected event as e. Metadata-only queries do
 // not join these tables or fetch body payloads.
 pub(crate) const COLUMNS: &str = "e.canonical_bytes AS canonical_length,
- canonical_slot.event_sequence AS canonical_slot_sequence,
- canonical_slot.header_offset AS canonical_offset,
+ e.body_id AS canonical_body_reference,
+ e.header_offset AS canonical_offset,
  canonical_body.id AS canonical_body_id,
  canonical_body.raw_bytes AS canonical_raw_bytes,
  canonical_body.payload AS canonical_payload";
 pub(crate) const JOINS: &str =
-    "LEFT JOIN event_body_slots canonical_slot ON canonical_slot.event_sequence=e.sequence
- LEFT JOIN event_bodies canonical_body ON canonical_body.id=canonical_slot.body_id";
+    "LEFT JOIN event_bodies canonical_body ON canonical_body.id=e.body_id";
 fn invalid(reason: &'static str) -> StoreError {
     io::Error::new(io::ErrorKind::InvalidData, reason).into()
 }
@@ -43,7 +42,7 @@ fn nonnegative(value: i64) -> Result<u64, StoreError> {
 struct Fields<'a> {
     header: Option<&'a str>,
     length: Option<i64>,
-    slot: Option<i64>,
+    reference: Option<i64>,
     offset: Option<i64>,
     body: Option<i64>,
     raw_bytes: Option<i64>,
@@ -53,7 +52,7 @@ fn reconstruct(fields: Fields<'_>) -> Result<Cow<'_, str>, StoreError> {
     let Fields {
         header,
         length,
-        slot,
+        reference,
         offset,
         body,
         raw_bytes,
@@ -61,7 +60,7 @@ fn reconstruct(fields: Fields<'_>) -> Result<Cow<'_, str>, StoreError> {
     } = fields;
     let Some(header) = header else {
         if length.is_some()
-            || slot.is_some()
+            || reference.is_some()
             || offset.is_some()
             || body.is_some()
             || raw_bytes.is_some()
@@ -73,10 +72,10 @@ fn reconstruct(fields: Fields<'_>) -> Result<Cow<'_, str>, StoreError> {
     };
     let length =
         nonnegative(length.ok_or_else(|| invalid("live event lacks its canonical byte length"))?)?;
-    match (slot, offset, body, raw_bytes, payload) {
+    match (reference, offset, body, raw_bytes, payload) {
         (None, None, None, None, None) => Recipe::new(header, length, None)?.reconstruct(None),
-        (Some(sequence), Some(offset), Some(id), Some(raw_bytes), Some(payload)) => {
-            if sequence <= 0 || id <= 0 || raw_bytes <= 0 {
+        (Some(reference), Some(offset), Some(id), Some(raw_bytes), Some(payload)) => {
+            if reference <= 0 || reference != id || id <= 0 || raw_bytes <= 0 {
                 return Err(invalid("invalid canonical body identity or length"));
             }
             let raw_bytes = nonnegative(raw_bytes)?;
@@ -96,14 +95,14 @@ fn reconstruct(fields: Fields<'_>) -> Result<Cow<'_, str>, StoreError> {
 pub(crate) fn json(row: &SqliteRow) -> Result<Cow<'_, str>, StoreError> {
     let header = row.try_get("event_header")?;
     let length = row.try_get("canonical_length")?;
-    let slot: Option<i64> = row.try_get("canonical_slot_sequence")?;
-    // The shared LEFT JOIN cannot expose body fields without a slot. A dangling
-    // body still has slot presence and takes the complete validation path.
-    if slot.is_none() {
+    let reference: Option<i64> = row.try_get("canonical_body_reference")?;
+    // Presence comes from the event reference, not its joined body. A dangling
+    // body reference must take the complete validation path and fail.
+    if reference.is_none() {
         return reconstruct(Fields {
             header,
             length,
-            slot,
+            reference,
             offset: None,
             body: None,
             raw_bytes: None,
@@ -113,7 +112,7 @@ pub(crate) fn json(row: &SqliteRow) -> Result<Cow<'_, str>, StoreError> {
     reconstruct(Fields {
         header,
         length,
-        slot,
+        reference,
         offset: row.try_get("canonical_offset")?,
         body: row.try_get("canonical_body_id")?,
         raw_bytes: row.try_get("canonical_raw_bytes")?,
@@ -134,12 +133,12 @@ pub(crate) fn json_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Cow<'a, s
             )
         })?;
     let length = row.get("canonical_length")?;
-    let slot: Option<i64> = row.get("canonical_slot_sequence")?;
-    if slot.is_none() {
+    let reference: Option<i64> = row.get("canonical_body_reference")?;
+    if reference.is_none() {
         return reconstruct(Fields {
             header,
             length,
-            slot,
+            reference,
             offset: None,
             body: None,
             raw_bytes: None,
@@ -161,7 +160,7 @@ pub(crate) fn json_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Cow<'a, s
     reconstruct(Fields {
         header,
         length,
-        slot,
+        reference,
         offset: row.get("canonical_offset")?,
         body: row.get("canonical_body_id")?,
         raw_bytes: row.get("canonical_raw_bytes")?,
@@ -189,7 +188,7 @@ mod tests {
         let result = reconstruct(Fields {
             header: Some("null"),
             length: Some(i64::MAX),
-            slot: Some(1),
+            reference: Some(1),
             offset: Some(0),
             body: Some(1),
             raw_bytes: Some(i64::MAX),
@@ -206,7 +205,7 @@ mod tests {
         let result = reconstruct(Fields {
             header: Some("null"),
             length: Some(4),
-            slot: Some(1),
+            reference: Some(1),
             offset: Some(0),
             body: None,
             raw_bytes: None,
@@ -216,7 +215,7 @@ mod tests {
         let result = reconstruct(Fields {
             header: None,
             length: None,
-            slot: None,
+            reference: None,
             offset: None,
             body: None,
             raw_bytes: None,

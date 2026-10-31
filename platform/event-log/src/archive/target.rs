@@ -29,11 +29,11 @@ use sqlx::{Row, SqliteConnection};
 // combined history view makes SQLite sort the entire remainder on every page.
 // The copied branch exposes h.sequence so its membership index supplies order.
 pub(super) const SOURCES: [&str; 2] = [
-    "SELECT e.sequence,e.event_id,e.invocation_id,e.operation_id,e.event_header,
+    "SELECT e.sequence,e.event_id,e.invocation_id,e.operation_id,e.event_header,e.body_id,
        json_extract(e.event_header,'$.invocation.session_id') AS owner_session_id,
        0 AS inherited,NULL AS archive_sequence
      FROM runtime_events e WHERE e.kind='tool_settled'",
-    "SELECT h.sequence,e.event_id,e.invocation_id,e.operation_id,e.event_header,
+    "SELECT h.sequence,e.event_id,e.invocation_id,e.operation_id,e.event_header,e.body_id,
        h.session_id AS owner_session_id,1 AS inherited,h.archive_sequence
      FROM session_history_members h CROSS JOIN runtime_events e
      WHERE e.sequence=h.sequence AND e.kind='tool_settled'",

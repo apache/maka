@@ -489,7 +489,7 @@ async fn retained_orphan_physical_proof_still_blocks_complete_import() {
     let inspect = rusqlite::Connection::open(&path).unwrap();
     inspect
         .execute_batch(
-            "DELETE FROM event_body_slots; UPDATE event_log SET retained_json=event_header,body_digest='fixture',event_header=NULL,canonical_bytes=NULL",
+            "UPDATE event_log SET retained_json=event_header,body_digest='fixture',event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL",
         )
         .unwrap();
     let log = EventLog::open(&path).await.unwrap();

@@ -32,23 +32,20 @@ DROP VIEW model_part_bodies;
 DROP VIEW runtime_events;
 
 ALTER TABLE event_log RENAME COLUMN event_json TO event_header;
-ALTER TABLE event_log ADD COLUMN canonical_bytes INTEGER CHECK(canonical_bytes IS NULL OR canonical_bytes>=0);
-UPDATE event_log SET canonical_bytes=length(CAST(event_header AS BLOB)) WHERE event_header IS NOT NULL;
-
 CREATE TABLE event_bodies (
     id INTEGER PRIMARY KEY,
     digest BLOB NOT NULL UNIQUE CHECK(length(digest)=32),
     raw_bytes INTEGER NOT NULL CHECK(raw_bytes>0),
     sqlite_json_bytes INTEGER NOT NULL CHECK(sqlite_json_bytes>0),
-    payload BLOB NOT NULL,
-    CHECK(length(payload)=raw_bytes)
+    payload BLOB NOT NULL CHECK(length(payload)=raw_bytes)
 );
-CREATE TABLE event_body_slots (
-    event_sequence INTEGER PRIMARY KEY REFERENCES event_log(sequence) ON DELETE CASCADE,
-    header_offset INTEGER NOT NULL CHECK(header_offset>=0),
-    body_id INTEGER NOT NULL REFERENCES event_bodies(id)
-);
-CREATE INDEX event_body_slot_material ON event_body_slots(body_id);
+ALTER TABLE event_log ADD COLUMN canonical_bytes INTEGER CHECK(canonical_bytes IS NULL OR canonical_bytes>=0);
+ALTER TABLE event_log ADD COLUMN body_id INTEGER REFERENCES event_bodies(id);
+ALTER TABLE event_log ADD COLUMN header_offset INTEGER
+    CHECK(header_offset IS NULL OR header_offset>=0)
+    CHECK((body_id IS NULL)=(header_offset IS NULL));
+CREATE INDEX event_body_references ON event_log(body_id) WHERE body_id IS NOT NULL;
+UPDATE event_log SET canonical_bytes=length(CAST(event_header AS BLOB)) WHERE event_header IS NOT NULL;
 
 CREATE TEMP TABLE canonical_body_stage AS
     SELECT sequence,
@@ -60,40 +57,50 @@ INSERT INTO event_bodies(digest,raw_bytes,sqlite_json_bytes,payload)
     SELECT DISTINCT maka_body_sha(raw),length(raw),
         length(CAST(json(CAST(raw AS TEXT)) AS BLOB)),raw
     FROM canonical_body_stage;
-UPDATE event_log SET event_header=maka_event_header(kind,event_header)
-    WHERE sequence IN (SELECT sequence FROM canonical_body_stage);
-INSERT INTO event_body_slots(event_sequence,header_offset,body_id)
-    SELECT stage.sequence,stage.header_offset,body.id
-    FROM canonical_body_stage stage JOIN event_bodies body ON body.digest=maka_body_sha(stage.raw);
+UPDATE event_log SET event_header=maka_event_header(kind,event_header),
+    body_id=body.id,header_offset=stage.header_offset
+    FROM canonical_body_stage stage JOIN event_bodies body ON body.digest=maka_body_sha(stage.raw)
+    WHERE event_log.sequence=stage.sequence;
 DROP TABLE canonical_body_stage;
 
 CREATE TRIGGER event_body_immutable BEFORE UPDATE ON event_bodies BEGIN
     SELECT RAISE(ABORT,'canonical body material is immutable');
 END;
-CREATE TRIGGER event_body_slot_immutable BEFORE UPDATE ON event_body_slots BEGIN
-    SELECT RAISE(ABORT,'canonical body slots are immutable');
+CREATE TRIGGER event_body_reference_immutable BEFORE UPDATE OF body_id,header_offset ON event_log
+    WHEN (OLD.body_id IS NOT NEW.body_id OR OLD.header_offset IS NOT NEW.header_offset)
+      AND NOT (NEW.body_id IS NULL AND NEW.header_offset IS NULL AND NEW.event_header IS NULL) BEGIN
+    SELECT RAISE(ABORT,'live canonical body references are immutable');
 END;
-CREATE TRIGGER event_body_released AFTER DELETE ON event_body_slots BEGIN
+CREATE TRIGGER event_body_released AFTER UPDATE OF body_id ON event_log
+    WHEN OLD.body_id IS NOT NULL AND OLD.body_id IS NOT NEW.body_id BEGIN
     DELETE FROM event_bodies WHERE id=OLD.body_id
-        AND NOT EXISTS(SELECT 1 FROM event_body_slots WHERE body_id=OLD.body_id);
+        AND NOT EXISTS(SELECT 1 FROM event_log WHERE body_id=OLD.body_id);
 END;
-CREATE TRIGGER event_live_length_insert BEFORE INSERT ON event_log
-    WHEN (NEW.event_header IS NULL)!=(NEW.canonical_bytes IS NULL) BEGIN
-    SELECT RAISE(ABORT,'canonical byte length must follow live material');
+CREATE TRIGGER event_body_deleted AFTER DELETE ON event_log WHEN OLD.body_id IS NOT NULL BEGIN
+    DELETE FROM event_bodies WHERE id=OLD.body_id
+        AND NOT EXISTS(SELECT 1 FROM event_log WHERE body_id=OLD.body_id);
 END;
-CREATE TRIGGER event_live_length_update BEFORE UPDATE OF event_header,canonical_bytes ON event_log
-    WHEN (NEW.event_header IS NULL)!=(NEW.canonical_bytes IS NULL)
-        OR (NEW.event_header IS NULL AND EXISTS(SELECT 1 FROM event_body_slots WHERE event_sequence=NEW.sequence)) BEGIN
-    SELECT RAISE(ABORT,'collected events cannot retain live canonical material');
+CREATE TRIGGER event_material_insert BEFORE INSERT ON event_log
+    WHEN NOT EXISTS(SELECT 1 WHERE (NEW.event_header IS NULL AND NEW.canonical_bytes IS NULL AND NEW.body_id IS NULL AND NEW.header_offset IS NULL)
+ OR (NEW.event_header IS NOT NULL AND NEW.canonical_bytes IS NOT NULL AND (
+     (NEW.body_id IS NULL AND NEW.header_offset IS NULL AND NEW.canonical_bytes=length(CAST(NEW.event_header AS BLOB)))
+     OR (NEW.body_id IS NOT NULL AND NEW.header_offset IS NOT NULL AND EXISTS(
+         SELECT 1 FROM event_bodies b WHERE b.id=NEW.body_id
+           AND NEW.kind='tool_settled' AND json_extract(NEW.event_header,'$.fact.outcome.kind')='succeeded'
+           AND NEW.canonical_bytes=length(CAST(NEW.event_header AS BLOB))-4+b.raw_bytes
+           AND substr(CAST(NEW.event_header AS BLOB),NEW.header_offset+1,4)=X'6e756c6c'))))) BEGIN
+    SELECT RAISE(ABORT,'invalid canonical event material recipe');
 END;
-CREATE TRIGGER event_body_slot_valid BEFORE INSERT ON event_body_slots
-    WHEN NOT EXISTS(SELECT 1 FROM event_log e JOIN event_bodies b ON b.id=NEW.body_id
-        WHERE e.sequence=NEW.event_sequence AND e.event_header IS NOT NULL
-        AND e.kind='tool_settled'
-        AND json_extract(e.event_header,'$.fact.outcome.kind')='succeeded'
-        AND e.canonical_bytes=length(CAST(e.event_header AS BLOB))-4+b.raw_bytes
-        AND substr(CAST(e.event_header AS BLOB),NEW.header_offset+1,4)=X'6e756c6c') BEGIN
-    SELECT RAISE(ABORT,'invalid canonical body slot recipe');
+CREATE TRIGGER event_material_update BEFORE UPDATE OF event_header,canonical_bytes,body_id,header_offset ON event_log
+    WHEN NOT EXISTS(SELECT 1 WHERE (NEW.event_header IS NULL AND NEW.canonical_bytes IS NULL AND NEW.body_id IS NULL AND NEW.header_offset IS NULL)
+ OR (NEW.event_header IS NOT NULL AND NEW.canonical_bytes IS NOT NULL AND (
+     (NEW.body_id IS NULL AND NEW.header_offset IS NULL AND NEW.canonical_bytes=length(CAST(NEW.event_header AS BLOB)))
+     OR (NEW.body_id IS NOT NULL AND NEW.header_offset IS NOT NULL AND EXISTS(
+         SELECT 1 FROM event_bodies b WHERE b.id=NEW.body_id
+           AND NEW.kind='tool_settled' AND json_extract(NEW.event_header,'$.fact.outcome.kind')='succeeded'
+           AND NEW.canonical_bytes=length(CAST(NEW.event_header AS BLOB))-4+b.raw_bytes
+           AND substr(CAST(NEW.event_header AS BLOB),NEW.header_offset+1,4)=X'6e756c6c'))))) BEGIN
+    SELECT RAISE(ABORT,'invalid canonical event material recipe');
 END;
 
 CREATE VIEW runtime_events AS

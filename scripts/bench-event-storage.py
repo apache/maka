@@ -65,10 +65,12 @@ def storage_stats(directory):
     return result
 
 
-def run(binary, directory, mode, events, body_bytes, iterations, body_pattern):
+def run(binary, directory, mode, events, body_bytes, iterations, body_pattern, operation="all"):
     command = [str(binary), "--database", str(directory), "--mode", mode,
                "--events", str(events), "--body-bytes", str(body_bytes),
                "--iterations", str(iterations), "--body-pattern", body_pattern]
+    if operation != "all":
+        command.extend(["--operation", operation])
     before = {"load": os.getloadavg(), "free_bytes": shutil.disk_usage(directory.parent).free}
     start = time.monotonic_ns()
     result = subprocess.run(command, check=True, text=True, capture_output=True)
@@ -76,6 +78,8 @@ def run(binary, directory, mode, events, body_bytes, iterations, body_pattern):
     if (report["errors"] or report["profile"] != "release"
             or report["completed_rows"] <= 0 or report["completed_bytes"] <= 0):
         raise RuntimeError(f"invalid or empty benchmark: {report}")
+    if operation != "all" and report.get("operation") != operation:
+        raise RuntimeError("binary does not support the requested operation")
     report.update(environment=before, wall_ns=time.monotonic_ns() - start,
                   stderr=result.stderr, command=command)
     report["storage_after_close"] = storage_stats(directory)
@@ -89,6 +93,7 @@ def main():
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--body-pattern", choices=("repeated", "entropy"), default="repeated")
+    parser.add_argument("--operation", choices=("all", "prefix"), default="all")
     parser.add_argument("--case", action="append", metavar="NAME:EVENTS:BODY_BYTES")
     args = parser.parse_args()
     args.output = args.output.resolve()
@@ -108,6 +113,7 @@ def main():
     (args.output / "manifest.json").write_text(json.dumps(dict(
         binaries=binaries, platform=platform.platform(), cpu_count=os.cpu_count(),
         runs=args.runs, iterations=args.iterations, cases=cases, body_pattern=args.body_pattern,
+        operation=args.operation,
         cache_state="one validation/warmup pass; steady state and OS-warm reopen"), indent=2) + "\n")
     summaries = {}
     fixtures = {}
@@ -119,7 +125,7 @@ def main():
                 directory = args.output / f"{case}-{repeat}-{label}"
                 for mode in ("create", "read"):
                     report = run(binary, directory, mode, int(event_count),
-                                 int(body_size), args.iterations, args.body_pattern)
+                                 int(body_size), args.iterations, args.body_pattern, args.operation)
                     fixture = report["fixture"]
                     previous = fixtures.setdefault(case, fixture)
                     if fixture != previous:

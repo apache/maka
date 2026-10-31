@@ -128,8 +128,7 @@ impl EventLog {
                         AND NOT EXISTS (SELECT 1 FROM model_request_compositions WHERE digest=?1)")
                         .bind(surface).execute(&mut *tx).await?;
                 }
-                sqlx::query("DELETE FROM event_body_slots WHERE event_sequence=?").bind(sequence).execute(&mut *tx).await?;
-                sqlx::query("UPDATE event_log SET retained_json=?, body_digest=?, event_header=NULL,canonical_bytes=NULL WHERE event_id=?")
+                sqlx::query("UPDATE event_log SET retained_json=?, body_digest=?, event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL WHERE event_id=?")
                     .bind(serde_json::to_string(&proof)?).bind(content_digest(body.as_bytes()))
                     .bind(&id).execute(&mut *tx).await?;
             }
@@ -292,7 +291,7 @@ mod cursor_tests {
         let proof = serde_json::to_string(&retained(&ended)).unwrap();
         let digest = content_digest(serde_json::to_string(&ended).unwrap().as_bytes());
         log.connection.run(move |db| Box::pin(async move {
-            sqlx::query("UPDATE event_log SET retained_json=?,body_digest=?,event_header=NULL,canonical_bytes=NULL WHERE sequence=2")
+            sqlx::query("UPDATE event_log SET retained_json=?,body_digest=?,event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL WHERE sequence=2")
                 .bind(proof).bind(digest).execute(&mut *db).await?;
             let publication: (f64, String) = sqlx::query_as("SELECT accounting_at,event_session FROM event_log WHERE sequence=2")
                 .fetch_one(&mut *db).await?;

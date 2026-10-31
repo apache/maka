@@ -81,14 +81,14 @@ impl Read for Parts<'_> {
 pub(crate) struct SpanMetadata {
     live: bool,
     length: Option<i64>,
-    slot_sequence: Option<i64>,
+    body_reference: Option<i64>,
     slot_offset: Option<i64>,
     body_id: Option<i64>,
     raw_bytes: Option<i64>,
 }
 pub(crate) const SPAN_COLUMNS: &str = "e.event_header IS NOT NULL AS canonical_live,
- e.canonical_bytes AS canonical_length,canonical_slot.event_sequence AS canonical_slot_sequence,
- canonical_slot.header_offset AS canonical_offset,canonical_body.id AS canonical_body_id,
+ e.canonical_bytes AS canonical_length,e.body_id AS canonical_body_reference,
+ e.header_offset AS canonical_offset,canonical_body.id AS canonical_body_id,
  canonical_body.raw_bytes AS canonical_raw_bytes";
 
 impl SpanMetadata {
@@ -97,7 +97,7 @@ impl SpanMetadata {
         Ok(Self {
             live: row.try_get("canonical_live")?,
             length: row.try_get("canonical_length")?,
-            slot_sequence: row.try_get("canonical_slot_sequence")?,
+            body_reference: row.try_get("canonical_body_reference")?,
             slot_offset: row.try_get("canonical_offset")?,
             body_id: row.try_get("canonical_body_id")?,
             raw_bytes: row.try_get("canonical_raw_bytes")?,
@@ -137,7 +137,7 @@ pub(crate) fn with_span_on_row<T>(
     let metadata = SpanMetadata {
         live: row.get(base)?,
         length: row.get(base + 1)?,
-        slot_sequence: row.get(base + 2)?,
+        body_reference: row.get(base + 2)?,
         slot_offset: row.get(base + 3)?,
         body_id: row.get(base + 4)?,
         raw_bytes: row.get(base + 5)?,
@@ -156,13 +156,18 @@ pub(crate) fn with_span_metadata<T>(
     let SpanMetadata {
         live,
         length,
-        slot_sequence,
+        body_reference,
         slot_offset,
         body_id,
         raw_bytes,
     } = metadata;
     if !live {
-        if length.is_some() || slot_sequence.is_some() || body_id.is_some() {
+        if length.is_some()
+            || body_reference.is_some()
+            || slot_offset.is_some()
+            || body_id.is_some()
+            || raw_bytes.is_some()
+        {
             return Err(invalid("collected canonical event retains live material"));
         }
         return Err(StoreError::MaterialCollected);
@@ -170,10 +175,10 @@ pub(crate) fn with_span_metadata<T>(
     let length =
         u64::try_from(length.ok_or_else(|| invalid("canonical span lacks logical length"))?)
             .map_err(|_| invalid("negative canonical byte length"))?;
-    let (slot, material) = match (slot_sequence, slot_offset, body_id, raw_bytes) {
+    let (slot, material) = match (body_reference, slot_offset, body_id, raw_bytes) {
         (None, None, None, None) => (None, None),
-        (Some(source), Some(position), Some(id), Some(length))
-            if source == sequence && position >= 0 && id > 0 && length > 0 =>
+        (Some(reference), Some(position), Some(id), Some(length))
+            if reference == id && position >= 0 && id > 0 && length > 0 =>
         {
             (
                 Some(Slot {
