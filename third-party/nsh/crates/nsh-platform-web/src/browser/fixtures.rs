@@ -5,6 +5,7 @@ use nsh_core::prelude::*;
 
 thread_local! {
     static KEPT: RefCell<Vec<Callback<(), i32>>> = const { RefCell::new(Vec::new()) };
+    static LISTENING: RefCell<Vec<(u32, Callback<(), i32>)>> = const { RefCell::new(Vec::new()) };
 }
 
 #[class]
@@ -32,6 +33,22 @@ impl CallbackBox {
     pub(crate) fn clear_kept() {
         let callbacks = KEPT.with(|kept| kept.take());
         drop(callbacks);
+    }
+    pub(crate) fn listen(callback: Callback<(), i32>) -> Stop {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        LISTENING.with(|l| l.borrow_mut().push((id, callback)));
+        Stop::new(move || {
+            let gone = LISTENING.with(|l| {
+                let mut l = l.borrow_mut();
+                let i = l.iter().position(|(i, _)| *i == id);
+                i.map(|i| l.remove(i))
+            });
+            drop(gone);
+        })
+    }
+    pub(crate) fn listening() -> u32 {
+        LISTENING.with(|l| l.borrow().len() as u32)
     }
 }
 

@@ -9399,6 +9399,7 @@ dependencies = [
 name = "nsh-base"
 version = "0.3.0"
 dependencies = [
+ "chrono",
  "html5ever 0.27.0",
  "imara-diff",
  "log",
@@ -9468,6 +9469,7 @@ dependencies = [
  "tokio-tungstenite 0.28.0",
  "unicode-linebreak",
  "unicode-segmentation",
+ "ureq",
  "url",
  "webpki-roots 1.0.11",
  "windows-sys 0.61.2",
@@ -9579,7 +9581,6 @@ dependencies = [
  "ttf-parser",
  "unicode-bidi",
  "unicode-linebreak",
- "ureq",
  "windows-sys 0.61.2",
  "x11rb",
  "zbus",

@@ -1,17 +1,20 @@
-//! The table's view, in layers:
+//! The table's view, in layers, from the bottom:
 //!
-//! - the *hit layer*: a vertical scroll view of a horizontal one of an empty
-//!   box of the content's size (scaled past a few million points: `axis.rs`).
-//!   The platforms scroll it, and its box takes presses, hovers and the
-//!   context menu;
-//! - the *body* over it, receiving no pointer: the cells of the rows and
-//!   columns in view (and a reach around them), placed where the table last
-//!   scrolled to. A scroll view moves its content at once, and the cells a
-//!   move needs come with the next commit, which moves the body with them,
-//!   so no frame shows the content without its cells. Its three regions are
-//!   the row headers, the fixed columns (which move with the rows only) and
-//!   the scrolling columns (which move both ways);
-//! - the *header* above it, interactive: group labels and titles, in the
+//! - the *body*, receiving no pointer: the cells of the rows and columns in
+//!   view (and a reach around them), placed where the table last scrolled
+//!   to. A scroll view moves its content at once, and the cells a move needs
+//!   come with the next commit, which moves the body with them, so no frame
+//!   shows the content without its cells. Its three regions are the row
+//!   headers, the fixed columns (which move with the rows only) and the
+//!   scrolling columns (which move both ways);
+//! - the *hit layer* over it: a vertical scroll view of a horizontal one of
+//!   an empty box of the content's size (scaled past a few million points:
+//!   `axis.rs`). The platforms scroll it, and its box takes presses, hovers
+//!   and the context menu. It draws nothing but its scroll bars (the
+//!   platform's indicator or the app's built-in `Scrollbar`, children of the
+//!   scroll view), which lie over the rows' backgrounds this way; under the
+//!   body, the rows would cover them;
+//! - the *header* above them, interactive: group labels and titles, in the
 //!   same three regions, the columns' resize handles and the drop line of a
 //!   column being moved;
 //! - on the desktops, a horizontal scroll bar over the body's bottom edge,
@@ -194,7 +197,6 @@ pub(crate) fn render(dt: Dt) -> impl IntoElement {
             .absolute()
             .inset_0()
             .on_layout(move |b: &Bounds<Points>| layout.viewport.set(b.size))
-            .child(hit_layer(hit_dt, strip_x.clone()))
             .child(
                 when(
                     move || custom_cell.get(),
@@ -202,6 +204,9 @@ pub(crate) fn render(dt: Dt) -> impl IntoElement {
                 )
                 .otherwise(move || body(body_dt2.clone(), false)),
             )
+            // Over the body, which takes no pointer: the scroll view's bars
+            // draw above the rows.
+            .child(hit_layer(hit_dt, strip_x.clone()))
             .child(
                 when(
                     move || custom_head.get(),
@@ -244,6 +249,10 @@ fn hit_layer(dt: Dt, lead: Lead) -> impl IntoElement {
         .bounces(move || props.bounces.get())
         .on_scroll(move |e: &ScrollEvent| {
             scroll_dt.scroll_y.set(e.offset.y);
+        })
+        .on_scroll_end({
+            let dt = dt.clone();
+            move |_: &Point<Points>| dt.rest()
         })
         .child(
             view()

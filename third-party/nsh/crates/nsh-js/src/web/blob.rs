@@ -372,28 +372,39 @@ pub(crate) fn resolve_blob_url(cx: Ctx, url: &str) -> Option<Blob> {
 }
 
 /// Gives the image source of `prop` its blob's bytes when it is a `blob:`
-/// URL; it then goes by a digest of them, as a `data:` URI's do. One
-/// revoked or never created keeps its URL and gets no bytes: the image
-/// fails.
+/// URL ([`resolve_image_url`]). One revoked or never created keeps its URL
+/// and gets no bytes: the image fails.
 pub(crate) fn resolve_image_source(cx: Ctx, prop: &mut nsh_core::Prop) {
     use nsh_core::{ImageProp, Prop};
     let source = match prop {
         Prop::Source(Some(source)) | Prop::Image(ImageProp::Placeholder(Some(source))) => source,
         _ => return,
     };
-    if source.data.is_some() || !source.uri.starts_with("blob:") {
+    if source.data.is_some() {
         return;
     }
-    let Some(entry) = find_blob_url(cx, &source.uri) else {
-        return;
-    };
+    if let Some((uri, data)) = resolve_image_url(cx, &source.uri) {
+        source.uri = uri;
+        source.data = Some(data);
+    }
+}
+
+/// The key and bytes of the image `blob:` URL `url` names: a source of it
+/// goes by a digest of them, as a `data:` URI's does. Made once per URL,
+/// so every source of it (a host `<Image>`'s, a Rust component's image
+/// prop, `JsHost::image_blob`) shares them and compares equal. `None` for
+/// any other URL, or one no blob has.
+pub(crate) fn resolve_image_url(cx: Ctx, url: &str) -> Option<(Arc<str>, nsh_core::ImageData)> {
+    if !url.starts_with("blob:") {
+        return None;
+    }
+    let entry = find_blob_url(cx, url)?;
     let (uri, data) = entry.image.get_or_insert_with(|| {
         let data = entry.blob.image_data();
         let made = nsh_core::ImageSource::default().with_bytes(&entry.blob.mime, data.clone());
         (made.uri, data)
     });
-    source.uri = uri.clone();
-    source.data = Some(data.clone());
+    Some((uri.clone(), data.clone()))
 }
 
 native!(

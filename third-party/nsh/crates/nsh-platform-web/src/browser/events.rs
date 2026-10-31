@@ -138,7 +138,9 @@ pub(super) fn payload(host: &Bindings, payload: &EventPayload) -> Result<Value, 
                 ("uris", strings(&paste.uris)?),
             ])?
         }
-        EventPayload::Picked { id, .. } => object([("id", number(*id))])?,
+        EventPayload::Picked { id, .. } | EventPayload::FileRequest { id, .. } => {
+            object([("id", number(*id))])?
+        }
         EventPayload::Native { name, data } => object([
             ("name", Value::string(name)?),
             ("data", Value(host.json(data)?.0[0] as u32)),

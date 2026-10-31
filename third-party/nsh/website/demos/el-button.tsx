@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Button, Switch } from "nsh/base";
-import { button, buttonText, desktop, Inspector, Panel, size, Stage, tint, ui, wide } from "./palette";
+import { button, buttonText, desktop, Inspector, Panel, size, Stage, ui, wide } from "./palette";
 
 const track = `${desktop ? "w-9" : "w-12"} rounded-full p-0.5 transition-colors motion-reduce:transition-none`;
 const thumb = desktop ? "size-4 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-4" : "size-5.5 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-5";
@@ -47,10 +47,9 @@ function App() {
       selected={on()}
       onPress={flip}
       accessibilityLabel={name}
-      {...button("secondary", { align: "flex-start", style: { width: size.control, paddingHorizontal: 0 } })}
-      selectedStyle={{ backgroundColor: tint(ui().accent, 0.25), backgroundImage: "none", borderColor: ui().accent }}
+      {...button("secondary", { on, align: "flex-start", style: { width: size.control, paddingHorizontal: 0 } })}
     >
-      <Text style={text()}>{glyph}</Text>
+      <Text style={{ ...text(), color: buttonText("secondary", { on }).color }}>{glyph}</Text>
     </Button>
   );
   const toggles = () => (

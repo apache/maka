@@ -18,7 +18,7 @@ function App() {
   );
   const openSheet = () => (
     <Button onPress={() => sheet.set(true)} {...button()}>
-      <Text style={buttonText()}>Open a sheet</Text>
+      <Text style={buttonText()}>Open as a page sheet</Text>
     </Button>
   );
   const backdrop = () => (
@@ -133,18 +133,24 @@ function App() {
         onCancel={() => cancels.update((n) => n + 1)}
         onOpen={() => log.set("onOpen: sheet")}
         backdropStyle={{ backgroundColor: tint("#000000", 0.3) }}
-        style={{
-          backgroundColor: ui().page,
-          flex: 1,
-          marginTop: 40,
-          width: "100%",
-          maxWidth: 560,
-          alignSelf: "center",
-          borderTopLeftRadius: 16,
-          borderTopRightRadius: 16,
-        }}
+        // As tall as its content: a panel in the middle on the desktop, a
+        // sheet along the bottom edge on a phone.
+        style={
+          desktop
+            ? { backgroundColor: ui().page, margin: "auto", width: 480, maxWidth: "90%", maxHeight: "90%", borderRadius: 16 }
+            : {
+                backgroundColor: ui().page,
+                marginTop: "auto",
+                width: "100%",
+                maxWidth: 560,
+                maxHeight: "90%",
+                alignSelf: "center",
+                borderTopLeftRadius: 16,
+                borderTopRightRadius: 16,
+              }
+        }
       >
-        <View style={{ flex: 1, padding: 20, paddingTop: "calc(env(safe-area-inset-top) + 20px)", paddingRight: "calc(env(safe-area-inset-right) + 20px)", paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)", paddingLeft: "calc(env(safe-area-inset-left) + 20px)", gap: 12 }}>
+        <View style={{ padding: 20, paddingTop: "calc(env(safe-area-inset-top) + 20px)", paddingRight: "calc(env(safe-area-inset-right) + 20px)", paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)", paddingLeft: "calc(env(safe-area-inset-left) + 20px)", gap: 12 }}>
           <Text style={{ color: ui().text, fontSize: 22, fontWeight: "700" }}>A sheet</Text>
           <Text style={{ color: ui().muted }}>
             presentation="pageSheet": a system sheet on iOS that follows the finger when swiped down. Elsewhere the

@@ -8,14 +8,16 @@ import { button, buttonText, desktop, focusRing, hoverFill, Log, Panel, size, Sp
 // its value tabular and at the trailing edge. An indeterminate indicator is a
 // third of the track that sweeps from end to end (the app flips its
 // translation, a transition moves it), and rests in the middle with reduced
-// motion; the pointer's hover and the keyboard's focus ring come from the
-// palette. Buttons are as wide as their labels with a pointer.
+// motion. A determinate one is the whole track, slid back by what is left to
+// do, so a new value glides there (the track clips it). The pointer's hover
+// and the keyboard's focus ring come from the palette. Buttons are as wide as
+// their labels with a pointer.
 const pad = desktop ? "px-3 py-3" : "px-4 py-4";
 const track = "h-1.5 overflow-hidden rounded-full";
 const SWEEP = 800;
 const indicator = (indeterminate: boolean, end: boolean) =>
   !indeterminate
-    ? "h-full rounded-full"
+    ? "h-full w-full rounded-full transition-transform duration-180 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none"
     : reduceMotion()
       ? "h-full w-1/3 rounded-full translate-x-full"
       : `h-full w-1/3 rounded-full transition-transform duration-700 ease-in-out ${end ? "translate-x-[200%]" : "translate-x-0"}`;
@@ -29,7 +31,7 @@ function Transfer(props: { label: string; detail: string; value: number; indeter
       trackClass={track}
       trackStyle={ui().inset}
       indicatorClass={indicator(!!props.indeterminate, props.end)}
-      indicatorStyle={{ backgroundColor: ui().accent }}
+      indicatorStyle={{ backgroundColor: ui().accent, translate: props.indeterminate ? undefined : `${props.value - 100}% 0` }}
     >
       <View class="flex-row items-baseline gap-3">
         <View style={{ flex: 1, gap: 2 }}>

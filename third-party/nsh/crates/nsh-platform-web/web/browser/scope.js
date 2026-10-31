@@ -13,6 +13,8 @@ export { createAnimation } from "./animation.js";
 export { createNavigation } from "./navigation.js";
 export { createKeymap } from "./keymap.js";
 export { createEnvironment } from "./environment.js";
+export { installTesting } from "./testing.js";
+export { createHot } from "./hot.js";
 
 
 // Public wrappers must share the app's Function/Error/Promise intrinsics.

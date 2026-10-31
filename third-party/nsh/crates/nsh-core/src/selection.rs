@@ -402,6 +402,105 @@ impl SelectionModel {
 /// U+FFFC, which stands for an attachment in a text's content.
 const OBJECT_REPLACEMENT: char = '\u{FFFC}';
 
+/// The order of the texts a backend listed child by child, in mount order:
+/// `runs` are the children's frames (in their parent) and the ranges of
+/// texts each added. The children with texts go by their tops when they
+/// stack (no two share a row): a virtual list's cells, which recycling
+/// leaves in mount order rather than their items'. Otherwise (a row, an
+/// overlay) mount order stands. Children without texts never count: a
+/// spare cell left where it was may overlap the shown ones. `None` when
+/// the order stays; else the texts' indices in their new order, from the
+/// first run's start.
+pub fn reading_order(runs: &[(Bounds<Points>, Range<usize>)]) -> Option<Vec<usize>> {
+    let runs: Vec<_> = runs.iter().filter(|(_, r)| !r.is_empty()).collect();
+    let stacked = runs.iter().enumerate().all(|(i, (a, _))| {
+        runs[i + 1..]
+            .iter()
+            .all(|(b, _)| a.bottom() <= b.top() || b.bottom() <= a.top())
+    });
+    let mut order: Vec<usize> = (0..runs.len()).collect();
+    if stacked {
+        order.sort_by(|&a, &b| {
+            runs[a]
+                .0
+                .top()
+                .partial_cmp(&runs[b].0.top())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+    if order.iter().enumerate().all(|(i, &o)| i == o) {
+        return None;
+    }
+    Some(order.into_iter().flat_map(|i| runs[i].1.clone()).collect())
+}
+
+/// Puts `items[start..]` in `order` ([`reading_order`]'s indices).
+pub fn reorder<T>(items: &mut Vec<T>, start: usize, order: &[usize]) {
+    let mut taken: Vec<Option<T>> = items.drain(start..).map(Some).collect();
+    items.extend(order.iter().filter_map(|&i| taken[i - start].take()));
+}
+
+/// The virtual list rows a selection keeps rendered: the nodes of the
+/// texts at its ends, which the backend hands the engine
+/// (`EngineControl::keep_rendered`) so that scrolling away does not
+/// recycle them. Tracks what was last handed over.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct KeptRows(Vec<u64>);
+
+impl KeptRows {
+    /// The nodes to keep when they changed since the last call (none: the
+    /// selection is gone), else `None`.
+    pub fn changed(&mut self, model: &SelectionModel) -> Option<Vec<u64>> {
+        let mut keys: Vec<u64> = if model.anchor.is_some() {
+            model.keys.iter().flatten().copied().collect()
+        } else {
+            Vec::new()
+        };
+        keys.sort_unstable();
+        keys.dedup();
+        (keys != self.0).then(|| {
+            self.0 = keys.clone();
+            keys
+        })
+    }
+    /// Lets go of every row (the selection's area is gone): an empty list
+    /// when some were kept, else `None`.
+    pub fn release(&mut self) -> Option<Vec<u64>> {
+        (!self.0.is_empty()).then(|| {
+            self.0.clear();
+            Vec::new()
+        })
+    }
+}
+
+/// How far a selection drag scrolls a scroll view per 16 ms tick (points,
+/// negative toward its start) with the pointer `at` along the view's axis
+/// (its coordinates; `extent` long), 0 away from the edges. It starts
+/// [`AUTOSCROLL_INSIDE`] inside an edge, as a maximized window leaves the
+/// pointer little room past it, and speeds up linearly from
+/// [`AUTOSCROLL_MIN`] to [`AUTOSCROLL_MAX`] over [`AUTOSCROLL_RAMP`] from
+/// there outward.
+pub fn autoscroll_step(at: Points, extent: Points) -> Points {
+    let into = if at < AUTOSCROLL_INSIDE {
+        at - AUTOSCROLL_INSIDE
+    } else if at > extent - AUTOSCROLL_INSIDE {
+        at - (extent - AUTOSCROLL_INSIDE)
+    } else {
+        return Points(0.0);
+    };
+    let t = (into.0.abs() / AUTOSCROLL_RAMP.0).min(1.0);
+    Points(into.0.signum() * (AUTOSCROLL_MIN.0 + t * (AUTOSCROLL_MAX.0 - AUTOSCROLL_MIN.0)))
+}
+
+/// How far inside an edge a selection drag starts scrolling ([`autoscroll_step`]).
+pub const AUTOSCROLL_INSIDE: Points = Points(16.0);
+/// Its step per tick where it starts.
+pub const AUTOSCROLL_MIN: Points = Points(12.0);
+/// Its largest step per tick, [`AUTOSCROLL_RAMP`] from where it starts on.
+pub const AUTOSCROLL_MAX: Points = Points(64.0);
+/// How far from where it starts it reaches [`AUTOSCROLL_MAX`].
+pub const AUTOSCROLL_RAMP: Points = Points(96.0);
+
 /// The position under `point` ([module docs](self): the hit-testing rule),
 /// `None` without texts.
 fn hit(texts: &impl SelectionTexts, point: Point<Points>) -> Option<TextPosition> {
@@ -1032,5 +1131,66 @@ mod tests {
         );
         assert!(model.texts_changed(&gone));
         assert!(model.bounds().is_none());
+    }
+
+    #[test]
+    fn stacked_children_go_by_their_tops_and_rows_stay_in_mount_order() {
+        let frame = |x: f32, y: f32, h: f32| bounds(point(px(x), px(y)), size(px(100.0), px(h)));
+        // Recycled cells: mounted showing rows 2, 0, 1 (two texts in the
+        // first), and an empty spare cell overlapping them.
+        let runs = [
+            (frame(0.0, 200.0, 100.0), 0..2),
+            (frame(0.0, 0.0, 300.0), 2..2),
+            (frame(0.0, 0.0, 100.0), 2..3),
+            (frame(0.0, 100.0, 100.0), 3..4),
+        ];
+        let order = reading_order(&runs).unwrap();
+        assert_eq!(order, [2, 3, 0, 1]);
+        let mut items = vec!["x", "c1", "c2", "a", "b"];
+        let shifted: Vec<usize> = order.iter().map(|i| i + 1).collect();
+        reorder(&mut items, 1, &shifted);
+        assert_eq!(items, ["x", "a", "b", "c1", "c2"]);
+        // Already in order, a row, an overlay: mount order.
+        let in_order = [
+            (frame(0.0, 0.0, 10.0), 0..1),
+            (frame(0.0, 10.0, 10.0), 1..2),
+        ];
+        assert_eq!(reading_order(&in_order), None);
+        let row = [
+            (frame(200.0, 0.0, 20.0), 0..1),
+            (frame(0.0, 0.0, 20.0), 1..2),
+        ];
+        assert_eq!(reading_order(&row), None);
+        let overlay = [
+            (frame(0.0, 50.0, 100.0), 0..1),
+            (frame(0.0, 0.0, 100.0), 1..2),
+        ];
+        assert_eq!(reading_order(&overlay), None);
+    }
+
+    #[test]
+    fn kept_rows_follow_the_ends_texts() {
+        let texts = column();
+        let mut model = SelectionModel::new();
+        let mut kept = KeptRows::default();
+        assert_eq!(kept.changed(&model), None);
+        model.press(&texts, at(4.0, 4.0), 1, false);
+        model.drag(&texts, at(4.0, 64.0));
+        assert!(!kept.changed(&model).unwrap().is_empty());
+        assert_eq!(kept.changed(&model), None);
+        model.clear();
+        assert_eq!(kept.changed(&model), Some(Vec::new()));
+    }
+
+    #[test]
+    fn autoscroll_starts_inside_the_edge_and_speeds_up_outward() {
+        let step = |at: f32| autoscroll_step(Points(at), Points(400.0));
+        assert_eq!(step(200.0), Points(0.0));
+        assert_eq!(step(17.0), Points(0.0));
+        assert!(step(15.0) < Points(0.0));
+        assert!(step(385.0) > Points(0.0));
+        assert_eq!(step(400.0 - 16.0 + 96.0), AUTOSCROLL_MAX);
+        assert_eq!(step(-500.0), Points(-AUTOSCROLL_MAX.0));
+        assert!(step(420.0) > step(390.0));
     }
 }

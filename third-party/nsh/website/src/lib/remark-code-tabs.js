@@ -96,6 +96,7 @@ function group(blocks, number, listLabel) {
           role: 'tab',
           id: tabId,
           className: ['code-tabs__tab'],
+          dataSlot: 'tabs-trigger',
           ariaControls: panelId,
           ariaSelected: selected ? 'true' : 'false',
           tabIndex: selected ? 0 : -1,
@@ -126,9 +127,15 @@ function group(blocks, number, listLabel) {
     data: { hName: 'div', hProperties: { className: ['code-tabs'], dataCodeTabs: '' } },
     children: [
       {
-        type: 'codeTabList',
-        data: { hName: 'div', hProperties: { role: 'tablist', className: ['code-tabs__list'], ariaLabel: listLabel } },
-        children: tabs,
+        type: 'codeTabHead',
+        data: { hName: 'div', hProperties: { className: ['code-tabs__head'] } },
+        children: [
+          {
+            type: 'codeTabList',
+            data: { hName: 'div', hProperties: { role: 'tablist', className: ['code-tabs__list'], dataSlot: 'tabs-list', dataSize: 'xs', ariaLabel: listLabel } },
+            children: tabs,
+          },
+        ],
       },
       ...panels,
     ],

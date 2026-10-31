@@ -17,7 +17,7 @@ for (const name of ["Visible header", "Hidden header"]) {
     await app.wait(800);
     await swipe(app);
     await app.waitFor("text:depth:1");
-    expect(app.shows("dismissed:1")).toBe(true);
+    expect(app.shows("text:dismissed:1")).toBe(true);
   });
 }
 
@@ -28,13 +28,13 @@ for (const name of ["Swipe disabled", "Back disabled", "Visible swipe disabled",
     await app.waitFor("text:depth:2");
     await app.wait(800);
     await swipe(app);
-    expect(app.shows("depth:2")).toBe(true);
-    expect(app.shows("dismissed:0")).toBe(true);
+    expect(app.shows("text:depth:2")).toBe(true);
+    expect(app.shows("text:dismissed:0")).toBe(true);
     // iOS 26 can also initiate the same transition from the content area.
     await app.drag("id:content", { x: 280, y: 0 });
     await app.wait(800);
-    expect(app.shows("depth:2")).toBe(true);
-    expect(app.shows("dismissed:0")).toBe(true);
+    expect(app.shows("text:depth:2")).toBe(true);
+    expect(app.shows("text:dismissed:0")).toBe(true);
     await app.press("text:Custom back");
     await app.waitFor("text:depth:1");
   });
@@ -45,8 +45,8 @@ test("an edge swipe leaves the root page in place", async () => {
   await swipe(app);
   await app.drag("id:content", { x: 280, y: 0 });
   await app.wait(800);
-  expect(app.shows("depth:1")).toBe(true);
-  expect(app.shows("dismissed:0")).toBe(true);
+  expect(app.shows("text:depth:1")).toBe(true);
+  expect(app.shows("text:dismissed:0")).toBe(true);
 });
 
 test("hidden-header swipes keep working after returning to the root", async () => {
@@ -57,7 +57,7 @@ test("hidden-header swipes keep working after returning to the root", async () =
     await app.wait(800);
     await swipe(app);
     await app.waitFor("text:depth:1");
-    expect(app.shows(`dismissed:${n}`)).toBe(true);
+    expect(app.shows(`text:dismissed:${n}`)).toBe(true);
   }
 });
 
@@ -69,10 +69,10 @@ test("vertical and reverse drags keep a hidden-header page in place", async () =
   for (const by of [{ x: 0, y: 250 }, { x: -80, y: 0 }]) {
     await app.drag("id:content", by);
     await app.wait(800);
-    expect(app.shows("depth:2")).toBe(true);
-    expect(app.shows("dismissed:0")).toBe(true);
+    expect(app.shows("text:depth:2")).toBe(true);
+    expect(app.shows("text:dismissed:0")).toBe(true);
   }
   await swipe(app);
   await app.waitFor("text:depth:1");
-  expect(app.shows("dismissed:1")).toBe(true);
+  expect(app.shows("text:dismissed:1")).toBe(true);
 });

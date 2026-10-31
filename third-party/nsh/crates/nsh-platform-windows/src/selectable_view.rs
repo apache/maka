@@ -25,7 +25,9 @@ use std::{
 use nsh_core::{
     AttributedText, Bounds, EventKind, Point, Points,
     geometry::point,
-    selection::{SelectionModel, SelectionTexts},
+    selection::{
+        KeptRows, SelectionModel, SelectionTexts, autoscroll_step, reading_order, reorder,
+    },
 };
 
 use crate::{
@@ -40,12 +42,9 @@ use crate::{
 const SELECT_SLOP: f32 = 3.0;
 /// The same over a press target (a link, `onPress`).
 const SELECT_SLOP_PRESS: f32 = 10.0;
-/// How often (ms) autoscroll scrolls while the mouse is past an edge.
+/// How often (ms) autoscroll scrolls while the mouse is near or past an
+/// edge.
 const AUTOSCROLL_TICK: u64 = 16;
-/// Autoscroll's step per tick for each point the mouse is past the edge,
-/// and its largest step.
-const AUTOSCROLL_RATE: f32 = 0.3;
-const AUTOSCROLL_MAX: f32 = 40.0;
 
 /// The texts of an area, in document order (depth first, children bottom
 /// to top), as the model sees them: coordinates are the area's.
@@ -77,12 +76,24 @@ impl Texts {
     }
 
     fn collect(&mut self, view: &NshView) {
+        // In reading order: a virtual list's recycled cells are mounted
+        // in no particular order.
+        let start = self.views.len();
+        let mut runs = Vec::new();
         view.with_children(|children| {
             for child in children {
+                let from = self.views.len();
                 self.add(child);
                 self.collect(child);
+                runs.push((child.state().frame, from..self.views.len()));
             }
         });
+        if let Some(order) = reading_order(&runs) {
+            reorder(&mut self.views, start, &order);
+            reorder(&mut self.texts, start, &order);
+            reorder(&mut self.frames, start, &order);
+            reorder(&mut self.to_root, start, &order);
+        }
     }
 
     /// Adds `view` when it is text that takes part.
@@ -209,6 +220,8 @@ struct Current {
     last: Option<(f32, f32)>,
     /// An autoscroll tick is pending.
     autoscrolling: bool,
+    /// The virtual list rows its ends are in, kept rendered.
+    kept: KeptRows,
 }
 
 impl Current {
@@ -223,11 +236,15 @@ impl Current {
             over_press: false,
             last: None,
             autoscrolling: false,
+            kept: KeptRows::default(),
         }
     }
 
     /// Hands each text its part of the selection.
     fn apply(&mut self, texts: &Texts) {
+        if let Some(nodes) = self.kept.changed(&self.model) {
+            keep_rendered(self.surface, nodes);
+        }
         let ranges = self.model.ranges(texts);
         let mut highlighted = Vec::with_capacity(ranges.len());
         for (i, range) in ranges {
@@ -244,9 +261,23 @@ impl Current {
 
     /// Takes the highlights away.
     fn unhighlight(&mut self) {
+        if let Some(nodes) = self.kept.release() {
+            keep_rendered(self.surface, nodes);
+        }
         for view in self.highlighted.drain(..) {
             set_range(&view, None);
         }
+    }
+}
+
+/// Keeps the virtual list rows of `nodes` rendered (none: lets go).
+fn keep_rendered(surface: u64, nodes: Vec<u64>) {
+    if let Some(surface) = Surface::by_key(surface) {
+        let nodes = nodes
+            .into_iter()
+            .filter_map(|k| k.try_into().ok())
+            .collect();
+        surface.control(|c| c.keep_rendered(nodes));
     }
 }
 
@@ -486,8 +517,9 @@ fn scroll_view_of(area: &NshView) -> Option<NshView> {
     None
 }
 
-/// How far `(x, y)` (root coordinates) is past the edges of `view`
-/// (negative above or left of it, 0 inside).
+/// The autoscroll step per tick for `(x, y)` (root coordinates) near or
+/// past the edges of `view` ([`autoscroll_step`]: negative toward the top
+/// or left, 0 away from them).
 fn past_edges(view: &NshView, x: f32, y: f32) -> (f32, f32) {
     let bounds = view.to_root().and_then(|m| {
         let s = view.state();
@@ -496,16 +528,10 @@ fn past_edges(view: &NshView, x: f32, y: f32) -> (f32, f32) {
     let Some((bx, by, bw, bh)) = bounds else {
         return (0.0, 0.0);
     };
-    let past = |p: f32, start: f32, len: f32| {
-        if p < start {
-            p - start
-        } else if p > start + len {
-            p - (start + len)
-        } else {
-            0.0
-        }
-    };
-    (past(x, bx, bw), past(y, by, bh))
+    (
+        autoscroll_step(Points(x - bx), Points(bw)).0,
+        autoscroll_step(Points(y - by), Points(bh)).0,
+    )
 }
 
 /// Scrolls `view` toward the mouse at `(x, y)` (root coordinates) when it
@@ -516,12 +542,7 @@ fn autoscroll_by(surface: &Rc<Surface>, view: &NshView, x: f32, y: f32) -> bool 
         return false;
     };
     let (px, py) = past_edges(view, x, y);
-    let step = |d: f32| (d * AUTOSCROLL_RATE).clamp(-AUTOSCROLL_MAX, AUTOSCROLL_MAX);
-    let (dx, dy) = if horizontal {
-        (step(px), 0.0)
-    } else {
-        (0.0, step(py))
-    };
+    let (dx, dy) = if horizontal { (px, 0.0) } else { (0.0, py) };
     if (dx, dy) == (0.0, 0.0) || !crate::scroll::can_scroll(view, dx, dy) {
         return false;
     }

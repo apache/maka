@@ -1283,10 +1283,14 @@ pub(crate) fn draw(snapshot: &gtk::Snapshot, state: &ViewState) {
         build(&drawn.text, layout, drawn.content)
     });
     let Some(node) = node else { return };
-    // An animated color (`AnimationProp::Color`) recolors the cached
-    // glyphs, keeping their coverage, rather than building them again on
-    // every frame.
-    match state.anim.color {
+    // An animated color (`AnimationProp::Color`) or a transition of the
+    // text's color recolors the cached glyphs, keeping their coverage,
+    // rather than building them again on every frame.
+    match state
+        .anim
+        .color
+        .or_else(|| state.live.as_ref()?.text_color())
+    {
         Some(c) => {
             let c = crate::decor::rgba(c);
             snapshot.push_color_matrix(

@@ -1,7 +1,7 @@
 ---
 title: View
 description: "The basic container element: layout, backgrounds, borders, shadows, press handling and gestures."
-order: 2
+order: 10
 group: primitives
 demo: el-view
 ---

@@ -495,6 +495,21 @@ impl AttributedText {
         self.spans.iter().any(|s| s.style.background.is_some())
     }
 
+    /// The color every character is drawn in, decoration lines included,
+    /// if there is one (`None` for several, or no text): what a transition
+    /// of the text's color animates ([`crate::transition::recolor`]).
+    pub fn uniform_color(&self) -> Option<Color> {
+        let color = self.spans.first()?.style.color;
+        self.spans
+            .iter()
+            .all(|s| {
+                s.style.color == color
+                    && (s.style.decoration.is_none()
+                        || s.style.decoration_color.is_none_or(|c| c == color))
+            })
+            .then_some(color)
+    }
+
     /// The span containing the UTF-16 offset `index` (the last one past the
     /// end).
     pub fn span_at(&self, index: u32) -> Option<&TextSpan> {

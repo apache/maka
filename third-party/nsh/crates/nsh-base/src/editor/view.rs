@@ -997,7 +997,16 @@ fn row_view(
             .absolute()
             .top_0()
             .left(move || Length::from(indent()))
-            .pointer_events(PointerEvents::Auto)
+            // Only a folded row's text takes presses (its placeholder
+            // unfolds): over the scroll views, any other row's glyphs would
+            // keep a finger or a wheel on them from the scroll views below.
+            .pointer_events(move || {
+                if content.with(|c| c.folded) {
+                    PointerEvents::Auto
+                } else {
+                    PointerEvents::None
+                }
+            })
             .child(dynamic(move || spans(span_ed.clone(), slot, content.get()))),
     )
 }

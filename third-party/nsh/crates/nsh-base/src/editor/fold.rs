@@ -56,7 +56,9 @@ pub(crate) fn fold_ranges(buffer: &Buffer, tab_size: u32) -> Vec<FoldRange> {
     while let Some((start, _)) = open.pop() {
         push(&mut ranges, start, last_non_blank);
     }
-    ranges.sort_by_key(|range| (range.start, std::cmp::Reverse(range.end)));
+    crate::sort::sort_by_key(&mut ranges, |range| {
+        (range.start, std::cmp::Reverse(range.end))
+    });
     ranges
 }
 

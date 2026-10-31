@@ -1,0 +1,7 @@
+---
+// shadcn/ui's TabsTrigger: a tab (`aria-selected`, roving `tabindex`).
+import type { HTMLAttributes } from 'astro/types';
+type Props = Omit<HTMLAttributes<'button'>, 'type'> & { selected?: boolean };
+const { selected = false, ...rest } = Astro.props;
+---
+<button type="button" data-slot="tabs-trigger" role="tab" aria-selected={String(selected)} tabindex={selected ? 0 : -1} {...rest}><slot /></button>

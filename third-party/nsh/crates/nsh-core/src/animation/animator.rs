@@ -165,6 +165,12 @@ impl Animator {
         self.graph.is_animating()
     }
 
+    /// True while an animation that ends by itself runs, not one looping
+    /// forever ([`Graph::is_finishing`]): what a test's step waits for.
+    pub fn finishing(&self) -> bool {
+        self.graph.is_finishing()
+    }
+
     /// A scroll view moved to `offset`: feeds its scroll value. False if no
     /// value is bound to it.
     pub fn scrolled(&mut self, id: u32, offset: Point<Points>) -> bool {

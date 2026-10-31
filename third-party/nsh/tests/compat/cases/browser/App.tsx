@@ -3,6 +3,7 @@
 // `id:case-<case>` (a one-point view over the corner, out of the layout);
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
+import BasePopupLooks from "./base-popup-looks";
 import BasePopupsDesktop from "./base-popups-desktop";
 import BaseSelectDesktop from "./base-select-desktop";
 import PropsPlatformWeb from "./props-platform-web";
@@ -17,6 +18,7 @@ const cases: Record<string, () => JSX.Element> = {
   "props-text-scaling": PropsTextScaling,
   "props-media-webview-desktop": PropsMediaWebviewDesktop,
   "base-popups-desktop": BasePopupsDesktop,
+  "base-popup-looks": BasePopupLooks,
   "base-select-desktop": BaseSelectDesktop,
 };
 const shown = signal("");

@@ -11,6 +11,7 @@ import android.text.Layout;
 import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
@@ -62,6 +63,17 @@ final class InputBox extends FrameLayout implements Node {
     private boolean replaced;
     /** What was last reported (px): offset, text height, viewport width and height; -1 for nothing. */
     private int reportedY = -1, reportedContent = -1, reportedWidth = -1, reportedHeight = -1;
+    /** `pointerEvents` (`Box`'s codes): `none` and `box-none` let touches through to the views below. */
+    int pointerEvents;
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent e) {
+        // No target (an editor's hidden input at its caret, over the
+        // selection's handles): the touch goes to the views below. It
+        // still takes focus and typed text.
+        if (pointerEvents == 1 || pointerEvents == 2) return false;
+        return super.dispatchTouchEvent(e);
+    }
 
     InputBox(Context context, Mounter mounter, int id) {
         super(context);

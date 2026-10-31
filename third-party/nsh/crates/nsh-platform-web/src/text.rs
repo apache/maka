@@ -1014,7 +1014,7 @@ impl TextEngine for WebTextEngine {
 }
 
 /// Canvas drawings use the same font and numeric-variant measurements as text.
-#[cfg(all(feature = "browser-core", not(feature = "js")))]
+#[cfg(feature = "browser-core")]
 pub(crate) fn canvas_width(font: &nsh_core::canvas::CanvasFont, text: &str) -> f32 {
     let css = crate::canvas::font(font);
     match css::font_variant_numeric(font.variant) {

@@ -265,10 +265,10 @@ fn field_f32(obj: &Object<'_>, key: &str) -> compat::Result<Option<f32>> {
     Ok(obj.get::<_, Option<f64>>(key)?.map(|v| v as f32))
 }
 
-/// A QuickJS value as host props read it.
+/// A JS value as host props read it.
 struct Js<'js>(Value<'js>);
 
-/// A QuickJS array, read by index.
+/// A JS array, read by index.
 struct JsList<'js>(Array<'js>);
 
 impl<'js> HostList for JsList<'js> {

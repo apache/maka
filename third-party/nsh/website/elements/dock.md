@@ -1,7 +1,6 @@
 ---
 title: Dock
 description: "DockArea: a dockable workspace of splits, tab groups and docks on the left, right and bottom edges, whose layout is data the app owns. The area owns tab drags and drops, resizing, docks, zoom and the lock, keeps each panel's content as it moves, and adapts to phones; the look and the panels' content are the app's."
-order: 29.6
 group: base
 demo: el-dock
 ---
@@ -246,7 +245,8 @@ closing docks still work, so a locked workspace is still a workspace to use.
 ## Methods
 
 `ref={area}` gives the area's methods (`DockAreaRef`), for commands, shortcuts and menus of the app's. Each edit is
-reported with `onLayoutChange` as the user's are.
+reported with `onLayoutChange` as the user's are. A method given a panel, a group, a tab index or a dock the layout
+does not have leaves the layout as it is and logs a warning naming the method and the value.
 
 | Method | Description |
 |---|---|

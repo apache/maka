@@ -193,9 +193,7 @@ impl RichCommand {
 pub(crate) fn attrs_of(attrs: &Option<AttrsJson>) -> Result<Option<Attrs>, String> {
     match attrs.as_ref().map(|a| &a.0) {
         None | Some(JsonValue::Null) => Ok(None),
-        Some(JsonValue::Object(map)) => Ok(Some(
-            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-        )),
+        Some(JsonValue::Object(map)) => Ok(Some(crate::rich_editor::model::object_attrs(map))),
         Some(other) => Err(format!("attributes are an object, got {other}")),
     }
 }

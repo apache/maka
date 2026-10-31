@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use super::host::{HostCx, HostInput, HostList, HostValue, field};
 use crate::{
-    AccessibilityProp, AccessibilityRole, AccessibilityState, AutoFill, CellSlot, EdgeInsets,
-    ImageScales, ImageSource, KeyboardTaps, ListContentStyle, ModalProp, Prop, ScrollProp,
-    StatusBarSetting, StatusBarStyle, Viewability,
+    AccessibilityCurrent, AccessibilityProp, AccessibilityRole, AccessibilityState, AutoFill,
+    CellSlot, EdgeInsets, ImageScales, ImageSource, KeyboardTaps, ListContentStyle, ModalProp,
+    Prop, ScrollProp, StatusBarSetting, StatusBarStyle, Viewability,
     element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes},
     geometry::{Bounds, Percentage, Points, point, size},
     mount::ModalConfig,
@@ -241,24 +241,44 @@ impl HostValue for PanActivation {
     }
 }
 
-/// `{ disabled, selected, checked: true | false | "mixed", busy, expanded }`.
+/// `{ disabled, selected, checked: true | false | "mixed", busy, expanded,
+/// pressed: true | false | "mixed", current: true | false | "page" | ... }`.
 impl HostValue for AccessibilityState {
     fn decode<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Self> {
         let flag = |key| input.field(key).and_then(|v| v.as_bool()).unwrap_or(false);
-        let checked = input.field("checked");
-        Some(AccessibilityState {
-            disabled: flag("disabled"),
-            selected: flag("selected"),
-            checked: match checked.as_ref().and_then(|c| c.as_bool()) {
+        let tristate = |key| {
+            let value = input.field(key);
+            match value.as_ref().and_then(|c| c.as_bool()) {
                 Some(true) => Some(Checked::True),
                 Some(false) => Some(Checked::False),
-                None => checked
+                None => value
                     .and_then(|c| c.as_string())
                     .filter(|s| s == "mixed")
                     .map(|_| Checked::Mixed),
-            },
+            }
+        };
+        let current = input.field("current");
+        Some(AccessibilityState {
+            disabled: flag("disabled"),
+            selected: flag("selected"),
+            checked: tristate("checked"),
             busy: flag("busy"),
             expanded: input.field("expanded").and_then(|v| v.as_bool()),
+            pressed: tristate("pressed"),
+            // `false` and unknown words are no current item, as ARIA has it.
+            current: match current.as_ref().and_then(|c| c.as_bool()) {
+                Some(true) => Some(AccessibilityCurrent::True),
+                Some(false) => None,
+                None => match current.and_then(|c| c.as_string()).as_deref() {
+                    Some("page") => Some(AccessibilityCurrent::Page),
+                    Some("step") => Some(AccessibilityCurrent::Step),
+                    Some("location") => Some(AccessibilityCurrent::Location),
+                    Some("date") => Some(AccessibilityCurrent::Date),
+                    Some("time") => Some(AccessibilityCurrent::Time),
+                    Some("true") => Some(AccessibilityCurrent::True),
+                    _ => None,
+                },
+            },
         })
     }
 
@@ -266,7 +286,11 @@ impl HostValue for AccessibilityState {
         types.declare("AccessibilityState", |_| {
             "/** The state assistive technologies report (`accessibilityState`). */\n\
              export interface AccessibilityState {\n  disabled?: boolean;\n  selected?: boolean;\n  \
-             checked?: boolean | \"mixed\";\n  busy?: boolean;\n  expanded?: boolean;\n}"
+             checked?: boolean | \"mixed\";\n  busy?: boolean;\n  expanded?: boolean;\n  \
+             /** A toggle button that is on or off (ARIA's `aria-pressed`). */\n  \
+             pressed?: boolean | \"mixed\";\n  \
+             /** The current item of a set (ARIA's `aria-current`): a pagination's page, a wizard's step. */\n  \
+             current?: boolean | \"page\" | \"step\" | \"location\" | \"date\" | \"time\";\n}"
                 .into()
         })
     }
@@ -662,6 +686,18 @@ pub(crate) fn role<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Accessibi
         cx.warn(format!("unknown role `{name}`"));
     }
     Some(AccessibilityProp::Role(role.unwrap_or_default()))
+}
+
+/// `accessibilityLevel`: a whole number from 1; anything else is none.
+pub(crate) fn accessibility_level<I: HostInput>(
+    input: &I,
+    _: &mut HostCx,
+) -> Option<AccessibilityProp> {
+    let level = input
+        .as_number()
+        .filter(|n| *n >= 1.0 && n.fract() == 0.0 && *n <= f64::from(u32::MAX))
+        .map(|n| n as u32);
+    Some(AccessibilityProp::Level(level))
 }
 
 /// `importantForAccessibility`.

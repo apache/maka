@@ -56,8 +56,8 @@ final class WebBox extends WidgetBox {
             String url = request.getUrl().toString();
             if (mounter.allowsWebview(url)) return false;
             android.util.Log.w("nsh", "web view navigation to " + url + " is not granted");
-            mounter.eventMap(id, Native.ERROR, new String[] {"message", "url"},
-                    new Object[] {"navigation to " + url + " is not granted", url});
+            mounter.eventMap(id, Native.ERROR, new String[] {"message", "code", "url"},
+                    new Object[] {"navigation to " + url + " is not granted", "ERR_ACCESS_DENIED", url});
             return true;
         }
 

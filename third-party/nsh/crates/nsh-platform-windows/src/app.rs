@@ -263,6 +263,7 @@ impl AppView {
             trace: options.trace,
             network: Some(nsh_engine::net::network()),
             websocket: None,
+            refuse_connections: None,
             filesystem: None,
             chunk_loader: None,
             assets: Some(Arc::new(AssetReader(options.asset_base.clone()))),
@@ -357,6 +358,7 @@ fn initial_environment() -> Environment {
         color_scheme: ColorScheme::Light,
         os: Os::Windows,
         idiom: Idiom::Desktop,
+        file_requests: true,
         ..Environment::default()
     }
 }

@@ -17,6 +17,7 @@ use crate::{JsonValue, NodeId};
 enum Val {
     Undefined,
     Json(JsonValue),
+    Function(Rc<dyn Fn()>),
 }
 
 /// The host: its values live as long as it does.
@@ -47,9 +48,17 @@ impl JsonHost {
 
     fn json_of(&self, v: JsRaw) -> Option<JsonValue> {
         match self.val(v) {
-            Val::Undefined => None,
+            Val::Undefined | Val::Function(_) => None,
             Val::Json(json) => Some(json),
         }
+    }
+
+    /// Calls function `v` ([`JsHost::new_function`]'s).
+    pub(crate) fn call(&self, v: JsRaw) {
+        let Val::Function(f) = self.val(v) else {
+            panic!("not a function")
+        };
+        f();
     }
 
     /// `json` as a value of the host.
@@ -114,6 +123,7 @@ impl JsHost for JsonHost {
             Val::Json(JsonValue::String(_)) => JsKind::String,
             Val::Json(JsonValue::Array(_)) => JsKind::Array,
             Val::Json(JsonValue::Object(_)) => JsKind::Object,
+            Val::Function(_) => JsKind::Function,
         }
     }
 
@@ -172,6 +182,7 @@ impl JsHost for JsonHost {
         match self.val(v) {
             Val::Undefined => "undefined".to_owned(),
             Val::Json(json) => json.to_string(),
+            Val::Function(_) => "[Function]".to_owned(),
         }
     }
 
@@ -293,6 +304,10 @@ impl JsHost for JsonHost {
 
     fn json(&self, v: &JsonValue) -> Result<JsRaw, PropError> {
         Ok(self.value(v.clone()))
+    }
+
+    fn new_function(&self, f: Box<dyn Fn()>) -> Result<JsRaw, PropError> {
+        Ok(self.put(Val::Function(f.into())))
     }
 
     fn wrap(&self, _instance: Rc<dyn ClassInstance>) -> Result<JsRaw, PropError> {

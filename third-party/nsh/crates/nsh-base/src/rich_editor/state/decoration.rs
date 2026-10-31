@@ -241,5 +241,5 @@ impl DecorationSet {
 }
 
 fn sort(decorations: &mut [Decoration]) {
-    decorations.sort_by_key(|decoration| (decoration.from, decoration.to));
+    crate::sort::sort_by_key(decorations, |decoration| (decoration.from, decoration.to));
 }

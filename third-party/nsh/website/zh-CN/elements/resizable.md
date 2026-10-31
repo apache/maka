@@ -1,7 +1,6 @@
 ---
 title: Resizable
 description: ResizablePanelGroup 与 ResizablePanel：并排或上下排列的面板，每两个面板之间有一个手柄，用户拖动它来分配空间。分组负责拖动、面板的尺寸限制、调整大小的光标以及手柄面向屏幕阅读器的角色；尺寸、手柄的外观和面板的内容都属于应用。
-order: 29.5
 group: base
 demo: el-resizable
 ---

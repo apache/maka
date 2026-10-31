@@ -105,3 +105,33 @@ fn unsupported_node_and_private_type_modules_do_not_silently_bundle() {
         );
     }
 }
+
+/// A module named as nsh's that nsh does not have (the primitives' former
+/// homes among them: they are `nsh`'s) fails to bundle, naming the ones
+/// there are.
+#[test]
+fn modules_nsh_does_not_have_do_not_bundle() {
+    for name in [
+        "nsh/list",
+        "nsh/image",
+        "nsh/canvas",
+        "nsh/webview",
+        "nsh/video",
+        "nsh/device",
+    ] {
+        let fixture = Fixture::new();
+        fixture.write(
+            "App.ts",
+            &format!("import * as module from '{name}'; console.log(module);\n"),
+        );
+        let message = fixture.build().expect_err(name).to_string();
+        assert!(
+            message.contains(&format!("nsh has no module `{name}`")),
+            "{message}"
+        );
+        assert!(
+            message.contains("`nsh`, `nsh/desktop`, `nsh/mobile`"),
+            "{message}"
+        );
+    }
+}

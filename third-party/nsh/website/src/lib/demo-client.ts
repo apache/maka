@@ -36,10 +36,12 @@ function themeDemos(root: ParentNode) {
   onThemeChange(apply);
 }
 
-/** The frame sizes and idioms of the layouts (`LAYOUTS` in `demo.js`). */
+/** The idioms of the layouts and their largest frames (`LAYOUTS` in
+ * `demo.js`); a panel's frame is as wide as fits, up to these, and the
+ * app lays out at that width, 1:1. */
 const LAYOUTS = {
   mobile: { width: 390, height: 844, idiom: 'phone' },
-  desktop: { width: 1024, height: 640, idiom: 'desktop' },
+  desktop: { width: 1024, height: 900, idiom: 'desktop' },
 } as const;
 type Layout = keyof typeof LAYOUTS;
 
@@ -59,32 +61,93 @@ const withIdiom = (url: string, layout: Layout) =>
     ? url.replace(/([?&]idiom=)[a-z]+/, `$1${LAYOUTS[layout].idiom}`)
     : url.replace('?', `?idiom=${LAYOUTS[layout].idiom}&`);
 
+/** Frames never get shorter than this, and keep this much below the
+ * content (popups and dialogs lift out of the frame, `docs/dev/web.md`). */
+const MIN_HEIGHT = 420;
+const ROOM_BELOW = 32;
+
+/** The height the app needs in `frame` (the player is on the site's
+ * origin): the bottom of the lowest thing it draws, not counting views that
+ * fill the frame (a page's background), or, when a view that fills it
+ * scrolls, the frame's height plus what is out of view; 0 when it cannot
+ * tell. */
+function contentHeight(frame: HTMLIFrameElement) {
+  try {
+    const doc = frame.contentDocument;
+    const app = doc?.getElementById('app');
+    if (!doc || !app) return 0;
+    const full = doc.documentElement.clientHeight;
+    const view = doc.defaultView!;
+    let bottom = 0;
+    // `clip`: the bottom of the views around that clip what they hold (a
+    // virtual list's rows out of view); views that fill the frame do not.
+    const walk = (el: Element, clip: number) => {
+      const r = el.getBoundingClientRect();
+      let inner = clip;
+      if (r.height >= full * 0.9) {
+        // Only scroll views (`nsh.js`'s `.nsh-scroll`) say they hold more.
+        const hidden = el.classList.contains('nsh-scroll') ? el.scrollHeight - el.clientHeight : 0;
+        if (hidden > 1) bottom = Math.max(bottom, full + hidden);
+      } else if (r.width > 0 && r.height > 0) {
+        const style = view.getComputedStyle(el);
+        // What draws: a leaf (text, an image, a border), or a view with a
+        // background; a bare container may stretch over empty room.
+        const draws = el.childElementCount === 0 || style.backgroundColor !== 'rgba(0, 0, 0, 0)';
+        if (draws && r.top < Math.min(full, clip)) bottom = Math.max(bottom, Math.min(full, clip, r.bottom));
+        if (style.overflowY !== 'visible') inner = Math.min(clip, r.bottom);
+      }
+      for (const child of el.children) walk(child, inner);
+    };
+    walk(app, Infinity);
+    return Math.ceil(bottom);
+  } catch {
+    return 0;
+  }
+}
+
 /** The Mobile / Desktop switch of a demo panel: the frame's size, the
- * idiom the app runs with (it reloads), and a desktop frame scaled to the
- * stage's width. */
+ * idiom the app runs with (it reloads), and the frame's width, the stage's
+ * up to the layout's (never scaled: the app shows at its real size). */
 function layoutDemo(demo: HTMLElement, all: HTMLElement[]) {
   const phone = demo.querySelector<HTMLElement>('.phone');
   const frame = demo.querySelector<HTMLIFrameElement>('.phone__screen iframe');
   const stage = demo.querySelector<HTMLElement>('.demo__stage');
   const buttons = [...demo.querySelectorAll<HTMLButtonElement>('[data-demo-layout]')];
   if (!phone || !stage || buttons.length === 0) return;
+  // The height the app's content takes (`contentHeight`), once measured.
+  let content = 0;
   const fit = () => {
-    if (demo.dataset.layout !== 'desktop') {
-      phone.style.removeProperty('--phone-scale');
-      return;
+    const size = LAYOUTS[(demo.dataset.layout as Layout) ?? 'mobile'];
+    const room = stage.clientWidth - parseFloat(getComputedStyle(stage).paddingLeft) * 2;
+    const width = Math.round(Math.max(280, Math.min(size.width, room)));
+    const height = content ? Math.min(size.height, Math.max(MIN_HEIGHT, content + ROOM_BELOW)) : size.height;
+    phone.style.setProperty('--phone-w', String(width));
+    phone.style.setProperty('--phone-h', String(height));
+    if (frame) {
+      frame.width = String(width);
+      frame.height = String(height);
     }
-    const room = stage.clientWidth - 40;
-    const scale = Math.max(0.3, Math.min(1, room / (LAYOUTS.desktop.width + 16)));
-    phone.style.setProperty('--phone-scale', scale.toFixed(3));
   };
   new ResizeObserver(fit).observe(stage);
+  // Each run measures again at the layout's full height, once it settles:
+  // the frame then ends below the content instead of a phone's height.
+  frame?.addEventListener('load', () => {
+    content = 0;
+    fit();
+    for (const delay of [800, 2000]) {
+      setTimeout(() => {
+        const measured = contentHeight(frame);
+        if (measured && (!content || measured > content)) {
+          content = measured;
+          fit();
+        }
+      }, delay);
+    }
+  });
   const apply = (layout: Layout, save: boolean) => {
     if (demo.dataset.layout === layout && phone.dataset.layout === layout) return fit();
     demo.dataset.layout = layout;
     phone.dataset.layout = layout;
-    const size = LAYOUTS[layout];
-    phone.style.setProperty('--phone-w', String(size.width));
-    phone.style.setProperty('--phone-h', String(size.height));
     for (const b of buttons) {
       const on = b.dataset.demoLayout === layout;
       b.setAttribute('aria-checked', String(on));
@@ -94,8 +157,6 @@ function layoutDemo(demo: HTMLElement, all: HTMLElement[]) {
       link.href = withIdiom(link.href, layout);
     }
     if (frame?.dataset.playerSrc) {
-      frame.width = String(size.width);
-      frame.height = String(size.height);
       frame.dataset.playerSrc = withIdiom(frame.dataset.playerSrc, layout);
       // Loaded (or about to be): run it again with the new idiom, and the
       // page's theme (its `src` keeps the one it first loaded with).

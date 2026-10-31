@@ -1,7 +1,7 @@
 ---
 title: 文字选择
 description: 可选择的视图：在视图内的文字之间、跨越视图、Text 元素和 TextView 的同一个选区，就像网页中的文字一样选择。
-order: 10.8
+order: 130
 group: primitives
 demo: el-text-selection
 ---

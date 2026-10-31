@@ -1,7 +1,6 @@
 ---
 title: Checkbox
 description: Checkbox 组件：一个勾选、未勾选或半选的控件，负责按压、键盘激活、禁用状态以及屏幕阅读器的角色和值，指示器及其中的标记由应用设置样式。
-order: 20.25
 group: base
 demo: el-checkbox
 ---

@@ -1,7 +1,7 @@
 ---
 title: 安全区
 description: safe-area-inset 环境变量以及 safeArea 和 safeAreaInsets 访问器：让内容避开刘海、状态栏、主屏幕指示条和标题栏。
-order: 10.6
+order: 110
 group: primitives
 demo: el-safe-area
 ---

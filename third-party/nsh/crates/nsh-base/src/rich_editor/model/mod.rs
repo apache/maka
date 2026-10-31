@@ -43,6 +43,25 @@ pub use to_dom::{
 /// The attributes of a node or a mark: JSON values by name.
 pub type Attrs = BTreeMap<String, Value>;
 
+/// The attributes of `entries` (of a key given twice, the last), as
+/// collecting them makes them: the editor builds many, and a collect per
+/// iterator type is kilobytes of code, this one instance.
+pub(crate) fn attrs_from(entries: &mut dyn Iterator<Item = (String, Value)>) -> Attrs {
+    entries.collect()
+}
+
+/// [`attrs_from`] as a JSON object (the same collect).
+pub(crate) fn json_object(
+    entries: &mut dyn Iterator<Item = (String, Value)>,
+) -> serde_json::Map<String, Value> {
+    entries.collect()
+}
+
+/// The attributes of a JSON object, copied.
+pub(crate) fn object_attrs(object: &serde_json::Map<String, Value>) -> Attrs {
+    attrs_from(&mut object.iter().map(|(k, v)| (k.clone(), v.clone())))
+}
+
 /// The number of UTF-16 code units of `text`.
 pub fn utf16_len(text: &str) -> usize {
     text.chars().map(char::len_utf16).sum()

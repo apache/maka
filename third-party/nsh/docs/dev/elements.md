@@ -81,11 +81,11 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
 ## Interaction and the environment
 
 - **State styles** (native, no JS round trip): `activeStyle`, `hoverStyle`, `focusStyle`, `disabledStyle`,
-  `checkedStyle`, `indeterminateStyle`, `expandedStyle` (and a `Button`'s `selectedStyle`) on any view (declared in
-  `StateStyleProps`), the same as the `active:` / `hover:` / `focus:` / `disabled:` / `selected:` / `checked:` /
-  `indeterminate:` / `aria-expanded:` classes: the core restyles the view while the platform reports it pressed,
-  hovered or focused, and while its accessibility state is selected, checked, mixed or expanded (a `Popover`'s or
-  `Menu`'s trigger while its popup is open); a Rust component's touch responder stays pressed from its grant until its
+  `checkedStyle`, `indeterminateStyle`, `expandedStyle`, `pressedStyle` (and a `Button`'s `selectedStyle`) on any view
+  (declared in `StateStyleProps`), the same as the `active:` / `hover:` / `focus:` / `disabled:` / `selected:` /
+  `checked:` / `indeterminate:` / `aria-expanded:` / `aria-pressed:` classes: the core restyles the view while the
+  platform reports it pressed, hovered or focused, and while its accessibility state is selected, checked, mixed,
+  expanded (a `Popover`'s or `Menu`'s trigger while its popup is open), pressed (a toggle button that is on) or busy; a Rust component's touch responder stays pressed from its grant until its
   touches end, wherever they go (CSS's `:active` until the button is released: a resize handle dragged off its band
   keeps its `group-active:` look; `Core::hold_pressed`); later
   states win, `disabled` over all (`docs/dev/styles.md`). Press feedback is the app's: the platforms add no fade or
@@ -95,7 +95,7 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   with `selectable` makes its texts select together (`text.md` "Selectable views").
 - **Platform modules**: `platform` (`nsh`'s environment, a constant: `os`: `ios` / `android` / `macos` / `windows` / `linux` / `web`, from the platform's
   `Environment::os` (`nsh_engine::Os`; the default is the build's mobile OS, so `nsh test` is iOS); `version` (a string,
-  Android's API level), `idiom` (`phone` / `pad` / `mac` / `tv` / `desktop`), `catalyst`, `renderer` (`native` / `web` / `terminal`, from `Environment::renderer`), `isTerminal`, `select` (terminals: `terminal`, OS, `native`, `default`; graphical surfaces: the OS, then `mobile` / `desktop`, `native` (not on the web), `default`); `desktop` and `desktop={{…}}` follow `Environment::desktop()`: a graphical desktop OS, or the web in the desktop idiom), `pixelRatio()` (an accessor: the window moving to another screen writes it), `nsh`'s
+  Android's API level), `idiom` (`phone` / `pad` / `mac` / `tv` / `desktop`: `Environment::reported_idiom()`, normalized to `desktop` on desktop OSes), `desktop` (`Environment::desktop()`: graphical desktop OSes and browsers in the desktop idiom, excluding terminal rendering), `catalyst` (`Os::is_catalyst()`: an iOS build for `target_abi = "macabi"`, in the iPad and the Mac idiom alike), `renderer` (`native` / `web` / `terminal`, from `Environment::renderer`), `isTerminal`, `select` (terminals: `terminal`, OS, `native`, `default`; graphical surfaces: OS, then `desktop` / `mobile` by `Environment::desktop()`, `native` (not on the web), `default`); `desktop={{…}}` follows `Environment::desktop()`; Mac Catalyst is mobile (the iOS backend, `ios={{…}}`, its idiom `pad` or `mac`); `nsh/desktop`'s `isAvailable` identifies native desktop and terminal window/title and menu APIs), `pixelRatio()` (an accessor: the window moving to another screen writes it), `nsh`'s
   `announce(message)` and `setAccessibilityFocus(ref)` (Rust, the node passed as `{ $node: id }`), reactive `screenReaderEnabled()` / `reduceMotion()`. The environment carries `pixelRatio`,
   `screenReader`, `osVersion` and `idiom` (VoiceOver / TalkBack changes are observed natively).
 - **`disabled`** on any element applies `disabled:` classes and removes its press and `onContextMenu` listeners from what
@@ -231,16 +231,30 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   becomes the responder (its termination request is honored as for any claim). Its own `…ShouldSetResponder`
   handlers (and a Rust element's other claims) are never asked: the view is a responder exactly when its pan is
   active, so `PanResponder`'s `panHandlers` work unchanged next to the prop.
-- **Accessibility**: `accessible`, `role`, `accessibilityLabel` / `Hint` / `State` / `Value` / `Actions` +
+- **Accessibility**: `accessible`, `role`, `accessibilityLabel` / `Hint` / `State` / `Value` / `Actions` / `Level` +
   `onAccessibilityAction`, `accessibilityElementsHidden`, `importantForAccessibility`, `accessibilityLiveRegion`, `testID`
-  (Android: resource id). Views without a label read their texts. The props go as one `MountItem::ViewProps`, except
+  (Android: resource id). Roles and states follow ARIA where `gpui-base` (AccessKit) has them: `group`, `region`,
+  `navigation`, `tree` / `treeitem`, `menuitemcheckbox` / `menuitemradio`; `accessibilityState.pressed` (`aria-pressed`:
+  a button that has one is a toggle button) and `current` (`aria-current`: `true`, `page`, `step`, `location`, `date`,
+  `time`); `accessibilityLevel` (`aria-level`: a heading's level, a tree item's depth). Per platform: macOS a toggle is
+  `AXCheckBox` / `AXToggle` with its pressed value, `region` / `navigation` are `AXGroup` with WebKit's landmark
+  subroles, a tree is a list of static-text items (as options: AppKit's outline rows need its rows and columns) with
+  their disclosure level, `current` and a heading's level are not exposed (AppKit has no attribute for the first, and a
+  heading's value is its text, which VoiceOver reads); iOS a pressed toggle carries the selected trait (UIKit's toggle
+  trait is iOS 17's), mixed and `current` are spoken in the value, `group` / `region` / `navigation` / `tree` /
+  `toolbar` are semantic-group containers named by their label (never one element hiding their content), no level; Android a toggle
+  is a checkable `ToggleButton`, `current` and mixed go in the state description, roles without a widget class in the
+  role description, no level; Windows a toggle has the Toggle pattern (and "toggle button"), landmarks
+  (`UIA_LandmarkTypePropertyId`), `Tree` / `TreeItem` control types, a heading's `HeadingLevel1`…`9`, a tree item's
+  `UIA_LevelPropertyId`, `current` in `AriaProperties`; Linux GTK's roles, `Pressed` on buttons, `Level`; GPUI
+  AccessKit's roles, `toggled`, `level`, `aria_current`; the web the ARIA attributes. Views without a label read their texts. The props go as one `MountItem::ViewProps`, except
   a label changing alone on mounted props (one that follows app state: a count, a price), which goes as
   `MountItem::AccessibilityLabel`. The `increment` / `decrement` actions make an element adjustable whatever its
   role: iOS adds the adjustable trait to the traits of its role (`native_view.rs` `traits`), so VoiceOver's swipe up /
   down performs them (an `image`, `Plot`'s role, stays an image), Android offers scroll forward / backward, Windows
   makes its range value writable.
 - **Frames**: `requestAnimationFrame` / `cancelAnimationFrame` follow the display (CADisplayLink / Choreographer).
-- **Back button** (`nsh/mobile`): `BackHandler.onBackPress(listener)` (returns the function that removes it; a
+- **Back button** (`nsh/mobile`): `BackHandler.on("press", listener)` (returns the function that removes it; a
   listener added while a component renders goes with it, as `keymap.bind`'s bindings do), after modals, the top
   overlay listening to `onCancel` and stacks; the app exits when nothing handles it. Rust components listen with `cx.on_back_press(..)`, before JS's listeners; the root wants
   the button while either side listens (`docs/dev/components.md`).

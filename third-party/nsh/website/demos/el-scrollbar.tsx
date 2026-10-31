@@ -1,4 +1,4 @@
-import { mount, Scroll, signal, Text, View, type YNode } from "nsh";
+import { mount, Scroll, signal, Text, View, type ScrollRef } from "nsh";
 import { Scrollbar, type ScrollbarMode } from "nsh/base";
 import { desktop, Panel, Segmented, size, Split, ui } from "./palette";
 
@@ -18,7 +18,7 @@ const MESSAGES = Array.from({ length: 60 }, (_, i) => ({
 function App() {
   const mode = signal<ScrollbarMode>("scrolling");
   const offset = signal(0);
-  let inbox: YNode | undefined;
+  let inbox: ScrollRef | undefined;
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>
       <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>scrollbar</Text>

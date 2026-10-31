@@ -2,12 +2,14 @@
 //! `PHPickerViewController`, Android's Photo Picker, an open panel on the
 //! desktops, `<input type=file>` in a browser). The picked images reach JS
 //! as `File`s whose bytes stay native ([`crate::picker`]). Needs the
-//! `picker` capability when the app declares capabilities.
+//! `picker` capability when the app declares capabilities: without it a
+//! pick rejects with `ERR_ACCESS_DENIED` (checked here, in the call; the
+//! core also refuses the picks of Rust components, which then get none).
 
 use crate::{
     element::{
-        JsError, JsHost, JsIn, JsObject, JsOwned, JsValue, Later, PropEnum, PropError, TsTypes,
-        module,
+        JsError, JsHost, JsIn, JsObject, JsOwned, JsValue, Later, PropEnum, PropError, System,
+        TsTypes, module,
     },
     geometry::{DevicePixels, Size},
     picker::{self, PickRequest, PickedFile},
@@ -26,10 +28,20 @@ impl Picker {
     /// formats browsers do not show come as JPEG unless `format` is
     /// `"current"`; `maxDimension` scales large photos down natively. On
     /// iOS and Android the system's photo picker needs no permission.
+    /// Rejects with `ERR_ACCESS_DENIED` when the `picker` capability is not
+    /// granted, and with a `RangeError` for options out of range.
     pub(crate) fn pick_images(
         options: Option<PickImagesOptions>,
+        sys: System,
     ) -> Result<Later<Vec<PickedImage>>, JsError> {
         let request = options.unwrap_or_default().request()?;
+        if !sys.access.allows_picker() {
+            return Err(JsError::access_denied(
+                "the picker is not granted: add `\"picker\": true` to capabilities in nsh.json",
+                "picker",
+                "",
+            ));
+        }
         Ok(Later::new(async move {
             let files = crate::prelude::pick_images(request).await;
             Ok::<_, JsError>(files.into_iter().map(PickedImage).collect())

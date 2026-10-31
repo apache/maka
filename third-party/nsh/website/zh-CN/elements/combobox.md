@@ -1,7 +1,6 @@
 ---
 title: Combobox
 description: Combobox 组件：从可搜索的一组条目中选出一个或多个值，桌面上是触发元素处的弹出层，手机上是 sheet，样式由应用决定。
-order: 20.66
 group: base
 demo: el-combobox
 ---
