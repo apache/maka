@@ -273,7 +273,10 @@ impl Desktop {
                 (found.len() == 1).then(|| found[0])
             })
             .await;
-        let position = bounds.center();
+        self.press_at(bounds.center());
+    }
+
+    fn press_at(&self, position: gpui::Point<gpui::Pixels>) {
         for input in [
             PlatformInput::MouseMove(MouseMoveEvent {
                 position,
@@ -571,30 +574,94 @@ async fn desktop_retries_a_failed_turn_in_place() {
 async fn desktop_opens_a_conversation_beside_the_current_one() {
     let mut fixture = Fixture::open().await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.type_text("BASE_SIDE_DRAFT").await;
     desktop.new_draft().await;
     desktop.type_text("MAIN_PANE_MESSAGE").await;
     desktop.key("enter", false);
     desktop.request(&mut fixture).await.finish().await;
-    desktop.press("Actions for NSH real Agent").await;
-    desktop.press("Open to the side").await;
-    desktop
-        .until(
-            "the conversation did not open beside the current one",
-            || {
-                (desktop.controls("Focus message composer").len() == 2
-                    && desktop.controls("Close side pane").len() == 1)
-                    .then_some(())
-            },
+    let roots = desktop
+        .client
+        .query("agent", "directories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    for index in 0..4 {
+        super::support::mutate(
+            &desktop.client,
+            "create",
+            json!({
+                "title":format!("Side {index}"),"labels":[],
+                "workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}
+            }),
         )
         .await;
-    desktop.press("Close side pane").await;
+    }
+    let resize = |width| {
+        desktop
+            .platform
+            .resize(size(gpui::DevicePixels(width), gpui::DevicePixels(640)))
+            .unwrap();
+        desktop.pump();
+    };
+    resize(3072);
+    for index in 0..4 {
+        let original = desktop.platform.text_input_target();
+        desktop.press(&format!("Actions for Side {index}")).await;
+        desktop.press("Open to the side").await;
+        desktop
+            .until("the additional conversation did not open", || {
+                (desktop.controls("Focus message composer").len() == index + 2).then_some(())
+            })
+            .await;
+        desktop.target_after(original).await;
+    }
+    desktop.type_text("KEEP_RIGHT_DRAFT").await;
+    let mut closes = desktop.controls("Close side pane");
+    closes.sort_by_key(|bounds| bounds.origin.x);
+    desktop.press_at(closes[1].center());
     desktop
-        .until("the side pane did not close", || {
-            (desktop.controls("Focus message composer").len() == 1
-                && desktop.controls("Close side pane").is_empty())
-            .then_some(())
+        .until(
+            "closing the middle pane did not keep the other panes",
+            || (desktop.controls("Focus message composer").len() == 4).then_some(()),
+        )
+        .await;
+    resize(1100);
+    desktop
+        .until("side panes did not hide in the narrower window", || {
+            (desktop.controls("Focus message composer").len() == 2).then_some(())
         })
         .await;
+    let original = desktop.platform.text_input_target();
+    desktop.press("Actions for NSH real Agent").await;
+    desktop.press("Open to the side").await;
+    desktop.target_after(original).await;
+    assert_eq!(
+        desktop.input_text().await,
+        "BASE_SIDE_DRAFT",
+        "the requested conversation must replace a visible pane"
+    );
+    resize(3072);
+    desktop
+        .until("hidden conversations did not return", || {
+            (desktop.controls("Focus message composer").len() == 4).then_some(())
+        })
+        .await;
+    let right = desktop
+        .controls("Focus message composer")
+        .into_iter()
+        .max_by_key(|bounds| bounds.origin.x)
+        .unwrap();
+    desktop.press_at(right.center());
+    assert_eq!(desktop.input_text().await, "KEEP_RIGHT_DRAFT");
+    while let Some(close) = desktop.controls("Close side pane").first().copied() {
+        let remaining = desktop.controls("Close side pane").len() - 1;
+        desktop.press_at(close.center());
+        desktop
+            .until("the side pane did not close", || {
+                (desktop.controls("Close side pane").len() == remaining).then_some(())
+            })
+            .await;
+    }
+    assert_eq!(desktop.controls("Focus message composer").len(), 1);
     desktop.close().await;
     fixture.finish().await;
 }
