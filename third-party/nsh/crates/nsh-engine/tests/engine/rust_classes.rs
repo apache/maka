@@ -119,6 +119,9 @@ mod other {
 thread_local! {
     /// What `Tools.mark` recorded (on the engine's thread).
     static MARKS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// `Tools.listen`'s listeners (on the engine's thread).
+    static LISTENERS: std::cell::RefCell<Vec<(u32, Callback<String>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Functions of the three kinds.
@@ -185,6 +188,29 @@ impl Tools {
     /// The words recorded so far, at once.
     pub(crate) fn marks() -> Vec<String> {
         MARKS.with_borrow(Clone::clone)
+    }
+
+    /// Posts every `ping` to `heard` until the returned function is
+    /// called or what called it goes.
+    pub(crate) fn listen(heard: Callback<String>) -> Stop {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        LISTENERS.with_borrow_mut(|l| l.push((id, heard)));
+        Stop::new(move || LISTENERS.with_borrow_mut(|l| l.retain(|(i, _)| *i != id)))
+    }
+
+    /// Posts `word` to every listener.
+    pub(crate) fn ping(word: String) {
+        LISTENERS.with_borrow(|l| {
+            for (_, heard) in l {
+                heard.post(word.clone());
+            }
+        });
+    }
+
+    /// How many listen.
+    pub(crate) fn listeners() -> u32 {
+        LISTENERS.with_borrow(Vec::len) as u32
     }
 
     /// An op that panics.
@@ -394,8 +420,8 @@ impl Sys {
         Ok(count)
     }
 
-    /// `n` doubled later: a negative one throws in the call, a zero one
-    /// rejects.
+    /// `n` doubled later: a negative one is refused in the call, a zero
+    /// one fails in the task (both reject).
     pub(crate) fn later(n: i32) -> Result<Later<i32>, JsError> {
         if n < 0 {
             return Err(JsError::Range(format!("{n} is negative")));
@@ -510,6 +536,7 @@ pub(crate) fn start_with(
         trace: false,
         network: None,
         websocket: None,
+        refuse_connections: None,
         filesystem: None,
         assets: None,
         chunk_loader: None,
@@ -650,7 +677,10 @@ setTimeout(async () => {
   lines.push(msg(() => Sys.reversed([1, 2])));
   lines.push(`${Sys.mayConnect(4000)} ${Sys.mayConnect(4001)}`);
   lines.push(`${Sys.take(2, true)} ${Sys.take(2, false)} ${msg(() => Sys.take(1, false))}`);
-  lines.push(msg(() => Sys.later(-1)));
+  let thrown = "no";
+  let refused;
+  try { refused = Sys.later(-1); } catch { thrown = "yes"; }
+  lines.push(`thrown ${thrown} ${await settled(refused)}`);
   lines.push(await settled(Sys.later(21)));
   lines.push(await settled(Sys.later(0)));
   const e = new Emitter();
@@ -668,7 +698,7 @@ mount(() => <Text>{shown()}</Text>);
 "#;
 
 #[test]
-fn calls_take_bytes_the_vms_system_and_start_tasks_that_throw_in_the_call() {
+fn calls_take_bytes_the_vms_system_and_start_tasks_that_reject_what_they_refuse() {
     let (_engine, rx) = start_with(
         SYSTEM,
         vec![registry()],
@@ -677,7 +707,7 @@ fn calls_take_bytes_the_vms_system_and_start_tasks_that_throw_in_the_call() {
     assert_eq!(
         shown(&rx, "done"),
         "done true 255,2,1|TypeError: Sys.reversed: `bytes`: expected a Uint8Array, got an array|\
-         true false|1 2 RangeError: at most 1|RangeError: -1 is negative|42|Error: zero|\
+         true false|1 2 RangeError: at most 1|thrown no RangeError: -1 is negative|42|Error: zero|\
          a hi,b hi|null"
     );
 }
@@ -841,6 +871,47 @@ fn integers_take_the_same_values_in_every_kind_of_call_and_prop() {
         );
     }
     assert_eq!(rows.len(), 5, "{done}");
+}
+
+const STOPS: &str = r#"import { mount, signal, Text } from "nsh";
+import { Tools } from "test/classes";
+
+const heard: string[] = [];
+const shown = signal("waiting");
+const open = signal(true);
+function Child() {
+  Tools.listen((w) => heard.push(`child ${w}`));
+  return <Text>child</Text>;
+}
+const stop = Tools.listen((w) => heard.push(`top ${w}`));
+setTimeout(() => {
+  Tools.ping("a");
+  setTimeout(() => {
+    const counts = [Tools.listeners()];
+    stop();
+    stop();
+    counts.push(Tools.listeners());
+    open.set(false);
+    counts.push(Tools.listeners());
+    Tools.ping("b");
+    setTimeout(() => shown.set(`done ${typeof stop} ${counts.join(" ")} ${heard.sort().join(",")}`), 10);
+  }, 10);
+}, 0);
+
+mount(() => (
+  <>
+    <Text>{shown()}</Text>
+    <If when={open()}>
+      <Child />
+    </If>
+  </>
+));
+"#;
+
+#[test]
+fn a_stop_function_stops_once_and_goes_with_its_owner() {
+    let (_engine, rx) = start(STOPS, vec![registry()]);
+    assert_eq!(shown(&rx, "done"), "done function 2 1 0 child a,top a");
 }
 
 const FRAGILE: &str = r#"import { mount, signal, Text } from "nsh";

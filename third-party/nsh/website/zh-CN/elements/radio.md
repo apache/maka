@@ -1,7 +1,6 @@
 ---
 title: Radio
 description: Radio 与 RadioGroup：一组选项，用户从中恰好选一个。每个单选框负责按压、键盘激活、禁用状态以及屏幕阅读器的角色和勾选状态；分组就是这组选项；外观和值都属于应用。
-order: 20.4
 group: base
 demo: el-radio
 ---

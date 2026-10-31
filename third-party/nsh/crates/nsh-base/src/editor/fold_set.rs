@@ -40,7 +40,9 @@ pub(crate) fn normalize(mut ranges: Vec<FoldRange>, line_count: usize) -> Vec<Fo
         range.end = range.end.min(last);
     }
     ranges.retain(|range| range.start < range.end);
-    ranges.sort_by_key(|range| (range.start, std::cmp::Reverse(range.end)));
+    crate::sort::sort_by_key(&mut ranges, |range| {
+        (range.start, std::cmp::Reverse(range.end))
+    });
     ranges.dedup_by_key(|range| range.start);
     let mut open: Vec<FoldRange> = Vec::new();
     ranges.retain(|range| {

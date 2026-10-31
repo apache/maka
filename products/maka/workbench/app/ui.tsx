@@ -126,6 +126,10 @@ export const controlStyle = {
   borderRadius: 8,
   justifyContent: 'center',
 } as const;
+export const toolbarControlStyle = {
+  ...controlStyle,
+  paddingHorizontal: platform.isTerminal ? 12 : 8,
+} as const;
 /**
  * Horizontal padding of the disclosure rows in a turn (status, process group,
  * thinking, tool). The desktop gives them one value so their chevrons and
@@ -201,7 +205,14 @@ export function Disclosure(props: {
   trailing?: JSX.Element;
 }) {
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', minWidth: 0 }}>
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        minWidth: 0,
+        marginHorizontal: platform.isTerminal ? 0 : -8,
+      }}
+    >
       <Button
         accessibilityLabel={props.label}
         tooltip={props.tooltip === undefined ? undefined : textTooltip(() => props.tooltip)}
@@ -338,7 +349,7 @@ export function Header(props: {
           ref={props.filesOpener}
           onPress={props.files}
           style={{
-            ...controlStyle,
+            ...toolbarControlStyle,
             flexDirection: 'row',
             alignItems: 'center',
             gap: 8,

@@ -1,5 +1,5 @@
 import { cleanup, signal, Text } from "nsh";
-import { WebSocket as SocketClient } from "websocket";
+import { connect } from "websocket";
 import { Button, Card, colors, mono } from "../ui";
 
 /** Both WebSocket interfaces use the host's real transport. */
@@ -15,7 +15,7 @@ export function StandardWebSockets() {
     busy.set(true);
     try {
       const url = "ws://127.0.0.1:9877/";
-      const socket = await SocketClient.connect(url);
+      const socket = await connect(url);
       const close = () => { void socket.close().catch(() => {}); };
       if (disposed) { close(); return; }
       release.add(close);

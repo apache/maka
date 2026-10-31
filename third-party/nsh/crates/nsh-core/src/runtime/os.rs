@@ -2,7 +2,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
-use crate::element::module;
+use crate::element::{JsError, codes, module};
 
 /// Native OS metadata. Returned paths confer no filesystem access.
 #[module]
@@ -29,11 +29,17 @@ impl Os {
         std::env::consts::ARCH.to_owned()
     }
 
-    /// The configured absolute native home directory. This grants no file access.
-    pub(crate) fn homedir() -> Result<String, String> {
+    /// The configured absolute native home directory. This grants no file
+    /// access. Throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where the
+    /// platform has none.
+    pub(crate) fn homedir() -> Result<String, JsError> {
+        let none = || {
+            JsError::Error("os.homedir(): no absolute native home directory is configured".into())
+                .with_code(codes::UNAVAILABLE)
+        };
         #[cfg(target_arch = "wasm32")]
         {
-            Err("os.homedir(): no absolute native home directory is configured".to_owned())
+            Err(none())
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -43,9 +49,7 @@ impl Os {
                 .map(PathBuf::from)
                 .find(|path| path.is_absolute())
                 .map(|path| path.to_string_lossy().into_owned())
-                .ok_or_else(|| {
-                    "os.homedir(): no absolute native home directory is configured".to_owned()
-                })
+                .ok_or_else(none)
         }
     }
 }

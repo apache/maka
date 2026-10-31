@@ -282,16 +282,21 @@ async fn session_send_returns_to_caller_while_the_existing_target_keeps_working(
             settings.tools = vec![create, send];
         }).await;
         let target = fixture.create("Existing task").await;
-        let caller = fixture.create("Coordinator").await;
+        let mut input = fixture.create_input("Coordinator").await;
+        input["tools"] = json!(["SessionCreate", "SessionSend"]);
+        let caller = fixture.mutation(2, "create", input, Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
         fixture.send(&caller).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
-        service_tools::named_tool_response(&mut socket, "SessionCreate", fixture.create_input("Created task").await).await;
+        service_tools::named_tool_response(&mut socket, "SessionCreate", json!({
+            "title":"Created task", "labels":[], "workspace":{"kind":"session","sessionId":caller},
+        })).await;
         let (mut socket, _) = listener.accept().await.unwrap();
         let sent = request(&mut socket).await;
         let created: Value = serde_json::from_str(sent["messages"].as_array().unwrap().iter().rev()
             .find(|message| message["role"] == "tool").unwrap()["content"].as_str().unwrap()).unwrap();
         assert_eq!(created["session"]["parentSessionId"], caller);
+        assert_eq!(created["session"]["tools"], json!(["SessionCreate", "SessionSend"]));
         let child = created["session"]["id"].as_str().unwrap();
         let observed = fixture.query("observe", json!({"sessionId":child})).await.unwrap();
         let updated = fixture.mutation(2, "metadata", json!({

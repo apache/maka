@@ -194,10 +194,18 @@ export const header = {
 };
 
 
-/** The motion every control shares: quick, slightly springy. */
+/**
+ * The motion every control shares: quick, slightly springy. `control` and
+ * `move` are gpui-kit's `spring_control` (a 180 ms response, no overshoot:
+ * a mark or a fill coming and going) and `spring_move` (280 ms, a damping
+ * ratio of 0.85: a thumb or an indicator traveling) as a unit mass's
+ * stiffness (2π / response)² and damping 2 · ratio · 2π / response.
+ */
 export const motion = {
   press: { stiffness: 520, damping: 34 },
   settle: { stiffness: 320, damping: 30 },
+  control: { stiffness: 1218, damping: 70 },
+  move: { stiffness: 504, damping: 38 },
   enter: { duration: 420, easing: Easing.out(Easing.cubic) },
 } as const;
 

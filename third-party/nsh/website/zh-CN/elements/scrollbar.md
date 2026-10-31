@@ -1,7 +1,6 @@
 ---
 title: Scrollbar
 description: "Scrollbar 组件：为所有滚动视图和列表（设置一次主题）或单个滚动视图提供应用自己外观的滚动条，也可放在应用想放的位置；滑块跟随内容，拖动和按压会滚动内容，可在滚动时、悬停时或始终显示，按应用给的时长淡入淡出。"
-order: 20.86
 group: base
 demo: el-scrollbar
 ---
@@ -86,6 +85,8 @@ mount(App);
 `Scrollbar` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`scrollbar()` 创建一个滚动条，每个
 prop 一个 setter（`.scroll(..)`、`.thumb_style(..)`），滚动条本身用类型化的样式方法；它的 `scroll` 接受 `ElementRef`（或
 `ScrollbarTarget`）。
+
+<a id="built-in-bars"></a>
 
 ## 内置滚动条
 

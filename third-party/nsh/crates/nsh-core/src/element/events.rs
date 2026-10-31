@@ -6,7 +6,7 @@ use std::{borrow::Cow, sync::Arc};
 use super::builder::Listener;
 use crate::{
     Bounds, ContextMenuEvent, EventPayload, JsonValue, MouseEvent, PayloadValue, Point, Points,
-    Size, TouchEvent,
+    PressEvent, Size, TouchEvent,
     geometry::{DevicePixels, Radians},
 };
 
@@ -493,6 +493,15 @@ pub(crate) fn native(p: &EventPayload) -> Option<Cow<'_, NativeEvent>> {
 /// `onMouseEnter`, `onMouseMove` and `onMouseLeave`'s payload; an event
 /// sent without one (an embedder's, a script's) still reaches the
 /// listener, at no known position.
+/// A press's (`on_press`, `on_long_press`, `on_press_down`,
+/// `on_press_up`): the default where the platform reported none.
+pub(crate) fn press(p: &EventPayload) -> Option<Cow<'_, PressEvent>> {
+    match p {
+        EventPayload::Press(e) => Some(Cow::Borrowed(e)),
+        _ => Some(Cow::Owned(PressEvent::default())),
+    }
+}
+
 pub(crate) fn mouse(p: &EventPayload) -> Option<Cow<'_, MouseEvent>> {
     match p {
         EventPayload::Mouse(e) => Some(Cow::Borrowed(e)),

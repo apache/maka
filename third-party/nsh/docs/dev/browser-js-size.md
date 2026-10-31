@@ -66,6 +66,7 @@ archive is attribution, not a proposed feature removal.
 
 QuickJS is absent from the browser feature's normal dependency graph (`nsh-js`, `rquickjs` and
 `rquickjs-sys` are absent), and the artifact exports the browser bridge without `nsh_start_bytecode`.
+Since then every web runtime (development host, website demos, playground) runs on the browser engine.
 The measured whole-runtime reduction includes replacing NSH's QuickJS bindings and standard-library
 integration; it must not be presented as the C interpreter's standalone size.
 

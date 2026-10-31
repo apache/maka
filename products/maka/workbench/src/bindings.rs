@@ -778,6 +778,18 @@ impl ApplicationHost {
         .await
     }
 
+    /// Dismiss an original's recovery prompt, retaining its reference and actual outcome.
+    pub async fn dismiss_control(this: Instance<Self>, operation_id: String) -> Result<(), String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(owner.clone(), async move {
+            let client = source.local(&owner).await?;
+            client.dismiss_control(id).await
+        })
+        .await
+    }
+
     /// Fence a control only if its preparation has not committed.
     pub async fn abandon_control(
         this: Instance<Self>,

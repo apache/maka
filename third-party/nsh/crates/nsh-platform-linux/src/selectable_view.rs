@@ -47,7 +47,9 @@ use gtk4::{self as gtk, gdk, gio, glib, graphene, prelude::*};
 use nsh_core::{
     AttributedText, NodeId, TextLayout,
     geometry::{Bounds, Point, Points},
-    selection::{SelectionModel, SelectionTexts},
+    selection::{
+        KeptRows, SelectionModel, SelectionTexts, autoscroll_step, reading_order, reorder,
+    },
 };
 use rustc_hash::FxHashMap;
 
@@ -74,6 +76,8 @@ struct Area {
     model: SelectionModel,
     /// The texts that draw part of the selection.
     highlighted: Vec<glib::WeakRef<NshView>>,
+    /// The virtual list rows its ends are in, kept rendered.
+    kept: KeptRows,
     /// A batch changed its subtree.
     dirty: bool,
     /// Its keys and focus controllers.
@@ -174,8 +178,17 @@ fn collect(area: &NshView) -> Texts {
                 });
             }
         }
+        // In reading order: a virtual list's recycled cells are mounted
+        // in no particular order.
+        let start = out.len();
+        let mut runs = Vec::new();
         for child in view.child_views() {
+            let from = out.len();
             walk(area, &child, out);
+            runs.push((child.state().frame, from..out.len()));
+        }
+        if let Some(order) = reading_order(&runs) {
+            reorder(out, start, &order);
         }
     }
     let mut items = Vec::new();
@@ -365,6 +378,7 @@ impl Area {
             view: view.downgrade(),
             model: SelectionModel::new(),
             highlighted: Vec::new(),
+            kept: KeptRows::default(),
             dirty: true,
             controllers: [keys.upcast(), focus.upcast()],
         }
@@ -559,8 +573,9 @@ pub(crate) fn released(surface: &Surface) {
 /// How often a drag past a scroll view's edge scrolls it (ms).
 const AUTOSCROLL_INTERVAL: u64 = 16;
 
-/// The scroll view around the dragging mouse's area that it is past an
-/// edge of, and by how much to scroll it (wheel deltas).
+/// The scroll view around the dragging mouse's area that it is near or
+/// past an edge of, and by how much to scroll it (wheel deltas,
+/// [`autoscroll_step`]).
 fn autoscroll_target(surface: &Surface) -> Option<(NshView, f32, f32)> {
     let (id, last) = surface
         .selection
@@ -585,27 +600,10 @@ fn autoscroll_target(surface: &Surface) -> Option<(NshView, f32, f32)> {
             .root
             .compute_point(&view, &graphene::Point::new(last.0, last.1))
             .map_or(last, |p| (p.x(), p.y()));
-        let past = |at: f32, extent: f32| {
-            if at < 0.0 {
-                at
-            } else if at > extent {
-                at - extent
-            } else {
-                0.0
-            }
-        };
-        // Faster the further past the edge, as browsers scroll.
-        let speed = |d: f32| {
-            if d == 0.0 {
-                0.0
-            } else {
-                d.signum() * (d.abs() / 4.0).clamp(1.0, 24.0)
-            }
-        };
         let (dx, dy) = if horizontal {
-            (speed(past(x, w)), 0.0)
+            (autoscroll_step(Points(x), Points(w)).0, 0.0)
         } else {
-            (0.0, speed(past(y, h)))
+            (0.0, autoscroll_step(Points(y), Points(h)).0)
         };
         if (dx, dy) != (0.0, 0.0) && crate::scroll::can_scroll(&view, dx, dy) {
             return Some((view, dx, dy));
@@ -727,16 +725,28 @@ fn clear(surface: &Surface, id: NodeId) {
 /// Shows area `id`'s selection: each text's range, the keyboard focus
 /// while there is one.
 fn apply(surface: &Surface, id: NodeId, area: &NshView, texts: &Texts) {
-    let (ranges, empty, old) = {
+    let (ranges, empty, old, kept) = {
         let mut areas = surface.selection.areas.borrow_mut();
         let Some(a) = areas.get_mut(&id) else { return };
         let ranges = a.model.ranges(texts);
+        let kept = a.kept.changed(&a.model);
         (
             ranges,
             a.model.is_empty(),
             std::mem::take(&mut a.highlighted),
+            kept,
         )
     };
+    if let Some(nodes) = kept {
+        surface.control(|c| {
+            c.keep_rendered(
+                nodes
+                    .into_iter()
+                    .filter_map(|k| k.try_into().ok())
+                    .collect(),
+            )
+        });
+    }
     let mut highlighted = Vec::with_capacity(ranges.len());
     let mut drawn = Vec::with_capacity(ranges.len());
     for (i, range) in ranges {

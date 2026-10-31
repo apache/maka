@@ -8,7 +8,9 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use nsh_core::element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, SharedString, TsTypes};
+use nsh_core::element::{
+    JsHost, JsIn, JsKind, JsOwned, JsPrimitive, JsValue, PropError, SharedString, TsTypes,
+};
 
 /// What a cell holds.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -157,14 +159,12 @@ impl PartialEq for DataTableRows {
     }
 }
 
-fn cell_of(value: JsIn<'_>) -> Cell {
-    match value.kind() {
-        JsKind::Number => value.as_number().map_or(Cell::Empty, Cell::Number),
-        JsKind::Bool => value.as_bool().map_or(Cell::Empty, Cell::Bool),
-        JsKind::String => value
-            .as_string()
-            .map_or(Cell::Empty, |s| Cell::Text(s.into())),
-        _ => value.as_date().map_or(Cell::Empty, Cell::Number),
+fn cell_of(value: JsPrimitive) -> Cell {
+    match value {
+        JsPrimitive::Number(n) | JsPrimitive::Date(n) => Cell::Number(n),
+        JsPrimitive::Bool(b) => Cell::Bool(b),
+        JsPrimitive::String(s) => Cell::Text(s.into()),
+        _ => Cell::Empty,
     }
 }
 
@@ -184,19 +184,25 @@ impl JsValue for DataTableRows {
         for r in 0..len {
             let row = value.index(r)?;
             let row = row.get();
+            // A row's cells are read in one call: a page of a wide table
+            // holds thousands, and the browser crosses into JS per call.
             match row.kind() {
                 JsKind::Array => {
-                    let n = row.array_len()?.unwrap_or(0);
-                    for c in 0..n {
-                        let cell = cell_of(row.index(c)?.get());
+                    for (c, cell) in row
+                        .primitives()?
+                        .unwrap_or_default()
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let cell = cell_of(cell);
                         if cell != Cell::Empty {
                             data.indexed_column(c)[r] = cell;
                         }
                     }
                 }
                 JsKind::Object => {
-                    for key in row.keys()? {
-                        let cell = cell_of(row.field(&key)?.get());
+                    for (key, cell) in row.primitive_entries()? {
+                        let cell = cell_of(cell);
                         if cell != Cell::Empty {
                             data.named_column(&key)[r] = cell;
                         }

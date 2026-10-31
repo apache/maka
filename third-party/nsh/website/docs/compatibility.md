@@ -36,7 +36,20 @@ The rules that keep it:
 2. **A rename keeps the old name** as an alias of the same implementation, marked `@deprecated` with the new name,
    for good. Moving an export to another module keeps it in the old one too.
 3. **Types only widen.** A union gains alternatives, a function gains overloads or trailing optional parameters, a
-   parameter becomes optional; what apps pass in (props, styles, options) gains optional members only.
+   parameter becomes optional; what apps pass in (props, styles, options) gains optional members only. The values
+   an app reads grow the same way: `platform.os` gains a platform, a state or a reason gains a case. A case the app
+   saw keeps its value, and the app handles a value it does not know, with a `switch`'s `default`:
+
+   ```tsx
+   switch (platform.os) {
+     case "ios":
+     case "android":
+       return <MobileLayout />;
+     default:
+       // The desktops, the web, and platforms NSH adds later.
+       return <WideLayout />;
+   }
+   ```
 4. **Behavior is kept.** New behavior is opt-in, through a new prop, option or value.
 5. **`nsh:rt` only grows**, each function keeping its signature and meaning.
 6. **Formats are read forever.** Packages, certificates, revocation lists and `app.json` of earlier releases are read
@@ -131,7 +144,7 @@ name. Update the case and its script to the new name. An API no release recorded
 ### Changing a type
 
 Widen it: more alternatives in a union, more overloads, trailing optional parameters, optional new members of what
-apps pass in. Parameter names are free to change; their count, optionality and types stay.
+apps pass in. A union apps read gains members the same way, each new member for a new case. Parameter names are free to change; their count, optionality and types stay.
 
 ### Changing behavior
 

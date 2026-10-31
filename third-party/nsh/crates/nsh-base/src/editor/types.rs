@@ -182,7 +182,7 @@ impl Selections {
         }
         self.primary = self.primary.min(self.all.len() - 1);
         let mut indexed: Vec<(usize, Selection)> = self.all.drain(..).enumerate().collect();
-        indexed.sort_by_key(|(_, s)| (s.start(), s.end()));
+        crate::sort::sort_by_key(&mut indexed, |(_, s)| (s.start(), s.end()));
         let mut merged: Vec<Selection> = Vec::with_capacity(indexed.len());
         let mut primary_at = 0;
         for (index, selection) in indexed {

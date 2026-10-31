@@ -23,6 +23,9 @@
 pub fn bootstrap() -> Option<std::process::ExitCode> {
     #[cfg(feature = "native-desktop")]
     {
+        if let Some(exit) = crate::host_handoff::bootstrap() {
+            return Some(exit);
+        }
         cua_driver_core::browser::extension_process::bootstrap_installed()
     }
     #[cfg(not(feature = "native-desktop"))]
@@ -35,7 +38,7 @@ pub fn bootstrap() -> Option<std::process::ExitCode> {
         let setup = arguments.first().and_then(|arg| arg.to_str()) == Some("browser")
             && matches!(
                 arguments.get(1).and_then(|arg| arg.to_str()),
-                Some("install" | "uninstall" | "extension")
+                Some("install" | "uninstall" | "extension" | "restore")
             );
         if extension || setup {
             eprintln!("Maka browser connector requires a build with native-desktop enabled");

@@ -56,6 +56,7 @@ impl SizingPolicy {
 pub(crate) struct PageFrame {
     bounds: WindowBounds,
     scaling_factor: f64,
+    native_scale: f64,
     requested_image_size: [f64; 2],
 }
 
@@ -116,6 +117,7 @@ impl PageFrame {
         Ok(Self {
             bounds,
             scaling_factor,
+            native_scale,
             requested_image_size,
         })
     }
@@ -136,6 +138,25 @@ impl PageFrame {
             self.bounds.y + point[1] * self.scaling_factor,
         ];
         if !point.iter().all(|value| value.is_finite()) {
+            return Err(unavailable());
+        }
+        Ok(point)
+    }
+
+    pub(crate) fn matches_geometry(
+        &self,
+        geometry: &platform_macos::geometry::NativeWindowGeometry,
+    ) -> bool {
+        self.native_scale == geometry.native_scale
+            && self.bounds.x == geometry.bounds.x
+            && self.bounds.y == geometry.bounds.y
+            && self.bounds.width == geometry.bounds.width
+            && self.bounds.height == geometry.bounds.height
+    }
+
+    pub(crate) fn native_pixels(&self, point: [f64; 2]) -> Result<[f64; 2], ToolError> {
+        let point = point.map(|coordinate| coordinate * self.scaling_factor * self.native_scale);
+        if !point.iter().all(|coordinate| coordinate.is_finite()) {
             return Err(unavailable());
         }
         Ok(point)

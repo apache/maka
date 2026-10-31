@@ -53,32 +53,34 @@ export function createAnimation(invoke, live, wake, environment) {
     add(b) { return math("add",this,b); }, sub(b) { return math("sub",this,b); },
     mul(b) { return math("mul",this,b); }, div(b) { return math("div",this,b); }, mod(b) { return math("mod",this,b); },
   });
+  // A call returning a promise never throws: what it refuses rejects.
+  const rejecting = f => { try { return f(); } catch (error) { return Promise.reject(error); } };
   const wait = (op, read = false, callback, composite) => {
     const id = allocate("animation");
     let resolve;
     const promise = new Promise(done => { resolve = done; });
     pending.set(id, { resolve, read, callback, composite: composite && new WeakRef(composite) });
-    try { op(id); } catch (error) { pending.delete(id); throw error; }
+    try { op(id); } catch (error) { pending.delete(id); return Promise.reject(error); }
     return promise;
   };
   const start = (node, spec) => wait(id => send(4, idOf(node), id, spec));
   Object.assign(AnimatedValue.prototype, {
     set(value) { send(3,idOf(this),value); },
-    stop() { send(5,idOf(this)); return this.getValue().then(value => ({ value })); },
+    stop() { return rejecting(() => { send(5,idOf(this)); return this.getValue().then(value => ({ value })); }); },
     getValue() { return wait(id => send(15,idOf(this),id), true); },
     setOffset(value) { send(12,idOf(this),value); },
     flattenOffset() { send(13,idOf(this)); }, extractOffset() { send(14,idOf(this)); },
     timing(to,options) { return start(this,{...options,type:"timing",to}); },
     spring(to,options) { return start(this,{...options,type:"spring",to}); },
     decay(options) { return start(this,{...options,type:"decay"}); },
-    keyframes(keyframes,options) { return Animated.keyframes(this,{...options,keyframes}).start(); },
+    keyframes(keyframes,options) { return rejecting(() => Animated.keyframes(this,{...options,keyframes}).start()); },
   });
   function composite(spec, inputs) {
     const key = allocate("composite");
     const data = { key, spec, inputs, running: 0 };
     const object = {
       start(callback) {
-        this.stop();
+        try { this.stop(); } catch (error) { return Promise.reject(error); }
         return wait(id => { data.running = id; send(8,id,key,spec); }, false, typeof callback === "function" ? callback : undefined, object);
       },
       stop() { if (data.running) send(9,data.running); },
@@ -135,7 +137,7 @@ export function createAnimation(invoke, live, wake, environment) {
         const spec = config && typeof config === "object" && base ? {...base,...config} : value;
         return composite({type:"motion",nodes:channels.map(channel=>idOf(motion[channel])),motion:spec,reduced},channels.map(channel=>motion[channel]));
       },
-      play(value,config) { return this.animation(value,config).start(); },
+      play(value,config) { return rejecting(() => this.animation(value,config).start()); },
       stop() { for(const channel of channels) send(5,idOf(motion[channel])); },
       reset() { for(const channel of channels) motion[channel].set(identity(channel)); },
     });

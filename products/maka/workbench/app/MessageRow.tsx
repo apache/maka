@@ -188,6 +188,8 @@ export function MessageRow({
                             justifyContent: 'flex-start',
                             alignItems: 'center',
                             gap: 8,
+                            // The first glyph starts where the message does.
+                            marginLeft: platform.isTerminal ? 0 : -8,
                           }}
                         >
                           <If
@@ -360,6 +362,8 @@ export function MessageRow({
                   justifyContent: 'flex-end',
                   gap: 8,
                   paddingTop: 4,
+                  // The last glyph ends where the bubble does.
+                  marginRight: platform.isTerminal ? 0 : -8,
                 }}
               >
                 <If when={timestamp()}>

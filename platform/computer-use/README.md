@@ -57,7 +57,7 @@ Load and enable that directory through Chrome's extension UI, then register its 
 maka browser install --provider maka --extension-id ACTUAL_MAKA_EXTENSION_ID
 ```
 
-To use an already installed ChatGPT extension, select its adapter explicitly instead:
+For an explicit permanent ChatGPT registration instead of automatic handoff:
 
 ```sh
 maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_ID
@@ -65,7 +65,19 @@ maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_
 
 These are alternative registration selections for an executable. Host installation refuses conflicting registrations. Re-export refuses to overwrite modified extension source. Setup does not install extensions, change browser policies or grant site access. Remove the matching extension-host registration with `maka browser uninstall --provider maka` for Maka or `maka browser uninstall --provider chatgpt` for ChatGPT; removal does not uninstall the extension or delete exported source.
 
-An installed ChatGPT extension connected to OpenAI's native host does not connect to Maka automatically. To keep that connection, use the separate Maka connector above. With no configured CDP endpoint or registered Maka connection, `cua.listBrowsers()` returns an empty list.
+Maka automatically discovers an installed ChatGPT extension and its original native host in Chrome or Chromium. Selection takes over the connection on demand; no setup command is required. Chrome is preferred when both are installed. To explicitly select an extension or Chromium instead:
+
+```sh
+maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_ID --on-demand
+```
+
+The default is Google Chrome. Append `--browser chromium` to select Chromium's native-messaging namespace instead. Each executable's connector selection targets one browser family; their recovery records and user counts remain separate. On Linux, on-demand setup honors `XDG_CONFIG_HOME`.
+
+Setup leaves the original registration in place. Browser discovery lists the configured connector without taking it over; selecting or using it acquires a shared lease. Normal turn cleanup, Session close and `await browser.release()` return that Session's lease. The original host is restored after the last user releases it. A long-running Agent should release the browser before sleeping. `maka browser restore` recovers an abandoned registration; an active supervisor keeps its registration lock.
+
+Acquiring and returning the connector reconnect the extension to the selected native host. Browser operations already running in the previous host do not carry over to the new connection.
+
+Discovery is read-only. The separate Maka connector and explicit permanent selections remain available. With neither an installed ChatGPT connector nor a configured provider, `cua.listBrowsers()` returns an empty list.
 
 Extension providers expose `browser.user` for user-tab discovery and claiming. The [API reference](src/api.md) covers its permission rules, the `tab.ax` facade, Playwright, clipboard and downloads. Host `browserPreparation` defaults to `popup: false` and `requestHeaders: []`; nonempty headers also enable effective popup adoption/relay. These controls grant no site access and do not prove ChatGPT page hooks are off. See the [typed configuration](../../plugins/workspace/api/src/computer.rs).
 
@@ -88,6 +100,14 @@ MAKA_CUA_WINDOWS_EXECUTABLE=/mnt/c/path/to/maka.exe just run
 ```
 
 Plain `cargo run -p maka-cli` retains the native default. To build the bridge directly, use `cargo run --locked -p maka-cli --no-default-features -- ...`. Cargo features combine across selected packages, so another selected package enabling `native-desktop` restores native dependencies. `just build` and release packaging retain the full native product; the Linux desktop shell separately requires Linux GUI development libraries.
+
+For the opt-in retained-page hardware smoke, build `cargo build -p maka-computer-use --features native-desktop --example desktop-host` and `cargo test -p maka-computer-native --features maka-computer-use/native-desktop --lib real_host_retained_browser_pages_survive_handoff --no-run`. Pass the emitted test executable to the runner on macOS or Linux with the official extension and original native host already connected:
+
+```sh
+python3 scripts/rust/browser-handoff-smoke.py --host target/debug/examples/desktop-host --test-binary /path/printed/by/cargo --extension-id ACTUAL_CHATGPT_EXTENSION_ID
+```
+
+The runner uses real Host authorization and effect custody, creates only blank test pages, checks retained pages across native-host generations and verifies exact registration restoration. It supplies the larger worker stack needed by this debug test. `--browser chromium` selects that namespace for the smoke as well.
 
 ## Lifetime
 

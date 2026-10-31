@@ -972,6 +972,7 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
             });
         }
         Command::PickImages { id, request } => pick_images(surface, *id, *request),
+        Command::FileRequest { id, request } => file_request(surface, *id, request),
         Command::ExitApp => {
             // The window goes after the batch is applied (closing it stops
             // the surface). An embedded surface closes the window it is in,
@@ -1046,6 +1047,91 @@ fn pick_images(surface: &Rc<Surface>, id: u32, request: nsh_core::picker::PickRe
             });
         })
         .detach();
+    });
+}
+
+/// A request on local paths ([`nsh_core::file_dialog`]): GPUI's open and
+/// save prompts (which take no title, filters or starting folder for
+/// picks, so the files whose extension the dialog does not take are left
+/// out), `open_with_system` and `reveal_path`, which report nothing back
+/// (only a path that is not there fails). GPUI has no trash.
+fn file_request(surface: &Rc<Surface>, id: u32, request: &nsh_core::file_dialog::FileRequest) {
+    use nsh_core::file_dialog::{self, FileRequest, OpenDialogKind};
+    let mut control = None;
+    surface.control(|c| control = Some(c.clone()));
+    let Some(control) = control else { return };
+    let request = request.clone();
+    crate::rt::on_app(move |cx| {
+        let answer =
+            move |payload| control.dispatch_event(ROOT_ID, EventKind::FileRequest, payload);
+        let missing = |path: &std::path::Path| {
+            EventPayload::file_failed(id, format!("`{}` does not exist", path.display()))
+        };
+        match request {
+            FileRequest::OpenDialog(dialog) => {
+                // Files and folders pick files where GPUI cannot do both.
+                let (files, directories) = match dialog.kind {
+                    OpenDialogKind::Folders => (false, true),
+                    OpenDialogKind::FilesAndFolders => (true, cx.can_select_mixed_files_and_dirs()),
+                    _ => (true, false),
+                };
+                let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
+                    files,
+                    directories,
+                    multiple: dialog.multiple,
+                    prompt: dialog.button_label.clone().map(Into::into),
+                });
+                cx.spawn(async move |_| {
+                    let payload = match paths.await {
+                        Ok(Ok(paths)) => EventPayload::file_answer(
+                            id,
+                            paths
+                                .unwrap_or_default()
+                                .into_iter()
+                                .filter(|p| p.is_dir() || file_dialog::passes(&dialog.filters, p))
+                                .collect(),
+                        ),
+                        Ok(Err(err)) => EventPayload::file_failed(id, err.to_string()),
+                        Err(_) => EventPayload::file_answer(id, Vec::new()),
+                    };
+                    answer(payload);
+                })
+                .detach();
+            }
+            FileRequest::SaveDialog(dialog) => {
+                let directory = dialog
+                    .directory
+                    .clone()
+                    .or_else(std::env::home_dir)
+                    .unwrap_or_default();
+                let path = cx.prompt_for_new_path(&directory, dialog.file_name.as_deref());
+                cx.spawn(async move |_| {
+                    let payload = match path.await {
+                        Ok(Ok(path)) => EventPayload::file_answer(id, path.into_iter().collect()),
+                        Ok(Err(err)) => EventPayload::file_failed(id, err.to_string()),
+                        Err(_) => EventPayload::file_answer(id, Vec::new()),
+                    };
+                    answer(payload);
+                })
+                .detach();
+            }
+            FileRequest::OpenPath(path) if path.exists() => {
+                cx.open_with_system(&path);
+                answer(EventPayload::file_answer(id, Vec::new()));
+            }
+            FileRequest::RevealPath(path) if path.exists() => {
+                cx.reveal_path(&path);
+                answer(EventPayload::file_answer(id, Vec::new()));
+            }
+            FileRequest::OpenPath(path) | FileRequest::RevealPath(path) => answer(missing(&path)),
+            FileRequest::MoveToTrash(_) => {
+                answer(EventPayload::file_failed(id, "GPUI has no trash"))
+            }
+            other => {
+                log::debug!("gpui: file request {other:?} is not supported");
+                answer(EventPayload::file_failed(id, "not supported"));
+            }
+        }
     });
 }
 

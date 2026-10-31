@@ -1,7 +1,7 @@
 ---
 title: Text
 description: 绘制文本的元素：嵌套片段、链接、行数限制、字体缩放、行内视图和文本布局事件。
-order: 3
+order: 20
 group: primitives
 demo: el-text
 ---

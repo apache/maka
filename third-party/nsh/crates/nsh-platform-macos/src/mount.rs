@@ -242,7 +242,11 @@ impl Mounter {
                 content,
             } => {
                 if let Some(view) = self.get(*id) {
+                    let old = view.state().text.as_ref().map(|t| t.text.clone());
                     crate::text::set(view, text, layout, *content);
+                    if let Some(old) = old {
+                        crate::transition::text_changed(surface, view, &old, text);
+                    }
                     self.draw_when_shown(view, Damage::All);
                     crate::access::text_changed(view);
                 }

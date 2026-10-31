@@ -19,7 +19,7 @@
 
 import { cleanup, signal } from 'nsh';
 import type { Host, Method, Input, Output } from './host';
-import { createText, errorText, message, UiError } from './text';
+import { createTransientText, createText, errorText, message, UiError } from './text';
 import type {
   ClientOperation,
   CredentialStatus,
@@ -73,7 +73,7 @@ export function createSettingsOperations(host: Host) {
     idle.clear();
   };
   const error = createText();
-  const notice = createText();
+  const notice = createTransientText();
   const pending = signal<ClientOperation[]>([]);
   const pendingKnown = signal(false);
   let alive = true;

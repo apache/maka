@@ -29,6 +29,7 @@ export interface ConversationShell {
   sessionId(): string | null;
   visible(): boolean;
   blocked(): boolean;
+  connectionLost(): boolean;
   openSession(sessionId: string | null): Promise<boolean>;
   openSettings(model?: ModelSelection): void;
   sidebarShown(): boolean;
@@ -37,10 +38,10 @@ export interface ConversationShell {
   showSidebar(): void;
   hideSidebar(): void;
   dismissRoute(): boolean;
-  /** Opens a conversation in a second pane beside this one, where the shell has one. */
+  /** Opens a conversation in another pane beside this one, where the shell has them. */
   openBeside?(sessionId: string): void;
-  /** The conversation open in the pane beside this one, if any. */
-  besideSessionId?(): string | null;
+  /** The conversations open in panes beside this one, left to right. */
+  besideSessionIds?(): readonly string[];
   /** Present on a pane the shell opened beside another: closes that pane. */
   closePane?(): void;
 }

@@ -59,7 +59,11 @@ const actionStyle = {
 
 // Queue content belongs to the existing Host watch. Only an uncommitted inline
 // edit and the current action's receipt/observation fence are local to this view.
-export function createQueueDock(session: ComposerQueue, height: () => number) {
+export function createQueueDock(
+  session: ComposerQueue,
+  height: () => number,
+  connected: () => boolean,
+) {
   const items = computed(
     () => session.snapshot()?.entries.filter((row) => row.kind !== 'in_flight') ?? [],
   );
@@ -94,7 +98,7 @@ export function createQueueDock(session: ComposerQueue, height: () => number) {
     expectedRevision: number,
     edit: Exclude<AgentQueueAction, { kind: 'reorder' }>,
   ) => {
-    if (!alive || busy()) return false;
+    if (!alive || !connected() || busy()) return false;
     if (expectedRevision !== revision()) {
       error.set(changedMessage());
       return false;
@@ -129,7 +133,7 @@ export function createQueueDock(session: ComposerQueue, height: () => number) {
     return false;
   };
   const read = async (messageId: string, expectedRevision: number) => {
-    if (!alive || busy()) return null;
+    if (!alive || !connected() || busy()) return null;
     busy.set({ through: null });
     error.set('');
     try {
@@ -150,7 +154,7 @@ export function createQueueDock(session: ComposerQueue, height: () => number) {
     return null;
   };
   const act = async (request: RowAction) => {
-    if (!alive || request.sessionId !== session.sessionId || busy()) return;
+    if (!alive || !connected() || request.sessionId !== session.sessionId || busy()) return;
     const row = entry(request.messageId);
     if (!row || request.revision !== revision()) {
       error.set(uiMessage('The queue changed before this action. Select the current row again.'));
@@ -232,7 +236,7 @@ export function createQueueDock(session: ComposerQueue, height: () => number) {
           {tr('Updating queue…')}
         </Text>
       </If>
-      <If when={error()}>
+      <If when={connected() && error()}>
         <Text
           style={[{ ...captionTextStyle, padding: 12, color: C.warning }, { userSelect: 'text' }]}
         >
@@ -242,16 +246,17 @@ export function createQueueDock(session: ComposerQueue, height: () => number) {
     </>
   );
   return {
-    shown: () => items().length > 0 || editing() !== null || busy() !== null || !!error(),
+    shown: () =>
+      items().length > 0 || editing() !== null || busy() !== null || (connected() && !!error()),
     summary: () => String(items().length),
     preview: () =>
-      error() ||
+      (connected() && error()) ||
       (editing()
         ? tr('Edit queued message')
         : busy()
           ? tr('Updating queue…')
           : (items()[0]?.preview ?? '')),
-    problem: () => !!error(),
+    problem: () => connected() && !!error(),
     content: () => (
       <View style={{ minHeight: 0, flexShrink: 1 }}>
         <If when={editing() === null}>
@@ -259,10 +264,9 @@ export function createQueueDock(session: ComposerQueue, height: () => number) {
             accessibilityLabel={tr('Message queue')}
             each={items()}
             keyExtractor={(row) => row.messageId}
-            footer={feedback}
             estimatedItemSize={rowHeight}
             style={{
-              height: error() || busy() ? height() : Math.min(items().length * rowHeight, height()),
+              height: Math.min(items().length * rowHeight, height()),
               minHeight: 0,
               flexShrink: 1,
               flexGrow: 0,
@@ -301,7 +305,7 @@ export function createQueueDock(session: ComposerQueue, height: () => number) {
                   <Button
                     accessibilityLabel={tr('Edit queued message {number}', { number: number() })}
                     tooltip={textTooltip(() => tr('Edit message'))}
-                    disabled={busy() !== null || editing() !== null}
+                    disabled={!connected() || busy() !== null || editing() !== null}
                     onPress={inputAction(act, request('edit'))}
                     style={actionStyle}
                     hoverStyle={{ backgroundColor: C.raised }}
@@ -312,7 +316,7 @@ export function createQueueDock(session: ComposerQueue, height: () => number) {
                   <Button
                     accessibilityLabel={tr('Remove queued message {number}', { number: number() })}
                     tooltip={textTooltip(() => tr('Remove message'))}
-                    disabled={busy() !== null || editing() !== null}
+                    disabled={!connected() || busy() !== null || editing() !== null}
                     onPress={inputAction(act, request('retract'))}
                     style={actionStyle}
                     hoverStyle={{ backgroundColor: C.raised }}
@@ -330,6 +334,7 @@ export function createQueueDock(session: ComposerQueue, height: () => number) {
                         : tr('Steer now · use in the current turn'),
                     )}
                     disabled={
+                      !connected() ||
                       busy() !== null ||
                       editing() !== null ||
                       row().kind !== 'followup' ||
@@ -346,6 +351,7 @@ export function createQueueDock(session: ComposerQueue, height: () => number) {
               );
             }}
           </List>
+          {feedback()}
         </If>
         <Each of={editing() ? [editing()!] : []} key={(edit) => edit.messageId}>
           {(edit) => {
@@ -419,6 +425,7 @@ export function createQueueDock(session: ComposerQueue, height: () => number) {
                     <Button
                       accessibilityLabel={tr('Save queued message')}
                       disabled={
+                        !connected() ||
                         busy() !== null ||
                         !entry(edit().messageId) ||
                         edit().revision !== revision() ||
@@ -434,7 +441,7 @@ export function createQueueDock(session: ComposerQueue, height: () => number) {
                     <If when={entry(edit().messageId) && edit().revision !== revision()}>
                       <Button
                         accessibilityLabel={tr('Review current queued message')}
-                        disabled={busy() !== null}
+                        disabled={!connected() || busy() !== null}
                         onPress={inputAction(reviewLatest, null)}
                         style={controlStyle}
                       >

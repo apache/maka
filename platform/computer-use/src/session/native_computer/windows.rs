@@ -258,7 +258,7 @@ impl Session {
             }
         }
         let bound = json!({"kind":"window","pid":binding.pid,"window_id":id});
-        let mut arguments = json!({"target":bound,"delivery_mode":"foreground"});
+        let mut arguments = json!({"target":bound,"delivery_mode":"background"});
         let tool = match operation {
             ActivateWindow => {
                 arguments = json!({"pid":binding.pid,"window_id":id});

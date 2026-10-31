@@ -213,7 +213,7 @@ pub(crate) fn rank(severity: EditorDiagnosticSeverity) -> u8 {
 
 /// By start, then end; stable, so marks of one range keep their order.
 fn sort<T>(marks: &mut [Mark<T>]) {
-    marks.sort_by_key(|mark| (mark.range.start, mark.range.end));
+    crate::sort::sort_by_key(marks, |mark| (mark.range.start, mark.range.end));
 }
 
 #[cfg(test)]

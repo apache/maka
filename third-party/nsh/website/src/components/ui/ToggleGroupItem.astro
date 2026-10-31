@@ -1,0 +1,17 @@
+---
+// An item of a ToggleGroup: a radio of a `single` group (`aria-checked`,
+// roving `tabindex`), a toggle of a `multiple` one (`aria-pressed`). The
+// page's script switches the attributes; `count` is a quiet number after
+// the label.
+import type { HTMLAttributes } from 'astro/types';
+type Props = Omit<HTMLAttributes<'button'>, 'type'> & {
+  type?: 'single' | 'multiple';
+  on?: boolean;
+  count?: number | string;
+};
+const { type = 'single', on = false, count, ...rest } = Astro.props;
+const state = type === 'single'
+  ? { role: 'radio', 'aria-checked': String(on), tabindex: on ? 0 : -1 }
+  : { 'aria-pressed': String(on) };
+---
+<button type="button" data-slot="toggle-group-item" {...state} {...rest}><slot />{count !== undefined && <span data-slot="toggle-count">{count}</span>}</button>

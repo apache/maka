@@ -127,7 +127,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      # QuickJS's WebAssembly build needs upstream LLVM: Apple's clang
+      # The web runtime's C code (zstd) needs upstream LLVM: Apple's clang
       # does not target wasm32. Check the C tools before building runtimes.
       - name: Set up WebAssembly C tools
         run: |
@@ -184,27 +184,6 @@ jobs:
           key: ${{ runner.os }}-release-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-release-cargo-
-
-      # Compile the actual WASI headers before the native runtimes: a bare
-      # clang probe does not exercise quickjs-jit-sys's vendored include path.
-      - name: Check the Windows web runtime
-        if: runner.os == 'Windows'
-        run: |
-          cargo metadata --locked --format-version 1 --filter-platform wasm32-unknown-unknown > "$RUNNER_TEMP/wasm-metadata.json"
-          python - "$RUNNER_TEMP/wasm-metadata.json" <<'PYTHON'
-          import json
-          import pathlib
-          import sys
-          packages = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["packages"]
-          package = next(p for p in packages if p["name"] == "quickjs-jit-sys")
-          include = pathlib.Path(package["manifest_path"]).parent / "vendor/wasi-libc/include"
-          for name in ("stdlib.h", "bits/alltypes.h"):
-              header = include / name
-              if not header.is_file():
-                  sys.exit(f"Missing vendored WASI header: {header}")
-              print(f"Verified WASI header: {header}")
-          PYTHON
-          cargo build --profile web -p nsh-platform-web --target wasm32-unknown-unknown --features bytecode-only
 
       - name: Build the distribution
         run: cargo xtask dist -v

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { signal } from 'nsh';
+import { cleanup, signal } from 'nsh';
 import { tr, type MessageKey } from './locale';
 import { message, type UiText, type UiTextValues } from './text-value';
 
@@ -45,6 +45,25 @@ export function createText() {
   return read;
 }
 
+/** Brief action feedback; pending states and actionable errors keep their own owners. */
+export function createTransientText() {
+  const text = createText();
+  const set = text.set;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+    clearTimeout(timer);
+  });
+  text.set = (value: UiText) => {
+    if (!alive) return;
+    clearTimeout(timer);
+    set(value);
+    if (value !== '') timer = setTimeout(() => set(''), 4000);
+  };
+  return text;
+}
+
 export class UiError extends Error {
   readonly text: UiText;
   constructor(key: MessageKey, values?: UiTextValues) {
@@ -55,9 +74,16 @@ export class UiError extends Error {
 }
 
 export function errorText(reason: unknown): UiText {
-  return reason instanceof UiError
-    ? reason.text
-    : reason instanceof Error
-      ? reason.message
-      : String(reason);
+  if (reason instanceof UiError) return reason.text;
+  const detail = reason instanceof Error ? reason.message : String(reason);
+  switch (detail) {
+    case 'agent_store_unavailable':
+      return message('Conversation data is temporarily unavailable. Try reconnecting.');
+    case 'agent_catalog_unavailable':
+      return message('Conversation list is temporarily unavailable. Try reconnecting.');
+    case 'database connection closed before accepting the operation':
+      return message('Connection interrupted. Reconnect to continue; your draft is kept.');
+    default:
+      return detail;
+  }
 }

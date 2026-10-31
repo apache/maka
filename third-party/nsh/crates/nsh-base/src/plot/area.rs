@@ -3,7 +3,8 @@
 use nsh_core::{
     SvgPaint,
     element::{
-        JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, RowAccessor, Rows, Style, TsTypes,
+        JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, RowAccessor, RowText, Rows, Style,
+        TsTypes,
     },
     prelude::*,
 };
@@ -13,7 +14,7 @@ use super::{
     line::{Curve, trace, trace_back},
     mark_canvas, mark_canvas_with, reach,
     scale::AxisMap,
-    series::{HoverDot, Series},
+    series::{self, HoverDot, Series},
 };
 
 /// Where an [`Area`]'s bottom edge goes (`y0`; TS `number |
@@ -136,6 +137,14 @@ pub struct AreaProps {
     /// `dotStyle` where none is set.
     #[prop(default)]
     pub hover_dot_style: Prop<Style>,
+    /// The category of its rows, which the plot's `colorScale` gives a
+    /// color (d3's `scaleOrdinal` of a field): a field name (its text, a
+    /// number as JS writes it) or a function of the row and its index. An
+    /// area is one series: its first row with a category gives the color.
+    /// That color is its `fill` where nothing sets one, in place of
+    /// `currentColor` (beside a background, `fill` stays `none`), so the
+    /// app's `fill-*` classes and `fill` style win.
+    pub color: Prop<Option<RowText>>,
 }
 
 /// A series of a [`Plot`](super::Plot) drawn as the region between its
@@ -146,7 +155,8 @@ pub struct AreaProps {
 /// `area().y0(accessor)`) a bottom edge through those values with the same
 /// curve, back to the first row, a band. It fills with its `fill`
 /// (`fill-*` classes; inherited from the plot as CSS inherits it),
-/// `currentColor` where none is set, over its `background` part (a
+/// `currentColor` where none is set (with `color`, its category's color
+/// of the plot's `colorScale` instead), over its `background` part (a
 /// gradient, `bg-linear-*`, shown inside its shape; `fill` is then `none`
 /// where none is set), and strokes its top edge with its `stroke`
 /// (`stroke-*`, `strokeWidth`, `strokeDasharray`), none where none is set.
@@ -171,6 +181,14 @@ pub fn Area(props: AreaProps, _cx: Scope<NoEvent>) -> impl IntoElement {
             hover_dot,
         );
         series
+    });
+    let (data, color) = (props.data, props.color);
+    let colors = plot.map(|plot| {
+        series::colors(
+            plot,
+            move || data.get().unwrap_or_else(|| plot.rows.get()),
+            color,
+        )
     });
     // Its constant baseline: `y0`'s value, or the edge of the plot where
     // the y scale's smallest values are (the bottom one; the top one when
@@ -271,7 +289,10 @@ pub fn Area(props: AreaProps, _cx: Scope<NoEvent>) -> impl IntoElement {
                 true => SvgPaint::None,
                 false => SvgPaint::CurrentColor,
             };
-            let p = p.fill_style_from_view(initial);
+            let p = p.fill_style_from_view(series::paint_of(
+                colors.and_then(series::first_color),
+                initial,
+            ));
             let (Some(plot), Some(series)) = (plot, series) else {
                 return p;
             };

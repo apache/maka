@@ -1,7 +1,6 @@
 ---
 title: Table
 description: "The Table component and its parts: a table of the app's own rows and cells that screen readers know as a table, with the look the app gives each part."
-order: 26.3
 group: base
 demo: el-table
 ---

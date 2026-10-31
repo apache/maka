@@ -403,23 +403,47 @@ pub struct ComponentSpec {
     pub generic: bool,
 }
 
+/// What makes a component's props', events' and methods' specs.
+type Specs = (
+    fn(&mut TsTypes) -> Vec<PropSpec>,
+    fn(&mut TsTypes) -> Vec<EventSpec>,
+    fn(&mut TsTypes) -> Vec<MethodSpec>,
+);
+
 impl ComponentSpec {
     pub(crate) fn of<C: Component>() -> Self {
+        Self::build(
+            name_of::<C>(),
+            C::DOC,
+            (C::Props::spec, C::Event::spec, C::METHODS.specs),
+            C::Props::LAZY_CHILDREN,
+            C::Props::GENERIC,
+        )
+    }
+
+    /// [`Self::of`] past what depends on the component's type.
+    #[inline(never)]
+    fn build(
+        name: &'static str,
+        doc: &'static str,
+        (props, events, methods): Specs,
+        lazy_children: bool,
+        generic: bool,
+    ) -> Self {
         let mut types = TsTypes::default();
-        let props = C::Props::spec(&mut types);
-        let events = C::Event::spec(&mut types);
-        let methods = (C::METHODS.specs)(&mut types);
-        let name = name_of::<C>();
+        let props = props(&mut types);
+        let events = events(&mut types);
+        let methods = methods(&mut types);
         Self {
             name,
             export: export_name(name).to_owned(),
-            doc: C::DOC,
+            doc,
             props,
             events,
             methods,
             types,
-            lazy_children: C::Props::LAZY_CHILDREN,
-            generic: C::Props::GENERIC,
+            lazy_children,
+            generic,
         }
     }
 
@@ -805,11 +829,27 @@ impl Registry {
     #[track_caller]
     pub fn register<C: Component>(&mut self) -> &mut Self {
         let spec = ComponentSpec::of::<C>();
+        let mut refs = Vec::new();
+        (C::METHODS.refs)(&mut refs);
+        self.register_erased(spec, make_instance::<C>, TypeId::of::<C>(), refs)
+    }
+
+    /// [`Self::register`] past what depends on the component's type: once,
+    /// not once per component.
+    #[track_caller]
+    #[inline(never)]
+    fn register_erased(
+        &mut self,
+        spec: ComponentSpec,
+        make: fn() -> Box<dyn AnyInstance>,
+        id: TypeId,
+        refs: Vec<&'static ClassDef>,
+    ) -> &mut Self {
         self.check_value_name(&spec.export);
         let types = Arc::make_mut(&mut self.types);
         if let Some(old) = types.get(spec.name) {
             let set = self.ui_set.or(self.namespace);
-            panic!("{}", same_name(spec.name, old.id, TypeId::of::<C>(), set));
+            panic!("{}", same_name(spec.name, old.id, id, set));
         }
         if self.classes.keys().any(|(_, name)| *name == spec.export) {
             panic!(
@@ -832,12 +872,10 @@ impl Registry {
             spec.name,
             ComponentType {
                 spec: Arc::new(spec),
-                make: make_instance::<C>,
-                id: TypeId::of::<C>(),
+                make,
+                id,
             },
         );
-        let mut refs = Vec::new();
-        (C::METHODS.refs)(&mut refs);
         self.classes_named(refs)
     }
 
@@ -1105,7 +1143,7 @@ impl Registry {
     /// runtime, before the app's first op: what the set's crates keep per
     /// engine is set up there (the languages an `Editor` knows,
     /// `nsh_base::editor::register_language`; a value of
-    /// [`global`](super::prelude::global)), as a Rust app's root sets it up
+    /// [`super::global()`]), as a Rust app's root sets it up
     /// before its children. An app's crate calls it from its
     /// `#[native_module]` function.
     pub fn setup(&mut self, f: impl Fn() + Send + Sync + 'static) -> &mut Self {

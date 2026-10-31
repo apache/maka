@@ -24,7 +24,7 @@ test("the sidebar shows the selected demo in the pane", async () => {
     expect(app.texts()).toContain(text);
   }
   // No index to go back to: the pane's demo is no pushed screen.
-  await expect(() => app.back()).rejects.toThrow("nothing to go back from");
+  await expect(() => app.back()).rejects.toMatchObject({ code: "ERR_NSH_TEST_NO_BACK" });
   await app.press("label:Photos");
   await app.waitFor(PHOTOS);
   expect(app.texts()).toContain("Photo stream");
@@ -47,5 +47,5 @@ test("resizing switches layouts and keeps the open demo", async () => {
   await app.waitFor(FOOTER);
   expect(app.texts()).toContain(PHOTOS);
   expect(app.texts()).toContain("Photo stream");
-  await expect(() => app.back()).rejects.toThrow("nothing to go back from");
+  await expect(() => app.back()).rejects.toMatchObject({ code: "ERR_NSH_TEST_NO_BACK" });
 });

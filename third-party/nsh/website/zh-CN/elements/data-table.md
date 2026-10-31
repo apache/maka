@@ -1,7 +1,6 @@
 ---
 title: DataTable
 description: DataTable 组件：向两个方向滚动、行数和列数不限的表格，列可以固定、调整宽度、移动和排序，支持按行、列、单元格选择，行由应用分页提供，带分组标签、键盘导航和由应用绘制的单元格。
-order: 26.4
 group: base
 demo: el-data-table
 ---
@@ -232,7 +231,7 @@ const columns: DataTableColumn[] = [
 
 ## Ref
 
-`ref` 提供 `DataTableRef`：
+`ref` 提供 `DataTableRef`。方法收到表格中没有的行、列或列键时什么也不改变，并在日志中记一条警告，写明方法和那个值；`fitColumn` 遇到未知的键时以 `TypeError` 拒绝。
 
 | 方法 | 说明 |
 |---|---|
@@ -243,7 +242,7 @@ const columns: DataTableColumn[] = [
 | `visibleRows()`、`visibleColumns()` | 视野中的行和滚动列，形如 `{ start, end }`（不含 `end`）。 |
 | `columnWidths()` | 当前的宽度，按 `columns` 的顺序。 |
 | `setColumnWidth(key, width)` | 在限制范围内设置列宽。 |
-| `fitColumn(key)` | 把列设为其最宽文字和标题所需的宽度，范围是视野中的行及其周围最多一千行。返回宽度，没有这一列时返回 `null`。 |
+| `fitColumn(key)` | 把列设为其最宽文字和标题所需的宽度，范围是视野中的行及其周围最多一千行。返回宽度。 |
 | `dump(start?, end?)` | 给定行（默认全部已持有的行）和标题的文字，与显示一致：`{ headers, rows }`，用于导出。 |
 | `copy()` | 把选中内容的文字放到剪贴板：一行的单元格以制表符分隔，一列的以换行分隔，一个单元格就是它的文字。 |
 | `focus()`、`blur()` | 让表格获得或交出键盘。 |

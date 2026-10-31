@@ -1,7 +1,6 @@
 ---
 title: Progress
 description: "The Progress component: a linear progress bar that owns its role, range and value for screen readers and the indicator's width by the value, with a track and an indicator the app styles."
-order: 20.8
 group: base
 demo: el-progress
 ---

@@ -1,7 +1,7 @@
 ---
 title: Shader
 description: "The Shader element: a view whose box a GPU program written in WGSL draws, under its children."
-order: 8.5
+order: 70
 group: primitives
 demo: el-shader
 ---

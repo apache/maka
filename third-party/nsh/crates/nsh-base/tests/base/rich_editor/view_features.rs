@@ -237,6 +237,26 @@ fn placeholders_follow_the_block_type() {
 }
 
 #[test]
+fn only_the_block_an_input_method_composes_in_hides_its_placeholder() {
+    let mut app = start_features(
+        json!({"type": "doc", "content": [
+            {"type": "heading", "attrs": {"level": 1}},
+            {"type": "paragraph"},
+        ]}),
+        true,
+    );
+    app.type_text("id:editor", "").unwrap();
+    keys(&mut app, &["ctrl+end"]);
+    see(&mut app, "\u{200b}Title");
+    see(&mut app, "\u{200b}Write here");
+    compose(&mut app, true, "ni");
+    see(&mut app, "ni");
+    app.wait_for_gone("text:\u{200b}Write here", Duration::from_secs(5))
+        .unwrap();
+    see(&mut app, "\u{200b}Title");
+}
+
+#[test]
 fn placeholders_hide_while_read_only() {
     let mut app = start_features(
         json!({"type": "doc", "content": [{"type": "paragraph"}]}),

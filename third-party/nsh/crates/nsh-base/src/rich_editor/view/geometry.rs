@@ -238,7 +238,7 @@ impl Geometry {
     pub(crate) fn range_rects(&self, from: usize, to: usize) -> Vec<Bounds<Points>> {
         let mut out = Vec::new();
         let mut ids: Vec<(&u64, &TextGeo)> = self.texts.iter().collect();
-        ids.sort_by_key(|(_, g)| g.start);
+        crate::sort::sort_by_key(&mut ids, |(_, g)| g.start);
         for (id, geo) in ids {
             let (start, end) = (geo.start, geo.start + geo.map.size);
             if end < from || start > to {

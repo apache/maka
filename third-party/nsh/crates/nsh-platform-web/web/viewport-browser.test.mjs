@@ -51,19 +51,24 @@ for (const crossOrigin of [false, true]) {
             const dialog = make(2);
             await pause();
             const host = await ask('open');
-            check(dialog.clientWidth === host.width && dialog.clientHeight === host.height, 'modal stayed in iframe');
+            // The host shows the app at .75: the dialog keeps that scale and covers the window.
+            const box = dialog.getBoundingClientRect();
+            check(Math.abs(box.width - host.width) < 1 && Math.abs(box.height - host.height) < 1, 'modal stayed in iframe');
+            check(Math.abs(dialog.clientWidth * .75 - host.width) < 1, 'modal lost the app scale');
             check(p.root.clientWidth === 320 && p.root.clientHeight === 240, 'app resized with the modal');
-            check(sizes.at(-1)[1] === host.width && sizes.at(-1)[2] === host.height, 'core got the iframe size');
+            check(sizes.at(-1)[1] === dialog.clientWidth && sizes.at(-1)[2] === dialog.clientHeight, 'core got the iframe size');
             const button = document.createElement('div');
             Object.assign(button, { _id:3, _kind:'view', _events:new Set(['onPress']), _props:{}, _tracked:0 });
             button.className='nsh-v'; button.style.cssText='left:600px;top:300px;width:80px;height:40px';
             dialog.append(button); p.views.set(3,button);
-            button.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:1,pointerType:'touch',clientX:620,clientY:310}));
-            button.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:1,pointerType:'touch',clientX:620,clientY:310}));
-            const mouse = p.mousePoint(button, {clientX:620,clientY:310});
-            check(mouse[0]===20 && mouse[1]===10,'mouse inherited the embedded app scale');
+            const at = {bubbles:true,pointerId:1,pointerType:'touch',clientX:620*.75,clientY:310*.75};
+            button.dispatchEvent(new PointerEvent('pointerdown',at));
+            button.dispatchEvent(new PointerEvent('pointerup',at));
+            const near = (a, b) => Math.abs(a - b) < .01;
+            const mouse = p.mousePoint(button, at);
+            check(near(mouse[0],20) && near(mouse[1],10),'mouse missed the dialog scale');
             const press = events.find(e=>e[1]==='onPress')?.[2];
-            check(press?.pagePosition.x===620 && press?.position.x===20, 'pointer origin moved with iframe');
+            check(near(press?.pagePosition.x,620) && near(press?.position.x,20), 'pointer missed the dialog scale');
             const wheel = new WheelEvent('wheel',{bubbles:true,cancelable:true,deltaY:120});
             dialog.dispatchEvent(wheel); check(wheel.defaultPrevented,'backdrop let the wheel through');
             check(getComputedStyle(dialog).touchAction==='none','backdrop lets touches pan the page');
@@ -78,7 +83,8 @@ for (const crossOrigin of [false, true]) {
             await ask('remove');
           } catch(e) { parent.postMessage({phase:'failed',error:e.stack},'*'); }
           </script>`;
-        const html = `<!doctype html><style>body{height:2000px;margin:0}#trap{transform:translate(30px,40px) scale(.75);transform-origin:0 0;overflow:hidden;width:340px;height:260px}iframe{width:320px;height:240px;border:0}</style>
+        // A dark host around a light player: the lifted frame takes its document's scheme, or it is painted opaque.
+        const html = `<!doctype html><style>html{color-scheme:dark}body{height:2000px;margin:0}#trap{transform:translate(30px,40px) scale(.75);transform-origin:0 0;overflow:hidden;width:340px;height:260px}iframe{width:320px;height:240px;border:0}</style>
           <button id="outside">outside</button><div id="trap"><iframe ${crossOrigin ? 'sandbox="allow-scripts"' : ''}></iframe></div>
           <script type="module">
           import { hostPlayerFrame } from '${module}';
@@ -103,6 +109,7 @@ for (const crossOrigin of [false, true]) {
               if(phase==='open'||phase==='nested-closed'){
                 check(frame.matches(':popover-open'),'iframe not in parent top layer');
                 check(getComputedStyle(frame).backgroundColor==='rgba(0, 0, 0, 0)','iframe background hides the host page');
+                check(getComputedStyle(frame).colorScheme==='light','iframe scheme differs from its document');
                 check(document.elementFromPoint(700,400)===frame,'mask does not cover the parent');
                 check(document.documentElement.style.overflow==='hidden','parent still scrolls');
                 check(outside.inert,'keyboard can reach the parent');

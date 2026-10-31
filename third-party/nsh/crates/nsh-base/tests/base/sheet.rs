@@ -73,7 +73,7 @@ fn a_bottom_sheet_can_be_swiped_closed() {
     app.drag("id:handle", point(px(0.0), px(100.0))).unwrap();
     app.wait_for_gone("Sheet body", std::time::Duration::from_secs(2))
         .unwrap();
-    app.wait_for("requests:1").unwrap();
+    app.wait_for("text:requests:1").unwrap();
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn a_short_drag_returns_without_a_close_request() {
     app.wait(std::time::Duration::from_millis(400)).unwrap();
     app.drag("id:handle", point(px(0.0), px(20.0))).unwrap();
     app.wait(std::time::Duration::from_millis(400)).unwrap();
-    app.wait_for("requests:0").unwrap();
+    app.wait_for("text:requests:0").unwrap();
     app.press("id:close").unwrap();
     app.wait_for_gone("Sheet body", std::time::Duration::from_secs(2))
         .unwrap();
@@ -128,7 +128,7 @@ fn a_cancelled_drag_does_not_close_even_past_the_release_threshold() {
         },
     );
     app.wait(std::time::Duration::from_millis(400)).unwrap();
-    app.wait_for("requests:0").unwrap();
+    app.wait_for("text:requests:0").unwrap();
     app.press("id:close").unwrap();
     app.wait_for_gone("Sheet body", std::time::Duration::from_secs(2))
         .unwrap();
@@ -140,7 +140,7 @@ fn a_permission_change_keeps_the_existing_content_and_stops_swiping() {
     app.wait(std::time::Duration::from_millis(400)).unwrap();
     app.press("id:lock").unwrap();
     app.drag("id:handle", point(px(0.0), px(100.0))).unwrap();
-    app.wait_for("requests:0").unwrap();
+    app.wait_for("text:requests:0").unwrap();
     app.wait_for("Sheet body").unwrap();
 }
 
@@ -151,7 +151,7 @@ fn declining_a_controlled_request_returns_the_sheet() {
     app.press("id:decline").unwrap();
     app.drag("id:handle", point(px(0.0), px(100.0))).unwrap();
     app.wait(std::time::Duration::from_millis(400)).unwrap();
-    app.wait_for("requests:1").unwrap();
+    app.wait_for("text:requests:1").unwrap();
     app.press("id:close").unwrap();
     app.wait_for_gone("Sheet body", std::time::Duration::from_secs(2))
         .unwrap();
@@ -575,5 +575,5 @@ fn a_web_sheet_uses_the_presented_surface_size_and_keeps_its_close_lifecycle() {
     app.press_key("Escape").unwrap();
     app.wait_for_gone("Sheet body", Duration::from_secs(2))
         .unwrap();
-    app.wait_for("requests:1").unwrap();
+    app.wait_for("text:requests:1").unwrap();
 }

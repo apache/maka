@@ -37,6 +37,7 @@ mod downloads;
 mod extension;
 mod filechooser;
 mod frames;
+mod host_handoff;
 mod origin;
 mod owned_input;
 mod ownership;
@@ -657,7 +658,24 @@ impl Browsers {
         ))
     }
 
-    async fn use_tab(&self, identity: &TabIdentity, turn: &str) -> Result<(), ToolError> {
+    async fn use_tab(
+        &self,
+        identity: &TabIdentity,
+        turn: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ToolError> {
+        let provider = self
+            .host()
+            .await
+            .lock()
+            .await
+            .tabs
+            .get(identity)
+            .map(|lease| lease.creator.provider.clone());
+        if let Some(provider) = provider {
+            self.ensure_provider_handoff(&provider, cancellation)
+                .await?;
+        }
         self.host()
             .await
             .lock()
@@ -715,6 +733,9 @@ impl Browsers {
                 Err(error) => errors.push(format!("{}: {error}", provider.id())),
             }
         }
+        if let Err(error) = self.append_handoff_candidate(&mut browsers).await {
+            errors.push(error.to_string());
+        }
         (browsers, errors)
     }
     pub(crate) async fn invoke(
@@ -726,6 +747,9 @@ impl Browsers {
         language: Language,
     ) -> Result<Value, ToolError> {
         let turn = invocation.turn();
+        if let Command::BrowserRelease { browser_id } = &command {
+            return self.release_browser(browser_id, turn).await;
+        }
         let call = BrowserCall::new(invocation, cancellation, language);
         if matches!(
             &command,
@@ -750,6 +774,25 @@ impl Browsers {
             self.extension_providers = discovered.providers;
             self.extension_errors = discovered.errors;
         }
+        let options = match &command {
+            Command::GetBrowser { options } => Some(BrowserOptions {
+                id: options.id.clone(),
+                url: options.url.clone(),
+                extension_instance_id: options.extension_instance_id.clone(),
+            }),
+            _ => self.command_browser_id(&command).map(|id| BrowserOptions {
+                id: Some(id.to_owned()),
+                url: None,
+                extension_instance_id: None,
+            }),
+        };
+        if let Some(options) = options
+            && self.acquire_handoff(&options, cancellation).await?
+        {
+            let discovered = provider::discover(&self.driver, self.owner).await;
+            self.extension_providers = discovered.providers;
+            self.extension_errors = discovered.errors;
+        }
         self.reconcile_extension_command(&command).await?;
         match command {
             Command::BrowserViewportSet {
@@ -768,7 +811,7 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn).await?;
+                    self.use_tab(&identity, turn, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).expect("checked browser tab");
                     tab.last_turn = turn.to_owned();
                     tab.page_assets_list(call).await
@@ -785,7 +828,7 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn).await?;
+                    self.use_tab(&identity, turn, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).expect("checked browser tab");
                     tab.last_turn = turn.to_owned();
                     tab.page_assets_bundle(options, call).await
@@ -841,6 +884,7 @@ impl Browsers {
                             Err(error) => retain_inventory_error(&mut failure, error),
                         }
                     }
+                    self.append_handoff_candidate(&mut browsers).await?;
                     if browsers.is_empty() {
                         if let Some(error) = failure {
                             return Err(error);
@@ -1000,7 +1044,7 @@ impl Browsers {
                         .get(handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn).await?;
+                    self.use_tab(&identity, turn, cancellation).await?;
                     let tab = self.targets.get_mut(handle).unwrap();
                     tab.last_turn = turn.to_owned();
                     tab.authorize(None, invocation, cancellation, language)
@@ -1058,7 +1102,7 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn).await?;
+                    self.use_tab(&identity, turn, cancellation).await?;
                     let tab = self
                         .targets
                         .get_mut(&handle)
@@ -1087,7 +1131,7 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn).await?;
+                    self.use_tab(&identity, turn, cancellation).await?;
                     let tab = self
                         .targets
                         .get_mut(&handle)
@@ -1131,7 +1175,7 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn).await?;
+                    self.use_tab(&identity, turn, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).unwrap();
                     tab.last_turn = turn.to_owned();
                     tab.authorize(None, invocation, cancellation, language)
@@ -1150,7 +1194,7 @@ impl Browsers {
                 }
                 let identity = self.targets.get(&handle)
                     .ok_or_else(|| failed("stale_tab: bind it again"))?.identity()?;
-                self.use_tab(&identity, turn).await?;
+                self.use_tab(&identity, turn, cancellation).await?;
                 let tab = self.targets.get_mut(&handle).expect("checked browser handle");
                 tab.last_turn = turn.to_owned();
                 let mut budget = Some(ReadBudget { remaining:options.budget() });
@@ -1173,7 +1217,7 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn).await?;
+                    self.use_tab(&identity, turn, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).unwrap();
                     tab.last_turn = turn.to_owned();
                     let mut budget = Some(ReadBudget::new(&options));
@@ -1222,7 +1266,7 @@ impl Browsers {
                         .get(handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn).await?;
+                    self.use_tab(&identity, turn, cancellation).await?;
                     let tab = self.targets.get_mut(handle).unwrap();
                     tab.last_turn = turn.to_owned();
                     tab.authorize(None, invocation, cancellation, language)
@@ -1260,7 +1304,7 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn).await?;
+                    self.use_tab(&identity, turn, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).unwrap();
                     tab.last_turn = turn.to_owned();
                     tab.refresh_info(call).await?;
@@ -1464,6 +1508,8 @@ impl Browsers {
         cancellation: &tokio_util::sync::CancellationToken,
         language: Language,
     ) -> Result<Value, ToolError> {
+        self.ensure_provider_handoff(&provider, cancellation)
+            .await?;
         if provider.extension().is_some() {
             return self
                 .create_extension(provider, url, initial, invocation, cancellation, language)
@@ -1576,9 +1622,11 @@ impl Browsers {
             generation,
             info,
         } = source;
+        self.ensure_provider_handoff(&provider, cancellation)
+            .await?;
         let identity = BrowserIdentity::of(&provider, &generation)?.tab(&info.id);
         let api_profile = provider.api_profile();
-        self.use_tab(&identity, turn).await?;
+        self.use_tab(&identity, turn, cancellation).await?;
         if self
             .clipboards
             .get(provider.id())
@@ -1707,7 +1755,7 @@ impl Browsers {
             })
         })?;
         let identity = tab.identity()?;
-        self.use_tab(&identity, turn).await?;
+        self.use_tab(&identity, turn, cancellation).await?;
         let tab = self.targets.get_mut(handle).unwrap();
         tab.last_turn = turn.to_owned();
         let prior_frame = tab.frame.clone();
@@ -1766,7 +1814,7 @@ impl Browsers {
             })
         })?;
         let identity = tab.identity()?;
-        self.use_tab(&identity, turn).await?;
+        self.use_tab(&identity, turn, cancellation).await?;
         let host = self.host().await;
         let tab = self.targets.get_mut(handle).unwrap();
         tab.last_turn = turn.to_owned();
@@ -1939,7 +1987,8 @@ impl Browsers {
                     .is_ok_and(|identity| !finished.contains(&identity))
         });
         if failures.is_empty() {
-            Ok(())
+            self.retire_handoff_resources(None).await?;
+            self.release_handoff_user().await
         } else {
             Err(ToolError::CleanupUnconfirmed(failures.join("; ")))
         }
@@ -2016,6 +2065,8 @@ impl Browsers {
                 .extension_browsers
                 .close_owner(self.owner)
                 .await;
+            self.release_handoff_user().await?;
+            self.host().await.lock().await.handoffs.remove(&self.owner);
             Ok(())
         } else {
             Err(ToolError::CleanupUnconfirmed(failures.join("; ")))
@@ -3005,7 +3056,7 @@ impl Tab {
             Action::Close => {
                 unreachable!("tab closure is admitted by its Host owner")
             }
-            Action::TypeText { index, text } => {
+            Action::TypeText { index, text, .. } => {
                 self.focus(index, cancellation, language).await?;
                 self.before_element_input(selected_index, cancellation, language)
                     .await?;
@@ -3089,7 +3140,7 @@ impl Tab {
                     input.release(held).await
                 })).await?;
             }
-            Action::PressKey { index, key } => {
+            Action::PressKey { index, key, .. } => {
                 self.focus(index, cancellation, language).await?;
                 self.before_element_input(selected_index, cancellation, language)
                     .await?;
@@ -3774,14 +3825,27 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(listed.as_array().unwrap().len(), 1);
-            assert_eq!(listed[0]["id"], "actual-cdp");
-            assert!(listed[0].get("tabs").is_none());
+            let actual = listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|browser| browser["id"] == "actual-cdp")
+                .unwrap();
+            assert!(actual.get("tabs").is_none());
+            assert!(
+                !listed
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|browser| browser["id"] == "unconfirmed-cdp")
+            );
             let (state, errors) = browsers.state().await;
-            assert_eq!(state.len(), 1);
-            assert_eq!(state[0]["id"], "actual-cdp");
-            assert_eq!(errors.len(), 1);
-            assert!(errors[0].starts_with("unconfirmed-cdp: tool cleanup unconfirmed:"));
+            assert!(state.iter().any(|browser| browser["id"] == "actual-cdp"));
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.starts_with("unconfirmed-cdp: tool cleanup unconfirmed:"))
+            );
             let selected = browsers
                 .invoke(
                     Command::GetBrowser {

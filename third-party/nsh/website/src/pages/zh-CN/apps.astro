@@ -1,0 +1,23 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import Nav from '../../components/Nav.astro';
+import Apps from '../../components/Apps.astro';
+import SiteFooter from '../../components/SiteFooter.astro';
+import { getShowcaseApps } from '../../lib/showcases';
+import { url } from '../../lib/site';
+
+const apps = await getShowcaseApps();
+---
+
+<BaseLayout
+  lang="zh-CN"
+  title="应用案例"
+  description="基于 Native Shell 构建的应用：iOS、Android、macOS、Windows、Linux 与 Web 上的原生界面，从文件传输、系统监控到 Markdown 阅读。"
+  alternates={{ en: '/apps', 'zh-CN': '/zh-CN/apps' }}
+>
+  <Nav lang="zh-CN" currentPath={Astro.url.pathname} langHref={url('apps')} />
+  <main id="main">
+    <Apps apps={apps} lang="zh-CN" />
+  </main>
+  <SiteFooter lang="zh-CN" />
+</BaseLayout>

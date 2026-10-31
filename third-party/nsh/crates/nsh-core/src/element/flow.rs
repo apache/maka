@@ -364,6 +364,34 @@ fn element_key(id: u64, i: usize) -> super::SharedString {
     format!("\u{1}{id}.{i}").into()
 }
 
+/// Keeps the `count` elements of row `id` where they are, in `out`. Out of
+/// line, as [`show_row`]: [`Rows::update`] is made for every item and key
+/// type.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn keep_row(out: &mut Vec<RegionElement>, id: u64, count: usize) {
+    for i in 0..count {
+        let mut kept = super::ElNode::new(Tag::View);
+        kept.kind = ElKind::Keep;
+        kept.key = Some(element_key(id, i));
+        out.push(RegionElement {
+            owner: None,
+            element: AnyElement(kept),
+        });
+    }
+}
+
+/// Adds the elements a new row `id`, of `owner`, made to `out`.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn show_row(out: &mut Vec<RegionElement>, id: u64, owner: Owner, elements: Vec<AnyElement>) {
+    for (i, mut element) in elements.into_iter().enumerate() {
+        element.0.key = Some(element_key(id, i));
+        out.push(RegionElement {
+            owner: Some(owner),
+            element,
+        });
+    }
+}
+
 impl<T: Clone + PartialEq + 'static, K: Hash + Eq + Clone + 'static> EachRows for Rows<T, K> {
     fn bind(self: Rc<Self>, show: Rc<dyn Fn(Vec<RegionElement>)>) {
         // The rows go with the region's owner.
@@ -400,15 +428,7 @@ impl<T: Clone + PartialEq + 'static, K: Hash + Eq + Clone + 'static> Rows<T, K> 
                 Some(row) => {
                     row.item.set(item);
                     row.index.set(index);
-                    for i in 0..row.count {
-                        let mut kept = super::ElNode::new(Tag::View);
-                        kept.kind = ElKind::Keep;
-                        kept.key = Some(element_key(row.id, i));
-                        out.push(RegionElement {
-                            owner: None,
-                            element: AnyElement(kept),
-                        });
-                    }
+                    keep_row(&mut out, row.id, row.count);
                     rows.push(row);
                 }
                 None => {
@@ -421,13 +441,7 @@ impl<T: Clone + PartialEq + 'static, K: Hash + Eq + Clone + 'static> Rows<T, K> 
                         (item, index, elements)
                     });
                     let count = elements.len();
-                    for (i, mut element) in elements.into_iter().enumerate() {
-                        element.0.key = Some(element_key(id, i));
-                        out.push(RegionElement {
-                            owner: Some(owner),
-                            element,
-                        });
-                    }
+                    show_row(&mut out, id, owner, elements);
                     rows.push(Row {
                         key,
                         id,

@@ -82,7 +82,7 @@ type ApprovalSource = Pick<
   Extract<InteractionRequest, { kind: 'service_approval' }>,
   'kind' | 'through' | 'toolUseId' | 'toolName'
 >;
-function InteractionAction(props: {
+export function InteractionAction(props: {
   label: string;
   accessibilityLabel?: string;
   onPress: () => void;

@@ -304,14 +304,15 @@ function BottomBar() {
 
 ## 平台
 
-Rust 中的 `os()`、`os_version()`、`idiom()` 和 `is_desktop()`，以及 TSX 中 `nsh` 的常量 `platform`，描述应用运行的平台。它们在应用运行期间保持不变。
+Rust 中的 `os()`、`os_version()`、`idiom()`、`is_desktop()` 和 `is_catalyst()`，以及 TSX 中 `nsh` 的常量 `platform`，描述应用运行的平台。它们在应用运行期间保持不变。
 
 | Rust | TSX | 说明 |
 |---|---|---|
 | `os()` | `platform.os` | `Os::Ios`、`Os::Android`、`Os::MacOs`、`Os::Windows`、`Os::Linux` 或 `Os::Web`（`os().name()` 即 TSX 的字符串）。Mac Catalyst 为 iOS。 |
 | `os_version()` | `platform.version` | 主版本号和次版本号；Android 上为 API 级别和 0。 |
-| `idiom()` | `platform.idiom`、`platform.catalyst` | `Idiom::Phone`、`Pad`、`Mac`、`Tv` 或 `Desktop`。 |
-| `is_desktop()` | `platform.idiom === "desktop" && !platform.isTerminal` | macOS、Windows 或 Linux，或桌面浏览器。 |
+| `idiom()` | `platform.idiom` | `Idiom::Phone`、`Pad`、`Mac`、`Tv` 或 `Desktop`；桌面操作系统即使渲染为终端也报告 `Desktop`。 |
+| `is_desktop()` | `platform.desktop` | macOS、Windows 或 Linux 图形界面，或桌面浏览器（[桌面与移动端](./platform-specific.md#桌面与移动端)）。 |
+| `is_catalyst()` | `platform.catalyst` | Mac Catalyst，无论哪种界面风格。 |
 
 TSX 的 `platform` 完整成员：
 
@@ -319,8 +320,9 @@ TSX 的 `platform` 完整成员：
 |---|---|
 | `platform.os` | `"ios"`、`"android"`、`"macos"`、`"windows"`、`"linux"` 或 `"web"`。Mac Catalyst 报告 `"ios"`。 |
 | `platform.version` | 字符串：iOS 和桌面平台为系统版本（`"17.5"`）；Android 为 API 级别（`"35"`）；Web 为 `"0.0"`。 |
-| `platform.idiom` | `"phone"`、`"pad"`、`"mac"`、`"tv"` 或 `"desktop"`。`"desktop"` 表示桌面设备类型：macOS、Windows、Linux 和桌面浏览器。用 `renderer` 区分终端呈现。 |
-| `platform.catalyst` | Mac 界面风格的 Mac Catalyst。 |
+| `platform.idiom` | `"phone"`、`"pad"`、`"mac"`、`"tv"` 或 `"desktop"`。`"desktop"` 表示设备类型，包括桌面操作系统上的终端应用。`"mac"` 是 Mac Catalyst 下 UIKit 的 Mac 界面风格，属于移动端界面风格。 |
+| `platform.desktop` | 适用图形桌面行为：macOS、Windows、Linux 和桌面浏览器，不包括终端渲染。`desktop={{…}}` 属性和 `platform.select({ desktop })` 以它为准。 |
+| `platform.catalyst` | 应用运行在 Mac Catalyst 下（`os` 为 `"ios"`），无论是 Mac 还是 iPad 界面风格。 |
 | `platform.select(spec)` | 当前平台对应的值；见[平台特定代码](./platform-specific.md#platformselect)。 |
 | `platform.renderer` | `"native"`（平台视图或桌面图形）、`"web"`（浏览器 HTML）或 `"terminal"`（终端字符单元格）。 |
 | `platform.isTerminal` | 界面渲染为终端字符单元格；`platform.os` 仍为宿主操作系统。 |

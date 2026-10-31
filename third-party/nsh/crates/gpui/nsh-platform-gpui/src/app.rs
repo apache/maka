@@ -383,6 +383,7 @@ impl AppView {
             trace: options.trace,
             network: Some(nsh_engine::net::network()),
             websocket: None,
+            refuse_connections: None,
             filesystem: None,
             chunk_loader: None,
             assets: Some(Arc::new(AssetReader(options.asset_base.clone()))),
@@ -638,6 +639,26 @@ impl AppView {
 
     pub(crate) fn surface(&self) -> &Rc<Surface> {
         &self.surface
+    }
+
+    /// Where the views labelled `label` (`accessibilityLabel`) that take
+    /// presses are in the window, as an assistive technology finds them.
+    /// An embedder's test presses one by sending the window's platform
+    /// input to it.
+    pub fn pressable_bounds(&self, label: &str) -> Vec<gpui::Bounds<gpui::Pixels>> {
+        crate::access::pressable_labelled(&self.surface, label)
+            .iter()
+            .filter_map(|view| {
+                let to_root = view.to_root()?;
+                let size = view.state().frame.size;
+                let (x0, y0) = to_root.map(0.0, 0.0)?;
+                let (x1, y1) = to_root.map(size.width.0, size.height.0)?;
+                Some(gpui::Bounds::from_corners(
+                    gpui::point(gpui::px(x0.min(x1)), gpui::px(y0.min(y1))),
+                    gpui::point(gpui::px(x0.max(x1)), gpui::px(y0.max(y1))),
+                ))
+            })
+            .collect()
     }
 
     /// Files dragged in from another application moved over the window
@@ -966,6 +987,7 @@ fn initial_environment() -> Environment {
             Os::Linux
         },
         idiom: Idiom::Desktop,
+        file_requests: true,
         ..Environment::default()
     }
 }

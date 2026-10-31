@@ -305,7 +305,7 @@ impl Owner {
                         Err(error) => {
                             let source = self.persisted.as_ref().map(|(source, _)| source.reference());
                             tracing::warn!(target: "maka_host_runtime::application", stage = "source_watch",
-                                cause = diagnostics::cause(&error), sql_code = diagnostics::sql_code(&error), os_code = diagnostics::os_code(&error),
+                                cause = diagnostics::cause(&error), error = %error, sql_code = diagnostics::sql_code(&error), os_code = diagnostics::os_code(&error),
                                 state_domain = source.map(|source| source.state_domain.as_str()),
                                 deployment_id = source.map(|source| tracing::field::display(source.deployment)), "Host runtime failure");
                             changes = None;

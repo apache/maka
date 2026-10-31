@@ -130,12 +130,7 @@ impl Gates {
         self.changed.notify_waiters();
     }
     pub(super) fn retain_unconfirmed(&self, custody: crate::connection::custody::Custody) {
-        {
-            let mut lifetime = self.lifetime.lock().unwrap();
-            lifetime.unconfirmed.push(custody);
-            lifetime.closing = true;
-        }
-        self.stop.cancel();
+        self.lifetime.lock().unwrap().unconfirmed.push(custody);
         self.changed.notify_waiters();
     }
     pub(super) fn is_closing(&self) -> bool {

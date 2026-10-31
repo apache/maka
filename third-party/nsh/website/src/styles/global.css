@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./ui.css";
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ====================================================================
@@ -62,9 +63,15 @@
   --finish-inset: var(--nsh-gallery-finish-inset-box-shadow);
   --finish-raised-bg: var(--nsh-gallery-finish-raised-background-image);
   --finish-raised: var(--nsh-gallery-finish-raised-box-shadow);
+  --finish-raised-border: var(--nsh-gallery-finish-raised-border-color);
+  --finish-hover-bg: var(--nsh-gallery-finish-hover-background-image);
+  --finish-hover: var(--nsh-gallery-finish-hover-box-shadow);
+  --finish-hover-border: var(--nsh-gallery-finish-hover-border-color);
   --finish-primary-bg: var(--nsh-gallery-finish-light-background-image);
-  --finish-primary-hover-bg: linear-gradient(180deg, #ffffff 0%, #eaecee 100%);
+  /* The gallery's primary hover is the fill at 94% opacity: the page shows through a touch. */
+  --finish-primary-hover-bg: linear-gradient(rgb(255 255 255 / 10%), rgb(255 255 255 / 10%)), var(--nsh-gallery-finish-light-background-image);
   --finish-primary: var(--nsh-gallery-finish-light-box-shadow);
+  --finish-primary-border: var(--nsh-gallery-finish-light-border-color);
   --finish-accent-bg: var(--nsh-gallery-finish-accent-background-image);
   --finish-accent: var(--nsh-gallery-finish-accent-box-shadow);
 
@@ -155,7 +162,6 @@ html.light {
 
 
   --finish-flat: inset 0 1px 0 #ffffff, inset 0 -1px 0 rgb(0 0 0 / 2.5%), 0 1px 2px rgb(20 20 10 / 5%);
-  --finish-primary-hover-bg: linear-gradient(180deg, #36383e 0%, #222327 100%);
   --accent-border: #a7cf3f;
 
   --code-bg: #f0f0eb;
@@ -214,7 +220,13 @@ html.light {
    Base
    ==================================================================== */
 
+/* The page's scrollbar keeps its gutter whether or not the page scrolls, so
+   the layout's width stays the same between short and long pages and while a
+   dialog of the web player locks the page (`overflow: hidden` on <html>,
+   `lockViewportPage` in nsh.js); `stable` holds for `hidden` too. Overlay
+   scrollbars (macOS, phones) take no gutter, so it costs nothing there. */
 html {
+  scrollbar-gutter: stable;
   font-family: var(--font-sans);
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -382,25 +394,6 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
 
 .site-nav__actions { display: flex; align-items: center; gap: 0.25rem; margin-left: auto; }
 
-.site-nav__icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 2rem;
-  height: 2rem;
-  padding: 0 0.4rem;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: 0.8125rem;
-  font-weight: 560;
-  text-decoration: none;
-  cursor: pointer;
-  transition: background 140ms ease;
-}
-.site-nav__icon-btn:hover { background: var(--secondary); color: var(--foreground); }
-.site-nav__icon-btn svg { width: 1rem; height: 1rem; }
-
 .site-nav__burger { display: none; }
 .site-nav__burger-close { display: none; }
 .site-nav__burger[aria-expanded="true"] .site-nav__burger-open { display: none; }
@@ -415,29 +408,17 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
   height: 2rem;
   margin-right: 0.35rem;
   padding: 0 0.4rem 0 0.6rem;
-  border: 1px solid var(--line);
+  /* Opens the search dialog; it looks like the Input it leads to (ui.css). */
+  border: 1px solid var(--nsh-gallery-input);
   border-radius: var(--radius-control);
-  background: var(--inset);
-  box-shadow: var(--finish-inset);
+  background: var(--nsh-gallery-card);
   color: var(--faint);
   font-size: 0.8125rem;
   cursor: pointer;
   transition: border-color 140ms ease, color 140ms ease;
 }
-.site-nav__search-btn:hover { border-color: var(--border); color: var(--muted-foreground); }
+.site-nav__search-btn:hover { border-color: color-mix(in srgb, var(--nsh-gallery-input) 70%, var(--foreground)); color: var(--muted-foreground); }
 .site-nav__search-hint { margin-right: auto; white-space: nowrap; }
-
-.search-footer kbd,
-.site-nav__search-key {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.05rem 0.35rem;
-  border-radius: 5px;
-  background: var(--finish-raised-bg);
-  box-shadow: var(--finish-raised);
-  color: var(--muted-foreground);
-  font: 0.75em/1.5 var(--font-mono);
-}
 
 @media (max-width: 1080px) {
   .site-nav__search-btn { width: 9.5rem; }
@@ -521,7 +502,9 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
   --pagefind-ui-border-radius: var(--radius-control);
   --pagefind-ui-font: inherit;
 }
-#search-ui .pagefind-ui__search-input { border: 1px solid var(--line); background: var(--inset); box-shadow: var(--finish-inset); color: var(--foreground); font-size: 0.95rem; }
+/* Pagefind's field, as the site's Input (ui.css). */
+#search-ui .pagefind-ui__search-input { border: 1px solid var(--nsh-gallery-input); background: var(--nsh-gallery-card); color: var(--foreground); font-size: 0.95rem; outline: none; transition: border-color 140ms ease, box-shadow 140ms ease; }
+#search-ui .pagefind-ui__search-input:focus-visible { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 50%, transparent); }
 #search-ui .pagefind-ui__search-input::placeholder { color: var(--faint); opacity: 1; }
 #search-ui .pagefind-ui__search-clear { background: transparent; color: var(--muted-foreground); }
 #search-ui .pagefind-ui__result { border-top: 1px solid var(--line); }
@@ -550,6 +533,8 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
   overflow-y: auto;
   padding: 2rem 1rem 2rem 0.5rem;
   border-right: 1px solid var(--line);
+  /* The links keep their place whether or not the list overflows. */
+  scrollbar-gutter: stable;
 }
 
 .sidebar-group__title {
@@ -771,7 +756,7 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
   .heading-anchor:focus-visible { opacity: 1; }
   .heading-anchor:hover { color: var(--foreground); }
 
-  a {
+  a:not([data-slot]) {
     color: var(--doc-link);
     text-decoration-line: underline;
     text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
@@ -779,7 +764,7 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
     text-underline-offset: 0.18em;
     transition: text-decoration-color 140ms ease;
   }
-  a:hover { text-decoration-color: currentColor; }
+  a:not([data-slot]):hover { text-decoration-color: currentColor; }
   a:has(> code) { text-decoration: none; }
   a:has(> code):hover { color: var(--doc-link-hover); }
   .heading-anchor, .doc-code-copy { text-decoration: none; }
@@ -853,31 +838,33 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
   pre[data-language="plaintext"]::before, pre[data-language="txt"]::before, pre[data-language="text"]::before, pre:not([data-language])::before { content: "Text"; }
   pre code { display: block; padding: 0.9rem 1.1rem 1rem; overflow-x: auto; background: var(--code-surface); font-size: 0.92em; line-height: 1.7; tab-size: 2; }
 
-  /* The copy button sits in the header row: a small glass control. */
+  /* The copy button sits in the header row as a ghost icon button (the
+     site's Button `ghost`): no surface until the pointer is on it. Its
+     corners follow the card's, inset by the gap between them. */
   .doc-code-copy {
     position: absolute;
-    top: 0.3rem;
-    right: 0.4rem;
+    top: 0.25rem;
+    right: 0.25rem;
     display: grid;
     place-items: center;
-    width: 1.65rem;
-    height: 1.65rem;
-    border-radius: 8px;
-    background: var(--glass-fill);
-    box-shadow: var(--glass-edge);
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 10px;
+    background: transparent;
     color: var(--muted-foreground);
     cursor: pointer;
     opacity: 0.75;
-    transition: opacity 150ms ease, color 150ms ease;
+    transition: opacity 150ms ease, color 150ms ease, background-color 150ms ease;
   }
   pre:hover .doc-code-copy, pre:focus-within .doc-code-copy, .doc-code-copy[data-copied] { opacity: 1; }
+  .doc-code-copy:hover { background: color-mix(in srgb, var(--accent) 60%, transparent); }
   .doc-code-copy:hover, .doc-code-copy[data-copied] { color: var(--foreground); }
   .doc-code-copy[data-copied] { color: var(--success); }
   .doc-code-copy svg { width: 0.85rem; height: 0.85rem; }
 
   /* Code tabs (remark-code-tabs.js): the same card as a code block, its
-     header row a tab per language instead of one label. The selected tab is
-     the text colour over a 2px accent bar; the copy button stays in the row. */
+     header row a segmented control with a tab per language, as the demo
+     panels' Preview / Source switch; the copy button stays in the row. */
   .code-tabs {
     position: relative;
     margin-block: 1rem;
@@ -888,38 +875,20 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
     background-color: var(--card);
     box-shadow: inset 0 1px 0 var(--highlight), var(--code-shadow);
   }
-  .code-tabs__list {
+  .code-tabs__head {
     display: flex;
-    gap: 0.25rem;
-    height: 2.25rem;
-    padding: 0 2.6rem 0 0.4rem;
+    align-items: center;
+    min-height: 2.5rem;
+    /* One gap on every side, so the tabs' corners nest in the card's
+       (14px), and the tabs' in theirs: 14 - 6 = 8, 8 - 3 = 5. */
+    padding: 6px 2.6rem 6px 6px;
     border-bottom: 1px solid var(--divider);
     overflow-x: auto;
     scrollbar-width: none;
   }
-  .code-tabs__tab {
-    position: relative;
-    padding: 0 0.5rem;
-    color: var(--muted-foreground);
-    font: 600 0.7rem/1 var(--font-mono);
-    letter-spacing: 0.04em;
-    white-space: nowrap;
-    cursor: pointer;
-    transition: color 140ms ease;
-  }
-  .code-tabs__tab:hover { color: var(--foreground); }
-  .code-tabs__tab[aria-selected="true"] { color: var(--foreground); }
-  .code-tabs__tab[aria-selected="true"]::after {
-    position: absolute;
-    right: 0.5rem;
-    bottom: -1px;
-    left: 0.5rem;
-    height: 2px;
-    border-radius: 2px 2px 0 0;
-    background: var(--citrus);
-    content: "";
-  }
-  .code-tabs__tab:focus-visible { outline-offset: -2px; border-radius: 6px; }
+  .code-tabs__list { flex: none; border-radius: 8px; }
+  .code-tabs__tab { white-space: nowrap; }
+  .code-tabs .doc-code-copy { top: 6px; right: 6px; border-radius: 8px; }
   .code-tabs__panel:focus-visible { outline-offset: -2px; }
   .code-tabs__panel[hidden] { display: none; }
   .code-tabs pre {
@@ -1082,8 +1051,9 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
    Phone frame and demo panels (markup from src/lib/demo.js)
    ==================================================================== */
 
-/* The app renders at 390×844 points; `--phone-scale` shrinks the whole
-   device, iframe included, so the app keeps its own layout width. */
+/* The app renders at `--phone-w`×`--phone-h` points; `--phone-scale`
+   shrinks the whole device, iframe included, so the app keeps its own layout
+   width (the home page's phone; demo panels show the app at its real size). */
 .phone {
   --phone-scale: 0.74;
   --phone-pad: 7px;
@@ -1210,69 +1180,16 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
 }
 
 .demo__file { color: var(--muted-foreground); font: 0.75rem/1 var(--font-mono); }
-.segmented + .demo__file { margin-left: 0.25rem; }
+.demo__layouts + .demo__file { margin-left: 0.25rem; }
 
-.demo__open {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  margin-left: auto;
-  padding: 0.3rem 0.5rem;
-  border-radius: 8px;
-  color: var(--muted-foreground) !important;
-  font-size: 0.78rem;
-  text-decoration: none !important;
-  white-space: nowrap;
-}
-.demo__open:hover { background: var(--secondary); color: var(--foreground) !important; }
-
-/* The panel's actions, icons in one group: edit in the playground, open in
-   a new tab (their names in `title` and `aria-label`). */
-.demo__actions {
-  display: inline-flex;
-  margin-left: auto;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  overflow: hidden;
-}
-.demo__action {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 28px;
-  color: var(--muted-foreground) !important;
-  text-decoration: none !important;
-}
-.demo__action + .demo__action { border-left: 1px solid var(--border); }
-.demo__action:hover { background: var(--secondary); color: var(--foreground) !important; }
-
-/* Segmented controls: a glassy track, the selected item a lit glass pill. */
-.segmented {
-  display: inline-flex;
-  gap: 0.15rem;
-  padding: 3px;
-  border-radius: var(--radius-control);
-  background: var(--glass-fill);
-  box-shadow: var(--glass-edge);
-  backdrop-filter: blur(12px) saturate(1.4);
-  -webkit-backdrop-filter: blur(12px) saturate(1.4);
-}
-.segmented button {
-  padding: 0.22rem 0.7rem;
-  border-radius: 7px;
-  color: var(--muted-foreground);
-  font-size: 0.78rem;
-  font-weight: 560;
-  cursor: pointer;
-  transition: background 140ms ease, color 140ms ease;
-}
-.segmented button:hover { color: var(--foreground); }
-.segmented button:is([aria-selected="true"], [aria-checked="true"]) { background: var(--glass-thumb); color: var(--foreground); box-shadow: var(--glass-thumb-edge); }
+/* The panel's actions, icon buttons in one group: edit in the playground,
+   open in a new tab (their names in `title` and `aria-label`). */
+.demo__actions { margin-left: auto; }
 
 .demo__stage {
   display: flex;
   justify-content: center;
-  padding: 2.25rem 1rem;
+  padding: 1.25rem 1rem;
   background-color: var(--inset);
   box-shadow: var(--finish-inset);
   background-image:
@@ -1281,7 +1198,16 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
   background-size: 24px 24px;
   background-position: center;
 }
-.demo__stage .phone { --phone-scale: 0.7; }
+/* The app at its real size, never scaled: a phone's width in the Mobile
+   layout, the stage's width in the Desktop one (`demo-client.ts`). */
+.demo__stage .phone { --phone-scale: 1; --phone-pad: 0px; border: 0; border-radius: 12px; background: none; box-shadow: none; }
+/* A desktop window takes the panel's whole width: apps lay out wide from
+   700 points (`wide()`), a panel is about 720. */
+.demo[data-layout="desktop"] .demo__stage { padding: 0; }
+.demo[data-layout="desktop"] .demo__stage .phone,
+.demo[data-layout="desktop"] .demo__stage .phone__screen { border-radius: 0; }
+/* The panel's bar names the file already. */
+.demo__stage .phone__bar { display: none; }
 
 .demo__code { max-height: 42rem; overflow: auto; }
 .demo__body > [role="tabpanel"]:not([data-active]) { display: none; }
@@ -1289,33 +1215,11 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
 .demo .demo__code pre::before { display: none; }
 .demo--source-only .demo__code { max-height: 32rem; }
 
-/* Wide enough for both: the phone and its source side by side, no switch.
-   The source takes the stage's height (`contain: size`) and scrolls. */
-.demo[data-view] { container-type: inline-size; }
-@container (min-width: 680px) {
-  .demo__body { display: grid; grid-template-columns: auto minmax(0, 1fr); }
-  .demo__body .demo__stage { padding-inline: 1.75rem; border-right: 1px solid var(--line); }
-  .demo__body .demo__stage .phone { --phone-scale: 0.64; }
-  .demo .demo__body > .demo__code { display: block; max-height: none; contain: size; }
-  .demo__body .demo__code pre { min-height: 100%; font-size: 0.8rem; }
-  .demo__bar .demo__views { display: none; }
-  .demo__bar .demo__file { margin-left: 0; }
-  .demo .demo__body > .demo__stage { display: flex; }
-}
-
-/* The Desktop layout: a 1024×640 window scaled to the stage's width
-   (`demo-client.ts`), the source below it. */
-.demo[data-layout="desktop"] .demo__body { display: block; }
-.demo[data-layout="desktop"] .demo__body > .demo__stage { display: flex; border-right: 0; }
-.demo[data-layout="desktop"] .demo__body > .demo__code { display: block; max-height: 28rem; contain: none; border-top: 1px solid var(--line); }
-.demo[data-layout="desktop"] .demo__bar .demo__views { display: none; }
-
 .demo--missing { padding: 1rem; color: var(--destructive); font-size: 0.875rem; }
 
 @media (max-width: 640px) {
   .demo__file { display: none; }
-  .demo__stage { padding: 1.5rem 0.5rem; }
-  .demo__stage .phone { --phone-scale: 0.62; }
+  .demo__stage { padding: 0.75rem 0.5rem; }
 }
 
 /* ====================================================================

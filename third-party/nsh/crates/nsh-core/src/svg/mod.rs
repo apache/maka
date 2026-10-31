@@ -1,4 +1,5 @@
-//! SVG images for the native backends (feature `svg`).
+//! SVG images for the native backends (feature `svg`), and SVGs as
+//! canvas drawings ([`drawing`], what `element::svg` shows).
 //!
 //! The platforms' image decoders (ImageIO, `BitmapFactory`, WIC, GDK) do not
 //! read SVG, so every native backend hands sniffed SVG bytes to this module
@@ -38,9 +39,14 @@ use resvg::{
 
 use crate::geometry::{DevicePixels, Points, Size};
 
+mod drawing;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod drawings;
 mod layers;
 #[cfg(test)]
 mod tests;
+
+pub use self::drawing::drawing;
 
 /// How much of a compressed SVG (`.svgz`) [`sniff`] inflates to find the
 /// root element.
@@ -308,15 +314,11 @@ impl<'a> OneSide<'a> {
         if value.trim_end().ends_with('%') {
             return None;
         }
-        let start = root.range().start + 1;
-        let at = text[start..]
-            .find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/')
-            .map_or(text.len(), |i| start + i);
         Some(OneSide {
             width,
             value,
             view_box: (vw, vh),
-            at,
+            at: root_attributes_at(doc, text),
         })
     }
 
@@ -368,6 +370,15 @@ impl<'a> OneSide<'a> {
         fixed.push_str(&text[self.at..]);
         fixed
     }
+}
+
+/// Where an attribute added to the root element goes in `text`, the
+/// document `doc` was parsed from: after the root's tag name.
+fn root_attributes_at(doc: &roxmltree::Document<'_>, text: &str) -> usize {
+    let start = doc.root_element().range().start + 1;
+    text[start..]
+        .find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/')
+        .map_or(text.len(), |i| start + i)
 }
 
 /// Inflates a `.svgz` up to [`MAX_BYTES`].

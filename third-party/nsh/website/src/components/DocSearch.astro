@@ -17,7 +17,7 @@ const copy = isZh
       <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
     </svg>
     <span class="site-nav__search-hint">{copy.label}</span>
-    <kbd class="site-nav__search-key" aria-hidden="true">/</kbd>
+    <kbd data-slot="kbd" class="site-nav__search-key" aria-hidden="true">/</kbd>
   </button>
 
   <dialog id="search-modal" aria-labelledby="search-modal-title">
@@ -28,9 +28,9 @@ const copy = isZh
       <p class="search-blank__body">{copy.emptyBody}</p>
     </div>
     <p class="search-footer" aria-hidden="true">
-      <span><kbd>↑</kbd><kbd>↓</kbd> {copy.navigate}</span>
-      <span><kbd>↵</kbd> {copy.enter}</span>
-      <span><kbd>Esc</kbd> {copy.esc}</span>
+      <span><kbd data-slot="kbd">↑</kbd><kbd data-slot="kbd">↓</kbd> {copy.navigate}</span>
+      <span><kbd data-slot="kbd">↵</kbd> {copy.enter}</span>
+      <span><kbd data-slot="kbd">Esc</kbd> {copy.esc}</span>
     </p>
   </dialog>
 </div>

@@ -499,7 +499,7 @@ pub fn find_links(text: &str, default_protocol: &str, protocols: &[String]) -> V
             },
         );
     }
-    found.sort_by_key(|f| f.start);
+    crate::sort::sort_by_key(&mut found, |f| f.start);
     found
 }
 
@@ -1000,11 +1000,12 @@ pub fn unset_link(ty: MarkType) -> BoxCommand {
 // `title`; Tiptap's also `target`, `rel`, `class`).
 fn known_attrs(ty: &MarkType, attrs: &Attrs) -> Attrs {
     let spec = ty.spec();
-    attrs
-        .iter()
-        .filter(|(k, _)| spec.attrs.iter().any(|(name, _)| name == *k))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
+    crate::rich_editor::model::attrs_from(
+        &mut attrs
+            .iter()
+            .filter(|(k, _)| spec.attrs.iter().any(|(name, _)| name == *k))
+            .map(|(k, v)| (k.clone(), v.clone())),
+    )
 }
 
 /// Registers `setLink` (`{ href, target?, title?, name?, protocols? }`),
@@ -1020,10 +1021,12 @@ pub fn register_commands(registry: &mut crate::rich_editor::commands::CommandReg
     fn attrs(args: &Value) -> Attrs {
         args.as_object()
             .map(|o| {
-                o.iter()
-                    .filter(|(k, _)| !matches!(k.as_str(), "name" | "protocols"))
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
+                crate::rich_editor::model::attrs_from(
+                    &mut o
+                        .iter()
+                        .filter(|(k, _)| !matches!(k.as_str(), "name" | "protocols"))
+                        .map(|(k, v)| (k.clone(), v.clone())),
+                )
             })
             .unwrap_or_default()
     }

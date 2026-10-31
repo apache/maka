@@ -291,7 +291,7 @@ fn classes(cx: *mut JsContext) -> Classes {
         methods(
             composite_proto,
             &[
-                (c"start", composite_start, 1),
+                (c"start", composite_start_js, 1),
                 (c"stop", composite_stop, 0),
                 (c"reset", composite_reset, 0),
             ],
@@ -721,12 +721,12 @@ unsafe extern "C" fn value_stop(
 ) -> JsValue {
     let id = match this_node(cx, this) {
         Ok(id) => id,
-        Err(e) => return e,
+        Err(e) => return crate::web::js::rejecting(cx, e),
     };
     if let Err(e) = send(cx, vec![int(ANIMATION_STOP), int(id)]) {
-        return e;
+        return crate::web::js::rejecting(cx, e);
     }
-    read(cx, id, Settles::Stopped)
+    crate::web::js::rejecting(cx, read(cx, id, Settles::Stopped))
 }
 
 /// `getValue()`: a promise of the node's current value, read on the UI
@@ -737,10 +737,13 @@ unsafe extern "C" fn value_get(
     _argc: c_int,
     _argv: *mut JsValue,
 ) -> JsValue {
-    match this_node(cx, this) {
-        Ok(id) => read(cx, id, Settles::Value),
-        Err(e) => e,
-    }
+    crate::web::js::rejecting(
+        cx,
+        match this_node(cx, this) {
+            Ok(id) => read(cx, id, Settles::Value),
+            Err(e) => e,
+        },
+    )
 }
 
 /// A promise of node `node`'s value, answered by the graph
@@ -866,7 +869,7 @@ unsafe extern "C" fn value_timing(
     argv: *mut JsValue,
 ) -> JsValue {
     let config = driver_config(cx, "timing", Some(arg(argc, argv, 0)), arg(argc, argv, 1));
-    start(cx, this, config)
+    crate::web::js::rejecting(cx, start(cx, this, config))
 }
 
 unsafe extern "C" fn value_spring(
@@ -876,7 +879,7 @@ unsafe extern "C" fn value_spring(
     argv: *mut JsValue,
 ) -> JsValue {
     let config = driver_config(cx, "spring", Some(arg(argc, argv, 0)), arg(argc, argv, 1));
-    start(cx, this, config)
+    crate::web::js::rejecting(cx, start(cx, this, config))
 }
 
 unsafe extern "C" fn value_decay(
@@ -886,7 +889,7 @@ unsafe extern "C" fn value_decay(
     argv: *mut JsValue,
 ) -> JsValue {
     let config = driver_config(cx, "decay", None, arg(argc, argv, 0));
-    start(cx, this, config)
+    crate::web::js::rejecting(cx, start(cx, this, config))
 }
 
 /// Settles the promise of animation (or value read) `f.animation`
@@ -1029,6 +1032,18 @@ unsafe extern "C" fn composite_reset(
 
 /// `start(callback)`: runs the composite (stopping a run of it first); a
 /// promise of whether it finished.
+/// `composite.start(callback?)`: [`composite_start`], whose failure
+/// rejects its promise.
+unsafe extern "C" fn composite_start_js(
+    cx: *mut JsContext,
+    this: JsValue,
+    argc: c_int,
+    argv: *mut JsValue,
+) -> JsValue {
+    // SAFETY: QuickJS's arguments, passed on.
+    crate::web::js::rejecting(cx, unsafe { composite_start(cx, this, argc, argv) })
+}
+
 unsafe extern "C" fn composite_start(
     cx: *mut JsContext,
     this: JsValue,
@@ -1411,7 +1426,7 @@ unsafe extern "C" fn value_keyframes(
     }
     let c = keyframes(cx, this, config);
     free(cx, config);
-    start_composite(cx, c)
+    crate::web::js::rejecting(cx, start_composite(cx, c))
 }
 
 /// Whether field `key` of `obj` is truthy.
@@ -1520,7 +1535,12 @@ unsafe extern "C" fn motion_method(
     // SAFETY: one data value: the motion object.
     let object = unsafe { *data };
     match magic {
-        0 => return play(cx, object, arg(argc, argv, 0), arg(argc, argv, 1)),
+        0 => {
+            return crate::web::js::rejecting(
+                cx,
+                play(cx, object, arg(argc, argv, 0), arg(argc, argv, 1)),
+            );
+        }
         3 => return motion_composite(cx, object, arg(argc, argv, 0), arg(argc, argv, 1)),
         _ => {}
     }

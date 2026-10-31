@@ -299,10 +299,16 @@ final class Mounter {
                     // `selectable`: 1 asked for, 0 refused, 2 unset (`encode.rs`).
                     int selectable = b.getInt();
                     Integer selectionColor = optColor(b);
+                    // The one color all of it is drawn in, if there is one
+                    // (`opt_color`: a flag, then the color), unboxed: a text
+                    // updating live allocates nothing for it.
+                    boolean uniform = b.getInt() != 0;
+                    int uniformColor = b.getInt();
                     if (v instanceof TextBox) {
                         TextBox t = (TextBox) v;
                         t.setSelectable(selectable == 1, selectable == 0, selectionColor);
                         t.setLayout((Layout) layout, x * density, y * density, w * density, h * density);
+                        t.recolor(uniform, uniformColor, effects.get(t.id));
                         t.setLinks(linkData, linkEvents);
                         if (links > 0 && t.press == null) t.press = new Pressable(t, this, t.id);
                         t.setClickable(links > 0 || (t.press != null && t.press.ownWanted()));
@@ -1025,7 +1031,9 @@ final class Mounter {
         }
         Box.Frame f = Box.frame(v);
         Transition t = layoutAnimation != null ? layoutAnimation[1] : null;
-        boolean moves = t != null && !created.contains(id) && f.right > f.left && f.bottom > f.top;
+        // A view never placed has no frame to move from; one placed zero
+        // high (a collapsed reveal) or zero wide grows from it, as on iOS.
+        boolean moves = t != null && !created.contains(id) && (f.right > f.left || f.bottom > f.top);
         int[] from = {f.left, f.top, f.right, f.bottom};
         int[] to = {px(x), px(y), px(x + w), px(y + h)};
         Animator running = layoutAnimators.get(id);
@@ -1186,7 +1194,7 @@ final class Mounter {
         }
     }
 
-    private static int lerpColor(int a, int b, float t) {
+    static int lerpColor(int a, int b, float t) {
         int r = 0;
         for (int shift = 0; shift < 32; shift += 8) {
             int ca = (a >>> shift) & 0xff, cb = (b >>> shift) & 0xff;
@@ -1415,11 +1423,18 @@ final class Mounter {
         if (v instanceof TextBox) ((TextBox) v).setColor(false, 0);
     }
 
-    /** `perspective` as a camera distance (React Native's normalization). */
+    /**
+     * `perspective` as a camera distance (React Native's normalization), set
+     * only when it moves: `setCameraDistance` invalidates the view on every
+     * call, and animated values and transitions come here each frame with
+     * the distance unchanged.
+     */
     private void setPerspective(View v, float term) {
         if (term == 0) term = 0.00078125f;
-        float distance = -1 / term;
-        v.setCameraDistance(density * density * distance * (float) Math.sqrt(5));
+        float distance = Math.abs(density * density * (-1 / term) * (float) Math.sqrt(5));
+        // The view keeps it divided by the screen's dpi: equal within a hair.
+        if (Math.abs(Math.abs(v.getCameraDistance()) - distance) <= distance * 1e-5f) return;
+        v.setCameraDistance(distance);
     }
 
     /** Press feedback of a view: `delayLongPress`, `android_ripple`. */
@@ -1584,6 +1599,7 @@ final class Mounter {
             Box box = (Box) v;
             box.pointerEvents = pointerEvents;
         }
+        if (v instanceof InputBox) ((InputBox) v).pointerEvents = pointerEvents;
         if (v instanceof TextBox) ((TextBox) v).a11y = a;
         a11y.put(id, a);
         a.apply(v);
@@ -1870,6 +1886,15 @@ final class Mounter {
 
     boolean hasShownModal() {
         return !shownModals.isEmpty();
+    }
+
+    /** The window of the topmost dialog shown, or null. */
+    View topModalWindow() {
+        for (int i = shownModals.size() - 1; i >= 0; i--) {
+            View window = shownModals.get(i).window();
+            if (window != null) return window;
+        }
+        return null;
     }
 
     /** The stack the back button acts on (pops, or asks to leave), if any. */

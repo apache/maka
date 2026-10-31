@@ -24,11 +24,11 @@ export default {
   id: 'maka.agent.workspace-computer',
   displayName: 'Computer Use',
   description:
-    'Observe and control the selected desktop and configured browsers with session approval.',
+    'Observe and control the selected desktop and available browsers with session approval.',
   localizations: {
     'zh-CN': {
       displayName: '电脑操作',
-      description: '经会话授权后观察和操作桌面及已配置的浏览器。',
+      description: '经会话授权后观察和操作桌面及可用的浏览器。',
     },
   },
   application: {

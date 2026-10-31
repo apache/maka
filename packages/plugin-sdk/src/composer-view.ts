@@ -24,6 +24,7 @@ import type {
   AgentFileCandidates,
   AgentQueue,
   AgentExecution,
+  AgentPlanView,
   AgentResumable,
   AgentQueueAction,
   AgentQueueMessageResult,
@@ -33,6 +34,7 @@ import type {
   AgentWorkspacePermissions,
   AgentWorkspaceAccess,
   ClientDraftAttachment,
+  CollaborationMode,
   ModelSelection,
   ThinkingLevel,
   WorkspacePath,
@@ -163,6 +165,30 @@ export interface PendingComposerPermissions {
   pending(): boolean;
   selectAccess(access: AgentWorkspaceAccess): void;
   selectRequests(request: boolean): void;
+  /**
+   * Applied with the sandbox settings once the conversation exists; null when
+   * this Agent does not plan.
+   */
+  mode(): CollaborationMode | null;
+  selectMode(mode: CollaborationMode): void;
+}
+
+export type ComposerPlanAction =
+  | { kind: 'approve'; proposalId: string; proposalRevision: number }
+  | { kind: 'revise'; proposalId: string }
+  | { kind: 'abandon'; proposalId: string }
+  | { kind: 'resume'; executionId: string }
+  | { kind: 'cancel'; executionId: string };
+
+export interface ComposerPlan {
+  /** Null until the first read; `enabled` says whether this Agent plans at all. */
+  view(): AgentPlanView | null;
+  mode(): CollaborationMode | null;
+  pending(): boolean;
+  error(): string;
+  selectMode(mode: CollaborationMode): Promise<void>;
+  /** Approving or resuming runs the Plan with the conversation's current model. */
+  change(action: ComposerPlanAction): Promise<void>;
 }
 
 type McpConfiguration = Extract<
@@ -210,6 +236,7 @@ export interface ComposerSession<Element = unknown> {
   readonly permissions: ComposerPermissions;
   readonly projectMcp: ComposerProjectMcp;
   readonly checklist: ComposerChecklistSource;
+  readonly plan: ComposerPlan;
   readonly computerAccess: ComposerComputerAccess;
   readonly completion: ComposerCompletionSource;
   draft(): string;
@@ -226,12 +253,15 @@ export interface ComposerSession<Element = unknown> {
   recoverable(): boolean;
   recovering(): boolean;
   unconfirmed(): string[];
+  connected(): boolean;
   invocation(): string | null;
   stopping(): boolean;
   resumable(): AgentResumable | null;
   resuming(): boolean;
   resume(source: AgentExecution, backend: ComposerBackend): Promise<void>;
   metrics(): string;
+  /** How much of its model's context the conversation uses, when the model reports a window. */
+  contextUsage?(): ComposerContextUsage | null;
   changeDraft(text: string): void;
   submit(event: { text: string }): void;
   sendRendered(action: ComposerSendAction): void;
@@ -275,3 +305,10 @@ export interface ComposerViewInput<Element = unknown> {
   /** Files dragged from another application are over the conversation. */
   fileDragging?(): boolean;
 }
+
+export type ComposerContextUsage = {
+  tokens: number;
+  window: number;
+  /** The count is an estimate or predates the latest additions. */
+  approximate: boolean;
+};

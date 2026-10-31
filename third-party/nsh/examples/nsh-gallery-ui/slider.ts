@@ -35,7 +35,7 @@ export const sliderValueStyle = (): TextStyle => ({ color: alpha(colors.text, 0.
  */
 export function sliderLook(o: SliderLookOptions = {}) {
   const vertical = !!o.vertical;
-  const pointer = platform.idiom === "desktop";
+  const pointer = platform.desktop;
   const thumb = pointer ? 14 : 20;
   // The band keeps half a thumb free at each end, so the thumbs stay inside.
   const band = vertical

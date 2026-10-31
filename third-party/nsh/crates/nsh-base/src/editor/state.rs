@@ -167,6 +167,7 @@ pub(crate) struct State {
     pub(crate) search: Option<EditorSearch>,
     pub(crate) matches: Vec<Range<usize>>,
     pub(crate) search_error: Option<String>,
+    pub(crate) compiled: search::Compiled,
     /// Where folds can start, found again after edits (lazily).
     fold_candidates: Option<Vec<FoldRange>>,
     /// Folding on.
@@ -226,6 +227,7 @@ impl State {
             search: None,
             matches: Vec::new(),
             search_error: None,
+            compiled: search::Compiled::default(),
             fold_candidates: None,
             folding: true,
             app_folds: None,
@@ -353,7 +355,7 @@ impl State {
         if search.query.is_empty() {
             return;
         }
-        match search::find_all(&self.buffer, search, MATCH_LIMIT) {
+        match search::find_all(&self.buffer, search, &mut self.compiled, MATCH_LIMIT) {
             Ok(matches) => {
                 self.matches = match &self.search_scope {
                     Some(scope) => search::within(matches, scope.iter().map(|m| &m.range)),
@@ -551,11 +553,9 @@ impl State {
     }
 
     /// Unfolds what hides `offset` (a caret moved there, a search match).
-    pub(crate) fn reveal(&mut self, offset: usize) {
+    pub(crate) fn reveal(&mut self, offset: usize) -> bool {
         let line = self.buffer.line_of(offset);
-        if self.display.is_hidden(line) {
-            self.unfold_hiding(line);
-        }
+        self.display.is_hidden(line) && self.unfold_hiding(line)
     }
 
     /// Unfolds every fold hiding `line`, nested ones included.

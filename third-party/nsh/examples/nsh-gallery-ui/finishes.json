@@ -8,37 +8,37 @@
       "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.2)"
     },
     "field": {
-      "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.3), 0 1px 0 rgba(255,255,255,0.04)"
+      "boxShadow": "none"
     },
     "raised": {
-      "backgroundColor": "#2d2e32",
-      "backgroundImage": "linear-gradient(180deg, #303135 0%, #292a2d 100%)",
-      "boxShadow": "0 1px 0 rgba(0,0,0,0.45)",
-      "borderColor": "#414348"
+      "backgroundColor": "#38393d",
+      "backgroundImage": "linear-gradient(180deg, #38393d 0%, #38393d 100%)",
+      "boxShadow": "inset 0 0 0 1px rgba(255,255,255,0.06), inset 0 1px 1px rgba(255,255,255,0.08), 0 1px 1px rgba(0,0,0,0.12)",
+      "borderColor": "rgba(0,0,0,0.5)"
     },
     "hover": {
-      "backgroundColor": "#2d2e32",
-      "backgroundImage": "linear-gradient(180deg, #35363a 0%, #2d2e32 100%)",
-      "boxShadow": "0 1px 0 rgba(0,0,0,0.45)",
-      "borderColor": "#474950"
+      "backgroundColor": "#3d3e42",
+      "backgroundImage": "linear-gradient(180deg, #3d3e42 0%, #3d3e42 100%)",
+      "boxShadow": "inset 0 0 0 1px rgba(255,255,255,0.07), inset 0 1px 1px rgba(255,255,255,0.09), 0 1px 1px rgba(0,0,0,0.12)",
+      "borderColor": "rgba(0,0,0,0.5)"
     },
     "pressed": {
-      "backgroundColor": "#29292c",
-      "backgroundImage": "linear-gradient(180deg, #29292c 0%, #29292c 100%)",
-      "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.3)",
-      "borderColor": "#393b40"
+      "backgroundColor": "#333438",
+      "backgroundImage": "linear-gradient(180deg, #333438 0%, #333438 100%)",
+      "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.18)",
+      "borderColor": "rgba(0,0,0,0.5)"
     },
     "light": {
       "backgroundColor": "#c4ec6a",
-      "backgroundImage": "linear-gradient(180deg, #c9f173 0%, #bce562 100%)",
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.55), inset 0 2px 0 rgba(255,255,255,0.12), 0 1px 0 rgba(0,0,0,0.45)",
-      "borderColor": "#8db536"
+      "backgroundImage": "linear-gradient(180deg, #c4ec6a 0%, #c4ec6a 100%)",
+      "boxShadow": "inset 0 0 0 1px rgba(255,255,255,0.22), inset 0 1px 1px rgba(255,255,255,0.35), 0 1px 1px rgba(0,0,0,0.12)",
+      "borderColor": "rgba(40,60,0,0.55)"
     },
     "accent": {
       "backgroundColor": "#c4ec6a",
-      "backgroundImage": "linear-gradient(180deg, #c9f173 0%, #bce562 100%)",
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.55), inset 0 2px 0 rgba(255,255,255,0.12), 0 1px 0 rgba(0,0,0,0.45)",
-      "borderColor": "#8db536"
+      "backgroundImage": "linear-gradient(180deg, #c4ec6a 0%, #c4ec6a 100%)",
+      "boxShadow": "inset 0 0 0 1px rgba(255,255,255,0.22), inset 0 1px 1px rgba(255,255,255,0.35), 0 1px 1px rgba(0,0,0,0.12)",
+      "borderColor": "rgba(40,60,0,0.55)"
     },
     "track": {
       "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.35)",
@@ -56,10 +56,10 @@
       "borderColor": "#8a8d93"
     },
     "pill": {
-      "backgroundColor": "#2d2e32",
-      "backgroundImage": "linear-gradient(180deg, #303135 0%, #292a2d 100%)",
-      "boxShadow": "0 1px 0 rgba(0,0,0,0.45)",
-      "borderColor": "#414348"
+      "backgroundColor": "#38393d",
+      "backgroundImage": "linear-gradient(180deg, #38393d 0%, #38393d 100%)",
+      "boxShadow": "inset 0 0 0 1px rgba(255,255,255,0.06), inset 0 1px 1px rgba(255,255,255,0.08), 0 1px 1px rgba(0,0,0,0.12)",
+      "borderColor": "rgba(0,0,0,0.5)"
     },
     "chip": {
       "boxShadow": "0 1px 0 rgba(0,0,0,0.3)"
@@ -85,7 +85,7 @@
       "boxShadow": "inset 0 1px 1px rgba(20,20,10,0.03)"
     },
     "field": {
-      "boxShadow": "inset 0 1px 1px rgba(20,20,10,0.04)"
+      "boxShadow": "none"
     },
     "raised": {
       "backgroundColor": "#f5f5f1",
@@ -119,7 +119,7 @@
     },
     "track": {
       "boxShadow": "inset 0 1px 1px rgba(20,20,10,0.05)",
-      "borderColor": "#dcdcd5"
+      "borderColor": "#cdcdc5"
     },
     "fill": {
       "backgroundImage": "linear-gradient(180deg, #cdf47c 0%, #c4ed68 100%)",
@@ -144,13 +144,13 @@
     "glass": {
       "backgroundColor": "rgba(249,249,246,0.8)",
       "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.9), 0 1px 0 rgba(20,20,10,0.04)",
-      "borderColor": "#dcdcd5",
+      "borderColor": "#cdcdc5",
       "backdropFilter": "blur(20px)"
     },
     "menu": {
       "backgroundColor": "#f9f9f6",
       "boxShadow": "0 1px 0 rgba(20,20,10,0.04), 0 12px 28px -10px rgba(20,20,10,0.22)",
-      "borderColor": "#dcdcd5"
+      "borderColor": "#cdcdc5"
     }
   }
 }

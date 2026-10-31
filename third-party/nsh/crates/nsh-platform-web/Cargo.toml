@@ -12,33 +12,33 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["js", "base-full", "std-zlib", "std-crypto"]
+default = ["browser"]
 # Every part of nsh/base; otherwise only its core controls are registered.
 base-full = []
-# Published TSX evaluated by the browser, with every base and standard module.
+# TSX apps, evaluated by the browser's JavaScript engine, with every base and
+# standard module. Without `browser-core` the module runs a Rust app only
+# (`nsh_start_rust`, `rust_app!`).
 browser = ["browser-core", "base-full", "std-zlib", "std-crypto"]
 # The browser host with core base components; used by the lite runtime.
 browser-core = ["nsh-engine/browser", "dep:url"]
 # Ownership fixtures for actual-Wasm bridge tests, never used by packaging.
 browser-tests = ["browser"]
-# JS apps (`nsh_start`, bundles, hot updates, chunks) on QuickJS. Without
-# it the module runs a Rust app only (`nsh_start_rust`, `rust_app!`) and
-# links no QuickJS.
-js = ["nsh-engine/js-core", "dep:nsh-js", "dep:rquickjs"]
 # The standard modules `zlib` and `crypto` (with its globals) for
 # JS apps: 0.56 and 0.35 MB of the gzipped module.
-std-zlib = ["nsh-js?/zlib", "dep:flate2", "dep:brotli", "dep:zstd"]
-std-crypto = ["nsh-js?/crypto", "dep:sha2", "dep:sha1", "dep:md-5", "dep:hmac", "dep:crc32fast", "dep:crc32c"]
+std-zlib = ["dep:flate2", "dep:brotli", "dep:zstd"]
+std-crypto = ["dep:sha2", "dep:sha1", "dep:md-5", "dep:hmac", "dep:crc32fast", "dep:crc32c"]
 # The playground's build (`nsh-playground.wasm`): also compiles TSX in the
 # page (`nsh_compile`; nsh's JSX compiler, no rolldown), about 3 MB more.
-compiler = ["js", "dep:nsh-bundler"]
-# The runtime of published apps (`nsh.wasm`): QuickJS without its parser
-# and compiler, 0.18 MB smaller; it runs bytecode only (`nsh_start_bytecode`,
-# bytecode chunks). The player and the dev host without it run source.
-bytecode-only = ["js", "nsh-js/bytecode-only"]
-# The development host's (`nsh-dev.wasm`): the model of the app that
-# `nsh test --target web` asks about (`nsh_testing::agent`).
-dev = ["js", "dep:nsh-testing", "dep:nsh-dev"]
+compiler = ["browser", "dep:nsh-bundler"]
+# The runtime `nsh package` links an app's from (`nsh-browser.wasm`): it
+# keeps its symbols and relocations, and the CLI drops the parts of
+# `nsh/base` and the standard modules the app does not use. Never served
+# as it is.
+linkable = []
+# The development host's (`nsh-dev.wasm`): development bundles with hot
+# module replacement, and the model of the app that `nsh test --target web`
+# asks about (`nsh_testing::agent`).
+dev = ["browser", "dep:nsh-testing", "dep:nsh-dev"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -47,13 +47,8 @@ crate-type = ["cdylib", "rlib"]
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 nsh-core = { workspace = true, features = ["glsl"] }
 nsh-engine.workspace = true
-nsh-js = { workspace = true, optional = true }
 nsh-base = { workspace = true, features = ["highlight"] }
 nsh-bundler = { workspace = true, optional = true }
-# QuickJS without its internal `assert`s (NDEBUG): 37 KB smaller and a
-# little faster. They check QuickJS' own invariants, not app code; a broken
-# one stays inside the module's sandbox (the native platforms keep them).
-rquickjs = { workspace = true, features = ["disable-assertions"], optional = true }
 serde_json.workspace = true
 serde.workspace = true
 sha2 = { workspace = true, optional = true }

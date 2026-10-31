@@ -1093,9 +1093,11 @@ const bind = async (method, args, document = true) => {
       });
     }
     Object.assign(target, {
-      typeText: (text) => action('typeText', { text }),
+      typeText: (text, options = {}) =>
+        action('typeText', { text, deliveryMode: options.deliveryMode }),
       paste: (text, options = {}) => action('paste', { text, options }),
-      pressKey: (key) => action('pressKey', { key }),
+      pressKey: (key, options = {}) =>
+        action('pressKey', { key, deliveryMode: options.deliveryMode }),
     });
   }
   if (result.kind === 'tab') target.capabilities = tabCapabilities(result, handle);
@@ -1195,6 +1197,7 @@ const browserObject = (result) =>
     browserId: result.id,
     capabilities: browserCapabilities(result),
     documentation: () => invoke('documentation'),
+    release: () => invoke('browserRelease', { browserId: result.id }).then(() => undefined),
     nameSession: async (name) => {
       const trimmed = name.trim();
       if (!trimmed) throw new ErrorClass('browser.nameSession requires a name');
