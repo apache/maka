@@ -277,10 +277,11 @@ impl Samples {
     }
     fn report(self) -> serde_json::Value {
         let mut output = serde_json::Map::new();
-        for (operation, mut values) in self.0 {
-            values.sort_unstable();
-            let at = |quantile: usize| values[((values.len() - 1) * quantile) / 100];
-            output.insert(operation.into(),json!({"samples":values.len(),"min_ns":values[0],"p50_ns":at(50),"p95_ns":at(95),"p99_ns":at(99),"max_ns":values[values.len()-1],"values_ns":values}));
+        for (operation, values) in self.0 {
+            let mut sorted = values.clone();
+            sorted.sort_unstable();
+            let at = |quantile: usize| sorted[((sorted.len() - 1) * quantile) / 100];
+            output.insert(operation.into(),json!({"samples":values.len(),"min_ns":sorted[0],"p50_ns":at(50),"p95_ns":at(95),"p99_ns":at(99),"max_ns":sorted[sorted.len()-1],"values_ns":values}));
         }
         output.into()
     }
@@ -345,7 +346,7 @@ fn usage() -> serde_json::Value {
             let micros = |time: libc::timeval| {
                 i128::from(time.tv_sec) * 1_000_000 + i128::from(time.tv_usec)
             };
-            return json!({"user_us":micros(value.ru_utime),"system_us":micros(value.ru_stime),"max_rss_native_units":value.ru_maxrss,"minor_faults":value.ru_minflt,"major_faults":value.ru_majflt,"block_inputs":value.ru_inblock,"block_outputs":value.ru_oublock});
+            return json!({"user_us":micros(value.ru_utime),"system_us":micros(value.ru_stime),"max_rss_native_units":value.ru_maxrss,"minor_faults":value.ru_minflt,"major_faults":value.ru_majflt,"block_inputs":value.ru_inblock,"block_outputs":value.ru_oublock,"voluntary_context_switches":value.ru_nvcsw,"involuntary_context_switches":value.ru_nivcsw});
         }
     }
     serde_json::Value::Null
@@ -393,7 +394,9 @@ async fn main() -> Result<()> {
     } else {
         RootOwner::open(&directory.join("root"), &namespaces)?
     };
+    let root_store_open = Instant::now();
     let root = RootStore::open(Arc::new(owner)).await?;
+    let root_store_open_ns = root_store_open.elapsed().as_nanos() as u64;
     let mut samples = Samples::default();
     let before_io = io_stats();
     let before_usage = usage();
@@ -766,7 +769,7 @@ async fn main() -> Result<()> {
     }
     println!(
         "{}",
-        json!({"mode":mode,"fixture":manifest,"operation":operation,"iterations":iterations,"profile":if cfg!(debug_assertions){"debug"}else{"release"},"samples":samples.report(),"completed_rows":completed_rows,"completed_bytes":completed_bytes,"directory_pages":directory_pages,"child_pages":child_pages,"peak_charged_bytes":PEAK.load(Ordering::Relaxed),"charged_allocations":ALLOCATIONS.load(Ordering::Relaxed),"errors":0,"database_bytes_after_close":database_bytes,"io_before":before_io,"io_after":after_io,"sqlite_resources":resources,"usage_before":before_usage,"usage_after":usage(),"timestamp":SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()})
+        json!({"mode":mode,"root_store_open_ns":root_store_open_ns,"fixture":manifest,"operation":operation,"iterations":iterations,"profile":if cfg!(debug_assertions){"debug"}else{"release"},"samples":samples.report(),"completed_rows":completed_rows,"completed_bytes":completed_bytes,"directory_pages":directory_pages,"child_pages":child_pages,"peak_charged_bytes":PEAK.load(Ordering::Relaxed),"charged_allocations":ALLOCATIONS.load(Ordering::Relaxed),"errors":0,"database_bytes_after_close":database_bytes,"io_before":before_io,"io_after":after_io,"sqlite_resources":resources,"usage_before":before_usage,"usage_after":usage(),"timestamp":SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()})
     );
     Ok(())
 }

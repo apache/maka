@@ -49,6 +49,10 @@ struct Fields<'a> {
     payload: Option<&'a [u8]>,
 }
 fn reconstruct(fields: Fields<'_>) -> Result<Cow<'_, str>, StoreError> {
+    let (recipe, payload) = material(fields)?;
+    recipe.reconstruct(payload)
+}
+fn material<'a>(fields: Fields<'a>) -> Result<(Recipe<'a>, Option<&'a [u8]>), StoreError> {
     let Fields {
         header,
         length,
@@ -73,7 +77,7 @@ fn reconstruct(fields: Fields<'_>) -> Result<Cow<'_, str>, StoreError> {
     let length =
         nonnegative(length.ok_or_else(|| invalid("live event lacks its canonical byte length"))?)?;
     match (reference, offset, body, raw_bytes, payload) {
-        (None, None, None, None, None) => Recipe::new(header, length, None)?.reconstruct(None),
+        (None, None, None, None, None) => Ok((Recipe::new(header, length, None)?, None)),
         (Some(reference), Some(offset), Some(id), Some(raw_bytes), Some(payload)) => {
             if reference <= 0 || reference != id || id <= 0 || raw_bytes <= 0 {
                 return Err(invalid("invalid canonical body identity or length"));
@@ -87,7 +91,7 @@ fn reconstruct(fields: Fields<'_>) -> Result<Cow<'_, str>, StoreError> {
                     bytes: raw_bytes,
                 }),
             )?;
-            recipe.reconstruct(Some(payload))
+            Ok((recipe, Some(payload)))
         }
         _ => Err(invalid("canonical slot or body is missing joined metadata")),
     }
@@ -120,6 +124,18 @@ pub(crate) fn json(row: &SqliteRow) -> Result<Cow<'_, str>, StoreError> {
     })
 }
 pub(crate) fn json_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Cow<'a, str>, StoreError> {
+    reconstruct(fields_on_handle(row)?)
+}
+pub(crate) fn prepare_event_on_handle<'a>(
+    row: &'a rusqlite::Row<'_>,
+    visit: impl FnOnce([&'a [u8]; 3]),
+) -> Result<super::event::PreparedEvent, StoreError> {
+    let (recipe, body) = material(fields_on_handle(row)?)?;
+    let (event, parts) = recipe.prepare(body)?;
+    visit(parts);
+    Ok(event)
+}
+fn fields_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Fields<'a>, StoreError> {
     let header = row
         .get_ref("event_header")?
         .as_str_or_null()
@@ -135,7 +151,7 @@ pub(crate) fn json_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Cow<'a, s
     let length = row.get("canonical_length")?;
     let reference: Option<i64> = row.get("canonical_body_reference")?;
     if reference.is_none() {
-        return reconstruct(Fields {
+        return Ok(Fields {
             header,
             length,
             reference,
@@ -157,7 +173,7 @@ pub(crate) fn json_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Cow<'a, s
                 Box::new(error),
             )
         })?;
-    reconstruct(Fields {
+    Ok(Fields {
         header,
         length,
         reference,

@@ -18,13 +18,15 @@
  */
 
 //! Lossless canonical events over immutable headers and typed body slots.
+mod event;
 pub(crate) mod migration;
 mod read;
 mod recipe;
 mod source;
 mod write;
 
-pub(crate) use read::{COLUMNS, JOINS, json, json_on_handle, one};
+pub(crate) use event::PreparedEvent;
+pub(crate) use read::{COLUMNS, JOINS, json, json_on_handle, one, prepare_event_on_handle};
 pub(crate) use recipe::projection;
 pub(crate) use source::{
     SPAN_COLUMNS, SpanMetadata, with_span, with_span_metadata, with_span_on_row,

@@ -63,9 +63,23 @@ impl RootDigest {
         Self(Prefix::empty().hash)
     }
 
-    pub(crate) fn record(&mut self, sequence: i64, json: &str) {
+    pub(crate) fn record(&mut self, sequence: i64, json: &[&[u8]]) {
         let sequence = sequence.to_be_bytes();
-        let leaf = hash(b"maka.source.leaf.v1\0", &[&sequence, json.as_bytes()]);
+        let mut leaf = Sha256::new();
+        leaf.update(b"maka.source.leaf.v1\0");
+        leaf.update((sequence.len() as u64).to_be_bytes());
+        leaf.update(sequence);
+        // The chunks are one original JSON field, with one length prefix.
+        leaf.update(
+            json.iter()
+                .map(|part| part.len() as u64)
+                .sum::<u64>()
+                .to_be_bytes(),
+        );
+        for part in json {
+            leaf.update(part);
+        }
+        let leaf = leaf.finalize();
         self.0 = hash(b"maka.source.chain.v1\0", &[&self.0, &sequence, &leaf]);
     }
 
@@ -74,6 +88,41 @@ impl RootDigest {
         let mut state = selection_state(&scope, cut);
         selection_component(&mut state, b"all", "", &self.0);
         Ok(format!("sha256:{}", hex::encode(state.finalize())))
+    }
+}
+
+#[cfg(test)]
+mod root_digest_tests {
+    use super::*;
+
+    #[test]
+    fn segmented_raw_json_keeps_the_original_single_field_framing() {
+        let mut expected = Prefix::empty().hash;
+        let mut actual = RootDigest::new();
+        for (sequence, json) in [
+            (7_i64, "{ \"n\":1e+00,\"t\":\"汉\\u0061\" }"),
+            (91, "{\"empty\":null}"),
+        ] {
+            let bytes = json.as_bytes();
+            let seq = sequence.to_be_bytes();
+            let leaf = hash(b"maka.source.leaf.v1\0", &[&seq, bytes]);
+            expected = hash(b"maka.source.chain.v1\0", &[&expected, &seq, &leaf]);
+            // Include a split within a UTF-8 character: hashing is over bytes.
+            let split = bytes.iter().position(|b| *b >= 128).map_or(3, |i| i + 1);
+            actual.record(
+                sequence,
+                &[
+                    &bytes[..split],
+                    &bytes[split..split + 1],
+                    &bytes[split + 1..],
+                ],
+            );
+        }
+        assert_eq!(actual.0, expected);
+        assert_eq!(
+            hex::encode(actual.0),
+            "c15a4587be8da9a4aabdb746de55daa2d5913e429e929f47ed2ed677f00b245f"
+        );
     }
 }
 

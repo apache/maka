@@ -244,6 +244,34 @@ impl<'a> Recipe<'a> {
             Ok(())
         })
     }
+    pub fn prepare(
+        &self,
+        body: Option<&'a [u8]>,
+    ) -> Result<(super::event::PreparedEvent, [&'a [u8]; 3]), StoreError> {
+        match (self.layout.slot, body) {
+            (None, None) => Ok((
+                super::event::PreparedEvent::inline(self.header),
+                [self.header.as_bytes(), &[], &[]],
+            )),
+            (Some(slot), Some(body)) => {
+                if body.len() as u64 != slot.bytes {
+                    return Err(invalid("canonical body length changed"));
+                }
+                let position = usize::try_from(slot.offset)
+                    .map_err(|_| invalid("slot offset exceeds memory range"))?;
+                let event = super::event::prepare(self.header, position, body)?;
+                Ok((
+                    event,
+                    [
+                        &self.header.as_bytes()[..position],
+                        body,
+                        &self.header.as_bytes()[position + 4..],
+                    ],
+                ))
+            }
+            _ => Err(invalid("canonical body does not match its slot")),
+        }
+    }
     pub fn reconstruct_with(
         &self,
         append_body: impl FnOnce(&mut Vec<u8>) -> Result<(), StoreError>,

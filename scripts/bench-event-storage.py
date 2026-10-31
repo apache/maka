@@ -25,6 +25,7 @@ Reopened reads are OS-cache-warm, not cold-cache measurements.
 """
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -46,7 +47,7 @@ def storage_stats(directory):
         for suffix in ("-wal", "-shm"):
             sidecar = path.with_name(path.name + suffix)
             sidecars[suffix] = sidecar.stat().st_size if sidecar.exists() else 0
-        with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) as db:
+        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as db:
             tables = {name for (name,) in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
             directories = {}
             for table in ("context_semantic_rows", "context_semantic_fragments", "context_semantic_directory_children"):
