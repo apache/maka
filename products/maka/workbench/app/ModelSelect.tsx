@@ -188,7 +188,7 @@ export function ModelSelect(props: {
               </Text>
             </If>
           </View>
-          <Icon name="down" color={C.secondary} />
+          <Icon name="down" color={C.muted} />
         </Button>
       }
     >

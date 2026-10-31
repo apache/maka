@@ -232,6 +232,8 @@ export interface ComposerSession<Element = unknown> {
   resuming(): boolean;
   resume(source: AgentExecution, backend: ComposerBackend): Promise<void>;
   metrics(): string;
+  /** How much of its model's context the conversation uses, when the model reports a window. */
+  contextUsage?(): ComposerContextUsage | null;
   changeDraft(text: string): void;
   submit(event: { text: string }): void;
   sendRendered(action: ComposerSendAction): void;
@@ -275,3 +277,10 @@ export interface ComposerViewInput<Element = unknown> {
   /** Files dragged from another application are over the conversation. */
   fileDragging?(): boolean;
 }
+
+export type ComposerContextUsage = {
+  tokens: number;
+  window: number;
+  /** The count is an estimate or predates the latest additions. */
+  approximate: boolean;
+};

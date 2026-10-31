@@ -4,7 +4,7 @@
     "Cargo.toml": "9c58d4f2ef93b548e6c02de8950270a9da42bcfea000ab262a78985e75e672e7",
     "package-lock.json": "863e20d94f46507befd14d7abe94982bb110dff3efaa13b9d1c3b60333f8d64a",
     "package.json": "a513ba49c73a1cd6d8060d9a4f2edb47f5286469553cf3b3f4959b9ceb64fa58",
-    "packages/plugin-sdk/src/composer-view.ts": "b0cf8a640d6b06dc30b071a477069a4860d7e12643024932d3d606f047815469",
+    "packages/plugin-sdk/src/composer-view.ts": "05577fbaff2df8105cf249888733e20ee3945324a148e852a6e358e3ff78ee07",
     "packages/plugin-sdk/src/configurations.ts": "5cd4b679d786a4766f97460c8fbe070a92415b5210561344c71de4f61c471f5e",
     "packages/plugin-sdk/src/contracts.ts": "63134585c74106b6dbf6d149598cfb2aa93f76fdfe86beed62d859bbb66291ca",
     "packages/plugin-sdk/src/generated/methods.ts": "83c5100a927372eeb44f53a714f0796bb812a74979f290b170026752536ad370",
