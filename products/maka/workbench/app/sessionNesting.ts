@@ -29,17 +29,32 @@ export function nestCreated(sessions: readonly Nestable[]): {
   nested: ReadonlySet<string>;
 } {
   const parents = new Map(sessions.map((session) => [session.id, session.parentSessionId]));
+  const roots = new Map<string, string | null>();
   const rootOf = (id: string) => {
+    const path: string[] = [];
     const seen = new Set<string>();
-    let root = id;
+    let at = id;
+    let root: string | null;
     for (;;) {
-      seen.add(root);
-      const parent = parents.get(root);
-      if (!parent || !parents.has(parent)) return root;
-      // A cycle has no first conversation; its members stay where they are.
-      if (seen.has(parent)) return id;
-      root = parent;
+      if (roots.has(at)) {
+        root = roots.get(at)!;
+        break;
+      }
+      if (seen.has(at)) {
+        root = null;
+        break;
+      }
+      seen.add(at);
+      path.push(at);
+      const parent = parents.get(at);
+      if (!parent || !parents.has(parent)) {
+        root = at;
+        break;
+      }
+      at = parent;
     }
+    for (const member of path) roots.set(member, root);
+    return root ?? id;
   };
   const children = new Map<string, string[]>();
   const nested = new Set<string>();
@@ -47,7 +62,9 @@ export function nestCreated(sessions: readonly Nestable[]): {
     const root = rootOf(id);
     if (root === id) continue;
     nested.add(id);
-    children.set(root, [...(children.get(root) ?? []), id]);
+    const siblings = children.get(root);
+    if (siblings) siblings.push(id);
+    else children.set(root, [id]);
   }
   const order = sessions
     .filter(({ id }) => !nested.has(id))
