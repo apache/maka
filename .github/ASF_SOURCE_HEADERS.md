@@ -71,7 +71,7 @@ Subtracting in a checkout is not the enumeration excusing itself. It decides whi
 
 | Comment syntax | Extensions |
 | --- | --- |
-| `/* … */` | `.cjs`, `.css`, `.js`, `.mjs`, `.mts`, `.rs`, `.swift`, `.ts`, `.tsx` |
+| `/* … */` | `.c`, `.cjs`, `.css`, `.js`, `.mjs`, `.mts`, `.rs`, `.swift`, `.ts`, `.tsx` |
 | `//` | `.jsonc` |
 | `#` | `.ps1`, `.py`, `.sh`, `.toml`, `.yaml`, `.yml`, `Dockerfile`, `network-policy` |
 | `<!-- … -->` | `.html`, `.md` |
