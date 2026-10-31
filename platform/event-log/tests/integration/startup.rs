@@ -298,7 +298,7 @@ async fn initialization_and_high_water_failures_close_the_actual_sql_owner_befor
             // Deliberately corrupt canonical storage outside RuntimeEvent ingress.
             // Current projection ownership is application-level; no append UDF
             // trigger must be disabled or restored around this fault fixture.
-            raw.execute_batch("PRAGMA ignore_check_constraints=ON; INSERT INTO event_log(sequence,event_id,kind,event_json) VALUES(-1,'invalid','diagnostic','{}');").unwrap();
+            raw.execute_batch("PRAGMA ignore_check_constraints=ON; INSERT INTO event_log(sequence,event_id,kind,event_header,canonical_bytes) VALUES(-1,'invalid','diagnostic','{}',2);").unwrap();
         } else {
             raw.execute_batch("PRAGMA application_id=123;").unwrap();
         }

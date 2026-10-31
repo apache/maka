@@ -25,14 +25,21 @@ use maka_agent_facts::context::TextSummary;
 use maka_agent_facts::context::resolve_model_purpose;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
-use sqlx::SqliteConnection;
+use sqlx::{Row, SqliteConnection};
 
 pub(super) async fn by_id(
     connection: &mut SqliteConnection,
     id: &str,
 ) -> Result<(u64, RuntimeEvent), StoreError> {
-    decode(sqlx::query_as("SELECT sequence, CASE WHEN length(CAST(event_json AS BLOB)) <= 8388608 THEN event_json END
-        FROM runtime_events WHERE event_id = ?").bind(id).fetch_optional(connection).await?)
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT e.sequence,e.event_header,{} FROM runtime_events e {} WHERE e.event_id=?",
+        crate::canonical::COLUMNS,
+        crate::canonical::JOINS
+    )))
+    .bind(id)
+    .fetch_optional(connection)
+    .await?;
+    decode(row)
 }
 
 pub(super) async fn by_kind(
@@ -41,22 +48,35 @@ pub(super) async fn by_kind(
     kind: &str,
     operation: Option<&str>,
 ) -> Result<(u64, RuntimeEvent), StoreError> {
-    let row = if let Some(operation) = operation {
-        sqlx::query_as("SELECT sequence, CASE WHEN length(CAST(event_json AS BLOB)) <= 8388608 THEN event_json END
-            FROM runtime_events WHERE invocation_id = ? AND kind = ? AND operation_id = ?")
-            .bind(invocation).bind(kind).bind(operation).fetch_optional(connection).await?
+    let operation_filter = if operation.is_some() {
+        " AND e.operation_id=?3"
     } else {
-        sqlx::query_as("SELECT sequence, CASE WHEN length(CAST(event_json AS BLOB)) <= 8388608 THEN event_json END
-            FROM runtime_events WHERE invocation_id = ? AND kind = ?")
-            .bind(invocation).bind(kind).fetch_optional(connection).await?
+        ""
     };
+    let query = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT e.sequence,e.event_header,{} FROM runtime_events e {}
+         WHERE e.invocation_id=?1 AND e.kind=?2{operation_filter}",
+        crate::canonical::COLUMNS,
+        crate::canonical::JOINS
+    )))
+    .bind(invocation)
+    .bind(kind);
+    let query = if let Some(operation) = operation {
+        query.bind(operation)
+    } else {
+        query
+    };
+    let row = query.fetch_optional(connection).await?;
     decode(row)
 }
 
-fn decode(row: Option<(i64, Option<String>)>) -> Result<(u64, RuntimeEvent), StoreError> {
-    let (sequence, json) = row.ok_or_else(|| invalid("missing proof event"))?;
-    let json = json.ok_or_else(|| invalid("proof event exceeds bounded reader capacity"))?;
-    Ok((sequence_number(sequence)?, serde_json::from_str(&json)?))
+fn decode(row: Option<sqlx::sqlite::SqliteRow>) -> Result<(u64, RuntimeEvent), StoreError> {
+    let row = row.ok_or_else(|| invalid("missing proof event"))?;
+    let json = crate::canonical::json(&row)?;
+    Ok((
+        sequence_number(row.try_get("sequence")?)?,
+        serde_json::from_str(&json)?,
+    ))
 }
 
 /// Validate the proof and return its exact source selection. The chain reader
@@ -167,14 +187,14 @@ pub(super) async fn validate(
     }
     let changed_route: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM event_log INDEXED BY context_summary_round
-         WHERE invocation_id = ?1 AND event_json IS NOT NULL AND kind = 'model_requested' AND sequence >= ?9 AND sequence < ?2
-         AND json_extract(event_json, '$.fact.purpose') = 'summary'
-         AND json_extract(event_json, '$.fact.source_high_water') = ?5
-         AND json_extract(event_json, '$.fact.source_scope') = json(?10)
-         AND (json_extract(event_json, '$.fact.model_id') != ?3 OR json_extract(event_json, '$.fact.route_identity') != ?4
-           OR json_extract(event_json, '$.fact.source_high_water') != ?5 OR json_extract(event_json, '$.fact.source_digest') != ?6
-           OR json_extract(event_json, '$.fact.checkpoint_event_id') IS NOT ?7
-           OR json_extract(event_json, '$.fact.effective_source_digest') IS NOT ?8))",
+         WHERE invocation_id = ?1 AND event_header IS NOT NULL AND kind = 'model_requested' AND sequence >= ?9 AND sequence < ?2
+         AND json_extract(event_header, '$.fact.purpose') = 'summary'
+         AND json_extract(event_header, '$.fact.source_high_water') = ?5
+         AND json_extract(event_header, '$.fact.source_scope') = json(?10)
+         AND (json_extract(event_header, '$.fact.model_id') != ?3 OR json_extract(event_header, '$.fact.route_identity') != ?4
+           OR json_extract(event_header, '$.fact.source_high_water') != ?5 OR json_extract(event_header, '$.fact.source_digest') != ?6
+           OR json_extract(event_header, '$.fact.checkpoint_event_id') IS NOT ?7
+           OR json_extract(event_header, '$.fact.effective_source_digest') IS NOT ?8))",
     ).bind(&event.invocation.invocation_id).bind(sequence as i64)
         .bind(model_id).bind(route_identity).bind(checkpoint.covered_through as i64).bind(&checkpoint.source_digest)
         .bind(&checkpoint.previous_checkpoint_id).bind(effective_source_digest).bind(first_summary as i64).bind(serde_json::to_string(source_scope)?).fetch_one(&mut *connection).await?;

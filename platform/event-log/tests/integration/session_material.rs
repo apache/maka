@@ -220,7 +220,7 @@ async fn collection_waits_for_the_last_history_owner_and_preserves_frozen_accoun
     let inspect = rusqlite::Connection::open(&path).unwrap();
     let (bodies, leaked, digest): (i64, i64, String) = inspect
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM event_log WHERE event_json IS NOT NULL),
+            "SELECT (SELECT COUNT(*) FROM event_log WHERE event_header IS NOT NULL),
          (SELECT COUNT(*) FROM event_log WHERE retained_json LIKE '%private-%'),
          (SELECT body_digest FROM event_log WHERE event_id=?1)",
             [&opening.event().id],
@@ -269,4 +269,115 @@ async fn retire(log: &EventLog, session: &str) {
         log.finish_session_retirement(session).await.unwrap(),
         SessionRetirement::Removed
     );
+}
+
+#[tokio::test]
+async fn shared_tool_projection_survives_collection_of_one_canonical_owner() {
+    use maka_agent_facts::{
+        event::{EventWrite, Invocation, RuntimeEvent},
+        tool_call::ToolCallIdentity,
+        tool_output::{DurableToolProjection, ToolOutput, ToolSuccess},
+    };
+    use maka_event_log::sessions::MaterialCollection;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("shared.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    let text = "shared projection 汉字\\n".repeat(4000);
+    for id in ["first", "second"] {
+        log.create_session(id, &format!("create-{id}"), &json!({}), 1)
+            .await
+            .unwrap();
+        let invocation = Invocation {
+            session_id: id.into(),
+            turn_id: id.into(),
+            run_id: id.into(),
+            invocation_id: id.into(),
+        };
+        let plain = |fact| EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap();
+        log.append(&plain(Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::Code {
+                source: "fixture".into(),
+            },
+        }))
+        .await
+        .unwrap();
+        let operation = format!("{id}-operation");
+        log.append(&plain(Fact::ToolDispatched {
+            presentation: None,
+            title: None,
+            operation_id: operation.clone(),
+            call: ToolCallIdentity::standalone(format!("{id}-call")),
+            name: "Read".into(),
+            input: json!({}),
+        }))
+        .await
+        .unwrap();
+        let result = EventWrite::tool_success(
+            format!("{id}-result"),
+            std::time::UNIX_EPOCH,
+            invocation.clone(),
+            operation,
+            ToolSuccess::projected(
+                ToolOutput::Text(text.clone()),
+                DurableToolProjection::Text { text: text.clone() },
+            ),
+        )
+        .unwrap()
+        .0;
+        log.append(&result).await.unwrap();
+        log.append(&result).await.unwrap();
+        log.append(&plain(Fact::InvocationEnded {
+            outcome: InvocationOutcome::Completed,
+        }))
+        .await
+        .unwrap();
+    }
+    let inspect = rusqlite::Connection::open(&path).unwrap();
+    let counts = || {
+        inspect.query_row("SELECT (SELECT COUNT(*) FROM event_bodies),(SELECT COUNT(*) FROM event_body_slots)", [], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))).unwrap()
+    };
+    assert_eq!(counts(), (1, 2));
+    let stored_bytes: i64 = inspect
+        .query_row("SELECT SUM(length(payload)) FROM event_bodies", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let projection_bytes = serde_json::to_vec(&DurableToolProjection::Text { text: text.clone() })
+        .unwrap()
+        .len();
+    assert_eq!(
+        stored_bytes as usize, projection_bytes,
+        "two canonical owners store one exact raw projection token"
+    );
+    let scope = LogScope::Session {
+        id: "second".into(),
+    };
+    let before = log
+        .scoped_prefix(scope.clone(), 100, 4 * 1024 * 1024)
+        .await
+        .unwrap();
+    retire(&log, "first").await;
+    while log.collect_session_material(None).await.unwrap() == MaterialCollection::Collected {}
+    assert_eq!(counts(), (1, 1));
+    assert_eq!(
+        log.resolve_tool_result("second", "second-result")
+            .await
+            .unwrap(),
+        ToolOutput::Text(text.clone())
+    );
+    log.close().await.unwrap();
+    let log = EventLog::open(&path).await.unwrap();
+    let after = log
+        .scoped_prefix(scope, 100, 4 * 1024 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_vec(&before).unwrap(),
+        serde_json::to_vec(&after).unwrap()
+    );
+    retire(&log, "second").await;
+    while log.collect_session_material(None).await.unwrap() == MaterialCollection::Collected {}
+    assert_eq!(counts(), (0, 0));
+    log.close().await.unwrap();
 }

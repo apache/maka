@@ -38,13 +38,13 @@ macro_rules! accepted_calls {
         FROM model_selected_parts s JOIN runtime_events m ON m.sequence=s.sequence JOIN model_part_bodies b
           ON b.event_id=s.body_event_id AND b.ordinal=s.ordinal
         JOIN runtime_events r ON r.invocation_id=s.invocation_id AND r.operation_id=s.step_id AND r.kind='model_requested'
-        WHERE s.terminal_kind='model_completed' AND COALESCE(json_extract(r.event_json,'$.fact.item_acceptance'),0)=0
+        WHERE s.terminal_kind='model_completed' AND COALESCE(json_extract(r.event_header,'$.fact.item_acceptance'),0)=0
           AND json_extract(b.part,'$.kind')='tool_call'
         UNION ALL
         SELECT b.invocation_id,b.step_id,b.source_sequence,b.event_id,json_extract(b.part,'$.call')
         FROM model_part_bodies b JOIN runtime_events o ON o.sequence=b.source_sequence JOIN runtime_events r ON r.invocation_id=b.invocation_id
           AND r.operation_id=b.step_id AND r.kind='model_requested'
-        WHERE b.source_kind='model_observed' AND json_extract(r.event_json,'$.fact.item_acceptance')=1
+        WHERE b.source_kind='model_observed' AND json_extract(r.event_header,'$.fact.item_acceptance')=1
           AND json_extract(b.part,'$.kind')='tool_call'
     )" };
 }
@@ -68,8 +68,8 @@ pub(crate) async fn mode(
     step: &str,
 ) -> Result<(bool, Option<ModelPurpose>), StoreError> {
     let (enabled, purpose): (bool, Option<String>) = sqlx::query_as(
-        "SELECT COALESCE(json_extract(event_json,'$.fact.item_acceptance'),0),
-                json_extract(event_json,'$.fact.purpose') FROM runtime_events
+        "SELECT COALESCE(json_extract(event_header,'$.fact.item_acceptance'),0),
+                json_extract(event_header,'$.fact.purpose') FROM runtime_events
          WHERE invocation_id=? AND operation_id=? AND kind='model_requested'",
     )
     .bind(invocation)
@@ -121,9 +121,9 @@ pub(crate) async fn validate(
         Fact::ModelCompleted { step_id, output } => {
             let (enabled, _) = mode(connection, &event.invocation.invocation_id, step_id).await?;
             let witness: Option<(String, String)> = sqlx::query_as(
-                "SELECT json_extract(event_json,'$.fact.event.data.reason'),json_extract(event_json,'$.fact.event.data.usage')
+                "SELECT json_extract(event_header,'$.fact.event.data.reason'),json_extract(event_header,'$.fact.event.data.usage')
                  FROM runtime_events WHERE invocation_id=? AND kind='model_observed'
-                 AND json_extract(event_json,'$.fact.step_id')=? AND json_extract(event_json,'$.fact.event.kind')='finished'
+                 AND json_extract(event_header,'$.fact.step_id')=? AND json_extract(event_header,'$.fact.event.kind')='finished'
                  ORDER BY sequence DESC LIMIT 1",
             ).bind(&event.invocation.invocation_id).bind(step_id).fetch_optional(&mut *connection).await?;
             if let Some((reason, usage)) = witness {

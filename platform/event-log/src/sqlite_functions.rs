@@ -34,12 +34,20 @@ pub(crate) async fn register(connection: &mut SqliteConnection) -> Result<(), St
 pub(crate) async fn register_migrations(
     connection: &mut SqliteConnection,
 ) -> Result<(), StoreError> {
-    on_handle(connection, crate::context::semantic::migration::register).await
+    on_handle(connection, |db| {
+        crate::context::semantic::migration::register(db)?;
+        crate::canonical::migration::register(db)
+    })
+    .await
 }
 pub(crate) async fn unregister_migrations(
     connection: &mut SqliteConnection,
 ) -> Result<(), StoreError> {
-    on_handle(connection, crate::context::semantic::migration::unregister).await
+    on_handle(connection, |db| {
+        crate::context::semantic::migration::unregister(db)?;
+        crate::canonical::migration::unregister(db)
+    })
+    .await
 }
 
 async fn on_handle(

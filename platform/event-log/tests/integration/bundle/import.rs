@@ -256,7 +256,7 @@ pub(crate) async fn roundtrip(bytes: &[u8]) {
     let inspect = rusqlite::Connection::open(&collision_path).unwrap();
     inspect
         .execute_batch(
-            "UPDATE event_log SET retained_json=event_json,body_digest='fixture',event_json=NULL",
+            "DELETE FROM event_body_slots; UPDATE event_log SET retained_json=event_header,body_digest='fixture',event_header=NULL,canonical_bytes=NULL",
         )
         .unwrap();
     let collision = EventLog::open(&collision_path).await.unwrap();

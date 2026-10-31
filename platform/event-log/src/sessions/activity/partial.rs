@@ -104,7 +104,7 @@ pub(super) async fn project(
                 AND result.invocation_id = ?1 AND result.sequence < ?2
                 AND result.kind IN ('model_completed', 'model_interrupted'))
              AND EXISTS (SELECT 1 FROM runtime_events WHERE sequence = ?2
-                AND json_extract(event_json, '$.fact.outcome.kind') IN ('failed', 'cancelled'))
+                AND json_extract(event_header, '$.fact.outcome.kind') IN ('failed', 'cancelled'))
              LIMIT 1",
         ).bind(invocation).bind(boundary).fetch_optional(&mut *connection).await?
     };
@@ -117,8 +117,8 @@ pub(super) async fn project(
              AND opening.kind = 'invocation_opened'
              WHERE request.kind = 'model_requested' AND request.invocation_id = ?1
              AND request.operation_id = ?2
-             AND json_extract(opening.event_json, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
-             AND json_extract(request.event_json, '$.fact.purpose') = 'main')",
+             AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
+             AND json_extract(request.event_header, '$.fact.purpose') = 'main')",
     )
     .bind(invocation)
     .bind(&step)

@@ -285,7 +285,7 @@ async fn lifetime_read_and_terminal_pending_lookup_remain_indexed_after_large_hi
         .unwrap();
     let log = session.owner().unwrap();
     log.connection.run(|db|Box::pin(async move {
-        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<20000) INSERT INTO event_log(event_id,kind,event_json) SELECT 'large-history-'||x,'unrelated','{}' FROM n").execute(db).await?;Ok(())
+        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<20000) INSERT INTO event_log(event_id,kind,event_header,canonical_bytes) SELECT 'large-history-'||x,'unrelated','{}',2 FROM n").execute(db).await?;Ok(())
     })).await.unwrap();
     log.connection.read(|db|Box::pin(async move {
         let plans=sqlx::query("EXPLAIN QUERY PLAN SELECT input_known,input_missing,output_known,output_missing FROM session_usage_totals WHERE session_id='source'").fetch_all(&mut *db).await?;

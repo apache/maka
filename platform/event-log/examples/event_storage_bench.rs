@@ -328,6 +328,10 @@ async fn main() -> Result<()> {
     }
     let events: usize = value("--events", "128").parse()?;
     let body_bytes: usize = value("--body-bytes", "65536").parse()?;
+    let body_pattern = value("--body-pattern", "repeated");
+    if !matches!(body_pattern.as_str(), "repeated" | "entropy") {
+        return Err("body pattern must be repeated or entropy".into());
+    }
     let iterations: usize = value("--iterations", "10").parse()?;
     if events == 0 || iterations == 0 {
         return Err("events and iterations must be positive".into());
@@ -372,6 +376,17 @@ async fn main() -> Result<()> {
         let pattern = "line: storage \\\"payload\\\"\n";
         let mut body = pattern.repeat(body_bytes.div_ceil(pattern.len()));
         body.truncate(body_bytes);
+        if body_pattern == "entropy" {
+            let mut state = 0x9e3779b97f4a7c15u64;
+            body = (0..body_bytes)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    char::from(33 + (state % 94) as u8)
+                })
+                .collect();
+        }
         let mut payloads = serde_json::Map::new();
         for index in 0..events {
             let operation = format!("tool-{index}");
@@ -380,6 +395,17 @@ async fn main() -> Result<()> {
             let (write, sequence, settled_ns) =
                 append_tool(&session, &invocation, &operation, &text, index as u64).await?;
             samples.add("append_attempt", start);
+            samples
+                .0
+                .entry(
+                    [
+                        "append_settled_json",
+                        "append_settled_text",
+                        "append_settled_content",
+                    ][index % 3],
+                )
+                .or_default()
+                .push(settled_ns);
             samples
                 .0
                 .entry("append_tool_settled")
@@ -394,7 +420,9 @@ async fn main() -> Result<()> {
             } = &write.event().fact
             {
                 let projection = serde_json::to_vec(model_projection)?;
-                payloads.insert(sequence.to_string(),json!({"bytes":projection.len(),"digest":digest(&projection),"first_digest":digest(&projection[..projection.len().min(64)]),"tail_digest":digest(&projection[projection.len().saturating_sub(64)..])}));
+                let window_start = (32 * 1024usize - 32).min(projection.len().saturating_sub(256));
+                let window_end = (window_start + 256).min(projection.len());
+                payloads.insert(sequence.to_string(),json!({"window_start":window_start,"window_digest":digest(&projection[window_start..window_end]),"bytes":projection.len(),"digest":digest(&projection),"first_digest":digest(&projection[..projection.len().min(64)]),"tail_digest":digest(&projection[projection.len().saturating_sub(64)..])}));
             }
         }
         session
@@ -417,7 +445,7 @@ async fn main() -> Result<()> {
         let (_, export) = root
             .export_bundle("bench", &inventory.subtree_digest, tokio::io::sink())
             .await?;
-        manifest = json!({"events":events,"body_bytes":body_bytes,"prefix_digest":prefix.digest,"export_digest":export.digest,"events_digest":digest(&serde_json::to_vec(&prefix.events)?),"payloads":payloads,"canonical_events":prefix.events.len()});
+        manifest = json!({"events":events,"body_bytes":body_bytes,"body_pattern":body_pattern,"prefix_digest":prefix.digest,"export_digest":export.digest,"events_digest":digest(&serde_json::to_vec(&prefix.events)?),"payloads":payloads,"canonical_events":prefix.events.len()});
         std::fs::write(
             directory.join("fixture.json"),
             serde_json::to_vec_pretty(&manifest)?,
@@ -537,6 +565,39 @@ async fn main() -> Result<()> {
             samples.add("tail_64_all", start);
         }
         let start = Instant::now();
+        for (body, length, evidence, _) in &payloads {
+            let offset = evidence["window_start"]
+                .as_u64()
+                .ok_or("missing window start")?;
+            let count = (*length - offset).min(256);
+            let source = captured.byte_range(body, offset, count)?;
+            let mut reader = source.open(Arc::new(Budget));
+            let mut buffer = allocation(64);
+            let mut sha = Sha256::new();
+            let mut bytes = 0;
+            loop {
+                let chunk = reader.read_chunk(buffer).await?;
+                sha.update(&chunk.buffer.as_ref()[..chunk.bytes_read]);
+                bytes += chunk.bytes_read as u64;
+                buffer = chunk.buffer;
+                if chunk.bytes_read == 0 {
+                    break;
+                }
+            }
+            if bytes != count
+                || hex::encode(sha.finalize())
+                    != evidence["window_digest"]
+                        .as_str()
+                        .ok_or("missing window digest")?
+            {
+                return Err("cross-frame repeated windows changed".into());
+            }
+            completed_bytes += bytes;
+        }
+        if iteration > 0 {
+            samples.add("cross_frame_repeated_64_all", start);
+        }
+        let start = Instant::now();
         for (body, _, evidence, _) in &payloads {
             let (sha, bytes) = captured
                 .with_sequential_source(body, |reader| {
@@ -568,6 +629,13 @@ async fn main() -> Result<()> {
         }
         let start = Instant::now();
         for (body, _, _, directory) in &payloads {
+            let leaf_start = Instant::now();
+            let operation = match directory {
+                PayloadDirectory::Tool(ToolDirectory::Text(_)) => "descriptor_leaf_text",
+                PayloadDirectory::Tool(ToolDirectory::Json(_)) => "descriptor_leaf_json",
+                PayloadDirectory::Tool(ToolDirectory::Content { .. }) => "descriptor_leaf_content",
+                _ => return Err("unexpected tool directory".into()),
+            };
             match directory {
                 PayloadDirectory::Tool(ToolDirectory::Text(span)) => {
                     check_text(&captured, body, *span).await?
@@ -606,6 +674,9 @@ async fn main() -> Result<()> {
                     }
                 }
                 _ => return Err("unexpected tool directory".into()),
+            }
+            if iteration > 0 {
+                samples.add(operation, leaf_start);
             }
         }
         if iteration > 0 {

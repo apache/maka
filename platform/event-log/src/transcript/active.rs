@@ -74,7 +74,7 @@ impl EventLog {
                         "SELECT EXISTS(SELECT 1 FROM runtime_events
                          WHERE invocation_id = ?1 AND sequence <= ?2
                          AND kind = 'invocation_opened'
-                         AND json_extract(event_json, '$.fact.input.kind') = 'context_compact')",
+                         AND json_extract(event_header, '$.fact.input.kind') = 'context_compact')",
                     )
                     .bind(id)
                     .bind(fence)

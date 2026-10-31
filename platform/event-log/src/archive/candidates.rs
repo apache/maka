@@ -45,7 +45,7 @@ impl EventLog {
             let mut tx = connection.begin().await?;
             if let Some(id) = &current {
                 let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events o WHERE invocation_id=? AND kind='invocation_opened'
-                    AND json_extract(event_json,'$.invocation.session_id')=? AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id=o.invocation_id AND t.kind='invocation_ended'))")
+                    AND json_extract(event_header,'$.invocation.session_id')=? AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id=o.invocation_id AND t.kind='invocation_ended'))")
                     .bind(id).bind(&session).fetch_one(&mut *tx).await?;
                 if !live { return Err(StoreError::InvalidTransition("prune source invocation is not live".into())); }
                 safety::settled_boundary(&mut tx, id, i64::MAX as u64).await?;
@@ -55,7 +55,7 @@ impl EventLog {
             // The admission preflight checks safety without materializing history.
             if max_candidates > 0 {
                 let selection = if let Some(id) = &current {
-                    let json: String = sqlx::query_scalar("SELECT event_json FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'")
+                    let json: String = sqlx::query_scalar("SELECT event_header FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'")
                         .bind(id).fetch_one(&mut *tx).await?;
                     let opening: RuntimeEvent = serde_json::from_str(&json)?;
                     Selection::for_opening(&mut tx, &opening).await?
@@ -99,13 +99,14 @@ async fn scan(
     let archive_filter = Selection::archive_predicate("t", "a", "9223372036854775807", "?4");
     let branches = target::SOURCES.map(|source| format!(
         "SELECT t.sequence AS sequence,t.event_id,
-           COALESCE(length(CAST(json_extract(t.event_json,'$.fact.outcome.model_projection') AS BLOB)),
-                    length(CAST(json_extract(t.event_json,'$.fact.outcome.message') AS BLOB)),0)
-         FROM ({source}) t CROSS JOIN runtime_events d
+           COALESCE(b.sqlite_json_bytes,
+                    length(CAST(json_extract(t.event_header,'$.fact.outcome.message') AS BLOB)),0)
+         FROM ({source}) t LEFT JOIN event_body_slots slot ON slot.event_sequence=t.sequence
+         LEFT JOIN event_bodies b ON b.id=slot.body_id CROSS JOIN runtime_events d
          WHERE d.invocation_id=t.invocation_id AND d.operation_id=t.operation_id AND d.kind='tool_dispatched'
            AND t.sequence>?1 AND t.sequence<=?3 AND t.owner_session_id=?2
-           AND {filter} AND json_extract(d.event_json,'$.fact.call.origin.kind')='provider'
-           AND NOT EXISTS(SELECT 1 FROM runtime_events a WHERE a.kind='tool_result_archived' AND CAST(json_extract(a.event_json,'$.fact.placeholder.identity.runtime_event_id') AS TEXT)=t.event_id AND {archive_filter})"
+           AND {filter} AND json_extract(d.event_header,'$.fact.call.origin.kind')='provider'
+           AND NOT EXISTS(SELECT 1 FROM runtime_events a WHERE a.kind='tool_result_archived' AND CAST(json_extract(a.event_header,'$.fact.placeholder.identity.runtime_event_id') AS TEXT)=t.event_id AND {archive_filter})"
     ));
     let query = format!(
         "{} ORDER BY sequence LIMIT ?5",

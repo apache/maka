@@ -55,18 +55,7 @@ fn with_range<T>(
             consume,
         ),
         Backing::Canonical { key, offset, bytes } => {
-            check_canonical(raw, key, offset, bytes)?;
-            with_blob(
-                raw,
-                "event_log",
-                "event_json",
-                key.source_sequence as i64,
-                offset
-                    .checked_add(range.start)
-                    .ok_or_else(|| invalid("identity range overflow"))?,
-                length,
-                consume,
-            )
+            with_canonical_range(raw, key, offset, bytes, range.start, length, consume)
         }
         Backing::Pieces { key, .. } => {
             check_pieces(raw, key)?;

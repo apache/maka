@@ -63,19 +63,24 @@ pub(crate) async fn insert(
             Position::Imported(sequence) => sequence.map(i64::try_from).transpose()
                 .map_err(|_| StoreError::PrefixTooLarge)?,
         };
-        let inserted = crate::canonical_insert::insert(crate::canonical_insert::Record {
+        let projection = crate::canonical::projection(event.fact.kind(), &json)?;
+        let header = projection.as_ref().map(|projection| projection.header(&json)).transpose()?;
+        let inserted = crate::canonical_insert::insert_header(crate::canonical_insert::Record {
             sequence: requested_sequence,
             event_id: &event.id,
             invocation_id: Some(&event.invocation.invocation_id),
             kind: event.fact.kind(),
             operation_id: event.fact.operation_id(),
-            json: &json,
-        }).execute(&mut *worker).await?;
+            json: header.as_deref().unwrap_or(&json),
+        }, json.len()).execute(&mut *worker).await?;
         if inserted.rows_affected() != 1 {
             return Err(StoreError::EventConflict);
         }
         // Capture before the projections issue INSERTs on this same handle.
         let sequence = sequence_number(inserted.last_insert_rowid())?;
+        if let Some(projection) = &projection {
+            crate::canonical::publish(worker, sequence, projection).await?;
+        }
         let stored = StoredEvent { sequence, event };
         crate::model_items::record(worker, &stored).await?;
         crate::context::projection::record(worker, &stored, &json).await?;

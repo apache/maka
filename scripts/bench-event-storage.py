@@ -60,14 +60,15 @@ def storage_stats(directory):
                                page_size=db.execute("PRAGMA page_size").fetchone()[0],
                                pages=db.execute("PRAGMA page_count").fetchone()[0],
                                free_pages=db.execute("PRAGMA freelist_count").fetchone()[0],
-                               directories=directories))
+                               directories=directories,
+                               bodies=(dict(zip(("records","raw_bytes","encoded_bytes"), db.execute("SELECT COUNT(*),COALESCE(SUM(raw_bytes),0),COALESCE(SUM(length(payload)),0) FROM event_bodies").fetchone())) if "event_bodies" in tables else None)))
     return result
 
 
-def run(binary, directory, mode, events, body_bytes, iterations):
+def run(binary, directory, mode, events, body_bytes, iterations, body_pattern):
     command = [str(binary), "--database", str(directory), "--mode", mode,
                "--events", str(events), "--body-bytes", str(body_bytes),
-               "--iterations", str(iterations)]
+               "--iterations", str(iterations), "--body-pattern", body_pattern]
     before = {"load": os.getloadavg(), "free_bytes": shutil.disk_usage(directory.parent).free}
     start = time.monotonic_ns()
     result = subprocess.run(command, check=True, text=True, capture_output=True)
@@ -87,6 +88,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--iterations", type=int, default=20)
+    parser.add_argument("--body-pattern", choices=("repeated", "entropy"), default="repeated")
     parser.add_argument("--case", action="append", metavar="NAME:EVENTS:BODY_BYTES")
     args = parser.parse_args()
     args.output = args.output.resolve()
@@ -105,7 +107,7 @@ def main():
             binaries[label] = dict(path=str(binary), sha256=hashlib.file_digest(stream, "sha256").hexdigest())
     (args.output / "manifest.json").write_text(json.dumps(dict(
         binaries=binaries, platform=platform.platform(), cpu_count=os.cpu_count(),
-        runs=args.runs, iterations=args.iterations, cases=cases,
+        runs=args.runs, iterations=args.iterations, cases=cases, body_pattern=args.body_pattern,
         cache_state="one validation/warmup pass; steady state and OS-warm reopen"), indent=2) + "\n")
     summaries = {}
     fixtures = {}
@@ -117,7 +119,7 @@ def main():
                 directory = args.output / f"{case}-{repeat}-{label}"
                 for mode in ("create", "read"):
                     report = run(binary, directory, mode, int(event_count),
-                                 int(body_size), args.iterations)
+                                 int(body_size), args.iterations, args.body_pattern)
                     fixture = report["fixture"]
                     previous = fixtures.setdefault(case, fixture)
                     if fixture != previous:

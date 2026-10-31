@@ -154,7 +154,7 @@ async fn material_state(log: &EventLog) -> (i64, i64, i64) {
         .read(|db| {
             Box::pin(async move {
                 let bodies = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM event_log WHERE event_json IS NOT NULL",
+                    "SELECT COUNT(*) FROM event_log WHERE event_header IS NOT NULL",
                 )
                 .fetch_one(&mut *db)
                 .await?;
@@ -228,7 +228,7 @@ async fn retirement_automatically_collects_after_the_last_archived_fork_is_remov
         "automatic vacuum must shrink the database"
     );
     let proof: (i64, i64) = log.connection.read(|db| Box::pin(async move {
-        Ok(sqlx::query_as("SELECT COUNT(*), SUM(event_json IS NULL AND body_digest IS NOT NULL AND retained_json NOT LIKE '%private input%') FROM event_log")
+        Ok(sqlx::query_as("SELECT COUNT(*), SUM(event_header IS NULL AND body_digest IS NOT NULL AND retained_json NOT LIKE '%private input%') FROM event_log")
             .fetch_one(db).await?)
     })).await.unwrap();
     assert_eq!(
@@ -390,7 +390,7 @@ async fn shutdown_drains_the_accepted_batch_and_reopen_resumes_without_new_write
     .unwrap();
     let remaining: i64 = inspect
         .query_row(
-            "SELECT COUNT(*) FROM event_log WHERE event_json IS NOT NULL",
+            "SELECT COUNT(*) FROM event_log WHERE event_header IS NOT NULL",
             [],
             |row| row.get(0),
         )

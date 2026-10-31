@@ -222,9 +222,9 @@ async fn second_record_sql_failure_rolls_back_the_complete_import_and_allows_ret
         .execute_batch(
             "CREATE TRIGGER fail_second_import_record BEFORE INSERT ON event_log
         WHEN NEW.kind='message_imported'
-          AND json_extract(NEW.event_json,'$.fact.record.sourceMessageId')='source-1'
+          AND json_extract(NEW.event_header,'$.fact.record.sourceMessageId')='source-1'
           AND EXISTS(SELECT 1 FROM event_log WHERE kind='message_imported'
-            AND json_extract(event_json,'$.fact.record.sourceMessageId')='source-0')
+            AND json_extract(event_header,'$.fact.record.sourceMessageId')='source-0')
         BEGIN SELECT RAISE(ABORT,'atomic second record fault'); END;",
         )
         .unwrap();
@@ -356,7 +356,7 @@ fn duplicate_calls() -> Vec<Record> {
 
 fn import_state(db: &rusqlite::Connection) -> (Vec<(i64, Vec<u8>)>, String) {
     let events = db
-        .prepare("SELECT sequence,CAST(event_json AS BLOB) FROM event_log ORDER BY sequence")
+        .prepare("SELECT sequence,CAST(event_header AS BLOB) FROM event_log ORDER BY sequence")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap()
@@ -489,7 +489,7 @@ async fn retained_orphan_physical_proof_still_blocks_complete_import() {
     let inspect = rusqlite::Connection::open(&path).unwrap();
     inspect
         .execute_batch(
-            "UPDATE event_log SET retained_json=event_json,body_digest='fixture',event_json=NULL",
+            "DELETE FROM event_body_slots; UPDATE event_log SET retained_json=event_header,body_digest='fixture',event_header=NULL,canonical_bytes=NULL",
         )
         .unwrap();
     let log = EventLog::open(&path).await.unwrap();

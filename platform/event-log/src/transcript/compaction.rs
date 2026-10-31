@@ -21,24 +21,24 @@ use crate::{StoreError, sequence_number};
 use maka_presentation::{Content, Message, Row};
 use rusqlite::Connection as RawConnection;
 
-const COMPACTION: &str = r#"SELECT c.event_id, json_extract(c.event_json, '$.invocation.turn_id') AS turn_id,
-           catalog_time(json_extract(c.event_json, '$.recorded_at')) AS adopted_at,
-           CASE WHEN json_extract(opening.event_json, '$.fact.input.kind') = 'context_compact'
-           THEN catalog_time(json_extract(opening.event_json, '$.recorded_at'))
-           ELSE (SELECT catalog_time(json_extract(r.event_json, '$.recorded_at'))
+const COMPACTION: &str = r#"SELECT c.event_id, json_extract(c.event_header, '$.invocation.turn_id') AS turn_id,
+           catalog_time(json_extract(c.event_header, '$.recorded_at')) AS adopted_at,
+           CASE WHEN json_extract(opening.event_header, '$.fact.input.kind') = 'context_compact'
+           THEN catalog_time(json_extract(opening.event_header, '$.recorded_at'))
+           ELSE (SELECT catalog_time(json_extract(r.event_header, '$.recorded_at'))
             FROM event_log r INDEXED BY context_summary_round
-            WHERE r.event_json IS NOT NULL AND r.invocation_id = c.invocation_id AND r.kind = 'model_requested'
-              AND json_extract(r.event_json, '$.fact.purpose') = 'summary'
+            WHERE r.event_header IS NOT NULL AND r.invocation_id = c.invocation_id AND r.kind = 'model_requested'
+              AND json_extract(r.event_header, '$.fact.purpose') = 'summary'
               AND r.sequence <= adopted.sequence
-              AND json_extract(r.event_json, '$.fact.source_high_water') = json_extract(adopted.event_json, '$.fact.source_high_water')
-              AND json_extract(r.event_json, '$.fact.source_digest') = json_extract(adopted.event_json, '$.fact.source_digest')
+              AND json_extract(r.event_header, '$.fact.source_high_water') = json_extract(adopted.event_header, '$.fact.source_high_water')
+              AND json_extract(r.event_header, '$.fact.source_digest') = json_extract(adopted.event_header, '$.fact.source_digest')
               AND NOT EXISTS (SELECT 1 FROM runtime_events boundary
                 WHERE boundary.invocation_id = c.invocation_id AND boundary.sequence > r.sequence AND boundary.sequence < c.sequence
                   AND boundary.kind = 'context_checkpoint_recorded')
             ORDER BY r.sequence LIMIT 1) END AS started_at
          FROM runtime_events c JOIN runtime_events adopted
            ON adopted.invocation_id = c.invocation_id AND adopted.kind = 'model_requested'
-           AND adopted.operation_id = json_extract(c.event_json, '$.fact.checkpoint.summary_step_id')
+           AND adopted.operation_id = json_extract(c.event_header, '$.fact.checkpoint.summary_step_id')
          LEFT JOIN runtime_events opening
            ON opening.invocation_id = c.invocation_id AND opening.kind = 'invocation_opened'
          WHERE c.sequence = ? AND c.kind = 'context_checkpoint_recorded'"#;

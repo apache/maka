@@ -314,7 +314,7 @@ async fn unknown_tools(
         .bind(&selection.lineage)
         .fetch_one(&mut *connection)
         .await?;
-    let rows=sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT json_extract(d.event_json,'$.fact.name'),o.operation_id {from} ORDER BY o.opened_at LIMIT 64")))
+    let rows=sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT json_extract(d.event_header,'$.fact.name'),o.operation_id {from} ORDER BY o.opened_at LIMIT 64")))
         .bind(&selection.session).bind(&selection.lineage).fetch_all(connection).await?;
     Ok((rows, crate::sequence_number(count)?))
 }
@@ -392,19 +392,19 @@ pub(crate) async fn latest_record(
     let eligible = format!(
         "c.kind='context_checkpoint_recorded' AND c.sequence <= ?1 AND {filter}
          AND NOT EXISTS(SELECT 1 FROM runtime_events r WHERE r.invocation_id=c.invocation_id
-           AND r.kind='model_requested' AND r.operation_id=json_extract(c.event_json,'$.fact.checkpoint.summary_step_id')
-           AND json_extract(r.event_json,'$.fact.source_scope.kind')='lineage'
+           AND r.kind='model_requested' AND r.operation_id=json_extract(c.event_header,'$.fact.checkpoint.summary_step_id')
+           AND json_extract(r.event_header,'$.fact.source_scope.kind')='lineage'
            AND (?3 IS NULL OR NOT {contains}))"
     );
     // Limit each indexed branch before combining: a wide UNION view would sort
     // every old body even when the newest native checkpoint is already known.
     let row: Option<(i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT * FROM (
-           SELECT c.sequence,c.event_json FROM runtime_events c
-           WHERE json_extract(c.event_json,'$.invocation.session_id')=?2 AND {eligible}
+           SELECT c.sequence,c.event_header FROM runtime_events c
+           WHERE json_extract(c.event_header,'$.invocation.session_id')=?2 AND {eligible}
            ORDER BY c.sequence DESC LIMIT 1)
          UNION ALL SELECT * FROM (
-           SELECT c.sequence,c.event_json FROM session_history_members h
+           SELECT c.sequence,c.event_header FROM session_history_members h
            JOIN runtime_events c ON c.sequence=h.sequence
            WHERE h.session_id=?2 AND {eligible} ORDER BY h.sequence DESC LIMIT 1)
          ORDER BY sequence DESC LIMIT 1"

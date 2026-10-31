@@ -196,8 +196,8 @@ impl EventLog {
                 "INSERT INTO session_history_members
                  SELECT ?1, e.sequence,
                      COALESCE((SELECT a.sequence FROM runtime_events a WHERE a.kind = 'tool_result_archived'
-                      AND CAST(json_extract(a.event_json,'$.fact.placeholder.identity.runtime_event_id') AS TEXT) = e.event_id
-                      AND json_extract(a.event_json,'$.invocation.session_id') = e.owner_session_id
+                      AND CAST(json_extract(a.event_header,'$.fact.placeholder.identity.runtime_event_id') AS TEXT) = e.event_id
+                      AND json_extract(a.event_header,'$.invocation.session_id') = e.owner_session_id
                       AND a.sequence < ?2), e.archive_sequence)
                  FROM session_history_events e WHERE e.owner_session_id = ?3 AND e.sequence <= ?4",
             ).bind(&target).bind(observed.saturating_add(1))
@@ -224,10 +224,10 @@ impl EventLog {
                     "INSERT INTO session_revision_sources
                      SELECT ?1, sequence FROM session_history_events
                      WHERE owner_session_id = ?2 AND sequence <= ?3
-                       AND json_extract(event_json, '$.invocation.turn_id') = ?4
+                       AND json_extract(event_header, '$.invocation.turn_id') = ?4
                        AND ((kind = 'invocation_opened'
-                         AND json_extract(event_json, '$.fact.input.kind') = 'message'
-                         AND json_array_length(event_json, '$.fact.input.source_messages') > 0)
+                         AND json_extract(event_header, '$.fact.input.kind') = 'message'
+                         AND json_array_length(event_header, '$.fact.input.source_messages') > 0)
                          OR kind = 'message_steered')"
                 ).bind(&request.target_session_id).bind(&request.source_session_id).bind(observed)
                     .bind(turn_id).execute(&mut *tx).await?;

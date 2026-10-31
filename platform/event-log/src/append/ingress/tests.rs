@@ -329,15 +329,7 @@ async fn canonical_tool_spans_preserve_projection_raw_and_replay_after_reopen_an
     }
     let canonical: String = reopened
         .connection
-        .read_interruptible(|db| {
-            Box::pin(async move {
-                Ok(
-                    sqlx::query_scalar("SELECT event_json FROM event_log WHERE sequence=6")
-                        .fetch_one(db)
-                        .await?,
-                )
-            })
-        })
+        .read_interruptible(|db| Box::pin(async move { crate::canonical::one(db, 6).await }))
         .await
         .unwrap();
     assert_eq!(canonical, expected_json);
@@ -394,15 +386,7 @@ async fn canonical_tool_spans_preserve_projection_raw_and_replay_after_reopen_an
     );
     let stored_json: String = imported
         .connection
-        .read_interruptible(|db| {
-            Box::pin(async move {
-                Ok(
-                    sqlx::query_scalar("SELECT event_json FROM event_log WHERE sequence=46")
-                        .fetch_one(db)
-                        .await?,
-                )
-            })
-        })
+        .read_interruptible(|db| Box::pin(async move { crate::canonical::one(db, 46).await }))
         .await
         .unwrap();
     assert_eq!(stored_json, imported_json);

@@ -461,8 +461,8 @@ async fn record_archive(
 ) -> Result<(), StoreError> {
     let event = &stored.event;
     let (target, invocation, identity, operation, is_error): (i64, String, String, String, bool) =
-        sqlx::query_as("SELECT sequence,invocation_id,json_extract(event_json,'$.invocation'),operation_id,
-           json_extract(event_json,'$.fact.outcome.kind')='failed' FROM runtime_events WHERE event_id=?")
+        sqlx::query_as("SELECT sequence,invocation_id,json_extract(event_header,'$.invocation'),operation_id,
+           json_extract(event_header,'$.fact.outcome.kind')='failed' FROM runtime_events WHERE event_id=?")
             .bind(&placeholder.identity.runtime_event_id).fetch_one(&mut *db).await?;
     let encoded = serde_json::to_string(placeholder)?;
     sqlx::query("INSERT INTO context_archive_records VALUES(?,?,?,?,?,?,?,?,?,?,?)")

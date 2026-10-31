@@ -37,8 +37,8 @@ const EXEC_BOUNDARY: &str = r#"SELECT sequence FROM runtime_events
              SELECT sequence FROM runtime_events
              WHERE invocation_id = ?1 AND sequence <= ?2
                AND kind IN ('executor_observed','executor_completed')
-               AND json_extract(event_json, '$.fact.output.toolCallId') =
-                   (SELECT json_extract(event_json, '$.fact.output.toolCallId') FROM runtime_events WHERE sequence = ?2)
+               AND json_extract(event_header, '$.fact.output.toolCallId') =
+                   (SELECT json_extract(event_header, '$.fact.output.toolCallId') FROM runtime_events WHERE sequence = ?2)
              ORDER BY sequence"#;
 const EXEC_REST: &str = r#"SELECT sequence FROM runtime_events
              WHERE invocation_id = ?1 AND sequence <= ?2 AND (
@@ -46,8 +46,8 @@ const EXEC_REST: &str = r#"SELECT sequence FROM runtime_events
                  OR (?3 AND sequence = ?2)
                  OR (kind IN ('executor_observed','executor_completed') AND (
                      NOT ?3 OR NOT EXISTS(SELECT 1 FROM runtime_events boundary WHERE boundary.sequence = ?2 AND boundary.kind = 'executor_observed')
-                     OR json_extract(event_json, '$.fact.output.toolCallId') =
-                         (SELECT json_extract(event_json, '$.fact.output.toolCallId') FROM runtime_events WHERE sequence = ?2))))
+                     OR json_extract(event_header, '$.fact.output.toolCallId') =
+                         (SELECT json_extract(event_header, '$.fact.output.toolCallId') FROM runtime_events WHERE sequence = ?2))))
              ORDER BY sequence"#;
 const STEP: &str = r#"SELECT sequence FROM runtime_events
 WHERE invocation_id = ?1 AND sequence <= ?3 AND kind = 'invocation_opened'
@@ -67,16 +67,16 @@ UNION
 SELECT sequence FROM runtime_events
 WHERE invocation_id = ?1 AND sequence <= ?3 AND ?2 IS NOT NULL
   AND kind = 'model_observed'
-  AND CAST(json_extract(event_json, '$.fact.step_id') AS TEXT) = ?2
-  AND json_extract(event_json, '$.fact.step_id') = ?2
+  AND CAST(json_extract(event_header, '$.fact.step_id') AS TEXT) = ?2
+  AND json_extract(event_header, '$.fact.step_id') = ?2
 ORDER BY sequence"#;
-const FACT: &str = r#"SELECT event_json FROM runtime_events WHERE sequence = ?"#;
+
 const PENDING: &str = r#"SELECT operation_id FROM runtime_events AS request
          WHERE invocation_id = ?1 AND sequence <= ?2 AND kind = 'model_requested'
            AND EXISTS(SELECT 1 FROM runtime_events opening
                WHERE opening.invocation_id = request.invocation_id AND opening.kind = 'invocation_opened'
-               AND json_extract(opening.event_json, '$.fact.input.kind') IN ('message', 'continuation', 'handoff'))
-           AND json_extract(request.event_json, '$.fact.purpose') = 'main'
+               AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff'))
+           AND json_extract(request.event_header, '$.fact.purpose') = 'main'
            AND NOT EXISTS(SELECT 1 FROM runtime_events AS boundary
                WHERE boundary.invocation_id = request.invocation_id
                  AND boundary.operation_id = request.operation_id
@@ -188,18 +188,27 @@ pub(super) async fn fact(
     tx: &mut SqliteConnection,
     sequence: i64,
 ) -> Result<StoredEvent, StoreError> {
-    let json: String = sqlx::query_scalar(FACT)
-        .bind(sequence)
-        .fetch_one(tx)
-        .await?;
-    decoded_fact(sequence, &json)
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT e.event_header,{columns} FROM runtime_events e {joins} WHERE e.sequence=?",
+        columns = crate::canonical::COLUMNS,
+        joins = crate::canonical::JOINS
+    )))
+    .bind(sequence)
+    .fetch_one(tx)
+    .await?;
+    decoded_fact(sequence, &crate::canonical::json(&row)?)
 }
 
 pub(super) fn fact_on_handle(db: &RawConnection, sequence: i64) -> Result<StoredEvent, StoreError> {
-    let json: String = db
-        .prepare_cached(FACT)?
-        .query_row([sequence], |row| row.get(0))?;
-    decoded_fact(sequence, &json)
+    let query = format!(
+        "SELECT e.event_header,{columns} FROM runtime_events e {joins} WHERE e.sequence=?",
+        columns = crate::canonical::COLUMNS,
+        joins = crate::canonical::JOINS
+    );
+    db.prepare_cached(&query)?.query_row([sequence], |row| {
+        // Decode failures keep their storage cause after the raw SQLite callback.
+        Ok(crate::canonical::json_on_handle(row).and_then(|json| decoded_fact(sequence, &json)))
+    })?
 }
 
 fn decoded_fact(sequence: i64, json: &str) -> Result<StoredEvent, StoreError> {

@@ -22,7 +22,7 @@ use crate::StoreError;
 use maka_agent_facts::attachment::AttachmentRef;
 use maka_agent_facts::attachment::StorageRef;
 use maka_agent_facts::event::RuntimeEvent;
-use sqlx::SqliteConnection;
+use sqlx::{Row, SqliteConnection};
 
 pub(crate) const RESOLVE_SQL: &str = r#"SELECT h.artifact_id FROM session_history_artifacts h
          JOIN artifacts a ON a.session_id=h.session_id AND a.id=h.artifact_id
@@ -84,16 +84,18 @@ pub(crate) async fn retain(
 ) -> Result<(), StoreError> {
     let mut after = 0_i64;
     loop {
-        let row: Option<(i64, String)> = sqlx::query_as(
-            "SELECT e.sequence, e.event_json FROM session_history_members h
-             JOIN runtime_events e ON e.sequence = h.sequence
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT e.sequence, e.event_header,{} FROM session_history_members h
+             JOIN runtime_events e ON e.sequence = h.sequence {}
              WHERE h.session_id = ? AND e.sequence > ?
                AND (e.kind IN ('message_steered', 'tool_settled') OR
-                    (e.kind = 'invocation_opened' AND json_extract(e.event_json,'$.fact.input.kind') = 'message'))
+                    (e.kind = 'invocation_opened' AND json_extract(e.event_header,'$.fact.input.kind') = 'message'))
              ORDER BY e.sequence LIMIT 1",
-        ).bind(target).bind(after).fetch_optional(&mut *tx).await?;
-        let Some((sequence, json)) = row else { break };
-        let event: RuntimeEvent = serde_json::from_str(&json)?;
+            crate::canonical::COLUMNS, crate::canonical::JOINS
+        ))).bind(target).bind(after).fetch_optional(&mut *tx).await?;
+        let Some(row) = row else { break };
+        let sequence: i64 = row.try_get("sequence")?;
+        let event: RuntimeEvent = serde_json::from_str(&crate::canonical::json(&row)?)?;
         for (reference, attachment) in super::references::from_event(&event) {
             retain_one(tx, source, target, reference, attachment, now).await?;
         }
@@ -110,17 +112,20 @@ pub(crate) async fn retain_revision(
 ) -> Result<(), StoreError> {
     let mut after = 0_i64;
     loop {
-        let row: Option<(i64, String)> = sqlx::query_as(
-            "SELECT e.sequence, e.event_json FROM session_revision_sources s
-             JOIN runtime_events e ON e.sequence=s.sequence
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT e.sequence, e.event_header,{} FROM session_revision_sources s
+             JOIN runtime_events e ON e.sequence=s.sequence {}
              WHERE s.session_id=? AND s.sequence>? ORDER BY s.sequence LIMIT 1",
-        )
+            crate::canonical::COLUMNS,
+            crate::canonical::JOINS
+        )))
         .bind(target)
         .bind(after)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((sequence, json)) = row else { break };
-        let event: RuntimeEvent = serde_json::from_str(&json)?;
+        let Some(row) = row else { break };
+        let sequence: i64 = row.try_get("sequence")?;
+        let event: RuntimeEvent = serde_json::from_str(&crate::canonical::json(&row)?)?;
         for attachment in super::references::revision(&event)? {
             retain_one(
                 tx,

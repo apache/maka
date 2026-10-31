@@ -93,7 +93,7 @@ impl EventLog {
                 return Ok(InterruptionCommit::Recorded { sequence });
             }
             let result = sqlx::query(
-                "INSERT INTO event_log(event_id,kind,event_json) VALUES (?,'native_turn_interrupted',?)"
+                "INSERT INTO event_log(event_id,kind,event_header,canonical_bytes) VALUES (?1,'native_turn_interrupted',?2,length(CAST(?2 AS BLOB)))"
             ).bind(uuid::Uuid::new_v4().to_string())
                 .bind(serde_json::to_string(&observed)?).execute(&mut *tx).await?;
             let sequence = crate::sequence_number(result.last_insert_rowid())?;
@@ -111,8 +111,8 @@ async fn source(
     // Compacted T1 retains its real invocation/call identity. Never require or
     // reconstruct the collected input body merely to observe a later Esc.
     let encoded: Option<(String, String)> = sqlx::query_as(
-        "SELECT json_extract(COALESCE(event_json,retained_json),'$.invocation'),
-                json_extract(COALESCE(event_json,retained_json),'$.fact.call')
+        "SELECT json_extract(COALESCE(event_header,retained_json),'$.invocation'),
+                json_extract(COALESCE(event_header,retained_json),'$.fact.call')
          FROM event_log e WHERE invocation_id=? AND operation_id=? AND kind='tool_dispatched'
            AND NOT EXISTS (SELECT 1 FROM imported_invocations i WHERE i.invocation_id=e.invocation_id)"
     ).bind(&observed.opening.invocation_id).bind(&observed.operation_id)
@@ -139,10 +139,10 @@ async fn interruption(
     turn: &str,
 ) -> Result<Option<(u64, NativeInterruption)>, StoreError> {
     let row: Option<(i64, String)> = sqlx::query_as(
-        "SELECT sequence,event_json FROM event_log INDEXED BY native_turn_interruption_lookup
+        "SELECT sequence,event_header FROM event_log INDEXED BY native_turn_interruption_lookup
          WHERE kind='native_turn_interrupted'
-           AND json_extract(event_json,'$.opening.session_id')=?
-           AND json_extract(event_json,'$.opening.turn_id')=?",
+           AND json_extract(event_header,'$.opening.session_id')=?
+           AND json_extract(event_header,'$.opening.turn_id')=?",
     )
     .bind(session)
     .bind(turn)
