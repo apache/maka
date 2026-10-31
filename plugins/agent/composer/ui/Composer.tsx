@@ -71,6 +71,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     else pending()?.selectFiles(event.uris);
   });
   const hero = () => props.session() === null || props.session()!.empty();
+  // On the desktop the card's 8-point inset makes its corners concentric with the 32-point round buttons.
+  const cardRadius = () => (platform.isTerminal && compact() ? 16 : 24);
   // Desktop only: the terminal keeps its start pane as it is.
   const noConnections = () => !platform.isTerminal && (props.needsConnection?.() ?? false);
   const pending = () => props.pending?.() ?? null;
@@ -420,13 +422,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           style={{
             flexShrink: 0,
             backgroundColor: C.raised,
-            borderRadius: compact() ? 16 : 24,
+            borderRadius: cardRadius(),
             borderWidth: 1,
             borderColor: fileDragging() ? C.accent : C.line,
-            paddingHorizontal: 16,
-            paddingTop: 12,
-            paddingBottom: 8,
-            gap: 12,
+            ...(platform.isTerminal
+              ? { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, gap: 12 }
+              : { padding: 8, gap: 8 }),
             minHeight: hero() && !compact() ? 120 : undefined,
           }}
         >
@@ -475,10 +476,17 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     focusStyle={{
                       borderWidth: 1,
                       borderColor: C.accent,
-                      borderRadius: compact() ? 16 : 24,
+                      borderRadius: cardRadius(),
                     }}
                   />
-                  <View style={[{ gap: 8 }, { pointerEvents: 'box-none' }]}>
+                  <View
+                    style={[
+                      platform.isTerminal
+                        ? { gap: 8 }
+                        : { gap: 8, flexGrow: 1, paddingHorizontal: 8, paddingTop: 4 },
+                      { pointerEvents: 'box-none' },
+                    ]}
+                  >
                     <If when={owner !== null}>
                       <DraftAttachments draft={owner!.attachments} preview={owner!.previewImage} />
                     </If>
@@ -629,7 +637,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           </Each>
           <View
             style={[
-              { flexDirection: 'row', alignItems: 'center', gap: 8 },
+              { flexDirection: 'row', alignItems: 'center', gap: platform.isTerminal ? 8 : 4 },
               { pointerEvents: 'box-none' },
             ]}
           >
@@ -751,7 +759,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             </Button>
           </View>
           <If when={fileDragging()}>
-            <FileDropHint radius={compact() ? 16 : 24} />
+            <FileDropHint radius={cardRadius()} />
           </If>
           <ComposerCompletion state={completion} />
         </View>

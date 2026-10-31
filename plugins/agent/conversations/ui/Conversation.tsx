@@ -272,14 +272,14 @@ function receiptMessage(reply: any): UiText {
   );
 }
 
-// Rows share the composer's column: at most 800 wide, centered, with room for
-// the scroll bar on the right.
+// Rows share the composer's column: at most 800 wide, centered. The terminal's
+// scroll bar takes a cell of the right margin.
 const readingColumn = {
   width: '100%',
   maxWidth: 800,
   alignSelf: 'center',
   paddingLeft: 16,
-  paddingRight: 24,
+  paddingRight: platform.isTerminal ? 24 : 16,
 } as const;
 
 export function Conversation(props: ConversationProps) {

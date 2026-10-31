@@ -126,6 +126,10 @@ export const controlStyle = {
   borderRadius: 8,
   justifyContent: 'center',
 } as const;
+export const toolbarControlStyle = {
+  ...controlStyle,
+  paddingHorizontal: platform.isTerminal ? 12 : 8,
+} as const;
 /**
  * Horizontal padding of the disclosure rows in a turn (status, process group,
  * thinking, tool). The desktop gives them one value so their chevrons and

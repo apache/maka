@@ -265,15 +265,35 @@ impl Desktop {
         })
     }
 
+    /// Where the window shows the one control labelled `label`, once it does.
+    async fn control(&self, label: &str) -> Bounds<gpui::Pixels> {
+        self.until(&format!("no single control labelled {label}"), || {
+            let found = self.controls(label);
+            (found.len() == 1).then(|| found[0])
+        })
+        .await
+    }
+
     /// Clicks the one control labelled `label` once the window shows it.
     async fn press(&self, label: &str) {
-        let bounds = self
-            .until(&format!("no single control labelled {label}"), || {
-                let found = self.controls(label);
-                (found.len() == 1).then(|| found[0])
-            })
-            .await;
+        let bounds = self.control(label).await;
         self.press_at(bounds.center());
+    }
+
+    /// The card's corners stay concentric with its round buttons, and its
+    /// controls stay on one center line, whatever height the card has.
+    async fn assert_composer_geometry(&self) -> Bounds<gpui::Pixels> {
+        let card = self.control("Focus message composer").await;
+        let add = self.control("Add to message").await;
+        let send = self.control("Send message").await;
+        assert_eq!(add.left() - card.left(), px(8.));
+        assert_eq!(card.right() - send.right(), px(8.));
+        assert_eq!(card.bottom() - send.bottom(), px(8.));
+        for label in ["Sandbox and approvals", "Choose model and effort"] {
+            assert_eq!(self.control(label).await.center().y, send.center().y);
+        }
+        assert_eq!(add.center().y, send.center().y);
+        card
     }
 
     fn press_at(&self, position: gpui::Point<gpui::Pixels>) {
@@ -673,6 +693,39 @@ fn tool_names(request: &ModelRequest) -> Vec<String> {
         .flatten()
         .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_owned))
         .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_keeps_one_inset() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("COMPOSER_GEOMETRY").await;
+    desktop.assert_composer_geometry().await;
+    desktop.key("enter", false);
+    desktop.request(&mut fixture).await.finish().await;
+    let session = desktop
+        .sessions()
+        .await
+        .into_iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    desktop
+        .wait(
+            "the reply did not finish",
+            fixture.idle(&desktop.client, &session),
+        )
+        .await;
+    desktop.type_text("COMPOSER_GEOMETRY_AGAIN").await;
+    let card = desktop.assert_composer_geometry().await;
+    // The card's border sits outside the backdrop the window reports.
+    let edit = desktop.control("Edit and resend in a fork").await;
+    assert_eq!(edit.right(), card.right() + px(1.));
+    desktop.close().await;
+    fixture.finish().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
