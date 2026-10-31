@@ -726,3 +726,130 @@ async fn the_bot_opens_without_naming_a_workspace() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn sleep_ends_the_turn_and_the_next_message_starts_a_new_one() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        f.send(&bot).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert!(
+            tool_names(&sent).contains(&"sleep".to_owned()),
+            "{:?}",
+            tool_names(&sent)
+        );
+        // sleep takes no duration.
+        let schema = sent["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["function"]["name"] == "sleep")
+            .unwrap()["function"]["parameters"]
+            .clone();
+        assert!(
+            schema["properties"]
+                .as_object()
+                .is_none_or(|properties| properties.is_empty()),
+            "{schema}"
+        );
+        service_tools::named_tool_response(&mut socket, "sleep", json!({})).await;
+
+        // The Turn is over: no further model request follows the sleep.
+        idle(&f, &bot).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), listener.accept())
+                .await
+                .is_err(),
+            "the model must not be called again after sleep"
+        );
+
+        // A later message wakes the Bot into a new Turn that still remembers the sleep.
+        f.mutation(
+            2,
+            "send",
+            json!({"sessionId":bot,"message":"are you there?","model":f.selection().await}),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert!(sent.to_string().contains("are you there?"));
+        assert!(
+            last_tool_result(&sent).contains("Turn ended"),
+            "{}",
+            last_tool_result(&sent)
+        );
+        response(&mut socket).await;
+        idle(&f, &bot).await;
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn only_the_bot_has_sleep_and_ordinary_creation_cannot_request_it() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        let _ = open(&f).await;
+        let ordinary = f.create("Ordinary").await;
+        f.send(&ordinary).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        response(&mut socket).await;
+        idle(&f, &ordinary).await;
+        assert!(
+            !tool_names(&sent).contains(&"sleep".to_owned()),
+            "{:?}",
+            tool_names(&sent)
+        );
+        let mut input = f.create_input("Impostor").await;
+        input["tools"] = json!(["sleep"]);
+        assert_eq!(
+            f.mutation(2, "create", input, Uuid::new_v4())
+                .await
+                .unwrap()["kind"],
+            "rejected"
+        );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn sleep_is_refused_while_a_message_is_bound_for_the_next_step() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        f.send(&bot).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        // A message queued during the Turn and promoted will be delivered at the next step.
+        let queued = f.mutation(2, "send", json!({"sessionId":bot,"message":"urgent: change of plan","model":f.selection().await}), Uuid::new_v4()).await.unwrap();
+        let queue = f.query("queue", json!({"sessionId":bot})).await.unwrap();
+        let promoted = f.mutation(2, "editQueue", json!({"sessionId":bot,"expectedRevision":queue["revision"],"edit":{"kind":"promote","messageId":queued["messageId"]}}), Uuid::new_v4()).await.unwrap();
+        assert_eq!(promoted["kind"], "committed", "{promoted}");
+        service_tools::named_tool_response(&mut socket, "sleep", json!({})).await;
+
+        // The refusal reaches the model, the Turn goes on, and the message arrives with it.
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert!(last_tool_result(&sent).contains("about to reach you"), "{}", last_tool_result(&sent));
+        assert!(sent.to_string().contains("urgent: change of plan"));
+        service_tools::named_tool_response(&mut socket, "sleep", json!({})).await;
+        idle(&f, &bot).await;
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
