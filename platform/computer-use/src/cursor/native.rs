@@ -78,7 +78,11 @@ pub(crate) enum RenderStatus {
 pub(crate) struct RenderState {
     pub status: RenderStatus,
     pub visible: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::deserialize_numbers",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub requested_position: Option<[f64; 2]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
@@ -152,6 +156,7 @@ impl Spec {
 enum Request {
     Update {
         cursor: Spec,
+        #[serde(default, deserialize_with = "crate::protocol::deserialize_numbers")]
         point: Option<[f64; 2]>,
         action: cursor_overlay::CursorAction,
         window: Option<u64>,
@@ -181,6 +186,7 @@ enum Response {
     },
     #[cfg(target_os = "macos")]
     Geometry {
+        #[serde(deserialize_with = "crate::protocol::deserialize_numbers")]
         result: Result<platform_macos::geometry::NativeWindowGeometry, String>,
     },
     #[cfg(target_os = "macos")]
@@ -778,6 +784,68 @@ impl crate::protocol::Action {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_wire_preserves_fractional_coordinates_and_geometry() {
+        fn roundtrip<T: Serialize + serde::de::DeserializeOwned>(
+            value: T,
+            failures: &mut Vec<String>,
+        ) {
+            let wire = serde_json::to_string(&value).unwrap();
+            match serde_json::from_str::<T>(&wire) {
+                Ok(decoded) => assert_eq!(serde_json::to_string(&decoded).unwrap(), wire),
+                Err(error) => failures.push(format!("{wire}: {error}")),
+            }
+        }
+        let mut failures = Vec::new();
+        roundtrip(
+            Request::Update {
+                cursor: Spec::default(),
+                point: Some([10.5, -20.25]),
+                action: cursor_overlay::CursorAction::Observe,
+                window: None,
+            },
+            &mut failures,
+        );
+        roundtrip(
+            Response::Render {
+                state: RenderState {
+                    requested_position: Some([10.5, -20.25]),
+                    ..Default::default()
+                },
+            },
+            &mut failures,
+        );
+        #[cfg(target_os = "macos")]
+        {
+            roundtrip(
+                Request::MacMetadata {
+                    query: crate::macos::page_scroll::metadata::Query::GlobalWindow {
+                        point: [10.5, -20.25],
+                    },
+                },
+                &mut failures,
+            );
+            roundtrip(
+                Response::Geometry {
+                    result: Ok(platform_macos::geometry::NativeWindowGeometry {
+                        window_id: 42,
+                        pid: 7,
+                        layer: 0,
+                        bounds: platform_macos::windows::WindowBounds {
+                            x: 10.5,
+                            y: -20.25,
+                            width: 300.75,
+                            height: 200.5,
+                        },
+                        native_scale: 1.5,
+                    }),
+                },
+                &mut failures,
+            );
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
 
     #[tokio::test]
     async fn stop_failure_keeps_the_original_owner_until_a_confirmed_retry() {

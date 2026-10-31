@@ -36,7 +36,7 @@ pub use browser_wait::BrowserWaitOperation;
 mod browser_download;
 pub use browser_download::{BrowserDownloadOptions, BrowserMediaTarget};
 
-fn deserialize_numbers<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+pub(crate) fn deserialize_numbers<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: serde::de::DeserializeOwned,
@@ -75,6 +75,7 @@ pub enum Command {
     BrowserViewportSet {
         #[serde(rename = "browserId")]
         browser_id: String,
+        #[serde(deserialize_with = "deserialize_numbers")]
         options: BrowserViewport,
     },
     BrowserViewportReset {
@@ -339,6 +340,7 @@ pub struct ObservationOptions {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct BrowserScreenshotOptions {
     pub full_page: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_numbers")]
     pub clip: Option<BrowserScreenshotClip>,
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -424,6 +426,7 @@ pub enum BrowserSelection {
 #[serde(deny_unknown_fields)]
 pub struct BrowserHistoryOptions {
     pub queries: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_numbers")]
     pub limit: Option<f64>,
     pub from: Option<String>,
     pub to: Option<String>,
@@ -672,4 +675,68 @@ pub enum NativeComputerMethod {
     SelectText,
     SetValue,
     GetWindow,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_numeric_options_survive_command_buffering() {
+        let cases = [
+            r#"{"method":"browserViewportSet","browserId":"browser","options":{"width":1920.0,"height":1080.0}}"#,
+            r#"{"method":"browserScreenshot","handle":{"kind":"tab","id":"tab"},"options":{"clip":{"x":10.5,"y":20.25,"width":300.75,"height":200.5}}}"#,
+            r#"{"method":"browserHistory","browserId":"browser","options":{"limit":5.0}}"#,
+        ];
+        let mut failures = Vec::new();
+        for text in cases {
+            for buffered in [false, true] {
+                let decoded: Result<Command, _> = if buffered {
+                    serde_json::from_value(serde_json::from_str::<serde_json::Value>(text).unwrap())
+                } else {
+                    serde_json::from_str(text)
+                };
+                match decoded {
+                    Ok(Command::BrowserViewportSet { options, .. }) => {
+                        assert_eq!((options.width, options.height), (1920.0, 1080.0));
+                    }
+                    Ok(Command::BrowserScreenshot { options, .. }) => {
+                        let clip = options.clip.unwrap();
+                        assert_eq!(
+                            (clip.x, clip.y, clip.width, clip.height),
+                            (10.5, 20.25, 300.75, 200.5)
+                        );
+                    }
+                    Ok(Command::BrowserHistory { options, .. }) => {
+                        assert_eq!(options.limit, Some(5.0));
+                    }
+                    Ok(_) => panic!("unexpected command"),
+                    Err(error) => failures.push(format!("{text} (buffered={buffered}): {error}")),
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        let screenshot: Command = serde_json::from_str(
+            r#"{"method":"browserScreenshot","handle":{"kind":"tab","id":"tab"},"options":{}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            screenshot,
+            Command::BrowserScreenshot {
+                options: BrowserScreenshotOptions { clip: None, .. },
+                ..
+            }
+        ));
+        let history: Command = serde_json::from_str(
+            r#"{"method":"browserHistory","browserId":"browser","options":{}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            history,
+            Command::BrowserHistory {
+                options: BrowserHistoryOptions { limit: None, .. },
+                ..
+            }
+        ));
+    }
 }

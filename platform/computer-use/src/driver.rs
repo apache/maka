@@ -1670,6 +1670,7 @@ mod tests {
             Arc::new(BoundSession {
                 session: expired,
                 started,
+                #[cfg(all(target_os = "linux", not(target_env = "musl")))]
                 native_turns: Mutex::new(Default::default()),
             }),
         );
