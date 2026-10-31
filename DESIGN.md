@@ -62,6 +62,8 @@ The composer is the reference:
 - Toolbar controls share one center line, with labels and chevrons at one spacing.
 - The card and the reading column share both edges.
 
+Elsewhere the same rule holds: icon buttons and disclosure rows reach 8 points past the reading column so their glyphs land on its edges, sidebar labels share one lane, and table text starts where code block text does.
+
 ## States
 
 - Every control shows hover, press, focus and disabled through the shared styles in `ui.tsx`, and selected where it applies.
@@ -71,4 +73,4 @@ The composer is the reference:
 
 ## Verification
 
-A visible change is reviewed in the real desktop renderer, in light and dark, at a narrow and a wide window. Geometry that must stay equal is asserted against resolved bounds, as `desktop_composer_keeps_one_inset` does: a screenshot judged by eye does not prove alignment.
+A visible change is reviewed in the real desktop renderer, in light and dark, at a narrow and a wide window. Geometry that must stay equal is asserted against resolved bounds, as `desktop_composer_keeps_one_inset` does: a screenshot judged by eye does not prove alignment. On macOS the headless test platform draws text in Helvetica rather than the system font, so judge typography and the centering of text beside icons with the real text system.
