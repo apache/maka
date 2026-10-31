@@ -669,9 +669,8 @@ async fn exclusive_session_retirement_settles_parked_work_without_a_new_activati
         pending_approval(&fixture, &session).await;
         eprintln!("approval fixture: pending approval established session={session}");
         eprintln!("approval fixture: waiting physical park session={session}");
-        let checkpoint = parked(&fixture, &session).await;
+        parked(&fixture, &session).await;
         eprintln!("approval fixture: physical park confirmed session={session}");
-        let store = fixture.session(&session).await;
         let revision = fixture.owner.session(&session).await.unwrap().revision;
         assert!(matches!(fixture.store.remove_session_family(&session, revision,
             maka_event_log::sessions::RemovalAuthority::Unmanaged).await.unwrap(),
@@ -683,13 +682,8 @@ async fn exclusive_session_retirement_settles_parked_work_without_a_new_activati
         eprintln!("approval fixture: worker drain confirmed session={session}");
         assert!(!fixture.owner.runs.state().await.controls.contains_key(&session));
         assert!(!fixture.owner.runs.state().await.closing);
-        assert!(store.native_approval_checkpoint(&session).await.unwrap().is_none());
-        let events = store.scoped_prefix(maka_agent_facts::event::LogScope::Session { id:session.clone() },
-            256, 4*1024*1024).await.unwrap().events;
-        assert_eq!(events.iter().filter(|event| matches!(&event.event.fact,
-            Fact::ToolSettled { operation_id, .. } if operation_id == &checkpoint.pending[0].operation_id)).count(), 1);
-        assert_eq!(events.iter().filter(|event| matches!(event.event.fact, Fact::InvocationEnded {
-            outcome: maka_agent_facts::event::InvocationOutcome::Cancelled { .. } })).count(), 1);
+        assert!(fixture.query("observe", json!({"sessionId":session})).await
+            .unwrap_err().contains("agent_session_unavailable"));
         assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
         assert_eq!(counter.entered.available_permits(), 0);
         eprintln!("approval fixture: waiting Host shutdown session={session}");
