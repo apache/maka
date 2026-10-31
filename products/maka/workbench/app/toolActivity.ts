@@ -126,7 +126,7 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
 export function latestToolActivity(
   active: ToolActivity[],
   invocationId: string | null,
-  turnId: string,
+  turnId: string | null,
 ): ToolActivity | undefined {
   let latest: ToolActivity | undefined;
   for (const tool of active) {

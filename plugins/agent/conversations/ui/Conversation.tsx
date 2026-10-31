@@ -76,10 +76,10 @@ import { Preview } from '../../../../products/maka/workbench/app/preview';
 import { thinkingSummary } from '../../../../products/maka/workbench/app/thinkingSummary';
 import type {
   ComposerSession,
+  ComposerQueue,
   ComposerSendAction as SendAction,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { AttachmentDraft } from '../../../../products/maka/workbench/app/attachmentDraft';
-import type { QueueSession } from '../../../../products/maka/workbench/app/QueueDock';
 import { sameRoute } from '../../../../products/maka/workbench/app/modelSelection';
 import type {
   BackendIdentity,
@@ -172,7 +172,6 @@ export type ConversationHandle = Omit<
   projectMcp: ReturnType<typeof createProjectMcp>;
   compact(prompt?: string): Promise<void>;
   interactions(): AgentPendingInteractions;
-  computerApps(): AgentComputerApps;
   activeTurn(): string | null;
   activityTurn(): string | null;
   flushDraft(): Promise<boolean>;
@@ -2002,7 +2001,7 @@ export function Conversation(props: ConversationProps) {
       return;
     void send(text, expectedBackend);
   };
-  const queueSession: QueueSession = {
+  const queueSession: ComposerQueue = {
     sessionId,
     snapshot: queued,
     running: () => invocation() !== null && !stopping(),
@@ -2020,7 +2019,12 @@ export function Conversation(props: ConversationProps) {
     title: () => title() || tr('Untitled conversation'),
     queue: queueSession,
     interactions,
-    computerApps,
+    computerAccess: {
+      snapshot: computerApps,
+      async stop(operationId) {
+        await props.control('stopComputerApp', { sessionId, operationId });
+      },
+    },
     draft,
     attachments,
     previewImage: props.previewImage,
