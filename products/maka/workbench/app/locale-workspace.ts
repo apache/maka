@@ -185,6 +185,7 @@ export const workspaceMessages = {
   'Fork conversation': ['Fork conversation', '分叉对话', '分支對話'],
   'Fork · {title}': ['Fork · {title}', '分支 · {title}', '分支 · {title}'],
   Fork: ['Fork', '分支', '分支'],
+  'From {title}': ['From {title}', '来自 {title}', '來自 {title}'],
   'Full screen image viewer': ['Full screen image viewer', '全屏图片查看器', '全螢幕圖片檢視器'],
   'Host returned an unexpected conversation action result.': [
     'Host returned an unexpected conversation action result.',
