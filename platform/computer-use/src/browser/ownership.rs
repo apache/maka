@@ -63,6 +63,12 @@ impl BrowserIdentity {
             }
         }
     }
+    pub(super) fn same_extension_instance(&self, other: &Self) -> bool {
+        matches!((self, other),
+            (Self::Extension { adapter, extension, instance, .. },
+             Self::Extension { adapter: other_adapter, extension: other_extension, instance: other_instance, .. })
+            if adapter == other_adapter && extension == other_extension && instance == other_instance)
+    }
     pub(super) fn tab(&self, id: &str) -> TabIdentity {
         TabIdentity {
             browser: self.clone(),
@@ -179,10 +185,15 @@ pub(super) struct Lease {
     pub(super) retention: Retention,
     pub(super) handoff_transfer: Option<Box<super::extension::HandoffTransfer>>,
     pub(super) logical_lease: Option<cua_driver_core::browser::ExtensionLogicalLease>,
+    // Provider-issued page identity survives a native-port generation. It is
+    // provenance for retained origin/order, never attachment permission.
+    pub(super) provider_tab_id: Option<String>,
 }
 
 #[derive(Default)]
 pub(crate) struct Host {
+    pub(super) handoffs:
+        HashMap<uuid::Uuid, std::sync::Arc<tokio::sync::Mutex<Option<crate::host_handoff::Lease>>>>,
     pub(super) tabs: HashMap<TabIdentity, Lease>,
     pub(super) extension: HashMap<(uuid::Uuid, BrowserIdentity), super::extension::ProviderState>,
     pub(super) next_extension_sequence: u64,
@@ -294,6 +305,7 @@ impl Host {
                     retention: Retention::Unmarked,
                     handoff_transfer: None,
                     logical_lease: None,
+                    provider_tab_id: None,
                 });
             }
         }
@@ -347,6 +359,7 @@ impl Host {
                     retention: Retention::Unmarked,
                     handoff_transfer: None,
                     logical_lease: None,
+                    provider_tab_id: None,
                 });
                 Ok(())
             }
@@ -509,7 +522,7 @@ impl Host {
         if turn.is_some() {
             self.check_mark_settlement(owner, turn)?;
         }
-        let extension_finished = self.finish_extension(owner, turn).await?;
+        let extension_finished = self.finish_extension(owner, turn, None).await?;
         let belongs = |creator: &Creator| {
             creator.owner == owner && turn.is_none_or(|turn| creator.turn == turn)
         };

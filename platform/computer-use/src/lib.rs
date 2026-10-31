@@ -38,6 +38,8 @@ pub mod desktop;
 mod driver;
 pub mod extension_browser_host;
 #[cfg(feature = "native-desktop")]
+mod host_handoff;
+#[cfg(feature = "native-desktop")]
 mod identity;
 mod invocation;
 pub mod language;

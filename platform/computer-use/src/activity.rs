@@ -138,6 +138,12 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
         ),
         Command::ListBrowsers { .. } => ("List browsers", "查看浏览器列表", "查看瀏覽器清單", None),
         Command::ListTabs { .. } => ("List tabs", "查看标签页列表", "查看分頁清單", None),
+        Command::BrowserRelease { browser_id } => (
+            "Release browser",
+            "归还浏览器",
+            "歸還瀏覽器",
+            Some(browser_id.as_str()),
+        ),
         Command::GetBrowser { options } => (
             "Connect browser",
             "连接浏览器",

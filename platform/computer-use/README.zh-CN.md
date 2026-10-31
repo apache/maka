@@ -65,7 +65,19 @@ maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_
 
 这些命令为同一个可执行文件选择不同的注册方式。扩展宿主安装拒绝覆盖冲突注册，重新导出扩展时也拒绝覆盖修改过的源码。安装命令不安装扩展、不修改浏览器策略，也不授予站点访问权限。Maka 使用 `maka browser uninstall --provider maka`，ChatGPT 使用 `maka browser uninstall --provider chatgpt`，移除匹配的 扩展宿主注册；此操作不卸载扩展或删除导出源码。
 
-已连接 OpenAI 原生宿主的 ChatGPT 扩展不会自动连接 Maka。要保留原有连接，可使用上面独立的 Maka 连接扩展。没有配置 CDP 端点或注册 Maka 连接时，`cua.listBrowsers()` 返回空列表。
+若希望按需共用 OpenAI 已有的原生宿主，而不是长期替换注册，可启用按需接管：
+
+```sh
+maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_ID --on-demand
+```
+
+默认选择 Google Chrome；追加 `--browser chromium` 可选择 Chromium 的原生消息注册位置。每个可执行文件的连接配置对应一种浏览器，两者的恢复记录和使用计数独立。在 Linux 上，按需接管遵循 `XDG_CONFIG_HOME`。
+
+接管和归还都会重新连接扩展宿主；原宿主中正在执行的浏览器操作不会跨连接继续。
+
+安装时保留原注册。浏览器发现会列出已配置的连接器，但不会接管；选择或使用时才取得共享租约。正常轮次清理、Session 关闭及 `await browser.release()` 会归还当前 Session 的租约，最后一个使用者归还后恢复原宿主。长时间运行的 Agent 应在休眠前主动归还浏览器。`maka browser restore` 可恢复遗留注册；仍在运行的监督进程会持有注册锁。
+
+未启用按需接管时，已连接 OpenAI 原生宿主的 ChatGPT 扩展不会自动连接 Maka，也可以使用上面独立的 Maka 连接扩展。没有配置提供方时，`cua.listBrowsers()` 返回空列表。
 
 Extension 提供方通过 `browser.user` 提供用户标签页发现和取得入口。[API 说明](src/api.zh-CN.md)涵盖其权限规则、`tab.ax` 门面、Playwright、剪贴板和下载。Host 的 `browserPreparation` 默认为 `popup: false`、`requestHeaders: []`；非空 headers 也会启用有效的 popup 采用与 relay。这些设置不授予站点访问权限，也不证明 ChatGPT 页面 hooks 已关闭，详见[类型化配置](../../plugins/workspace/api/src/computer.rs)。
 
@@ -88,6 +100,14 @@ MAKA_CUA_WINDOWS_EXECUTABLE=/mnt/c/path/to/maka.exe just run
 ```
 
 直接使用 `cargo run -p maka-cli` 保留原生默认值。直接构建桥接版本可用 `cargo run --locked -p maka-cli --no-default-features -- ...`。Cargo 会合并所选包的 feature，若同时选择的其他包启用了 `native-desktop`，便会恢复原生依赖。`just build` 和发布打包保留完整原生产品；Linux 桌面 shell 自身仍需要 Linux GUI 开发库。
+
+要运行可选的保留页面实机验证，先执行 `cargo build -p maka-computer-use --features native-desktop --example desktop-host` 和 `cargo test -p maka-computer-native --features maka-computer-use/native-desktop --lib real_host_retained_browser_pages_survive_handoff --no-run`。在 macOS 或 Linux 上保持官方扩展及其原宿主已连接，将 Cargo 输出的测试可执行文件路径传给脚本：
+
+```sh
+python3 scripts/rust/browser-handoff-smoke.py --host target/debug/examples/desktop-host --test-binary /path/printed/by/cargo --extension-id ACTUAL_CHATGPT_EXTENSION_ID
+```
+
+脚本经过真实 Host 授权和副作用托管，只创建空白测试页，验证跨宿主重连的页面保留及注册信息的精确恢复，并为调试测试设置所需的较大线程栈。也可追加 `--browser chromium` 验证该注册位置。
 
 ## 生命周期
 

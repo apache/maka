@@ -294,6 +294,8 @@ for its logical session's active tab; this does not select the OS focused tab.
 The current direct CDP provider has no logical-session active-tab service and
 returns `undefined` from `selected()`.
 
+`await browser.release()` returns this Session's on-demand ChatGPT browser lease. It settles this turn's temporary tabs and physical control resources before releasing the host; retained pages stay open. Other Sessions keep their own leases. The last release restores the original native host. Reacquire with `cua.getBrowser({id: "chatgpt"})` before further use; handles from a retired host generation require a fresh attachment. Normal turn cleanup also releases the lease. Long-running Agents should release before sleeping. Other browser providers do not support this operation.
+
 `await browser.nameSession(name)` trims and stores the session's managed group
 title. Existing managed presentation is updated through its owned receipts;
 future created tabs use the stored title. `cua.createBrowserTab(id, url,

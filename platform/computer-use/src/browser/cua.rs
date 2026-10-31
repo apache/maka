@@ -329,7 +329,7 @@ impl Browsers {
             .get(handle)
             .ok_or_else(|| failed("stale_tab: bind it again"))?
             .identity()?;
-        self.use_tab(&identity, call.invocation.turn()).await?;
+        self.use_tab(&identity, call.invocation.turn(), call.cancellation).await?;
         let tab = self
             .targets
             .get_mut(handle)

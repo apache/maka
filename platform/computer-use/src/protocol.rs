@@ -140,6 +140,10 @@ pub enum Command {
     GetBrowser {
         options: BrowserOptions,
     },
+    BrowserRelease {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+    },
     BrowserTab {
         #[serde(rename = "browserId")]
         browser_id: String,

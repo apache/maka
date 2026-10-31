@@ -744,6 +744,7 @@ fn browser_command(command: &maka_computer_use::protocol::Command) -> bool {
             | Command::HandleJsDialog { .. }
             | Command::ListTabs { .. }
             | Command::GetBrowser { .. }
+            | Command::BrowserRelease { .. }
             | Command::BrowserTab { .. }
             | Command::BrowserManagedTabs { .. }
             | Command::BrowserSelect { .. }
@@ -1055,3 +1056,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "evaluate/browser_handoff_test.rs"]
+mod browser_handoff_test;

@@ -159,6 +159,8 @@ REPL 被取消、超时或耗尽堆内存后，需要 `cua_reset` 并重新绑�
 
 `agent.browsers` 与 `cua.browsers` 是同一个浏览器集合；`list`、`get(id)`、`getDefault` 和 `getForUrl(url)` 返回元数据或惰性 Browser，不输出观察。`cua.getBrowser` 是输出说明的便捷入口。`browser.tabs.selected()` 返回逻辑会话选中的标签页；它不选择操作系统焦点标签页。直接 CDP 尚无逻辑选中服务，返回 `undefined`。
 
+`await browser.release()` 归还当前 Session 的按需 ChatGPT 浏览器租约。归还前会清理本轮临时标签页及实际控制资源，需要保留的页面继续打开。其他 Session 保留自己的租约，最后一个使用者归还后恢复原生宿主。再次使用前通过 `cua.getBrowser({id: "chatgpt"})` 取得连接；旧宿主代次的句柄需要重新附着。正常轮次清理也会归还租约，长期运行的 Agent 应在休眠前主动归还。其他浏览器提供方不支持此操作。
+
 `await browser.nameSession(name)` 去除两端空白并保存托管标签组名称；`cua.createBrowserTab(id, url, {sessionName})` 先解析浏览器、等待命名成功，再创建标签页。当前公开 profile 不提供 visibility 能力。
 
 `await browser.history({queries, limit, from, to})` 通过真实声明历史传输能力的扩展读取当前浏览器 profile 的历史。它要求当前权限边界下针对实际浏览器 ID 和 generation 的独立 `browser_history` 批准；网页或下载批准不能授权历史读取，来源策略也不会自动批准。默认查询全部历史并限制为 100 条；多查询结果按访问时间倒序合并、按 URL 去重后再应用总条数限制。Maka 扩展声明 Chrome history 权限，旧扩展未具备权限时不声明支持。ChatGPT 和其他第三方适配器仍为尽力支持。

@@ -25,6 +25,26 @@ pub(crate) fn process(pid: u32) -> Result<String, ToolError> {
         .map_err(|error| ToolError::Failed(format!("process identity unavailable: {error}")))
 }
 
+pub(crate) fn live_process(pid: u32) -> Result<Option<String>, ToolError> {
+    match identity(pid) {
+        Ok(identity) => Ok(Some(identity)),
+        Err(error) => {
+            #[cfg(unix)]
+            let absent = error.kind() == std::io::ErrorKind::NotFound
+                || error.raw_os_error() == Some(libc::ESRCH);
+            #[cfg(windows)]
+            let absent = error.raw_os_error() == Some(87);
+            if absent {
+                Ok(None)
+            } else {
+                Err(ToolError::Failed(format!(
+                    "process identity unavailable: {error}"
+                )))
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn identity(pid: u32) -> Result<String, std::io::Error> {
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();

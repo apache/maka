@@ -159,6 +159,8 @@ REPL 被取消、逾時或耗盡堆積記憶體後，需要 `cua_reset` 並重�
 
 `agent.browsers` 與 `cua.browsers` 是同一瀏覽器集合；`list`、`get(id)`、`getDefault` 和 `getForUrl(url)` 回傳中繼資料或惰性 Browser，不輸出觀察。`cua.getBrowser` 是輸出說明的便捷入口。`browser.tabs.selected()` 回傳邏輯工作階段選取的分頁；它不選擇作業系統焦點分頁。直接 CDP 尚無邏輯選取服務，回傳 `undefined`。
 
+`await browser.release()` 歸還目前 Session 的按需 ChatGPT 瀏覽器租約。歸還前會清理本輪暫時分頁及實際控制資源，需要保留的頁面繼續開啟。其他 Session 保留自己的租約，最後一個使用者歸還後恢復原生宿主。再次使用前透過 `cua.getBrowser({id: "chatgpt"})` 取得連線；舊宿主世代的控制代碼需要重新附加。正常輪次清理也會歸還租約，長期執行的 Agent 應在休眠前主動歸還。其他瀏覽器提供方不支援此操作。
+
 `await browser.nameSession(name)` 移除兩端空白並保存受管分頁群組名稱；`cua.createBrowserTab(id, url, {sessionName})` 先解析瀏覽器、等待命名成功，再建立分頁。目前公開 profile 不提供 visibility 能力。
 
 `await browser.history({queries, limit, from, to})` 透過實際宣告歷史傳輸能力的擴充功能讀取目前瀏覽器 profile 的歷史。它要求目前權限邊界下針對實際瀏覽器 ID 和 generation 的獨立 `browser_history` 核准；網頁或下載核准不能授權歷史讀取，來源原則亦不會自動核准。預設查詢全部歷史並限制為 100 筆；多查詢結果依造訪時間倒序合併、依 URL 去重後再套用總筆數限制。Maka 擴充功能宣告 Chrome history 權限，舊擴充功能未具備權限時不宣告支援。ChatGPT 與其他第三方介接器仍為盡力支援。

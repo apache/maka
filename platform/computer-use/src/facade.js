@@ -1195,6 +1195,7 @@ const browserObject = (result) =>
     browserId: result.id,
     capabilities: browserCapabilities(result),
     documentation: () => invoke('documentation'),
+    release: () => invoke('browserRelease', { browserId: result.id }).then(() => undefined),
     nameSession: async (name) => {
       const trimmed = name.trim();
       if (!trimmed) throw new ErrorClass('browser.nameSession requires a name');
