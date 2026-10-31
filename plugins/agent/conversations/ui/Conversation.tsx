@@ -99,6 +99,7 @@ import { MessageEdit, TurnRetry } from '../../../../products/maka/workbench/app/
 import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
+import { createSessionPlan } from '../../../../products/maka/workbench/app/sessionPlan';
 import {
   TurnPanel,
   TurnSummary,
@@ -321,6 +322,7 @@ export function Conversation(props: ConversationProps) {
   const stopping = () => invocation() !== null && stoppingRun() === invocation();
   const workspace = signal('');
   const permissions = createSessionPermissions(host, sessionId, props.control);
+  const plan = createSessionPlan(host, sessionId, props.control, permissions, () => selection());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
   const runTurn = signal<string | null>(null);
   const backend = signal<any>(null);
@@ -2057,6 +2059,7 @@ export function Conversation(props: ConversationProps) {
     modelDetails,
     refreshModel,
     permissions,
+    plan,
     projectMcp,
     workspace,
     empty: () =>

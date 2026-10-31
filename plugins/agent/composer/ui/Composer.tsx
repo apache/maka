@@ -29,6 +29,7 @@ import { keymap } from 'nsh';
 import { DraftAttachments } from '../../../../products/maka/workbench/app/Attachments';
 import { ComposerDetails } from '../../../../products/maka/workbench/app/ComposerDetails';
 import { SessionPermissionsSelect } from '../../../../products/maka/workbench/app/SessionPermissionsSelect';
+import { PlanModeToggle } from '../../../../products/maka/workbench/app/PlanModeToggle';
 import type { AgentExecution } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import type {
   ComposerBackend,
@@ -667,6 +668,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             <SessionPermissionsSelect
               owner={props.session()?.permissions ?? null}
               pending={pending()?.permissions ?? null}
+            />
+            <PlanModeToggle
+              plan={props.session()?.plan ?? null}
+              pending={pending()?.permissions ?? null}
+              busy={props.session()?.invocation() != null}
             />
             <If when={props.session() !== null || pending() !== null}>
               <View
