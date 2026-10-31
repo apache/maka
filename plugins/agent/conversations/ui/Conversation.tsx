@@ -24,10 +24,12 @@ import {
   type UiText,
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
-import { tr } from '../../../../products/maka/workbench/app/locale';
+import { tr, type MessageKey } from '../../../../products/maka/workbench/app/locale';
 import type { StagedFile } from 'maka/host';
 import type {
   AgentResumable,
+  AgentResumeParkReason,
+  AgentResumeResult,
   AgentExecution,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import {
@@ -185,6 +187,21 @@ export type ConversationHandle = Omit<
   /** The title its header shows. */
   title(): string;
 };
+// What the user can do about each reason the Host declined to continue.
+const continuationParked: Record<AgentResumeParkReason, MessageKey> = {
+  closed: 'Maka is shutting down. Continue after it restarts.',
+  archived: 'Restore this conversation to continue it.',
+  busy: 'This conversation is busy or has queued messages. Continue once it is idle.',
+  source_missing: 'There is no stopped response to continue.',
+  source_changed:
+    'The conversation changed after this response stopped. Send a new message instead.',
+  source_not_resumable: 'This response cannot be continued. Send a new message instead.',
+  already_continued: 'This response has already been continued.',
+  workspace_changed:
+    'The workspace changed after this response stopped. Send a new message instead.',
+  safety_check_failed: 'This response cannot be continued safely. Send a new message instead.',
+};
+
 type ConversationProps = {
   client: ScopedHost;
   control: Control;
@@ -1584,6 +1601,13 @@ export function Conversation(props: ConversationProps) {
       : left.connectionId === right.connectionId &&
         left.modelId === right.modelId &&
         left.thinkingLevel === right.thinkingLevel;
+  // Choosing a model answers the earlier send's complaint; other errors stay.
+  effect(() => {
+    if (backendIdentity(backend()) === null) return;
+    untracked(() => {
+      if (error() === tr('Choose a model before sending.')) error.set('');
+    });
+  });
   // Metadata follows the route's value, not observe()'s newly allocated backend
   // objects or live stream state. The durable backend remains the only choice.
   const modelRoute = computed(() => {
@@ -1738,15 +1762,14 @@ export function Conversation(props: ConversationProps) {
     try {
       const model = await selection(expectedBackend);
       if (!alive || !model || draft().trim() || attachments.files().length) return;
-      const result = await props.control('resume', {
+      const result: AgentResumeResult = await props.control('resume', {
         sessionId,
         sourceInvocationId: source.invocationId,
         sourceHighWater: source.highWater,
         ...model,
       });
       if (!alive) return;
-      if (result.kind === 'parked')
-        notice.set(uiMessage('Continuation is unavailable: {reason}.', { reason: result.reason }));
+      if (result.kind === 'parked') notice.set(uiMessage(continuationParked[result.reason]));
       await observe();
     } catch (reason) {
       report(reason);
