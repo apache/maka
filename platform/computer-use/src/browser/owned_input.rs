@@ -139,7 +139,7 @@ struct State {
     held: Vec<Option<HeldState>>,
     dispatch: Dispatch,
     body: BodyProgress,
-    uncertainty: Option<ToolError>,
+    cleanup_failure: Option<ToolError>,
     modifiers: u32,
     completion: Completion,
     // This is the original admission/lifetime gate, not proof of release.
@@ -166,7 +166,7 @@ impl Resource {
                 held: Vec::new(),
                 dispatch: Dispatch::default(),
                 body: BodyProgress::Unpolled,
-                uncertainty: None,
+                cleanup_failure: None,
                 modifiers: 0,
                 completion: Completion::Running,
                 admission: Some(admission),
@@ -250,9 +250,6 @@ impl Resource {
             Some(CdpFailureDisposition::ReplyFailure) => {}
             _ => {
                 state.dispatch.uncertain += 1;
-                state.uncertainty = Some(unknown(format!(
-                    "the owned input press outcome is unknown: {error}; do not replay"
-                )))
             }
         }
     }
@@ -295,7 +292,7 @@ impl Resource {
                     Some(HeldState::Releasing(command)) => Some(HeldState::Unconfirmed(command)),
                     other => other,
                 };
-                state.uncertainty = Some(ToolError::CleanupUnconfirmed(format!(
+                state.cleanup_failure = Some(ToolError::CleanupUnconfirmed(format!(
                     "owned input release was not acknowledged: {error}; custody retained"
                 )));
             }
@@ -303,8 +300,8 @@ impl Resource {
     }
     fn finish(&self) -> Result<(), ToolError> {
         let mut state = self.state();
-        if state.held.iter().any(Option::is_some) || state.uncertainty.is_some() {
-            let error = state.uncertainty.clone().unwrap_or_else(|| {
+        if state.held.iter().any(Option::is_some) || state.cleanup_failure.is_some() {
+            let error = state.cleanup_failure.clone().unwrap_or_else(|| {
                 let method = state
                     .held
                     .iter()
@@ -542,11 +539,11 @@ async fn complete_sequence(
     if let Err(error) = &result
         && required_completion(Err(error.clone())).is_err()
     {
-        // A known UP ACK settles only that release. It cannot erase an unknown
-        // preceding motion/UI/press effect or the original operation receipt.
+        // Preserve actual cleanup/persistence failures. The body's external
+        // outcome remains in result; acknowledged releases settle input custody.
         let mut state = cleanup.resource.state();
-        if state.uncertainty.is_none() {
-            state.uncertainty = Some(error.clone());
+        if state.cleanup_failure.is_none() {
+            state.cleanup_failure = Some(error.clone());
         }
     }
     let released = cleanup.cleanup().await;
@@ -568,10 +565,8 @@ async fn complete_sequence(
 fn required_completion(result: Result<(), ToolError>) -> Result<(), ToolError> {
     match result {
         Err(
-            error @ (ToolError::OutcomeUnknown(_)
-            | ToolError::CleanupUnconfirmed(_)
+            error @ (ToolError::CleanupUnconfirmed(_)
             | ToolError::Persistence(_)
-            | ToolError::OperationUnknown { .. }
             | ToolError::OperationCleanupUnconfirmed { .. }),
         ) => Err(error),
         _ => Ok(()),
@@ -881,6 +876,43 @@ mod tests {
             Err(mpsc::error::TryRecvError::Empty)
         ));
     }
+    #[tokio::test]
+    async fn unknown_ui_effect_keeps_its_result_but_confirmed_release_settles_input() {
+        let (socket, mut wire) = wire().await;
+        let input = sequence(socket.clone(), CancellationToken::new()).await;
+        let resource = input.resource.clone();
+        let body = input.clone();
+        let running = tokio::spawn(complete_sequence(
+            input,
+            Box::pin(async move {
+                body.mouse_down(None, down()).await?;
+                Err(ToolError::OutcomeUnknown(
+                    "the page effect could not be observed".into(),
+                ))
+            }),
+        ));
+        let press = wire.request().await;
+        wire.ack(&press);
+        let release = wire.request().await;
+        assert_eq!(release["params"]["type"], "mouseReleased");
+        wire.ack(&release);
+        let result = running.await.unwrap();
+        assert!(matches!(result, Err(ToolError::OutcomeUnknown(_))));
+        resource
+            .check_settled()
+            .expect("a terminal call and acknowledged release must not poison the input owner");
+        let observing =
+            tokio::spawn(async move { socket.request("Page.getFrameTree", json!({})).await });
+        let read = wire.request().await;
+        assert_eq!(read["method"], "Page.getFrameTree");
+        wire.ack(&read);
+        observing.await.unwrap().unwrap();
+        assert!(
+            wire.requests.try_recv().is_err(),
+            "unknown input must not be replayed"
+        );
+    }
+
     #[tokio::test]
     async fn failed_up_keeps_cleanup_unconfirmed_and_is_not_replayed() {
         let (socket, mut wire) = wire().await;

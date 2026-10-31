@@ -37,9 +37,23 @@ use uuid::Uuid;
 #[derive(Debug)]
 enum OperationFailure {
     Ordinary(ToolError),
-    // Constructed by operation only after its exact sealed physical drain proof.
-    // The original action's journal remains Unknown.
-    DrainedNativeUnknown(ToolError),
+    // A browser result has a durable Unknown receipt. Native input additionally
+    // requires its exact physical drain proof before this observer may continue.
+    ReportedUnknown(ToolError),
+}
+impl OperationFailure {
+    fn reported(error: ToolError, browser: bool, native_drained: bool) -> Self {
+        if (browser || native_drained)
+            && matches!(
+                error,
+                ToolError::OutcomeUnknown(_) | ToolError::OperationUnknown { .. }
+            )
+        {
+            Self::ReportedUnknown(error)
+        } else {
+            Self::Ordinary(error)
+        }
+    }
 }
 impl From<ToolError> for OperationFailure {
     fn from(error: ToolError) -> Self {
@@ -391,7 +405,8 @@ impl Computer {
         } else {
             None
         };
-        let device = if browser_command(&command)
+        let browser_operation = browser_command(&command);
+        let device = if browser_operation
             || matches!(
                 command,
                 maka_computer_use::protocol::Command::ListWindows { .. }
@@ -644,15 +659,16 @@ impl Computer {
         } else {
             None
         };
-        let drained_native_unknown = native_drain.is_some();
-        let journal_failure = if !drained_native_unknown
-            && let Err(
-                error @ (ToolError::Persistence(_)
-                | ToolError::CleanupUnconfirmed(_)
-                | ToolError::OutcomeUnknown(_)
-                | ToolError::OperationUnknown { .. }
-                | ToolError::OperationCleanupUnconfirmed { .. }),
-            ) = &result
+        let result = result.map_err(|error| {
+            OperationFailure::reported(error, browser_operation, native_drain.is_some())
+        });
+        let journal_failure = if let Err(OperationFailure::Ordinary(
+            error @ (ToolError::Persistence(_)
+            | ToolError::CleanupUnconfirmed(_)
+            | ToolError::OutcomeUnknown(_)
+            | ToolError::OperationUnknown { .. }
+            | ToolError::OperationCleanupUnconfirmed { .. }),
+        )) = &result
         {
             receipt.fail(error.clone());
             self.stopping.cancel();
@@ -661,12 +677,6 @@ impl Computer {
             None
         };
         settlement.complete(journal_failure);
-        let result = match result {
-            Err(error) if drained_native_unknown => {
-                return Err(OperationFailure::DrainedNativeUnknown(error));
-            }
-            other => other,
-        };
         match result? {
             ToolOutput::Mcp(result) => {
                 let mut value = result.structured_content.unwrap_or(Value::Null);
@@ -834,7 +844,7 @@ impl ToolExecutor for Bridge {
                 .operation(&bridge, input, cancellation, receipt.clone())
                 .await;
             match result {
-                Err(OperationFailure::DrainedNativeUnknown(error)) => {
+                Err(OperationFailure::ReportedUnknown(error)) => {
                     receipt.complete_call();
                     Err(error)
                 }
@@ -898,27 +908,36 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn bridge_keeps_browser_live_only_for_the_typed_post_drain_native_unknown() {
+    async fn bridge_allows_reported_browser_unknown_and_drained_native_unknown_to_continue() {
         use maka_agent_facts::tool_call::ToolOrigin;
         use maka_capabilities::call::{Identity, Issuer};
         use maka_code_runtime::CellAbort;
         use maka_computer_use::protocol::Command;
         use maka_event_log::root::{RootNamespaces, RootOwner};
 
-        for (drained, error) in [
+        for (browser_operation, drained, error) in [
             (
+                true,
+                false,
+                ToolError::OutcomeUnknown("browser navigation outcome unknown".into()),
+            ),
+            (
+                false,
                 true,
                 ToolError::OutcomeUnknown("native outcome unknown".into()),
             ),
             (
                 false,
+                false,
                 ToolError::OutcomeUnknown("native outcome unknown".into()),
             ),
             (
                 false,
+                false,
                 ToolError::Persistence("interruption write failed".into()),
             ),
             (
+                false,
                 false,
                 ToolError::CleanupUnconfirmed("missing interruption writer".into()),
             ),
@@ -972,15 +991,20 @@ mod tests {
                 )
                 .unwrap();
             let native_error = error.clone();
-            let fixture: OperationFixture =
-                Arc::new(move |input| match serde_json::from_value(input).unwrap() {
-                    Command::ListWindows { .. } if drained => {
-                        Err(OperationFailure::DrainedNativeUnknown(native_error.clone()))
+            let fixture: OperationFixture = Arc::new(move |input| {
+                let command: Command = serde_json::from_value(input).unwrap();
+                match command {
+                    Command::ListWindows { .. } | Command::ListTabs { .. } => {
+                        Err(OperationFailure::reported(
+                            native_error.clone(),
+                            browser_command(&command),
+                            drained,
+                        ))
                     }
-                    Command::ListWindows { .. } => Err(native_error.clone().into()),
                     Command::ListBrowsers { .. } => Ok(json!("browser-still-live")),
                     command => panic!("unexpected facade command: {command:?}"),
-                });
+                }
+            });
             let context =
                 CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![])
                     .unwrap();
@@ -1006,12 +1030,17 @@ mod tests {
                 "{}\nglobalThis.native=()=>invoke('listWindows',{{options:{{}}}});globalThis.browser=()=>invoke('listBrowsers',{{options:{{}}}});",
                 maka_computer_use::facade()
             );
+            let bootstrap = if browser_operation {
+                bootstrap.replace("invoke('listWindows'", "invoke('listTabs'")
+            } else {
+                bootstrap
+            };
             let runtime = Repl::new(bootstrap, CellLimits::default()).unwrap();
             let result = runtime.evaluate(
                 "let caught=false;try{await native()}catch(e){caught=true}nodeRepl.write({caught,browser:await browser()});".into(),
                 bridge.clone(), CancellationToken::new(), context.clone(), Duration::from_secs(3),
             ).await;
-            if drained {
+            if browser_operation || drained {
                 assert!(
                     matches!(&result, Ok(CellResult::Success { .. })),
                     "{result:?}"
