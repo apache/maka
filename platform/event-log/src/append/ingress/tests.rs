@@ -431,6 +431,9 @@ async fn canonical_open_rejects_utf16_and_retains_utf8() {
             .await
             .unwrap();
         crate::sqlite_functions::register(&mut db).await.unwrap();
+        crate::sqlite_functions::register_migrations(&mut db)
+            .await
+            .unwrap();
         sqlx::migrate!("./migrations")
             .run_direct(None, &mut db, false)
             .await

@@ -22,9 +22,11 @@ use rusqlite::Connection;
 
 pub(crate) fn schema(include: impl Fn(&str, &str) -> bool) -> String {
     let db = Connection::open_in_memory().unwrap();
+    crate::context::semantic::migration::register(&db).unwrap();
     for migration in super::MIGRATIONS.iter() {
         db.execute_batch(migration.sql.as_ref()).unwrap();
     }
+    crate::context::semantic::migration::unregister(&db).unwrap();
     let mut query = db.prepare(
         "SELECT type,name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND tbl_name NOT IN (SELECT name FROM pragma_table_list WHERE schema='main' AND type='shadow') ORDER BY rowid",
     ).unwrap();
@@ -101,6 +103,9 @@ async fn existing_artifact_rows_migrate_without_losing_bytes_or_history_aliases(
     // A conflicting old digest must not silently pick one of two different bodies.
     sqlx::query("UPDATE artifacts SET payload=zeroblob(length(payload)) WHERE session_id='copy'")
         .execute(&mut db)
+        .await
+        .unwrap();
+    crate::sqlite_functions::register_migrations(&mut db)
         .await
         .unwrap();
     let error = super::MIGRATIONS

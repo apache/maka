@@ -21,23 +21,39 @@ use sqlx::SqliteConnection;
 
 use crate::StoreError;
 
-/// Startup only, before installing application hooks. rusqlite supplies its
-/// safe scalar-function trampoline; SQLx retains sole connection ownership and
-/// executes the SQL. No borrowed wrapper or statement may escape this scope.
+/// Register the functions required by ordinary writer and reader connections.
 pub(crate) async fn register(connection: &mut SqliteConnection) -> Result<(), StoreError> {
+    on_handle(connection, |db| {
+        crate::sessions::register_functions(db)
+            .and_then(|()| crate::message_identity::register(db))
+            .and_then(|()| crate::transcript::navigation::register(db))
+            .and_then(|()| crate::context::evidence::register(db))
+    })
+    .await
+}
+pub(crate) async fn register_migrations(
+    connection: &mut SqliteConnection,
+) -> Result<(), StoreError> {
+    on_handle(connection, crate::context::semantic::migration::register).await
+}
+pub(crate) async fn unregister_migrations(
+    connection: &mut SqliteConnection,
+) -> Result<(), StoreError> {
+    on_handle(connection, crate::context::semantic::migration::unregister).await
+}
+
+async fn on_handle(
+    connection: &mut SqliteConnection,
+    apply: impl FnOnce(&rusqlite::Connection) -> Result<(), StoreError> + Send,
+) -> Result<(), StoreError> {
     let mut locked = connection.lock_handle().await?;
-    // SAFETY: SQLx's guard prevents every worker FFI call while this borrowed
-    // non-owning handle exists. Both crates share libsqlite3-sys's sqlite3 type
-    // (no cast); from_handle does not close the underlying connection. Only
-    // Send + 'static UDFs are registered, and no await occurs before wrapper
-    // drop. SQLite owns their closures until replacement or connection close.
+    // SAFETY: SQLx's guard excludes worker FFI calls while this borrowed,
+    // non-owning connection exists. Both crates use the same libsqlite3-sys.
+    // The synchronous callback cannot retain a wrapper or statement, and the
+    // wrapper drops before the guard. Registered functions are Send + 'static.
     let borrowed = unsafe { rusqlite::Connection::from_handle(locked.as_raw_handle().as_ptr()) }?;
-    let registered = crate::sessions::register_functions(&borrowed)
-        .and_then(|()| crate::message_identity::register(&borrowed))
-        .and_then(|()| crate::transcript::navigation::register(&borrowed))
-        .and_then(|()| crate::context::evidence::register(&borrowed));
-    // rusqlite 0.39 removes hooks only for an owned connection; this borrowed
-    // wrapper leaves SQLx's connection and hooks intact.
+    let result = apply(&borrowed);
+    // A borrowed rusqlite connection leaves SQLx's live connection and hooks intact.
     drop(borrowed);
-    registered
+    result
 }

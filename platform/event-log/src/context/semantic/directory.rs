@@ -18,6 +18,7 @@
  */
 
 //! Same-transaction typed metadata over the actual immutable payload encoding.
+pub(super) mod codec;
 mod scan;
 use super::{captured, invalid};
 use crate::StoreError;
@@ -52,7 +53,7 @@ pub(super) fn prepare_fragment(
         };
         captured::with_fragment_reader(raw, key, source, |reader| {
             scan::payload(reader, root, |kind, ordinal, child| {
-                raw.execute("INSERT INTO context_semantic_directory_children(source_sequence,source_index,list_kind,ordinal,directory_json) VALUES(?,?,?,?,?)",params![key.source_sequence as i64,key.item_index as i64,kind.as_str(),i64::try_from(ordinal).map_err(|_|invalid("directory ordinal exceeds SQLite range"))?,serde_json::to_string(&child)?])?;
+                raw.execute("INSERT INTO context_semantic_directory_children(source_sequence,source_index,list_kind,ordinal,directory_bytes) VALUES(?,?,?,?,?)",params![key.source_sequence as i64,key.item_index as i64,kind.as_str(),i64::try_from(ordinal).map_err(|_|invalid("directory ordinal exceeds SQLite range"))?,codec::encode(&child)?])?;
                 Ok(())
             })
         })
