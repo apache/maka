@@ -800,7 +800,7 @@ fn asset_fallback_url(document: &BrowserDocument, url: &str) -> Result<String, T
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use maka_agent_api::contract::{Workspace, WorkspacePermissions};
     use maka_agent_facts::{
@@ -811,11 +811,11 @@ mod tests {
 
     const ORIGIN: &str = "https://clipboard.example";
 
-    struct Fixture {
+    pub(crate) struct Fixture {
         _directory: tempfile::TempDir,
-        owner: Arc<Computer>,
-        store: maka_event_log::SessionStore,
-        invocation: Invocation,
+        pub(crate) owner: Arc<Computer>,
+        pub(crate) store: maka_event_log::SessionStore,
+        pub(crate) invocation: Invocation,
         attachment: Attachment,
     }
     impl Fixture {
@@ -823,7 +823,19 @@ mod tests {
             Self::new_with_global_grant(true).await
         }
 
+        pub(crate) async fn browser_handoff() -> Self {
+            Self::new_configured(true, true).await
+        }
+
+        pub(crate) fn basis(&self) -> PermissionBasis {
+            self.attachment.basis
+        }
+
         async fn new_with_global_grant(global_grant: bool) -> Self {
+            Self::new_configured(global_grant, false).await
+        }
+
+        async fn new_configured(global_grant: bool, accepted_configuration: bool) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let workspace_path = directory.path().join("workspace");
             std::fs::create_dir(&workspace_path).unwrap();
@@ -862,7 +874,7 @@ mod tests {
                 identity,
             };
             let reference = root
-                .attach_workspace("fixture", &serde_json::to_value(workspace).unwrap())
+                .attach_workspace("fixture", &serde_json::to_value(&workspace).unwrap())
                 .await
                 .unwrap();
             let basis = PermissionBasis {
@@ -904,7 +916,32 @@ mod tests {
                     &EventWrite::plain(RuntimeEvent::new(
                         invocation.clone(),
                         Fact::InvocationOpened {
-                            configuration: None,
+                            configuration: accepted_configuration
+                                .then(|| maka_agent_facts::execution::InvocationConfiguration {
+                                    compaction_prompt: None,
+                                    editing_tools: None,
+                                    tool_discovery: false,
+                                    tool_composition: None,
+                                    system_prompt: None,
+                                    cwd: workspace.path.clone(),
+                                    workspace_identity: Some(workspace.identity.clone()),
+                                    workspace_binding: Some(basis.binding),
+                                    workspace_origin:
+                                        maka_agent_facts::execution::WorkspaceOrigin::Selected,
+                                    sandbox_mode:
+                                        maka_agent_facts::execution::SandboxMode::WorkspaceWrite,
+                                    approval_policy:
+                                        maka_agent_facts::execution::ApprovalPolicy::OnRequest,
+                                    boundary_revision: 0,
+                                    collaboration_mode: Default::default(),
+                                    orchestration_mode: Default::default(),
+                                    tool_mode: Default::default(),
+                                    code_language: Default::default(),
+                                    model: None,
+                                    thinking_level: None,
+                                    language: maka_agent_facts::language::Language::En,
+                                })
+                                .map(Box::new),
                             input: InvocationInput::Message {
                                 source_messages: vec![],
                                 content: "Fixture turn".into(),
@@ -999,7 +1036,7 @@ mod tests {
                 .await
         }
 
-        async fn end(&self) {
+        pub(crate) async fn end(&self) {
             self.store
                 .append(
                     &EventWrite::plain(RuntimeEvent::new(
@@ -1016,7 +1053,7 @@ mod tests {
                 .unwrap();
         }
 
-        async fn close(self) {
+        pub(crate) async fn close(self) {
             self.owner.stopping.cancel();
             self.owner.tasks.close();
             self.owner.tasks.wait().await;

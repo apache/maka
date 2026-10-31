@@ -19,7 +19,7 @@ name: Computer Use
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, rust-preview]
     paths:
       - .github/workflows/computer-use.yml
       - Cargo.toml

@@ -13462,7 +13462,16 @@ export const contracts = {
             type: 'object',
             properties: {
               workspace: {
-                $ref: '#/$defs/AgentWorkspaceSelection',
+                description:
+                  "Where the Bot Session is created on first use. Absent: the Host's first\nconfigured workspace root, so opening the Bot never needs another conversation.",
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentWorkspaceSelection',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
               title: {
                 type: ['string', 'null'],
@@ -13471,7 +13480,6 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['workspace'],
             $defs: {
               AgentWorkspaceSelection: {
                 oneOf: [
@@ -13624,6 +13632,12 @@ export const contracts = {
                     description: 'The Session could not be created; see the creation reason.',
                     type: 'string',
                     const: 'creation_rejected',
+                  },
+                  {
+                    description:
+                      'No workspace was given and the Host has no configured workspace root.',
+                    type: 'string',
+                    const: 'no_workspace',
                   },
                 ],
               },

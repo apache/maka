@@ -241,6 +241,10 @@ impl Session {
 
     /// Resolve the actual current window/process without the public getApp
     /// wrapper, which would additionally read AX and change the raw API.
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "musl"))
+    ))]
     async fn raw_window(
         &mut self,
         id: u64,

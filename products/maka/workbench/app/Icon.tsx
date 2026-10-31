@@ -124,10 +124,10 @@ export function Icon(props: { name: keyof typeof glyphs; color: string; size?: n
             cx.lineTo(8, 14.5);
             break;
           case 'plus':
-            cx.moveTo(8, 3);
-            cx.lineTo(8, 13);
-            cx.moveTo(3, 8);
-            cx.lineTo(13, 8);
+            cx.moveTo(8, 2);
+            cx.lineTo(8, 14);
+            cx.moveTo(2, 8);
+            cx.lineTo(14, 8);
             break;
           case 'send':
             cx.moveTo(8, 13);
@@ -225,10 +225,10 @@ export function Icon(props: { name: keyof typeof glyphs; color: string; size?: n
             cx.closePath();
             break;
           case 'refresh':
-            cx.arc(8, 8, 5, -0.7, Math.PI * 1.7);
-            cx.moveTo(12, 1.5);
-            cx.lineTo(12.5, 5);
-            cx.lineTo(9, 4.5);
+            cx.arc(8, 8.75, 5, -0.7, Math.PI * 1.7);
+            cx.moveTo(12, 2.25);
+            cx.lineTo(12.5, 5.75);
+            cx.lineTo(9, 5.25);
             break;
           case 'file':
             cx.moveTo(3, 1.5);

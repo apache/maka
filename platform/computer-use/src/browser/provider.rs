@@ -68,6 +68,11 @@ impl Provider {
             Self::Cdp(_) => None,
         }
     }
+    pub(super) fn extension_adapter(&self) -> Option<ExtensionAdapterMode> {
+        self.extension().and_then(|extension| {
+            ExtensionAdapterMode::from_host_name(&extension.identity().adapter)
+        })
+    }
     pub(super) fn extension_mode(&self) -> Option<ExtensionAdapterMode> {
         match self {
             Self::Extension { connection, .. } if !connection.is_closed() => {
@@ -200,11 +205,29 @@ impl ExtensionCache {
         );
         Ok(ready)
     }
+    fn prune_closed(&mut self, owner: uuid::Uuid) {
+        self.entries.retain(|identity, entry| {
+            identity.owner != owner
+                || entry.ready.get().is_none_or(|ready| {
+                    ready
+                        .as_ref()
+                        .is_ok_and(|connection| !connection.is_closed())
+                })
+        });
+    }
     pub(crate) async fn close_owner(&mut self, owner: uuid::Uuid) {
+        self.close_matching(owner, None).await;
+    }
+    pub(super) async fn close_adapter(&mut self, owner: uuid::Uuid, adapter: &str) {
+        self.close_matching(owner, Some(adapter)).await;
+    }
+    async fn close_matching(&mut self, owner: uuid::Uuid, adapter: Option<&str>) {
         let keys: Vec<_> = self
             .entries
             .keys()
-            .filter(|identity| identity.owner == owner)
+            .filter(|identity| {
+                identity.owner == owner && adapter.is_none_or(|adapter| identity.adapter == adapter)
+            })
             .cloned()
             .collect();
         for key in keys {
@@ -228,6 +251,7 @@ pub(super) async fn discover(
     owner: uuid::Uuid,
 ) -> Discovery {
     let mut result = Discovery::default();
+    driver.lock().await.extension_browsers.prune_closed(owner);
     let discovered = match cua_driver_core::browser::discover_installed_extension_endpoints().await
     {
         Ok(discovered) => discovered,
@@ -242,7 +266,22 @@ pub(super) async fn discover(
             .into_iter()
             .map(|entry| format!("extension browser descriptor rejected: {}", entry.reason)),
     );
+    let handoff_hosts = match super::host_handoff::selected_handoff_hosts().await {
+        Ok(hosts) => Some(hosts),
+        Err(error) => {
+            result.errors.push(error.to_string());
+            None
+        }
+    };
     for endpoint in discovered.endpoints {
+        if ExtensionAdapterMode::from_host_name(&endpoint.identity().adapter)
+            == Some(ExtensionAdapterMode::Chatgpt)
+            && handoff_hosts
+                .as_ref()
+                .is_none_or(|hosts| !hosts.allows(endpoint.identity()))
+        {
+            continue;
+        }
         let cell = match driver
             .lock()
             .await

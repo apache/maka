@@ -65,6 +65,7 @@ const CONTROL_METHODS: &[&str] = &[
     "changeSession",
     "fork",
     "openBot",
+    "changePlan",
 ];
 const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
@@ -917,6 +918,14 @@ impl Client {
             .journal
             .pending_controls(&self.0.source, &owner)
             .await
+    }
+    /// Stop prompting for this original without cancelling, replaying, or changing its outcome.
+    pub async fn dismiss_control(&self, id: Uuid) -> Result<()> {
+        let operation = self.operation_for_control(id).await?;
+        if operation.reference.is_none() {
+            return Err("unprepared controls must be abandoned before dismissing".into());
+        }
+        self.0.journal.dismiss_control(id).await
     }
     /// A settled or abandoned Settings attempt retains its original owner.
     pub async fn operation_for_settings(&self, id: Uuid) -> Result<Operation> {

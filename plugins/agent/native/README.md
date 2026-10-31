@@ -21,6 +21,14 @@
 
 [简体中文](README.zh-CN.md)
 
+[`HistoryCheckpointPublisher`](src/checkpoints.rs) is an internal trusted-assembly
+coordinator for history-only checkpoints. It binds the native Session namespace
+and complete original `RecoveryRef`, then uses the Root-owned capture/publication
+and recovery implementation. It does not register a service method or model tool.
+A future service adapter must perform Host admission and settle the original
+operation from the durable publication receipt; callers cannot supply their own
+authority scope. Workspace capture and restore/activation are outside this API.
+
 `agent.fork` captures a source revision and an explicit `position`: `end`, `through_turn`, or `before_turn` with a logical Turn ID, or `start` for empty history. `before_turn` excludes the complete target Turn and accepts the first Turn to create an empty conversation. The Host resolves the boundary from canonical history in the copy transaction; clients do not need a preceding Turn or the sampled history landmarks. The returned branch retains that position, and the source conversation is unchanged.
 
 Exposes Agent execution as native application services. `provide` registers factories; `executor` and `workhub` connect the service to the execution and coordination domains. Packages and product compositions choose which factories to activate and how to bind their imports.

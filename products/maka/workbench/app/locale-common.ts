@@ -35,6 +35,26 @@ export const commonMessages = {
     '放弃尚未确认的 {method}',
     '放棄尚未確認的 {method}',
   ],
+  'Connection interrupted. Reconnect to continue; your draft is kept.': [
+    'Connection interrupted. Reconnect to continue; your draft is kept.',
+    '连接已中断，重新连接后可继续。草稿已保留。',
+    '連線已中斷，重新連線後可繼續。草稿已保留。',
+  ],
+  'Conversation data is temporarily unavailable. Try reconnecting.': [
+    'Conversation data is temporarily unavailable. Try reconnecting.',
+    '暂时无法读取会话数据，请尝试重新连接。',
+    '暫時無法讀取對話資料，請嘗試重新連線。',
+  ],
+  'Conversation list is temporarily unavailable. Try reconnecting.': [
+    'Conversation list is temporarily unavailable. Try reconnecting.',
+    '暂时无法读取会话列表，请尝试重新连接。',
+    '暫時無法讀取對話清單，請嘗試重新連線。',
+  ],
+  'The action outcome is unknown. Check the current state before trying again.': [
+    'The action outcome is unknown. Check the current state before trying again.',
+    '暂时无法确认操作结果，请先检查当前状态再决定是否重试。',
+    '暫時無法確認操作結果，請先檢查目前狀態再決定是否重試。',
+  ],
   Cancel: msg_cancel,
   'Choose workspace': ['Choose workspace', '选择工作区', '選擇工作區'],
   Close: msg_closeModels,

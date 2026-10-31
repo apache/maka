@@ -232,6 +232,11 @@ impl Journal {
         .await
         .map(|_| ())
     }
+    pub(crate) async fn dismiss_control(&self, id: Uuid) -> Result<()> {
+        self.write(write::Command::DismissControl(id))
+            .await
+            .map(|_| ())
+    }
     pub(crate) async fn abandon(&self, host: &DeploymentRef, id: Uuid) -> Result<Operation> {
         let write::Output::Operation(operation) = self
             .write(write::Command::Abandon {
@@ -344,6 +349,8 @@ impl Journal {
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating operations table: {error}"))?;
             sqlx::query("CREATE INDEX IF NOT EXISTS operations_pending ON operations(domain,deployment,draft_owner) WHERE receipt IS NULL AND abandoned=0")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating pending operations index: {error}"))?;
+            sqlx::query("CREATE TABLE IF NOT EXISTS dismissed_controls (operation TEXT PRIMARY KEY REFERENCES operations(id))")
+                .execute(&mut *transaction).await.map_err(|error| format!("client journal creating dismissed controls table: {error}"))?;
             for index in recovery::INDEXES {
                 sqlx::query(index).execute(&mut *transaction).await
                     .map_err(|error| format!("client journal creating recovery index: {error}"))?;

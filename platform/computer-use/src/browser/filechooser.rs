@@ -614,7 +614,8 @@ impl Browsers {
         // Missing support refuses before any chooser interception is sent.
         provenance_supported(tab)?;
         let identity = tab.identity()?;
-        self.use_tab(&identity, invocation.turn()).await?;
+        self.use_tab(&identity, invocation.turn(), cancellation)
+            .await?;
         let tab = self
             .targets
             .get_mut(&handle)
@@ -992,7 +993,8 @@ impl Browsers {
             .ok_or_else(|| failed(format!("Unknown file chooser id \"{chooser}\"")))?;
         store.held(&chooser, tab, self.owner, invocation.turn(), &files)?;
         let identity = tab.identity()?;
-        self.use_tab(&identity, invocation.turn()).await?;
+        self.use_tab(&identity, invocation.turn(), cancellation)
+            .await?;
         let tab = self
             .targets
             .get_mut(&handle)

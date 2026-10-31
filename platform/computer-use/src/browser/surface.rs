@@ -76,6 +76,11 @@ impl Browsers {
             }
         }
         if available.is_empty() {
+            let mut configured = Vec::new();
+            self.append_handoff_candidate(&mut configured).await?;
+            if let Some(candidate) = configured.into_iter().next() {
+                return Ok(candidate);
+            }
             return Err(failure.unwrap_or_else(|| failed("No browser is available")));
         }
         if available.len() == 1 {

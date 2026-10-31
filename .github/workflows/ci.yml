@@ -19,9 +19,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, rust-preview]
   push:
-    branches: [main]
+    branches: [main, rust-preview]
   workflow_dispatch:
 
 permissions:
@@ -38,10 +38,11 @@ jobs:
     timeout-minutes: 180
     env:
       MBX_CACHE_EXPORT_GROUP: ci-${{ github.run_id }}-${{ github.run_attempt }}-test
-      MBX_GC_AUTO: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '0' || '1' }}
+      MBX_GC_AUTO: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview') && '0' || '1' }}
       MBX_TARGET_VIEWS: "0"
       # Linked outputs already live in target; retain cache copies only for export.
-      MBX_CACHE_LINKS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '0' }}
+      # Pushes to either long-lived branch save the cache their pull requests restore.
+      MBX_CACHE_LINKS: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview') && '1' || '0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -170,10 +171,10 @@ jobs:
           target/debug/maka desktop --version
           target/debug/maka-desktop-shell --version
       - name: Export compiled Rust cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.mbx-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview') && steps.mbx-cache.outputs.cache-hit != 'true'
         run: mbx cache export --group "$MBX_CACHE_EXPORT_GROUP" --format directory "$RUNNER_TEMP/mbx-cache"
       - name: Save compiled Rust cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.mbx-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview') && steps.mbx-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/mbx-cache

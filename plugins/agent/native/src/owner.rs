@@ -755,8 +755,7 @@ impl Owner {
             names
                 .iter()
                 .any(|name| name == bot::SEND_USER || name == bot::SLEEP)
-        })
-        {
+        }) {
             return Ok(Created::Rejected {
                 reason: Rejection::ToolsUnavailable,
             });
@@ -833,7 +832,11 @@ impl Owner {
                         reason: Rejection::WorkspaceUnavailable,
                     });
                 }
-                if let Some(parent) = session.configuration.tools {
+                // User creation reuses a workspace; Agent derivation also
+                // inherits the parent's tool ceiling.
+                if scope.identity.agent().is_some()
+                    && let Some(parent) = session.configuration.tools
+                {
                     tools = Some(match tools {
                         None => parent,
                         Some(names) => names

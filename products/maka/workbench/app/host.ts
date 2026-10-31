@@ -225,6 +225,7 @@ export function createHost(application: UiHost) {
     abandonSetting: (id: string) => nativeHost.abandonSetting(id) as Promise<ClientOperation>,
     pendingControls: () => nativeHost.pendingControls() as Promise<ClientOperation[]>,
     recoverControl: (id: string) => nativeHost.recoverControl(id) as Promise<OperationReply>,
+    dismissControl: (id: string) => nativeHost.dismissControl(id) as Promise<void>,
     abandonControl: (id: string) => nativeHost.abandonControl(id) as Promise<ClientOperation>,
   };
 }

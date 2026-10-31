@@ -224,11 +224,6 @@ enum Command {
     ObserveProjectedApplication {
         slot: u64,
     },
-    ApplicationAction {
-        slot: u64,
-        action: Action,
-        cancellation: CancellationToken,
-    },
     NativeApplicationAction {
         slot: u64,
         action: Action,
@@ -1219,22 +1214,6 @@ impl Application {
         }
     }
 
-    pub(crate) async fn action(
-        &self,
-        action: Action,
-        cancellation: CancellationToken,
-    ) -> Result<(), ToolError> {
-        unit(
-            self.controller
-                .request(Command::ApplicationAction {
-                    slot: self.slot,
-                    action,
-                    cancellation,
-                })
-                .await?,
-        )
-    }
-
     pub(crate) async fn clear(&self) -> Result<(), ToolError> {
         self.controller
             .retire(Command::ClearApplication { slot: self.slot })
@@ -1504,22 +1483,6 @@ impl ApplicationSlot {
         check_indexed_window(target.window_id, expected_window_id)?;
         Ok(target)
     }
-
-    fn action(
-        &mut self,
-        action: Action,
-        cancellation: &CancellationToken,
-    ) -> Result<(), ToolError> {
-        if !Target::handles(&action) {
-            return Err(failed(
-                "application slot requires a retained semantic action",
-            ));
-        }
-        self.observed
-            .as_mut()
-            .ok_or_else(|| failed("stale_element: observe the application before semantic input"))?
-            .action(action, cancellation)
-    }
 }
 
 fn check_indexed_window(actual: u32, expected: u32) -> Result<(), ToolError> {
@@ -1780,15 +1743,6 @@ impl WorkerState {
             Command::ObserveProjectedApplication { slot } => Ok(
                 Response::ProjectedApplicationObserved(self.observe_projected_application(slot)?),
             ),
-            Command::ApplicationAction {
-                slot,
-                action,
-                cancellation,
-            } => {
-                self.application_slot_mut(slot)?
-                    .action(action, &cancellation)?;
-                Ok(Response::Unit)
-            }
             Command::NativeApplicationAction {
                 slot,
                 action,
@@ -2915,7 +2869,7 @@ mod tests {
     }
 
     #[test]
-    fn application_slot_cannot_be_used_as_a_window_or_act_without_observation() {
+    fn application_slot_cannot_be_used_as_a_window() {
         let epoch = NativeEpochId::new();
         let mut slot = Slot::Application(ApplicationSlot {
             epoch,
@@ -2928,16 +2882,6 @@ mod tests {
         assert!(
             matches!(slot.window_mut(), Err(ToolError::Failed(reason)) if reason == "native AX application slot is not a window")
         );
-        let application = slot.application_mut().unwrap();
-        assert!(matches!(
-            application.action(Action::SetValue { index: 1, value: "value".into() }, &CancellationToken::new()),
-            Err(ToolError::Failed(reason)) if reason == "stale_element: observe the application before semantic input"
-        ));
-        assert!(matches!(
-            application.action(Action::TypeText { index: None, text: "text".into() }, &CancellationToken::new()),
-            Err(ToolError::Failed(reason)) if reason == "application slot requires a retained semantic action"
-        ));
-        assert!(application.observed.is_none());
     }
 
     #[tokio::test]

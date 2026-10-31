@@ -680,12 +680,24 @@ impl Owner {
             .filter(|name| self.tools.contains(name))
             .map(|name| (*name).to_owned())
             .collect();
+        let workspace = match input.workspace {
+            Some(workspace) => workspace,
+            None => match self.default_bot_workspace().await? {
+                Some(workspace) => workspace,
+                None => {
+                    self.release_claim(&mine).await?;
+                    return Ok(BotOpened::Rejected {
+                        reason: BotRejection::NoWorkspace,
+                    });
+                }
+            },
+        };
         let create = Create {
             automatic_title: false,
             tools: Some(tools),
             title: input.title.unwrap_or_else(|| "Bot".into()),
             labels: vec![],
-            workspace: input.workspace,
+            workspace,
         };
         let operation = operation.clone();
         let created = self
@@ -724,6 +736,25 @@ impl Owner {
                 })
             }
         }
+    }
+    /// The Host's first configured workspace root, as a directory selection.
+    async fn default_bot_workspace(&self) -> Result<Option<WorkspaceSelection>, String> {
+        let page = maka_workspace_support::query(
+            self.workspace_roots.clone(),
+            crate::contract::Directories::Roots,
+        )
+        .await?;
+        Ok(match page {
+            crate::contract::DirectoryPage::Roots { roots } => {
+                roots
+                    .into_iter()
+                    .next()
+                    .map(|root| WorkspaceSelection::Directory {
+                        selection: root.selection,
+                    })
+            }
+            _ => None,
+        })
     }
     async fn storage_claim(&self, revision: Option<u64>, mine: &str) -> Result<(), StoreError> {
         self.bot

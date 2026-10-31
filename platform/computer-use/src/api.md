@@ -2,6 +2,12 @@ Computer Use is an independent persistent JavaScript REPL. Use cua_repl directly
 Code Mode is not required. Variables and bound objects survive calls and Turns within
 the current Host process. A fresh REPL after restart has no variables from history;
 follow the current Computer Use state supplied with the model request.
+For websites, start with `await cua.listBrowsers()` and use a browser Tab before
+native browser-window input. Installed ChatGPT connections can be taken over on
+demand without shell setup or launching ChatGPT desktop.
+Use top-level `await`, not top-level `return`. This REPL retains declarations;
+reuse bindings or choose fresh names. It has no Node APIs or `setTimeout`.
+
 `cua.computer.target` identifies the selected desktop platform (`mac`, `linux`, `windows`).
 In WSL it defaults to the Windows host; shell commands may still run in Linux.
 
@@ -27,6 +33,8 @@ Native inventories and state shapes differ by platform; reuse returned IDs and s
 A fresh REPL has no bound targets. The entry points below emit API documentation
 and inventory or initial target state. Browser IDs come from configured CDP providers and connected Extension browser
 providers. Exact IDs take precedence; only without an exact match do `maka` and `chatgpt` select a unique current Extension endpoint. If neither is available, use native browser windows through getApp. The API does not expose driver administration such as start_session.
+
+An installed ChatGPT extension with its original native host is discovered automatically in Chrome or Chromium. `listBrowsers()` reports it as `on_demand`; selecting it takes control until `browser.release()` or turn cleanup restores the original host. No setup command, debug port or ChatGPT desktop launch is needed. Prefer this browser connection for websites before native browser-window input.
 
 ChatGPT and stock OpenCLI compatibility is best effort. Stock OpenCLI currently cannot serve this browser-session contract. Without an exact provider ID or extension-instance selection, `getBrowser({id: "opencli"})` selects a unique usable existing provider before any tab creation or claim; zero or multiple candidates refuses selection. Exact IDs and existing handles never switch providers.
 
@@ -221,8 +229,7 @@ Linux rejects numeric page counts. Linux X11 defaults to `{pixels:800}` and acce
 65535. It sends `max(round(pixels/100),1)` wheel steps; the application determines
 the resulting content movement. Linux Wayland currently refuses pixel input.
 macOS scrolling takes positive finite numeric pages, defaulting to one, and rejects
-`{pixels}`. The current native adapter can deliver only integer page counts from
-1 to 50; fractional or larger page counts remain unsupported.
+`{pixels}`. Fractional page counts are supported.
 Windows requires a coordinate point and a positive finite `{pixels:500}` distance;
 omitted distances and numeric page counts are rejected. Coordinates and direction-signed distances use JavaScript
 `Math.round`; rounded inputs must fit signed 32-bit integers. Native wheel deltas
@@ -245,11 +252,17 @@ Native semantic actions use retained accessibility elements. Application menus
 are scoped to their owning process and the exact bound window; closed menu
 contents are omitted until the menu is opened. Menu interaction may activate the
 bound window and keeps it active while the menu is open.
-macOS/Windows coordinate and keyboard input use the exact window's foreground
-route; macOS restores the prior application after delivery where supported.
-Linux keeps background delivery. Coordinate input can move the system pointer.
-Unverified input effects are reported in the call output. There is no public
-`delivery_mode` option or automatic replay.
+Native coordinate and keyboard input defaults to background delivery to the exact
+bound window. Unsupported background delivery is reported; input is not automatically
+replayed in the foreground. Unverified effects may already have been delivered.
+Prefer browser Tab operations for websites: they avoid desktop focus and pointer
+input. For native text entry prefer `typeText` or `setValue`; macOS `paste` uses the
+system clipboard and foreground keyboard input. Native menus may activate their
+window. Some coordinate routes can move the system pointer; delivery metadata
+reports the actual route. Native `app.pressKey(key, {deliveryMode:"foreground"})`
+and `app.typeText(text, {deliveryMode:"foreground"})` explicitly request a foreground
+route when needed; the default is `"background"`. Do not retry an unverified input
+automatically or silently switch modes.
 
 `nodeRepl.write(value)` emits text/JSON. `await nodeRepl.emitImage(bytes | dataUrl |
 {bytes, mimeType})` emits an image. File/HTTP image URLs, Node, arbitrary filesystem
@@ -293,6 +306,8 @@ convenience entry point that emits documentation. A Browser exposes `tabs.select
 for its logical session's active tab; this does not select the OS focused tab.
 The current direct CDP provider has no logical-session active-tab service and
 returns `undefined` from `selected()`.
+
+`await browser.release()` returns this Session's on-demand ChatGPT browser lease. It settles this turn's temporary tabs and physical control resources before releasing the host; retained pages stay open. Other Sessions keep their own leases. The last release restores the original native host. Reacquire with `cua.getBrowser({id: "chatgpt"})` before further use; handles from a retired host generation require a fresh attachment. Normal turn cleanup also releases the lease. Long-running Agents should release before sleeping. Other browser providers do not support this operation.
 
 `await browser.nameSession(name)` trims and stores the session's managed group
 title. Existing managed presentation is updated through its owned receipts;

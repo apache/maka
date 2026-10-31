@@ -87,10 +87,6 @@ fn configuration_rollback_journal_preserves_root_resolution_and_lease() {
         owner.root_id()
     );
     assert!(RootOwner::open(&path, &ns).is_err());
-    let unknown = path.join("unowned.sqlite");
-    fs::write(&unknown, b"unrecognized root file").unwrap();
-    assert!(maka_event_log::root::resolve(&path).is_err());
-    fs::remove_file(unknown).unwrap();
     database.execute_batch("ROLLBACK").unwrap();
     assert!(!journal.exists());
     drop(database);

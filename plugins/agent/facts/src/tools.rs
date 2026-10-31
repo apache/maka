@@ -91,7 +91,7 @@ pub enum ToolError {
     },
     #[error("tool persistence failed: {0}")]
     Persistence(String),
-    /// The worker has stopped; its external effect cannot be confirmed.
+    /// The external effect cannot be confirmed; cleanup is tracked separately.
     #[error("tool effect outcome unknown: {0}")]
     OutcomeUnknown(String),
     /// Exact application receipt is durable evidence, never model error text.

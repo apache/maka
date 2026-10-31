@@ -563,11 +563,14 @@ fn index(state: &str, role: &str, name: &str) -> u64 {
 
 #[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
-#[ignore = "requires macOS Accessibility; compiles and operates a disposable native form"]
+#[ignore = "requires MAKA_CUA_TEST_HOST and macOS Accessibility; compiles and operates a disposable native form"]
 async fn native_form_retains_exact_ax_elements_and_verifies_submission() {
     let mut form = NativeForm::start(false).await;
     let window_id = form.window_id;
-    let driver = Arc::new(Mutex::new(Driver::default()));
+    let executable = std::env::var_os("MAKA_CUA_TEST_HOST").expect("built desktop-host helper");
+    let driver = Arc::new(Mutex::new(Driver::with_cursor_executable(
+        executable.into(),
+    )));
     let mut native = Session::new(driver.clone());
     let windows = native
         .invoke(
@@ -601,7 +604,7 @@ async fn native_form_retains_exact_ax_elements_and_verifies_submission() {
     let (ok, output) = evaluate(
         &repl,
         bridge.clone(),
-        format!("const app=await cua.getApp({{windowId:{}}});", window["id"]),
+        format!("await cua.cursor.configure({{enabled:false}}); const app=await cua.getApp({{windowId:{}}});", window["id"]),
     )
     .await;
     assert!(ok, "{}", texts(&output));
@@ -632,15 +635,28 @@ async fn native_form_retains_exact_ax_elements_and_verifies_submission() {
     let name = index(&state, "AXTextField", "Name");
     let message = index(&state, "AXTextArea", "Message");
     let button = index(&state, "AXButton", "Submit fixture");
+    let (ok, output) = evaluate(&repl, bridge.clone(), format!(
+        "await app.setValue({name}, ''); await app.click({name}); await app.typeText('hello hello'); await app.pressKey('Right');"
+    )).await;
+    assert!(ok, "{}", texts(&output));
+    assert!(
+        output
+            .iter()
+            .filter_map(|part| match part {
+                CellOutput::Text { text } => serde_json::from_str::<Value>(text).ok(),
+                _ => None,
+            })
+            .any(|delivery| delivery["delivery"]["mode"] == "background"),
+        "default input must report background delivery: {}",
+        texts(&output)
+    );
     let (ok,output)=evaluate(&repl,bridge.clone(),format!("await app.click({name}); await app.selectText({name}, 'hello', {{prefix:'hello '}}); await app.paste('world'); await app.setValue({message}, 'placeholder'); await app.click({message}); await app.selectText({message}, 'placeholder'); await app.paste('<b>你好</b>', {{format:'html'}}); await app.click({button}); await app.getAXState({{disableDiffing:true}});")).await;
     assert!(ok, "{}", texts(&output));
     let submitted = form.line().await;
     let submitted: Value = serde_json::from_str(&submitted).unwrap();
     assert!(
         submitted["submitted"] == "hello world / 你好",
-        "native paste did not produce the requested text; rich={}, font={}",
-        submitted["rich"],
-        submitted["font"]
+        "native paste did not produce the requested text: {submitted}"
     );
     assert!(
         submitted["bold"] == true,
@@ -672,15 +688,15 @@ async fn native_form_retains_exact_ax_elements_and_verifies_submission() {
         })
         .unwrap();
     use base64::Engine;
-    let pixels = tiny_skia::Pixmap::decode_png(
+    let pixels = imagesize::blob_size(
         &base64::engine::general_purpose::STANDARD
             .decode(image["data"].as_str().unwrap())
             .unwrap(),
     )
     .unwrap();
     let point: Value = serde_json::from_str(&form.command("canvas").await).unwrap();
-    let x = point["point"][0].as_f64().unwrap() * f64::from(pixels.width());
-    let y = point["point"][1].as_f64().unwrap() * f64::from(pixels.height());
+    let x = point["point"][0].as_f64().unwrap() * pixels.width as f64;
+    let y = point["point"][1].as_f64().unwrap() * pixels.height as f64;
     let (ok, output) = evaluate(
         &repl,
         bridge.clone(),
@@ -688,14 +704,15 @@ async fn native_form_retains_exact_ax_elements_and_verifies_submission() {
     )
     .await;
     assert!(ok, "{}", texts(&output));
+    eprintln!("native coordinate click delivery: {}", texts(&output));
     let click: Value = serde_json::from_str(&form.line().await).unwrap();
     assert!(
         (click["click"][0].as_f64().unwrap() - 50.0).abs() < 2.0
             && (click["click"][1].as_f64().unwrap() - 20.0).abs() < 2.0,
         "coordinate click must reach the observed canvas point: {click}"
     );
-    let end_x = point["end"][0].as_f64().unwrap() * f64::from(pixels.width());
-    let end_y = point["end"][1].as_f64().unwrap() * f64::from(pixels.height());
+    let end_x = point["end"][0].as_f64().unwrap() * pixels.width as f64;
+    let end_y = point["end"][1].as_f64().unwrap() * pixels.height as f64;
     let (ok, output) = evaluate(
         &repl,
         bridge.clone(),
@@ -739,11 +756,11 @@ async fn native_form_retains_exact_ax_elements_and_verifies_submission() {
     )
     .await;
     assert!(ok);
-    let canvas_index = index(&texts(&output), "AXButton", "Event canvas");
+    let scroll_index = index(&texts(&output), "AXTextField", "Name");
     let (ok, output) = evaluate(
         &repl,
         bridge.clone(),
-        format!("try {{ await app.scroll({canvas_index}, 'down', {{pixels:37}}); throw Error('unsupported indexed pixels accepted'); }} catch(error) {{ if (!String(error).includes('macOS scroll accepts pages, not pixels.')) throw error; }}"),
+        format!("try {{ await app.scroll({scroll_index}, 'down', {{pixels:37}}); throw Error('unsupported indexed pixels accepted'); }} catch(error) {{ if (!String(error).includes('macOS scroll accepts pages, not pixels.')) throw error; }}"),
     )
     .await;
     assert!(ok, "{}", texts(&output));
@@ -786,7 +803,7 @@ async fn native_form_retains_exact_ax_elements_and_verifies_submission() {
     let (ok, output) = evaluate(
         &repl,
         bridge.clone(),
-        "await app.pressKey('super+j'); await app.getAXState({disableDiffing:true});".into(),
+        "await app.pressKey('super+j', {deliveryMode:'foreground'}); await app.getAXState({disableDiffing:true});".into(),
     )
     .await;
     assert!(ok, "{}", texts(&output));
@@ -807,7 +824,7 @@ async fn native_form_retains_exact_ax_elements_and_verifies_submission() {
     let (ok, output) = evaluate(
         &repl,
         bridge.clone(),
-        "await app.typeText('exact window'); await app.getAXState({disableDiffing:true});".into(),
+        "await app.typeText('exact window', {deliveryMode:'foreground'}); await app.getAXState({disableDiffing:true});".into(),
     )
     .await;
     assert!(
@@ -981,7 +998,7 @@ async fn native_cursors_are_visible_independent_and_retire_without_moving_system
         )
         .await;
         let moved = move_fixture_cursor(&bridge, &handle, point).await.unwrap();
-        assert_eq!(moved["visible"], true, "{moved}");
+        assert_eq!(moved["delivery"]["mode"], "background", "{moved}");
         cursor_handles.push(handle);
     }
     let (ok, output) = evaluate(&first, a.clone(), "await cua.cursor.getState();".into()).await;
@@ -1077,7 +1094,7 @@ async fn native_cursors_are_visible_independent_and_retire_without_moving_system
     let moved = move_fixture_cursor(&b, &cursor_handles[1], [280, 160])
         .await
         .unwrap();
-    assert_eq!(moved["visible"], true, "{moved}");
+    assert_eq!(moved["delivery"]["mode"], "background", "{moved}");
     first.close().await.unwrap();
     a.0.lock().await.close().await.unwrap();
     let (ok, output) = evaluate(&second, b.clone(), "await cua.cursor.getState();".into()).await;

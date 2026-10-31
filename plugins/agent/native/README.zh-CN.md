@@ -21,6 +21,12 @@
 
 [English](README.md)
 
+[`HistoryCheckpointPublisher`](src/checkpoints.rs) 是供可信装配层使用的内部
+历史 checkpoint 协调器。它绑定原生 Session 命名空间与完整的原始
+`RecoveryRef`，调用 Root 持有的捕获、发布及恢复实现，不注册服务方法或
+模型工具。后续服务适配器必须经过 Host 准入，并根据持久发布回执完成原
+操作；调用方不能自行指定权限作用域。Workspace 捕获及恢复启动不属于此 API。
+
 `agent.fork` 捕获源会话版本和显式 `position`：`end`、带逻辑 Turn ID 的 `through_turn` 或 `before_turn`，以及表示空历史的 `start`。`before_turn` 排除目标完整轮次，指定第一轮可创建空对话。Host 在复制事务中从规范历史计算边界，客户端无需寻找上一轮或依赖采样的历史导航点。返回的分支保留该位置，源会话保持不变。
 
 将 Agent 执行暴露为原生应用服务。`provide` 注册工厂，`executor` 和 `workhub` 连接执行与协调领域。包声明和产品组合决定激活哪些工厂，以及如何绑定导入。

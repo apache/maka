@@ -21,12 +21,13 @@ use super::support::{Fixture, ModelRequest, Options, ReplyGate};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui::{
     AppContext, Application, ApplicationHandle, Bounds, Focusable, Keystroke, Modifiers,
-    PlatformInput, TextInputTarget, WindowBounds, WindowHandle, WindowOptions, point, px, size,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, TextInputTarget,
+    WindowBounds, WindowHandle, WindowOptions, point, px, size,
 };
 use maka_app_client::Client;
 use maka_plugin_core::operation::{OperationOutcome, Receipt};
 use maka_workbench::bindings::Bindings;
-use nsh_gpui_terminal::TerminalPlatform;
+use nsh_gpui_terminal::{CandidateFrame, TerminalPlatform};
 use nsh_platform_gpui::{AppOptions, AppView};
 use serde_json::{Value, json};
 use std::{
@@ -34,7 +35,7 @@ use std::{
     future::Future,
     path::Path,
     rc::Rc,
-    sync::{Arc, atomic::Ordering},
+    sync::{Arc, Mutex, atomic::Ordering},
     time::Duration,
 };
 use tokio::sync::{Notify, watch};
@@ -44,6 +45,7 @@ const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQN
 
 struct Desktop {
     platform: Rc<TerminalPlatform>,
+    frame: Arc<Mutex<Option<CandidateFrame>>>,
     app: ApplicationHandle,
     window: WindowHandle<AppView>,
     client: Client,
@@ -55,6 +57,21 @@ struct Desktop {
 
 impl Desktop {
     async fn open(fixture: &Fixture, address: &Path) -> Self {
+        Self::open_at(
+            fixture,
+            address,
+            size(gpui::DevicePixels(960), gpui::DevicePixels(640)),
+            nsh_core::platform::Appearance::Dark,
+        )
+        .await
+    }
+
+    async fn open_at(
+        fixture: &Fixture,
+        address: &Path,
+        dimensions: gpui::Size<gpui::DevicePixels>,
+        appearance: nsh_core::platform::Appearance,
+    ) -> Self {
         let client = fixture.client_at(address).await;
         let bindings = Bindings::new(client.clone(), tokio::runtime::Handle::current());
         let mut config = maka_workbench::configuration(
@@ -70,17 +87,21 @@ impl Desktop {
             .with(maka_workbench::Foreground(receiver));
         let wake = Arc::new(Notify::new());
         let notification = wake.clone();
+        let frame = Arc::new(Mutex::new(None));
+        let captured = frame.clone();
         let platform = TerminalPlatform::new(
             Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
-            Box::new(|frame| {
-                std::thread::spawn(move || frame.submit()?.complete())
+            Box::new(move |frame| {
+                let frame = std::thread::spawn(move || frame.submit()?.complete())
                     .join()
                     .unwrap()
                     .unwrap();
+                *captured.lock().unwrap() = Some(frame);
             }),
             Arc::new(move || notification.notify_one()),
         )
         .unwrap();
+        platform.set_viewport(dimensions, 1.0).unwrap();
         let errors = Rc::new(RefCell::new(None));
         let failed = errors.clone();
         let opened = Rc::new(RefCell::new(None));
@@ -91,7 +112,10 @@ impl Desktop {
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                             point(px(0.0), px(0.0)),
-                            size(px(960.0), px(640.0)),
+                            size(
+                                px(dimensions.width.0 as f32),
+                                px(dimensions.height.0 as f32),
+                            ),
                         ))),
                         inactive_frame_interval: None,
                         ..Default::default()
@@ -109,6 +133,7 @@ impl Desktop {
                             view.on_error(move |message| {
                                 *failed.borrow_mut() = Some(message.to_owned())
                             });
+                            view.set_appearance(appearance, cx);
                             view.load_with_config(config);
                             window.focus(&view.focus_handle(cx), cx);
                             view
@@ -121,6 +146,7 @@ impl Desktop {
         let window = opened.borrow_mut().take().unwrap();
         let desktop = Self {
             platform,
+            frame,
             app,
             window,
             client,
@@ -253,6 +279,72 @@ impl Desktop {
         let picker = self.platform.text_input_target();
         self.key("enter", false);
         self.target_after(picker).await;
+    }
+
+    /// Where the window shows controls labelled `label`.
+    fn controls(&self, label: &str) -> Vec<Bounds<gpui::Pixels>> {
+        self.app.update(|cx| {
+            self.window
+                .update(cx, |view, _, _| view.pressable_bounds(label))
+                .unwrap()
+        })
+    }
+
+    /// Where the window shows the one control labelled `label`, once it does.
+    async fn control(&self, label: &str) -> Bounds<gpui::Pixels> {
+        self.until(&format!("no single control labelled {label}"), || {
+            let found = self.controls(label);
+            (found.len() == 1).then(|| found[0])
+        })
+        .await
+    }
+
+    /// Clicks the one control labelled `label` once the window shows it.
+    async fn press(&self, label: &str) {
+        let bounds = self.control(label).await;
+        self.press_at(bounds.center());
+    }
+
+    /// The card's corners stay concentric with its round buttons, and its
+    /// controls stay on one center line, whatever height the card has.
+    async fn assert_composer_geometry(&self) -> Bounds<gpui::Pixels> {
+        let card = self.control("Focus message composer").await;
+        let add = self.control("Add to message").await;
+        let send = self.control("Send message").await;
+        assert_eq!(add.left() - card.left(), px(8.));
+        assert_eq!(card.right() - send.right(), px(8.));
+        assert_eq!(card.bottom() - send.bottom(), px(8.));
+        for label in ["Sandbox and approvals", "Choose model and effort"] {
+            assert_eq!(self.control(label).await.center().y, send.center().y);
+        }
+        assert_eq!(add.center().y, send.center().y);
+        card
+    }
+
+    fn press_at(&self, position: gpui::Point<gpui::Pixels>) {
+        for input in [
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+        ] {
+            self.platform.dispatch_input(input).unwrap();
+            self.pump();
+        }
     }
 
     async fn held(&self, gate: &ReplyGate) {
@@ -477,5 +569,504 @@ async fn desktop_retries_a_failed_first_submission_in_the_same_session() {
     assert!(sessions.iter().any(|entry| entry["id"] == session));
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
     desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_retries_a_failed_turn_in_place() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("RETRIED_IN_PLACE_MESSAGE").await;
+    desktop.key("enter", false);
+    let failed = desktop.request(&mut fixture).await;
+    failed
+        .http_error(
+            json!({"error":{"type":"invalid_request_error","message":"FIXTURE_TURN_FAILED"}}),
+        )
+        .await;
+    desktop.press("Retry").await;
+    let retry = desktop.request(&mut fixture).await;
+    let users: Vec<_> = retry.body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "user")
+        .collect();
+    assert!(
+        users
+            .last()
+            .is_some_and(|message| message.to_string().contains("RETRIED_IN_PLACE_MESSAGE")),
+        "{}",
+        retry.body
+    );
+    retry.finish().await;
+    let sessions = desktop.sessions().await;
+    assert_eq!(sessions.len(), 2);
+    let session = sessions
+        .iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    fixture.idle(&desktop.client, session).await;
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_opens_a_conversation_beside_the_current_one() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.type_text("BASE_SIDE_DRAFT").await;
+    desktop.new_draft().await;
+    desktop.type_text("MAIN_PANE_MESSAGE").await;
+    desktop.key("enter", false);
+    desktop.request(&mut fixture).await.finish().await;
+    let roots = desktop
+        .client
+        .query("agent", "directories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    for index in 0..4 {
+        super::support::mutate(
+            &desktop.client,
+            "create",
+            json!({
+                "title":format!("Side {index}"),"labels":[],
+                "workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}
+            }),
+        )
+        .await;
+    }
+    let resize = |width| {
+        desktop
+            .platform
+            .resize(size(gpui::DevicePixels(width), gpui::DevicePixels(640)))
+            .unwrap();
+        desktop.pump();
+    };
+    resize(3072);
+    for index in 0..4 {
+        let original = desktop.platform.text_input_target();
+        desktop.press(&format!("Actions for Side {index}")).await;
+        desktop.press("Open to the side").await;
+        desktop
+            .until("the additional conversation did not open", || {
+                (desktop.controls("Focus message composer").len() == index + 2).then_some(())
+            })
+            .await;
+        desktop.target_after(original).await;
+    }
+    desktop.type_text("KEEP_RIGHT_DRAFT").await;
+    let mut closes = desktop.controls("Close side pane");
+    closes.sort_by_key(|bounds| bounds.origin.x);
+    desktop.press_at(closes[1].center());
+    desktop
+        .until(
+            "closing the middle pane did not keep the other panes",
+            || (desktop.controls("Focus message composer").len() == 4).then_some(()),
+        )
+        .await;
+    resize(1100);
+    desktop
+        .until("side panes did not hide in the narrower window", || {
+            (desktop.controls("Focus message composer").len() == 2).then_some(())
+        })
+        .await;
+    let original = desktop.platform.text_input_target();
+    desktop.press("Actions for NSH real Agent").await;
+    desktop.press("Open to the side").await;
+    desktop.target_after(original).await;
+    assert_eq!(
+        desktop.input_text().await,
+        "BASE_SIDE_DRAFT",
+        "the requested conversation must replace a visible pane"
+    );
+    resize(3072);
+    desktop
+        .until("hidden conversations did not return", || {
+            (desktop.controls("Focus message composer").len() == 4).then_some(())
+        })
+        .await;
+    let right = desktop
+        .controls("Focus message composer")
+        .into_iter()
+        .max_by_key(|bounds| bounds.origin.x)
+        .unwrap();
+    desktop.press_at(right.center());
+    assert_eq!(desktop.input_text().await, "KEEP_RIGHT_DRAFT");
+    while let Some(close) = desktop.controls("Close side pane").first().copied() {
+        let remaining = desktop.controls("Close side pane").len() - 1;
+        desktop.press_at(close.center());
+        desktop
+            .until("the side pane did not close", || {
+                (desktop.controls("Close side pane").len() == remaining).then_some(())
+            })
+            .await;
+    }
+    assert_eq!(desktop.controls("Focus message composer").len(), 1);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+fn tool_names(request: &ModelRequest) -> Vec<String> {
+    request.body["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_keeps_one_inset() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("COMPOSER_GEOMETRY").await;
+    desktop.assert_composer_geometry().await;
+    desktop.key("enter", false);
+    let mut reply = desktop.request(&mut fixture).await;
+    reply.thinking("Thinking first.").await;
+    reply.delta("Done.").await;
+    reply.finish().await;
+    let session = desktop
+        .sessions()
+        .await
+        .into_iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    desktop
+        .wait(
+            "the reply did not finish",
+            fixture.idle(&desktop.client, &session),
+        )
+        .await;
+    desktop.type_text("COMPOSER_GEOMETRY_AGAIN").await;
+    let card = desktop.assert_composer_geometry().await;
+    // The card's border sits outside the backdrop the window reports, and icon
+    // buttons reach 8 points past the column so their glyphs land on its edges.
+    let (left, right) = (card.left() - px(1.), card.right() + px(1.));
+    let edit = desktop.control("Edit and resend in a fork").await;
+    assert_eq!(edit.right() - px(8.), right);
+    let source = desktop.controls("Copy message");
+    assert_eq!(source[0].left() + px(8.), left);
+    let turn = desktop.control("Turn work details").await;
+    assert_eq!(turn.left() + px(8.), left);
+    assert_eq!(turn.right() - px(8.), right);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_plans_first_then_runs_the_approved_plan() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.press("Planning mode").await;
+    let previous = desktop.platform.text_input_target();
+    desktop.press("Focus message composer").await;
+    desktop.target_after(previous).await;
+    desktop.type_text("PLAN_FIRST_MESSAGE").await;
+    desktop.key("enter", false);
+    let planning = desktop.request(&mut fixture).await;
+    let tools = tool_names(&planning);
+    assert!(tools.iter().any(|name| name == "SubmitPlan"), "{tools:?}");
+    planning
+        .tool_call(
+            "SubmitPlan",
+            json!({"title":"PLAN_TITLE","steps":[{"id":"one","title":"PLAN_STEP","description":"PLAN_STEP_DETAIL"}]}),
+        )
+        .await;
+    // The submitted proposal opens for approval without a click.
+    desktop.press("Approve and execute").await;
+    let running = desktop.request(&mut fixture).await;
+    let tools = tool_names(&running);
+    assert!(tools.iter().any(|name| name == "update_plan"), "{tools:?}");
+    assert!(!tools.iter().any(|name| name == "SubmitPlan"), "{tools:?}");
+    assert!(running.body.to_string().contains("PLAN_STEP_DETAIL"));
+    running
+        .tool_call(
+            "update_plan",
+            json!({"steps":[{"id":"one","status":"completed"}]}),
+        )
+        .await;
+    desktop.request(&mut fixture).await.finish().await;
+    let session = desktop
+        .sessions()
+        .await
+        .into_iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    desktop
+        .wait("the approved plan did not complete", async {
+            loop {
+                let plan = desktop
+                    .client
+                    .query("agent", "plan", json!({"sessionId":session}))
+                    .await
+                    .unwrap();
+                if plan["current"]["execution"]["phase"] == "completed" {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+    // Approving runs the Plan without leaving planning mode.
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId":session}))
+        .await
+        .unwrap();
+    assert_eq!(observed["session"]["collaborationMode"], "plan");
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn disconnected_desktop(
+    theme: &str,
+    appearance: nsh_core::platform::Appearance,
+    layout: &str,
+    width: i32,
+    height: i32,
+) {
+    let mut fixture = Fixture::open().await;
+    let dimensions = size(gpui::DevicePixels(width), gpui::DevicePixels(height));
+    let desktop = Desktop::open_at(&fixture, &fixture.address, dimensions, appearance).await;
+    desktop.new_draft().await;
+    desktop.type_text("Start a response").await;
+    desktop.key("enter", false);
+    let mut reply = desktop.request(&mut fixture).await;
+    desktop.control("Pause response").await;
+    let closing = tokio::spawn({
+        let store = fixture.store.clone();
+        async move { store.shutdown().await }
+    });
+    reply.delta("Wake the original source watcher.").await;
+    desktop.control("Details").await;
+    desktop.control("Retry").await;
+    assert!(desktop.controls("Pause response").is_empty());
+    desktop.type_text("DRAFT_KEPT_WHILE_DISCONNECTED").await;
+    desktop.expect_text("DRAFT_KEPT_WHILE_DISCONNECTED").await;
+    let retry = desktop.control("Retry").await;
+    let composer = desktop.control("Focus message composer").await;
+    {
+        let guard = desktop.frame.lock().unwrap();
+        let frame = guard.as_ref().unwrap();
+        assert_eq!(frame.size(), dimensions);
+        if let Some(directory) = std::env::var_os("MAKA_UI_ARTIFACT_DIR") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            let mut ppm = format!("P6\n{} {}\n255\n", width, height).into_bytes();
+            for pixel in frame.pixels().chunks_exact(4) {
+                ppm.extend_from_slice(&pixel[..3]);
+            }
+            std::fs::write(
+                directory.join(format!("disconnected-{theme}-{layout}.ppm")),
+                ppm,
+            )
+            .unwrap();
+        }
+        let pixel = ((height as usize / 3) * width as usize + width as usize - 2) * 4;
+        assert_eq!(
+            frame.pixels()[pixel] > 128,
+            theme == "light",
+            "the requested theme must actually be rendered"
+        );
+    }
+    assert!(
+        retry.top() >= composer.bottom(),
+        "connection feedback overlaps the workspace: retry={retry:?}, composer={composer:?}"
+    );
+    assert!(
+        retry.right() <= px(width as f32) && retry.bottom() <= px(height as f32),
+        "connection actions must stay within the window: {retry:?}"
+    );
+    assert!(
+        retry.bottom() > px(height as f32 - 64.0),
+        "connection status must use the bottom of the actual viewport: {retry:?}"
+    );
+    assert_eq!(
+        desktop.controls("Retry").len(),
+        1,
+        "one connection failure needs one retry action"
+    );
+    assert!(desktop.controls("Pause response").is_empty());
+    reply.finish().await;
+    desktop
+        .wait("the closed store did not drain", closing)
+        .await
+        .unwrap()
+        .unwrap();
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+fn visual_case() -> (
+    &'static str,
+    nsh_core::platform::Appearance,
+    &'static str,
+    i32,
+    i32,
+) {
+    let case = std::env::var("MAKA_UI_VISUAL_CASE").unwrap_or_else(|_| "dark-wide".into());
+    match case.as_str() {
+        "light-narrow" => (
+            "light",
+            nsh_core::platform::Appearance::Light,
+            "narrow",
+            720,
+            720,
+        ),
+        "light-wide" => (
+            "light",
+            nsh_core::platform::Appearance::Light,
+            "wide",
+            1280,
+            800,
+        ),
+        "dark-narrow" => (
+            "dark",
+            nsh_core::platform::Appearance::Dark,
+            "narrow",
+            720,
+            720,
+        ),
+        "dark-wide" => (
+            "dark",
+            nsh_core::platform::Appearance::Dark,
+            "wide",
+            1280,
+            800,
+        ),
+        _ => panic!("unsupported visual case: {case}"),
+    }
+}
+
+// GPUI owns process-wide application state; visual cases run in separate processes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_connection_failure_has_one_status_below_the_workspace() {
+    let (theme, appearance, layout, width, height) = visual_case();
+    disconnected_desktop(theme, appearance, layout, width, height).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_unknown_control_can_be_dismissed_and_feedback_expires() {
+    let fixture = images_fixture().await;
+    let (path, _) = image_file(&fixture);
+    let client = fixture.client().await;
+    let before = client
+        .query("agent", "observe", json!({"sessionId":fixture.session}))
+        .await
+        .unwrap();
+    let id = Uuid::new_v4();
+    let mutation = client
+        .control(
+            id,
+            "metadata",
+            json!({
+                "sessionId":fixture.session, "expectedRevision":before["session"]["revision"],
+                "title":"THIS_RENAME_MUST_NOT_RUN", "labels":[]
+            }),
+        )
+        .await
+        .unwrap();
+    let original = mutation.prepare().await.unwrap();
+    let create = ReplyGate::create(fixture.directory.path(), fixture.address.clone());
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &create.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+    )
+    .await;
+    desktop.type_text("DRAFT_KEPT_AFTER_DISMISSAL").await;
+    desktop.press("Check action status (1)").await;
+    let dismiss = format!("Dismiss action notice {}", &id.to_string()[..8]);
+    desktop.control(&dismiss).await;
+    assert!(
+        desktop.controls("Dismiss action feedback").is_empty(),
+        "an unknown result must not show success feedback"
+    );
+    if let Some(directory) = std::env::var_os("MAKA_UI_ARTIFACT_DIR") {
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let guard = desktop.frame.lock().unwrap();
+        let frame = guard.as_ref().unwrap();
+        assert_eq!(
+            frame.size(),
+            size(gpui::DevicePixels(width), gpui::DevicePixels(height))
+        );
+        let mut ppm = format!("P6\n{} {}\n255\n", width, height).into_bytes();
+        for pixel in frame.pixels().chunks_exact(4) {
+            ppm.extend_from_slice(&pixel[..3]);
+        }
+        std::fs::write(
+            directory.join(format!("unconfirmed-action-{theme}-{layout}.ppm")),
+            ppm,
+        )
+        .unwrap();
+    }
+    desktop.press(&dismiss).await;
+    desktop.control("Dismiss action feedback").await;
+    assert!(desktop.controls("Check action status (1)").is_empty());
+    desktop
+        .until("completed action feedback did not expire", || {
+            desktop
+                .controls("Dismiss action feedback")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    let retained = client.operation_for_control(id).await.unwrap();
+    assert_eq!(retained.reference, original.reference);
+    assert!(retained.receipt.is_none());
+    assert!(!retained.abandoned);
+    let after = client
+        .query("agent", "observe", json!({"sessionId":fixture.session}))
+        .await
+        .unwrap();
+    assert_eq!(after["session"]["title"], before["session"]["title"]);
+    desktop.expect_text("DRAFT_KEPT_AFTER_DISMISSAL").await;
+    mutation.close().await.unwrap();
+    desktop.new_draft().await;
+    desktop.attach(&path).await;
+    desktop
+        .type_text("NEW_SESSION_DRAFT_KEPT_AFTER_DISMISSAL")
+        .await;
+    create.arm();
+    desktop.key("enter", false);
+    desktop.held(&create).await;
+    create.discard_reply();
+    desktop.control("Check action status (1)").await;
+    let controls = desktop.client.pending_controls().await.unwrap();
+    assert_eq!(controls.len(), 1);
+    assert_eq!(controls[0].method, "create");
+    let dismiss = format!("Dismiss action notice {}", &controls[0].id.to_string()[..8]);
+    desktop.press(&dismiss).await;
+    desktop.control("Send message").await;
+    desktop
+        .expect_text("NEW_SESSION_DRAFT_KEPT_AFTER_DISMISSAL")
+        .await;
+    assert!(desktop.controls("Check action status (1)").is_empty());
+    desktop.control("Remove attachment selected.png").await;
+    assert_eq!(
+        fixture.request_count.load(Ordering::SeqCst),
+        0,
+        "neither checking nor dismissing may send the preserved draft"
+    );
+    client.close().await.unwrap();
+    desktop.close().await;
+    drop(create);
     fixture.finish().await;
 }

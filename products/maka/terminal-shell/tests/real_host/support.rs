@@ -141,6 +141,8 @@ pub struct Fixture {
     pub request_count: Arc<AtomicUsize>,
     requests: mpsc::Receiver<ModelRequest>,
     host: Arc<Host>,
+    #[cfg(feature = "desktop-tests")]
+    pub store: Arc<RootStore>,
     server: JoinHandle<Result<(), String>>,
     provider: AbortOnDropHandle<()>,
 }
@@ -248,7 +250,7 @@ impl Fixture {
         )
         .unwrap();
         let host = Host::open(
-            store,
+            store.clone(),
             deployment,
             native,
             None,
@@ -288,6 +290,8 @@ impl Fixture {
             request_count,
             requests,
             host,
+            #[cfg(feature = "desktop-tests")]
+            store,
             server,
             provider,
         };
@@ -537,6 +541,12 @@ impl ModelRequest {
     pub async fn finish(self) {
         self.finish_with_reason("stop").await;
     }
+    /// Ends the reply with one call to `name`.
+    #[cfg(feature = "desktop-tests")]
+    pub async fn tool_call(mut self, name: &str, arguments: Value) {
+        self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"nsh-real-call","type":"function","function":{"name":name,"arguments":arguments.to_string()}}]},"finish_reason":null}]})).await;
+        self.finish_with_reason("tool_calls").await;
+    }
 
     pub async fn http_error(self, body: Value) {
         self.response
@@ -723,6 +733,8 @@ pub struct ReplyGate {
     armed: Arc<AtomicBool>,
     pub held: Arc<Notify>,
     release: Arc<Notify>,
+    #[cfg(feature = "desktop-tests")]
+    discard: Arc<AtomicBool>,
     worker: JoinHandle<()>,
 }
 impl ReplyGate {
@@ -752,10 +764,12 @@ impl ReplyGate {
         let armed = Arc::new(AtomicBool::new(false));
         let held = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
+        let discard = Arc::new(AtomicBool::new(false));
         let worker = tokio::spawn({
             let armed = armed.clone();
             let held = held.clone();
             let release = release.clone();
+            let discard = discard.clone();
             async move {
                 let mut connections = JoinSet::new();
                 loop {
@@ -763,6 +777,7 @@ impl ReplyGate {
                         accepted=listener.accept()=> {
                             let downstream=accepted.unwrap(); let upstream=ipc::connect(&target).await.unwrap();
                             let armed=armed.clone(); let held=held.clone(); let release=release.clone();
+                            let discard=discard.clone();
                             connections.spawn(async move {
                                 let (down_read,mut down_write)=tokio::io::split(downstream);
                                 let (up_read,mut up_write)=tokio::io::split(upstream);
@@ -788,6 +803,7 @@ impl ReplyGate {
                                             && armed.swap(false,Ordering::SeqCst) {
                                             held.notify_one();
                                             release.notified().await;
+                                            if discard.swap(false,Ordering::SeqCst) { break; }
                                         }
                                         if gate_write(&mut down_write,&frame).await.is_err(){break;}
                                     }
@@ -806,6 +822,8 @@ impl ReplyGate {
             armed,
             held,
             release,
+            #[cfg(feature = "desktop-tests")]
+            discard,
             worker,
         }
     }
@@ -814,6 +832,11 @@ impl ReplyGate {
     }
     pub fn release(&self) {
         self.release.notify_one();
+    }
+    #[cfg(feature = "desktop-tests")]
+    pub fn discard_reply(&self) {
+        self.discard.store(true, Ordering::SeqCst);
+        self.release();
     }
 }
 impl Drop for ReplyGate {
