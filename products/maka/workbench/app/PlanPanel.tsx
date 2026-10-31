@@ -98,7 +98,7 @@ export function createPlanPanel(plan: ComposerPlan) {
       plan.error() || (showing() === 'execution' ? phase() : (artifact()?.title ?? '')),
     problem: () =>
       !!plan.error() || (showing() === 'execution' && execution()!.phase === 'interrupted'),
-    content: () => (
+    content: (previewed: () => boolean) => (
       <View style={{ minHeight: 0, flexShrink: 1 }}>
         <Scroll style={{ minHeight: 0, flexShrink: 1 }}>
           <View
@@ -209,9 +209,11 @@ export function createPlanPanel(plan: ComposerPlan) {
                 </Each>
               </View>
             </If>
-            {/* A running step is marked in the list; other phases are said here. */}
+            {/* A running step is marked in the list; other phases are said here
+                unless the tab's preview already says them. */}
             <If
               when={
+                !previewed() &&
                 showing() === 'execution' &&
                 (execution()!.phase !== 'active' || !!execution()!.cancellation)
               }

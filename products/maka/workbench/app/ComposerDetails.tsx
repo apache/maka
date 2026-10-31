@@ -52,6 +52,8 @@ export function ComposerDetails(props: {
   type Panel = keyof typeof panels;
   const keys: Panel[] = ['plan', 'todo', 'computer', 'queue'];
   const available = computed(() => keys.filter((key) => panels[key].shown()));
+  // A lone panel's preview sits beside its tab, so its content need not repeat it.
+  const previewed = () => available().length === 1;
   const selected = signal<Panel | null>(null);
   const labels = {
     plan: () => tr('Plan'),
@@ -174,7 +176,7 @@ export function ComposerDetails(props: {
                 borderTopColor: C.line,
               }}
             >
-              {panels[key()].content()}
+              {panels[key()].content(previewed)}
             </View>
           )}
         </Each>
