@@ -1,6 +1,8 @@
 // The Select demo: a sort order chosen with a press or the
 // keys, a font list with sections, search, an empty state and a font that
-// is not installed, and a language the organization sets (disabled). On a
+// is not installed, and a language the organization sets (disabled); a sort
+// menu in a list header, countries with their flags, and an issue's status,
+// required team and locked priority. On a
 // phone (headless runs are touch screens) the list is a sheet; on a
 // desktop a popup, whose rows the pointer highlights and whose search field
 // takes the keyboard at once.
@@ -16,7 +18,7 @@ describe("on a phone", () => {
   });
 
   test("a press opens the list and a press on an option chooses it", async () => {
-    expect(app.count("role:combobox")).toBe(3);
+    expect(app.count("role:combobox")).toBe(8);
     await app.press("role:combobox[Sort by]");
     await app.waitFor("role:option[Oldest first]");
     expect(app.count("role:option")).toBe(5);
@@ -52,7 +54,7 @@ describe("on a phone", () => {
     expect(app.texts()).toContain("SERIF");
     // A font that is not installed takes no press.
     expect(app.enabled("role:option[Playfair Display]")).toBe(false);
-    await expect(() => app.press("role:option[Playfair Display]")).rejects.toThrow("is disabled");
+    await expect(() => app.press("role:option[Playfair Display]")).rejects.toMatchObject({ code: "ERR_NSH_TEST_DISABLED" });
     // Ignoring case; the sections without a match go. Each match shows its
     // title (the rows the app draws stay in their own rows as others go).
     await app.type("text:Search fonts", "M");
@@ -81,7 +83,60 @@ describe("on a phone", () => {
 
   test("a disabled select does not open", async () => {
     expect(app.enabled("role:combobox[Language]")).toBe(false);
-    await expect(() => app.press("role:combobox[Language]")).rejects.toThrow("is disabled");
+    await expect(() => app.press("role:combobox[Language]")).rejects.toMatchObject({ code: "ERR_NSH_TEST_DISABLED" });
+  });
+
+  test("a sort menu in a list header orders the downloads, and its arrow turns the order round", async () => {
+    await app.press("role:combobox[Sort downloads]");
+    await app.waitFor("role:option[Size]");
+    await app.press("role:option[Size]");
+    await app.waitFor("Downloads: Size, largest first");
+    // The column sorted on leads at the rows' trailing edge.
+    expect(app.texts()).toContain("1.2 GB");
+    await app.press("role:button[Descending]");
+    await app.waitFor("Downloads: Size, smallest first");
+    expect(app.shows("role:button[Ascending]")).toBe(true);
+    // Another order starts its own way round: names from A.
+    await app.press("role:combobox[Sort downloads]");
+    await app.waitFor("role:option[Name]");
+    await app.press("role:option[Name]");
+    await app.waitFor("Downloads: Name, A to Z");
+  });
+
+  test("countries show their flags and codes by region, search narrows them, and one is not shipped to", async () => {
+    await app.press("role:combobox[Country]");
+    await app.waitFor("role:option[Japan]");
+    expect(app.texts()).toContain("EUROPE");
+    await app.type("text:Search countries", "bra");
+    await app.waitUntil(() => app.count("role:option") === 1);
+    expect(app.enabled("role:option[Brazil]")).toBe(false);
+    await app.clear("text:bra");
+    await app.type("text:Search countries", "port");
+    await app.waitUntil(() => app.count("role:option") === 1);
+    await app.press("role:option[Portugal]");
+    await app.waitFor("Country: Portugal");
+    await app.waitFor("+351");
+    expect(app.texts()).toContain("5–7 days");
+  });
+
+  test("an issue needs a team: filing without one says so, and a locked priority does not open", async () => {
+    expect(app.texts()).toContain("Required: who picks it up");
+    await app.press("role:button[File issue]");
+    await app.waitFor("Issue: a team is required");
+    await app.waitFor("Choose a team to file the issue");
+    await app.press("role:combobox[Team]");
+    await app.waitFor("role:option[Platform]");
+    await app.press("role:option[Platform]");
+    await app.waitFor("Team: Platform");
+    await app.waitFor("Required: who picks it up");
+    await app.press("role:combobox[Status]");
+    await app.waitFor("role:option[In review]");
+    await app.press("role:option[In review]");
+    await app.waitFor("Status: In review");
+    await app.press("role:button[File issue]");
+    await app.waitFor("Issue filed: In review, Platform");
+    await app.waitFor("Filed as NSH-612");
+    expect(app.enabled("role:combobox[Priority]")).toBe(false);
   });
 });
 

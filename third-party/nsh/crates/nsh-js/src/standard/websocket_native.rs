@@ -1,5 +1,5 @@
 //! The global `WebSocket`: a capability-checked transport on the owning VM.
-//! (The `websocket` module's `WebSocket.connect` is the runtime's Rust
+//! (The `websocket` module's `connect` is the runtime's Rust
 //! registry, `nsh_core::runtime`; both count under one per-VM cap.)
 //!
 //! The class itself is native, an `EventTarget` (`web/websocket.rs`).
@@ -39,20 +39,6 @@ impl std::future::Future for YieldNow {
     }
 }
 const QUEUE: usize = 8;
-/// A place among the VM's WebSockets (shared with the `websocket` module),
-/// or the `RangeError` saying there is none.
-fn acquire_slot(cx: &Ctx<'_>) -> Result<nsh_core::element::Held> {
-    use nsh_core::runtime::{MAX_WEBSOCKETS, WEBSOCKETS};
-    crate::dom::shared(cx.as_raw().as_ptr())
-        .system_quotas
-        .take(WEBSOCKETS, MAX_WEBSOCKETS)
-        .ok_or_else(|| {
-            Exception::throw_range(
-                cx,
-                &format!("At most {MAX_WEBSOCKETS} concurrent WebSockets are allowed per VM"),
-            )
-        })
-}
 
 /// Whether the app may open a WebSocket to `url`, checked before any DNS
 /// lookup: the handshake is a GET of the same URL over HTTP.
@@ -71,8 +57,9 @@ enum Command {
 /// Opens the transport of the global `WebSocket` (`web/websocket.rs`):
 /// `callback(kind, data)` hears `open` (`{ protocol }`), `message`,
 /// `error` (its message) and `close` (`{ code, reason, wasClean }`). The
-/// URL is checked here, against the app's capabilities. Its `send`,
-/// `close` and `bufferedAmount` object, or the pending exception.
+/// URL is checked here, against the app's capabilities: one not granted
+/// opens nothing and hears `error` and `close` ([`super::refused`]). Its
+/// `send`, `close` and `bufferedAmount` object, or the pending exception.
 pub(crate) fn connect(
     cx: crate::web::js::Ctx,
     url: String,
@@ -126,12 +113,12 @@ fn open<'js>(
     // The handshake API does not follow redirects. The URL checked is the
     // one connected to: the parsed, normalized form.
     if !allowed(&cx, &parsed) {
-        return Err(Exception::throw_type(
-            &cx,
-            "WebSocket network capability denied",
-        ));
+        return super::refused(cx, callback, super::denial(&parsed));
     }
-    let slot = acquire_slot(&cx)?;
+    if let Some(message) = super::host_refusal(&cx, &parsed) {
+        return super::refused(cx, callback, message);
+    }
+    let slot = super::slot(&cx)?;
     let mut request = parsed
         .as_str()
         .into_client_request()
@@ -195,15 +182,23 @@ fn open<'js>(
             };
             let length = message.len();
             if send_buffered.get().saturating_add(length) > MAX_MESSAGE {
-                return Err(Exception::throw_range(
+                return Err(super::exceeded(
                     &send_cx,
                     "WebSocket buffered data exceeds 8 MiB",
                 ));
             }
-            send_tx.try_send(Command::Send(message)).map_err(|_| {
-                Exception::throw_type(&send_cx, "WebSocket outbound queue is full or closed")
-            })?;
-            send_buffered.set(send_buffered.get() + length);
+            match send_tx.try_send(Command::Send(message)) {
+                Ok(()) => send_buffered.set(send_buffered.get() + length),
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    return Err(super::exceeded(
+                        &send_cx,
+                        "WebSocket outbound queue is full",
+                    ));
+                }
+                // A socket that is closing discards what is sent, as a
+                // browser's does: its `close` event follows.
+                Err(mpsc::error::TrySendError::Closed(_)) => {}
+            }
             Ok(())
         }),
     )?;
@@ -215,8 +210,12 @@ fn open<'js>(
                     code: CloseCode::from(code),
                     reason: reason.into(),
                 })))
-                .map_err(|_| {
-                    Exception::throw_type(&close_cx, "WebSocket outbound queue is full or closed")
+                .or_else(|error| match error {
+                    mpsc::error::TrySendError::Full(_) => Err(super::exceeded(
+                        &close_cx,
+                        "WebSocket outbound queue is full",
+                    )),
+                    mpsc::error::TrySendError::Closed(_) => Ok(()),
                 })
             },
         ),

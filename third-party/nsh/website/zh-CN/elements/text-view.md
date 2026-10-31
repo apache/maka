@@ -1,7 +1,6 @@
 ---
 title: TextView
 description: TextView 组件：用原生文本和视图显示 Markdown、HTML 或由文档块组成的文档，按部件设定样式，适用于 AI 聊天回复、文章和帮助页面。
-order: 26
 group: base
 demo: text-view
 ---

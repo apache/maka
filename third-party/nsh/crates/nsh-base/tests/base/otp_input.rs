@@ -401,3 +401,29 @@ fn a_disabled_input_takes_no_input() {
     assert!(!app.screen().enabled("label:Disabled").unwrap());
     assert!(app.screen().enabled("label:Masked").unwrap());
 }
+
+#[test]
+fn the_caret_blinks_without_mount_items() {
+    let mut app = Headless::start(EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
+        ..EngineConfig::new(Root::of::<Uncontrolled>())
+    })
+    .unwrap();
+    let items = Arc::new(Mutex::new(0usize));
+    let seen = items.clone();
+    app.observe(move |_, batch| *seen.lock().unwrap() += batch.items.len());
+    app.first_render().unwrap();
+    app.type_text("id:otp", "1").unwrap();
+    see(&mut app, "Changes [1]");
+    app.run_for(Duration::from_millis(100)).unwrap();
+    *items.lock().unwrap() = 0;
+    // Four blinks: the caret's opacity moves natively, the engine sends
+    // nothing.
+    app.run_for(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        *items.lock().unwrap(),
+        0,
+        "mount items while the caret blinks"
+    );
+}

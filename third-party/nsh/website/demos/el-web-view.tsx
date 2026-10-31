@@ -61,7 +61,7 @@ function App() {
         />
         <View style={{ gap: 12, width: wide() ? 320 : undefined }}>
           <Text style={{ color: ui().muted }}>
-            {platform.idiom === "desktop" ? "Click" : "Tap"} the button in the page to post to the app; these buttons call the ref's methods.
+            {platform.desktop ? "Click" : "Tap"} the button in the page to post to the app; these buttons call the ref's methods.
           </Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             <Button

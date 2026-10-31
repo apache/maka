@@ -1,0 +1,16 @@
+---
+// shadcn/ui's Input. With an `icon` slot it is an InputGroup: the icon
+// placed at the field's start.
+import type { HTMLAttributes } from 'astro/types';
+type Props = HTMLAttributes<'input'> & { size?: 'default' | 'sm' };
+const { size = 'default', ...rest } = Astro.props;
+const icon = Astro.slots.has('icon');
+---
+{icon
+  ? (
+    <div data-slot="input-group">
+      <span data-slot="input-group-addon" aria-hidden="true"><slot name="icon" /></span>
+      <input data-slot="input" data-size={size} {...rest} />
+    </div>
+  )
+  : <input data-slot="input" data-size={size} {...rest} />}

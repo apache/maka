@@ -35,6 +35,7 @@ fn config() -> EngineConfig {
         trace: false,
         network: None,
         websocket: None,
+        refuse_connections: None,
         filesystem: None,
         assets: None,
         chunk_loader: None,

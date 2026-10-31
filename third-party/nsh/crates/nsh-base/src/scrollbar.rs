@@ -560,6 +560,18 @@ pub fn Scrollbar(props: ScrollbarProps, _cx: Scope<NoEvent>) -> impl IntoElement
     // mouse in the `hover` mode), as `gpui-base`'s does; elsewhere it lets
     // the pointer through to what is under it.
     let hover_reveals = move || ctl.mode.get() == ScrollbarMode::Hover && is_desktop();
+    // A hidden bar takes no touches anywhere in it: under the track's
+    // `none`, a view inside with `pointerEvents` of its own would take
+    // them again (CSS's inheritance), so the rail and the thumb's holder
+    // are `none` too while it is hidden.
+    let takes = move || shown.get() || hover_reveals();
+    let inner = move || {
+        if takes() {
+            PointerEvents::BoxNone
+        } else {
+            PointerEvents::None
+        }
+    };
     let axis = ctl.axis;
     // The track's thickness across the axis: how far a sliding entrance
     // starts off its edge.
@@ -592,7 +604,7 @@ pub fn Scrollbar(props: ScrollbarProps, _cx: Scope<NoEvent>) -> impl IntoElement
                 .w(move || Length::from(px(ctl.thumb())))
                 .translate_x(move || DefiniteLength::from(px(ctl.position()))),
         })
-        .pointer_events(PointerEvents::BoxNone)
+        .pointer_events(inner)
         .child(thumb);
     // Off its edge by the track's thickness until the slide brings it in
     // (an exit slides it out): the track clips it.
@@ -607,7 +619,7 @@ pub fn Scrollbar(props: ScrollbarProps, _cx: Scope<NoEvent>) -> impl IntoElement
             Axis::Vertical => v.flex_col().bind_translate_x(&slide),
             Axis::Horizontal => v.flex_row().bind_translate_y(&slide),
         })
-        .pointer_events(PointerEvents::BoxNone)
+        .pointer_events(inner)
         .on_layout(move |frame: &Bounds<Points>| {
             ctl.rail_origin.replace(frame.origin);
             ctl.rail.set(frame.size.along(axis).0);
@@ -640,7 +652,7 @@ pub fn Scrollbar(props: ScrollbarProps, _cx: Scope<NoEvent>) -> impl IntoElement
         .on_responder_terminate(move |_: &ResponderEvent| ctl.release())
         .bind_opacity(&ctl.opacity)
         .pointer_events(move || {
-            if shown.get() || hover_reveals() {
+            if takes() {
                 PointerEvents::Auto
             } else {
                 PointerEvents::None

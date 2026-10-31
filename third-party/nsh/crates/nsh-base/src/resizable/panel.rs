@@ -575,7 +575,7 @@ impl Model {
             .filter(|(_, e)| e.props.visible)
             .map(|(made, e)| (self.start(e.frame), made, e.id))
             .collect();
-        visible.sort_by(|a, b| match (a.0, b.0) {
+        crate::sort::sort_by(&mut visible, |a, b| match (a.0, b.0) {
             (Some(x), Some(y)) => x
                 .partial_cmp(&y)
                 .unwrap_or(std::cmp::Ordering::Equal)

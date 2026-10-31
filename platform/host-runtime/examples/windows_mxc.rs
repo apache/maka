@@ -1128,6 +1128,9 @@ mod native {
                 failures.join(", ")
             ))
         })?;
+        let mut online = fixture.command("network-allowed", Network::Allowed)?;
+        online.arg("example.com:443");
+        assert_eq!(fixture.capture(online).await?, "dns-ok\nhostname-tcp-ok\n");
         let mut denied = fixture.command("network-denied", Network::Denied)?;
         denied.args(addresses.map(|address| address.to_string()));
         denied.arg(direct_address.to_string());
@@ -1175,7 +1178,7 @@ mod native {
         );
         server.await??;
         println!(
-            "PASS local IPv4/IPv6/interface semantics, public direct egress blocked, destination-enforcing execution proxy"
+            "PASS sandbox DNS and hostname TCP, local IPv4/IPv6/interface semantics, public direct egress blocked, destination-enforcing execution proxy"
         );
         Ok(())
     }
@@ -1392,6 +1395,35 @@ mod native {
                         std::thread::park();
                     }
                 }
+            }
+            Some("network-allowed") => {
+                let addresses = args[1]
+                    .to_socket_addrs()?
+                    .filter(SocketAddr::is_ipv4)
+                    .collect::<Vec<_>>();
+                assert!(
+                    !addresses.is_empty(),
+                    "sandbox DNS returned no IPv4 addresses"
+                );
+                println!("dns-ok");
+                let mut failures = Vec::new();
+                let mut connected = false;
+                for address in addresses {
+                    match TcpStream::connect_timeout(&address, Duration::from_secs(10)) {
+                        Ok(stream) => {
+                            drop(stream);
+                            connected = true;
+                            break;
+                        }
+                        Err(error) => failures.push(format!("{address}: {error}")),
+                    }
+                }
+                assert!(
+                    connected,
+                    "sandbox hostname TCP failed: {}",
+                    failures.join(", ")
+                );
+                println!("hostname-tcp-ok");
             }
             Some("network-denied") => {
                 for (address, marker) in args[1..].iter().zip([

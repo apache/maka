@@ -810,6 +810,23 @@ LayoutAnimation.configureNext({
 });
 ```
 
+布局动画覆盖这次更新改变的所有帧，无论它们在屏幕上的什么位置：同一次更新中刷新的列表或到达的实时数据也会随之动画。在 Rust 组件中，用 `ElementRef::animate_layout(transition)` 只为一个元素的变化所移动的内容做动画：元素自己和其内容的帧，以及被它的尺寸推动的视图（它的兄弟视图，以及各级祖先的兄弟视图）的帧。这次更新的其他帧立即变化。`nsh/base` 的 `Collapsible` 和 `AccordionPanel` 就是这样展开内容的。
+
+```rust
+use nsh_core::element::{LayoutCurve, LayoutTransition};
+
+let region = element_ref();
+let open = signal(false);
+let toggle = move || {
+    region.animate_layout(LayoutTransition::new(LayoutCurve::Spring { damping: 1.0 }, 265.0));
+    open.update(|o| *o = !*o);
+};
+view()
+    .element_ref(&region)
+    .overflow_hidden()
+    .style_with(move |s| if open.get() { s } else { s.h(px(0.0)) })
+```
+
 ## 各部分运行在哪里
 
 | | 运行于 | 每帧运行你的代码 |

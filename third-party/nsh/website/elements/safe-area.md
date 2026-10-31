@@ -1,7 +1,7 @@
 ---
 title: Safe area
 description: "The safe-area-inset environment variables and the safeArea and safeAreaInsets accessors: content kept clear of the notch, the status bar, the home indicator and headers."
-order: 10.6
+order: 110
 group: primitives
 demo: el-safe-area
 ---

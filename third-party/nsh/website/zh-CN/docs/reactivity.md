@@ -488,7 +488,7 @@ function ProfileCard(props: { user: User | undefined }) {
 }
 ```
 
-失败交给发生处上方最近的错误边界，fallback 中的失败交给再上一层的错误边界。没有错误边界时，失败作为未捕获的错误报告（开发时的错误浮层、日志）。TSX 中不带参数的 `fallback` 按原样显示：`fallback={<Text>Unavailable</Text>}`。
+失败交给发生处上方最近的错误边界，fallback 中的失败交给再上一层的错误边界。没有错误边界时，失败作为未捕获的错误报告（开发时的错误浮层、日志）。TSX 中元素形式的 `fallback` 按原样显示（`fallback={<Text>Unavailable</Text>}`），函数形式的则以错误和 `reset` 调用，与它声明了几个参数无关。
 
 ## 什么会运行，何时运行
 

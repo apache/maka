@@ -70,6 +70,36 @@ pub(crate) fn starter(
     }))
 }
 
+/// What `target`'s host honors of `open`'s options, which `open` checks
+/// them against: the platform the apps run on there, and whether the host
+/// opens them at the size `open` gives (a desktop's window, a browser's
+/// page) or they fill a device's screen.
+pub(crate) fn host_target(target: Target) -> nsh_testing::HostTarget {
+    use nsh_testing::Platform;
+    // This machine's desktop: the GPUI host's.
+    let desktop = if cfg!(target_os = "macos") {
+        Platform::Macos
+    } else if cfg!(windows) {
+        Platform::Windows
+    } else {
+        Platform::Linux
+    };
+    let (name, platform, sized) = match target {
+        Target::Ios | Target::Catalyst => ("ios", Platform::Ios, false),
+        Target::Android => ("android", Platform::Android, false),
+        Target::Macos => ("macos", Platform::Macos, true),
+        Target::Windows => ("windows", Platform::Windows, true),
+        Target::Linux => ("linux", Platform::Linux, true),
+        Target::Web => ("web", Platform::Web, true),
+        Target::Gpui => ("gpui", desktop, true),
+    };
+    let mut host = nsh_testing::HostTarget::default();
+    host.name = name.to_owned();
+    host.platform = platform;
+    host.sized = sized;
+    host
+}
+
 /// A host running one app for a test.
 struct TestHost {
     server: DevServer,

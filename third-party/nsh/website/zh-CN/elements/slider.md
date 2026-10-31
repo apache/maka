@@ -1,7 +1,6 @@
 ---
 title: Slider
 description: "Slider 组件：沿轨道选取一个值或两个值组成的范围；支持触摸屏和鼠标的按压与拖动、WAI-ARIA 的滑块按键，每个滑块向屏幕阅读器报告自己的数值；轨道、指示条、范围和滑块由应用设置样式。"
-order: 20.85
 group: base
 demo: el-slider
 ---
@@ -90,7 +89,8 @@ mount(App);
 ## 值
 
 值是一个数字，或两个滑块的范围 `[start, end]`；值的形状决定有几个滑块。应用用 `value` 持有它，并设置 `onChange` 报告的值，和 `nsh/base`
-的每个控件一样；也可以用 `defaultValue` 把值交给滑块自己保存，修改照样会报告给应用。
+的每个控件一样；也可以用 `defaultValue` 把值交给滑块自己保存，修改照样会报告给应用。拖动时，滑块和范围由原生层与指针在同一帧移动，
+指针抬起后重新显示应用的 `value`；屏幕阅读器运行时随拖动读出每个值，否则在拖动结束时得到最终的值。
 
 ```tsx
 const price = signal<[number, number]>([200, 800]);

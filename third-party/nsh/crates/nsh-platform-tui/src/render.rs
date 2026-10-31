@@ -4107,11 +4107,12 @@ mod tests {
             Bounds::new(Point::new(px(8.0), px(0.0)), Size::new(px(8.0), px(16.0))),
         ));
         for (id, color) in [(2, Color(0xff00_00ff)), (4, Color(0x0000_ffff))] {
-            let mut style = ViewStyle::default();
-            style.background_color = color;
             items.push(MountItem::ViewStyle {
                 id,
-                style: Box::new(style),
+                style: Box::new(ViewStyle {
+                    background_color: color,
+                    ..Default::default()
+                }),
             });
         }
         surface.apply(MountBatch { items });

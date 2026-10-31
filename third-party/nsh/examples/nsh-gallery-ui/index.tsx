@@ -1,19 +1,22 @@
 import type { JSX, ViewStyle } from "nsh";
 import { effect, Text, token, View } from "nsh";
 import { reduceMotion } from "nsh";
-import { createAnimatedValue } from "nsh";
+import { type AnimatedValue, createAnimatedValue } from "nsh";
 import { platform } from "nsh";
 import { keymap } from "nsh";
 import { Button as BaseButton, Sheet as BaseSheet, Switch, Tooltip } from "nsh/base";
 import { safeArea } from "nsh";
 import { Icon, type IconName } from "./icons";
+import { createPresence, type PopupSide } from "./popup";
 import { alpha, colors, finish, focusRing, hovered, isDark, mono, motion, radius, tints, toneColor, toneTint, type Tone } from "./theme";
 
 export * from "./theme";
 export { Segmented } from "./segmented";
+export * from "./popup";
 export * from "./data-table";
 export * from "./slider";
 export * from "./scrollbar-theme";
+export * from "./avatar";
 
 /**
  * The thumb of a resize handle (`handleThumbClass`), as gpui-component
@@ -28,7 +31,7 @@ export const handleThumb =
  * Instructions for the device's input: `touch` on phones and tablets,
  * `pointer` on desktops (a mouse, a touchpad, a keyboard).
  */
-export const hint = (touch: string, pointer: string) => (platform.idiom === "desktop" ? pointer : touch);
+export const hint = (touch: string, pointer: string) => (platform.desktop ? pointer : touch);
 
 /**
  * Desktops' way to refresh what phones pull down (the mouse does not drag
@@ -38,7 +41,7 @@ export const hint = (touch: string, pointer: string) => (platform.idiom === "des
  * key's label for the hint, or null where it is not bound.
  */
 export function bindRefresh(refresh: () => void): string | null {
-  if (platform.idiom !== "desktop" || platform.os === "web") return null;
+  if (!platform.desktop || platform.os === "web") return null;
   keymap.bind("mod+r", refresh);
   return keymap.label("mod+r");
 }
@@ -108,6 +111,27 @@ export function Appear(props: { index?: number; flex?: boolean; children: JSX.El
   );
 }
 
+/**
+ * An animated value that springs to `target` each time it changes (a
+ * control's state: 1 while on, 0 while off), natively: JS only starts each
+ * spring. A change mid-way turns it from where it is, with its velocity;
+ * with reduced motion it lands at once. For discrete changes only: what
+ * the pointer drives (a dragged thumb, a hover's place) is set in the same
+ * frame, never sprung toward the pointer.
+ */
+export function follow(target: () => number, spring: { stiffness: number; damping: number } = motion.control): AnimatedValue {
+  const v = createAnimatedValue(target());
+  let shown = target();
+  effect(() => {
+    const next = target();
+    if (next === shown) return;
+    shown = next;
+    if (reduceMotion()) v.set(next);
+    else v.spring(next, spring);
+  });
+  return v;
+}
+
 /** A rounded icon tile. */
 export function IconTile(props: { name: IconName; tint?: string; size?: number }) {
   const size = props.size ?? 40;
@@ -132,7 +156,7 @@ export function IconTile(props: { name: IconName; tint?: string; size?: number }
 }
 
 /** A pointer and a keyboard: the compact sizes of desktops. */
-const pointer = platform.idiom === "desktop";
+const pointer = platform.desktop;
 
 /**
  * The page's density: compact with a pointer (desktops), roomier on a touch
@@ -317,14 +341,44 @@ export function Row(props: { first?: boolean; onPress?: () => void; children: JS
 
 export type ButtonVariant = "primary" | "secondary" | "accent" | "ghost" | "danger";
 
+/** A ring turning with its top arc in `tint`: work going on. */
+export function Spinner(props: { size: number; tint: string }) {
+  return (
+    <View
+      style={{
+        width: props.size,
+        height: props.size,
+        borderRadius: props.size / 2,
+        borderWidth: Math.max(1.5, props.size / 8),
+        borderColor: alpha(props.tint, 0.25),
+        borderTopColor: props.tint,
+        animationName: "spin",
+        animationDuration: 800,
+        animationTimingFunction: "linear",
+        animationIterationCount: "infinite",
+      }}
+    />
+  );
+}
+
+/** A button's heights and label sizes, by size: compact with a pointer, roomier on a touch screen. */
+const buttonSizes = pointer
+  ? { small: { height: 24, font: 12, icon: 12, pad: 8 }, regular: { height: 28, font: 13, icon: 14, pad: 12 }, large: { height: 34, font: 14, icon: 15, pad: 16 } }
+  : { small: { height: 36, font: 14, icon: 14, pad: 12 }, regular: { height: 40, font: 15, icon: 16, pad: 16 }, large: { height: 48, font: 17, icon: 18, pad: 20 } };
+
 /**
- * A button: 28 pt tall on a desktop, 40 on a touch screen (`small`: 36).
- * `primary` and `accent` are the citrus fill (the main action), `secondary`
- * a raised neutral, `ghost` bare until the pointer is over it, `danger` a
- * destructive action: the danger tone's tint, edge and text on the raised
- * finish's drop, as quiet as `secondary`. A `color`
+ * A button: 28 pt tall on a desktop, 40 on a touch screen (`small` 24 / 36,
+ * `large` 34 / 48). `primary` and `accent` are the citrus fill (the main
+ * action), `secondary` a raised neutral, `ghost` bare until the pointer is
+ * over it, `danger` a destructive action: the danger tone's tint, edge and
+ * text on the raised finish's drop, as quiet as `secondary`. A `color`
  * fills it with that color instead. Under the pointer a raised button
- * lightens, pressed it sinks (an inner shade, and 3% smaller).
+ * lightens, pressed it sinks (an inner shade, and 3% smaller). `busy`
+ * puts a spinner in the icon's place and takes no presses; a new icon or
+ * the spinner grows in. Its width follows the label at once: a layout
+ * animation would move every frame of the update, app-wide (a list
+ * refreshing beside it too), so the motion stays on the glyph's own
+ * opacity and scale.
  */
 export function Button(props: {
   label: string;
@@ -332,22 +386,36 @@ export function Button(props: {
   color?: string;
   icon?: IconName;
   disabled?: boolean;
+  /** Work started by it is going on: a spinner, no presses (not dimmed). */
+  busy?: boolean;
   /** Grows to share a row with its siblings. */
   flex?: number;
-  size?: "small" | "regular";
+  size?: "small" | "regular" | "large";
   /** Shown as chosen: what it opens is open (a menu's or a popover's
    * trigger), or it is on. A ghost button keeps the hover's `accent` fill, a
    * raised one its pressed look, a filled one its pressed shade. */
   selected?: boolean;
   onPress: () => void;
 }) {
-  const small = () => props.size === "small";
+  const dims = () => buttonSizes[props.size ?? "regular"];
   // `nsh/base`'s Button gives the behavior (presses, disabled, the button
   // role); the look below is the gallery's own.
   const scale = createAnimatedValue(1);
+  // The leading glyph (the icon, or the spinner while busy) grows in each
+  // time it changes; at once with reduced motion.
+  const glyph = createAnimatedValue(1);
+  let shownGlyph = props.busy ? "busy" : props.icon;
+  effect(() => {
+    const next = props.busy ? "busy" : props.icon;
+    if (next === shownGlyph) return;
+    shownGlyph = next;
+    if (reduceMotion()) return;
+    glyph.set(0);
+    glyph.spring(1, motion.control);
+  });
   const variant = () => props.variant ?? "primary";
   const filled = () => !props.color && (variant() === "primary" || variant() === "accent");
-  const height = () => (pointer ? 28 : small() ? 36 : 40);
+  const height = () => dims().height;
   const danger = () => !props.color && variant() === "danger";
   const fg = () => (props.color ? "#ffffff" : filled() ? colors.onAccent : danger() ? colors.danger : colors.text);
   const look = (): ViewStyle =>
@@ -369,19 +437,20 @@ export function Button(props: {
             : finish.raised;
   return (
     <BaseButton
-      onPress={props.onPress}
-      onPressDown={() => scale.spring(0.97, motion.press)}
+      // Busy, it keeps its focus and its look and takes no second press.
+      onPress={() => !props.busy && props.onPress()}
+      onPressDown={() => !props.busy && scale.spring(0.97, motion.press)}
       onPressUp={() => scale.spring(1, motion.press)}
       disabled={props.disabled}
       accessibilityLabel={props.label}
       selected={props.selected}
-      hoverStyle={props.disabled || props.selected ? undefined : props.color || filled() ? { opacity: 0.94 } : danger() ? { backgroundColor: alpha(colors.danger, 0.16) } : variant() === "ghost" ? hovered() : finish.hover}
-      activeStyle={props.disabled ? undefined : props.color || filled() ? { opacity: 0.88 } : danger() ? { backgroundColor: alpha(colors.danger, 0.22), boxShadow: "none" } : finish.pressed}
+      hoverStyle={props.disabled || props.selected || props.busy ? undefined : props.color || filled() ? { opacity: 0.94 } : danger() ? { backgroundColor: alpha(colors.danger, 0.16) } : variant() === "ghost" ? hovered() : finish.hover}
+      activeStyle={props.disabled || props.busy ? undefined : props.color || filled() ? { opacity: 0.88 } : danger() ? { backgroundColor: alpha(colors.danger, 0.22), boxShadow: "none" } : finish.pressed}
       focusStyle={focusRing()}
       style={{
         flex: props.flex,
         height: height(),
-        paddingHorizontal: pointer ? 12 : 16,
+        paddingHorizontal: dims().pad,
         borderRadius: radius.control,
         borderCurve: "continuous",
         borderWidth: 1,
@@ -396,10 +465,14 @@ export function Button(props: {
         transitionDuration: 120,
       }}
     >
-      <If when={props.icon}>
-        <Icon name={props.icon!} size={pointer ? 14 : 16} tint={fg()} />
+      <If when={props.busy || props.icon}>
+        <View style={{ opacity: glyph, transform: [{ scale: glyph.interpolate({ inputRange: [0, 1], outputRange: [0.5, 1] }) }] }}>
+          <If when={props.busy} else={<Icon name={props.icon!} size={dims().icon} tint={fg()} />}>
+            <Spinner size={dims().icon} tint={fg()} />
+          </If>
+        </View>
       </If>
-      <Text style={{ fontSize: pointer ? 13 : 15, fontWeight: "500", color: fg() }}>{props.label}</Text>
+      <Text style={{ fontSize: dims().font, fontWeight: "500", color: fg() }}>{props.label}</Text>
     </BaseButton>
   );
 }
@@ -485,17 +558,10 @@ export function switchLook(on: () => boolean, size: "small" | "regular" = "regul
   // The track's size and inset, and the knob: it travels what is left inside
   // the border and the padding.
   const [width, height, inset, knob] = pointer ? [28, 16, 1, 12] : size === "small" ? [34, 20, 1, 16] : [42, 24, 1, 20];
-  const t = createAnimatedValue(on() ? 1 : 0);
+  // The knob travels as gpui-kit's does (`spring_move`), the track's color
+  // with it; with reduced motion both change in place.
+  const t = follow(() => (on() ? 1 : 0), motion.move);
   const x = t.interpolate({ inputRange: [0, 1], outputRange: [0, width - 2 - 2 * inset - knob] });
-  let shown = on();
-  effect(() => {
-    const next = on();
-    if (next === shown) return;
-    shown = next;
-    // Reduced motion: the knob and the track change in place.
-    if (reduceMotion()) t.set(next ? 1 : 0);
-    else t.spring(next ? 1 : 0, motion.settle);
-  });
   return {
     get trackStyle(): ViewStyle {
       return {
@@ -581,12 +647,24 @@ export function Sheet(props: { open: boolean; onClose: () => void; children: JSX
 
 export { Icon, type IconName } from "./icons";
 
-/** A short text as an element's `tooltip`: a `Tooltip` of `nsh/base` in a
- * small bubble of the theme's `popover` tokens. */
-export function Tip(props: { label: string }) {
+/**
+ * A short text as an element's `tooltip`: a `Tooltip` of `nsh/base` in a
+ * small bubble of the theme's `popover` tokens that comes in with `popIn`
+ * from its side (`placement`, default above), with the keys of a
+ * `shortcut` after the text.
+ */
+export function Tip(props: { label: string; shortcut?: string; placement?: PopupSide; delay?: number }) {
+  const presence = createPresence(props.placement ?? "top");
   return (
-    <Tooltip class="rounded-md border border-border bg-popover px-2 py-1">
-      <Text class="text-xs text-popover-foreground">{props.label}</Text>
+    <Tooltip placement={props.placement} delay={props.delay} onOpen={presence.show} onClose={presence.hide}>
+      <View class="flex-row items-center gap-2 rounded-md border border-border bg-popover px-2 py-1" style={presence.style}>
+        <Text class="text-xs text-popover-foreground">{props.label}</Text>
+        <If when={props.shortcut}>
+          <Text class="text-xs text-muted-foreground" style={{ fontVariant: ["tabular-nums"] }}>
+            {props.shortcut}
+          </Text>
+        </If>
+      </View>
     </Tooltip>
   );
 }

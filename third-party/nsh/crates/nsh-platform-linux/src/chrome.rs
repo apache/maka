@@ -97,6 +97,12 @@ pub(crate) fn attach(surface: &Rc<Surface>, overlay: &gtk::Overlay, slot: &gtk::
     });
 }
 
+/// The box above the app holding the menu bar (the menus it opens are
+/// inside it), once the `AppView` is made.
+pub(crate) fn menu_bar_slot(surface: &Surface) -> Option<gtk::Box> {
+    surface.chrome.slot.borrow().as_ref()?.upgrade()
+}
+
 /// The window the surface is in.
 fn window(surface: &Surface) -> Option<gtk::Window> {
     surface.root.root().and_downcast::<gtk::Window>()
@@ -760,7 +766,7 @@ fn popup(surface: &Rc<Surface>, items: &[MenuItem], at: Option<(f32, f32)>) {
     let (x, y) = at
         .or_else(|| crate::input::last_pointer(surface))
         .unwrap_or_default();
-    let menu = gtk::PopoverMenu::from_model(Some(&model));
+    let menu = gtk::PopoverMenu::from_model_full(&model, gtk::PopoverMenuFlags::NESTED);
     #[cfg(feature = "dev")]
     {
         *surface.chrome.open_popup.borrow_mut() = Some((items.into(), menu.clone()));

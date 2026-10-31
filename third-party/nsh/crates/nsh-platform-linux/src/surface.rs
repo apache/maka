@@ -240,11 +240,11 @@ impl Surface {
         SURFACES.with(|s| s.borrow().get(&key).and_then(Weak::upgrade))
     }
 
-    /// Whether a native animation runs: the graph's, or a navigation
-    /// transition.
+    /// Whether a native animation runs: the graph's (not one looping
+    /// forever, which no test step waits for), or a navigation transition.
     #[cfg(feature = "dev")]
     pub(crate) fn animating(&self) -> bool {
-        self.anim.borrow().animating()
+        self.anim.borrow().finishing()
             || self
                 .nav
                 .try_borrow()

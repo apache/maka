@@ -88,12 +88,14 @@ use std::{
 use gpui::{
     A11ySubtreeBuilder, AnyElement, App, AvailableSpace, FocusHandle, InteractiveElement,
     IntoElement, StatefulInteractiveElement, Styled, Window,
-    accesskit::{self, Action, ActionData, CustomAction, Live, Node, Role, ScrollUnit, Toggled},
+    accesskit::{
+        self, Action, ActionData, AriaCurrent, CustomAction, Live, Node, Role, ScrollUnit, Toggled,
+    },
     div, point, px, size,
 };
 use nsh_core::{
-    Accessibility, AccessibilityRole as AxRole, Checked, Command, EventKind, EventMask, LiveRegion,
-    MountBatch, NodeId, ViewKind, geometry::Points,
+    Accessibility, AccessibilityCurrent, AccessibilityRole as AxRole, Checked, Command, EventKind,
+    EventMask, LiveRegion, MountBatch, NodeId, ViewKind, geometry::Points,
 };
 use rustc_hash::FxHashMap;
 
@@ -138,7 +140,10 @@ fn groups_role(role: Role) -> bool {
             | Role::Switch
             | Role::Tab
             | Role::MenuItem
+            | Role::MenuItemCheckBox
+            | Role::MenuItemRadio
             | Role::ListBoxOption
+            | Role::TreeItem
     )
 }
 
@@ -168,6 +173,9 @@ fn focusable(role: Role) -> bool {
             | Role::Switch
             | Role::Tab
             | Role::ListBoxOption
+            | Role::MenuItemCheckBox
+            | Role::MenuItemRadio
+            | Role::TreeItem
     )
 }
 
@@ -236,6 +244,13 @@ pub(crate) fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Op
         AxRole::RowGroup => Role::RowGroup,
         AxRole::Listbox => Role::ListBox,
         AxRole::Option => Role::ListBoxOption,
+        AxRole::Group => Role::Group,
+        AxRole::Region => Role::Region,
+        AxRole::Navigation => Role::Navigation,
+        AxRole::Tree => Role::Tree,
+        AxRole::TreeItem => Role::TreeItem,
+        AxRole::MenuItemCheckbox => Role::MenuItemCheckBox,
+        AxRole::MenuItemRadio => Role::MenuItemRadio,
     })
 }
 
@@ -500,12 +515,27 @@ fn describe_props(
     if state.selected || matches!(role, Role::Tab | Role::ListBoxOption) {
         node.set_selected(state.selected);
     }
-    if let Some(checked) = state.checked {
+    // A button's pressed state makes it a toggle button (ARIA's
+    // `aria-pressed`), as AccessKit reads a toggled button.
+    if let Some(checked) = state.checked.or(state.pressed) {
         node.set_toggled(match checked {
             Checked::False => Toggled::False,
             Checked::True => Toggled::True,
             Checked::Mixed => Toggled::Mixed,
         });
+    }
+    if let Some(current) = state.current {
+        node.set_aria_current(match current {
+            AccessibilityCurrent::True => AriaCurrent::True,
+            AccessibilityCurrent::Page => AriaCurrent::Page,
+            AccessibilityCurrent::Step => AriaCurrent::Step,
+            AccessibilityCurrent::Location => AriaCurrent::Location,
+            AccessibilityCurrent::Date => AriaCurrent::Date,
+            AccessibilityCurrent::Time => AriaCurrent::Time,
+        });
+    }
+    if let Some(level) = a.level {
+        node.set_level(level as usize);
     }
     if let Some(expanded) = state.expanded {
         node.set_expanded(expanded);
@@ -1603,6 +1633,75 @@ mod tests {
         find(&all, 6).state_mut().props.accessibility.label = Some("Store".into());
         assert_eq!(name_of(&find(&all, 6)).as_deref(), Some("Store"));
         assert_eq!(node(&built(&root), 6).label(), Some("Store"));
+    }
+
+    /// The roles of gpui-base's structural components; a button's pressed
+    /// state, a level and a current item.
+    #[test]
+    fn structural_roles_pressed_level_and_current() {
+        let with_role = |role| Accessibility {
+            role,
+            ..Default::default()
+        };
+        for (role, expected) in [
+            (AxRole::Group, Role::Group),
+            (AxRole::Region, Role::Region),
+            (AxRole::Navigation, Role::Navigation),
+            (AxRole::Tree, Role::Tree),
+            (AxRole::TreeItem, Role::TreeItem),
+            (AxRole::MenuItemCheckbox, Role::MenuItemCheckBox),
+            (AxRole::MenuItemRadio, Role::MenuItemRadio),
+        ] {
+            assert_eq!(
+                role_for(&with_role(role), ViewKind::View, false),
+                Some(expected)
+            );
+        }
+        let root = view(0, ViewKind::View, Accessibility::default());
+        root.set_invalidate(Rc::new(|| {}));
+        let toggle = pressable(
+            2,
+            Accessibility {
+                role: AxRole::Button,
+                label: Some("Bold".into()),
+                state: AccessibilityState {
+                    pressed: Some(Checked::True),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let heading = view(
+            4,
+            ViewKind::View,
+            Accessibility {
+                role: AxRole::Header,
+                label: Some("Details".into()),
+                level: Some(3),
+                ..Default::default()
+            },
+        );
+        let page = pressable(
+            6,
+            Accessibility {
+                role: AxRole::Link,
+                label: Some("2".into()),
+                state: AccessibilityState {
+                    current: Some(AccessibilityCurrent::Page),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        toggle.insert_before(&root, None);
+        heading.insert_before(&root, None);
+        page.insert_before(&root, None);
+        let b = built(&root);
+        assert_eq!(node(&b, 2).role(), Role::Button);
+        assert_eq!(node(&b, 2).toggled(), Some(Toggled::True));
+        assert_eq!(node(&b, 4).role(), Role::Heading);
+        assert_eq!(node(&b, 4).level(), Some(3));
+        assert_eq!(node(&b, 6).aria_current(), Some(AriaCurrent::Page));
     }
 
     #[test]

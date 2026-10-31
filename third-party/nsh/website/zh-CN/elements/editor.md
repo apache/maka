@@ -1,7 +1,6 @@
 ---
 title: Editor
 description: Editor 组件：代码编辑器，带语法高亮、行号、多光标、折叠、软换行、查找与替换、诊断和装饰，以及代码编辑器的按键。
-order: 26.2
 group: base
 demo: el-editor
 ---
@@ -465,7 +464,7 @@ let editor!: EditorRef;
 
 ## 方法
 
-`ref={editor}` 提供编辑器的方法（`EditorRef`），供应用的按钮、菜单和按键使用。返回值的方法（`value()`、`selections()`、`replaceAll()`、`canUndo()`、`caretBounds()`、`folds()` 等）在 JS 中返回一个 `Promise`，所以要 `await` 它们：`const text = await editor.value()`。
+`ref={editor}` 提供编辑器的方法（`EditorRef`），供应用的按钮、菜单和按键使用。返回值的方法（`value()`、`selections()`、`replaceAll()`、`canUndo()`、`caretBounds()`、`folds()` 等）在 JS 中返回一个 `Promise`，所以要 `await` 它们：`const text = await editor.value()`。方法收到超出文本的行（`fold`、`scrollToLine`、`goToLine` 等）时什么也不改变，并在日志中记一条警告，写明方法和那一行。
 
 | 方法 | 说明 |
 |---|---|

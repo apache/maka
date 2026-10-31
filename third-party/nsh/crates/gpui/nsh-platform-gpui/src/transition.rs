@@ -30,7 +30,7 @@ use std::rc::Rc;
 
 pub(crate) use nsh_core::transition::Live;
 use nsh_core::{
-    Bounds, LayoutAnimation, Points, ViewKind, ViewStyle,
+    AttributedText, Bounds, LayoutAnimation, Points, ViewKind, ViewStyle,
     transition::{self, Extra},
 };
 
@@ -183,6 +183,23 @@ pub(crate) fn style_changed(surface: &Rc<Surface>, view: &NshView, old: &ViewSty
         return;
     };
     animate(surface, view, |live| live.restyle(restyle));
+}
+
+/// `view`'s text changed from `old` (the new one is in its state): its
+/// color transitions as its style's `transition` says, drawn over the new
+/// runs ([`Live::text_color`]) rather than typeset on every frame.
+pub(crate) fn text_changed(
+    surface: &Rc<Surface>,
+    view: &NshView,
+    old: &AttributedText,
+    text: &AttributedText,
+) {
+    let recolor = transition::recolor(old, text, &view.state().style, reduce_motion(surface));
+    if recolor.starts() {
+        animate(surface, view, |live| live.recolor(recolor));
+    } else if let Some(live) = view.state_mut().live.as_deref_mut() {
+        live.recolor(recolor);
+    }
 }
 
 /// True if an ancestor of `view` is animating out (and takes `view` with

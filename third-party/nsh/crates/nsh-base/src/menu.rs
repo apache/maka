@@ -9,13 +9,21 @@
 //! submenus replace its items (a submenu's `back` row, and Escape or the
 //! back button, return to the items above). The items reach their menu
 //! through context, so the app arranges them freely (groups, labels,
-//! conditions).
+//! conditions). An item with `checked` is checkable (a setting, or one
+//! choice of a group by its `role`): the value is the app's, its indicator
+//! a part that takes the item's state.
 
 use std::{rc::Rc, time::Duration};
 
-use nsh_core::{ContextMenuEvent, TouchEvent, TouchPhase, element::Style, prelude::*};
+use nsh_core::{
+    AccessibilityState, Checked, ContextMenuEvent, TouchEvent, TouchPhase, element::Style,
+    prelude::*,
+};
 
-use crate::popup::{OpenChangeReason, OpenState, SheetMotion, lifecycle};
+use crate::{
+    popup::{OpenChangeReason, OpenState, PopupPresence, SheetMotion, StateLooks, lifecycle},
+    roving::{bar, bar_trigger, leave_bar},
+};
 
 /// How long a finger stays on a context menu's trigger before it opens
 /// (less than the platforms' long press, so it opens while the finger is
@@ -36,11 +44,14 @@ struct MenuContext {
     level: u32,
     /// Desktops: the submenu of this level that is open.
     open_sub: Signal<Option<u32>>,
+    /// Desktops: this level's popup is open (the menu's, or the
+    /// submenu's while every level around it is), which its submenus'
+    /// follow: they close with it, each with its own exit.
+    open: Memo<bool>,
     /// The next submenu's id.
     next: Stored<u32>,
-    /// The popup part, for the submenus' popups.
-    popup_class: Prop<Option<SharedString>>,
-    popup_style: Prop<Style>,
+    /// The popup part and its states' looks, for the submenus' popups.
+    looks: StateLooks,
 }
 
 impl MenuContext {
@@ -60,8 +71,26 @@ struct Surface {
     margin: Prop<Points>,
     popup_class: Prop<Option<SharedString>>,
     popup_style: Prop<Style>,
+    popup_starting_class: Prop<Option<SharedString>>,
+    popup_starting_style: Prop<Style>,
+    popup_ending_class: Prop<Option<SharedString>>,
+    popup_ending_style: Prop<Style>,
     backdrop_class: Prop<Option<SharedString>>,
     backdrop_style: Prop<Style>,
+}
+
+impl Surface {
+    /// The desktop popup's looks.
+    fn looks(self) -> StateLooks {
+        StateLooks {
+            class: Some(self.popup_class),
+            style: Some(self.popup_style),
+            starting_class: self.popup_starting_class,
+            starting_style: self.popup_starting_style,
+            ending_class: self.popup_ending_class,
+            ending_style: self.popup_ending_style,
+        }
+    }
 }
 
 /// Where a menu's popup goes on the desktops.
@@ -94,14 +123,18 @@ fn surface(
         path,
         level: 0,
         open_sub,
+        open: computed(move || open.get()),
         next: stored(1),
-        popup_class: parts.popup_class,
-        popup_style: parts.popup_style,
+        looks: parts.looks(),
     });
-    // An attempt to close it: reported, then it closes.
+    // An attempt to close it: reported, then it closes (none while it
+    // goes).
     let dismiss = {
         let (change, emit) = (change.clone(), emit.clone());
         Rc::new(move |reason: OpenChangeReason| {
+            if !open.get_untracked() {
+                return;
+            }
             emit(MenuEvent::Cancel);
             change(false, reason);
         })
@@ -119,25 +152,36 @@ fn surface(
             }
         }
     };
-    // A sheet comes in and goes with its motion; a popup at once.
+    // A sheet comes in and goes with its motion; a popup with the app's
+    // transitions between its looks.
     let motion = SheetMotion::new(move || sheet && open.get(), || Placement::Bottom);
+    let presence = PopupPresence::new(move || !sheet && open.get(), parts.looks());
     {
         let (opened, closed) = (emit.clone(), emit.clone());
         lifecycle(
-            move || if sheet { motion.there() } else { open.get() },
+            move || {
+                if sheet {
+                    motion.there()
+                } else {
+                    presence.mounted()
+                }
+            },
             move || opened(MenuEvent::Open),
             move || closed(MenuEvent::Close),
         );
     }
+    let placed = emit.clone();
     when(
         move || {
             if sheet {
                 motion.shown.get()
             } else {
-                open.get()
+                presence.mounted()
             }
         },
         move || {
+            // The trigger may be a toolbar's item; the items are not.
+            leave_bar();
             // Each opening starts at the top.
             path.set(Vec::new());
             open_sub.set(None);
@@ -171,14 +215,19 @@ fn surface(
                 }
             };
             let dismiss = dismiss.clone();
+            let placed = placed.clone();
             let popup = popup
                 .placement(parts.placement)
                 .align(parts.align)
                 .offset(parts.offset)
                 .margin(parts.margin)
                 .role(AccessibilityRole::Menu)
-                .app_class(parts.popup_class)
-                .inline_style(parts.popup_style)
+                .element_ref(&presence.popup())
+                .app_class(move || presence.class())
+                .state_inline_style(move || presence.style())
+                .on_position(move |p: &OverlayPosition| {
+                    placed(MenuEvent::Position(p.placement, p.bounds, p.available))
+                })
                 .on_press_outside(move |_: &Point<Points>| dismiss(OpenChangeReason::PressOutside))
                 .on_cancel(cancel.clone())
                 .child(children);
@@ -216,6 +265,24 @@ pub struct MenuProps {
     /// The inline style of the popup or sheet, over its classes.
     #[prop(default)]
     pub popup_style: Prop<Style>,
+    /// Desktops: classes the popup (and its submenus' popups) has in its
+    /// first frame, which its `transition` classes animate from
+    /// (Tailwind's `starting:`, CSS's `@starting-style`): its entrance. A
+    /// state's classes apply over `popupClass` and `popupStyle`, as a
+    /// state's styles do. The sheet of touch screens has its own motion.
+    pub popup_starting_class: Prop<Option<SharedString>>,
+    /// Desktops: the inline style of the popup in its first frame, over
+    /// `popupStyle`.
+    #[prop(default)]
+    pub popup_starting_style: Prop<Style>,
+    /// Desktops: classes the popup has while it goes: it stays, taking no
+    /// presses, until the transitions it has then ran (`onClose` after),
+    /// so they run its exit.
+    pub popup_ending_class: Prop<Option<SharedString>>,
+    /// Desktops: the inline style of the popup while it goes, over
+    /// `popupStyle`.
+    #[prop(default)]
+    pub popup_ending_style: Prop<Style>,
     /// Touch screens: the classes of the backdrop behind the sheet
     /// (pressing it closes the menu).
     pub backdrop_class: Prop<Option<SharedString>>,
@@ -240,11 +307,17 @@ pub enum MenuEvent {
     OpenChange(bool, OpenChangeReason),
     /// It is shown (a sheet once it came in).
     Open,
-    /// It is gone (a sheet once it went; also when the app closed it).
+    /// It is gone (a sheet once it went, a popup after its exit; also when
+    /// the app closed it).
     Close,
     /// The user tried to close it without choosing (Escape or back, a press
     /// outside or on the backdrop).
     Cancel,
+    /// Desktops: the popup was placed: the side it went on (the other side
+    /// of `placement` when only that one had room), its frame in the root
+    /// view and the room on that side.
+    #[args(placement, bounds, available)]
+    Position(Placement, Bounds<Points>, Size<Points>),
 }
 
 /// A menu its trigger opens: a popup at the trigger on the desktops, a
@@ -269,20 +342,27 @@ pub fn Menu(props: MenuProps, cx: Scope<MenuEvent>) -> impl IntoElement {
         margin: props.margin,
         popup_class: props.popup_class,
         popup_style: props.popup_style,
+        popup_starting_class: props.popup_starting_class,
+        popup_starting_style: props.popup_starting_style,
+        popup_ending_class: props.popup_ending_class,
+        popup_ending_style: props.popup_ending_style,
         backdrop_class: props.backdrop_class,
         backdrop_style: props.backdrop_style,
     };
     let toggle = change.clone();
+    // In a toolbar, the trigger is one of its items.
+    let around = bar();
     view()
         .child(props.trigger.place(move |trigger| {
             let toggle = toggle.clone();
-            trigger
+            let trigger = trigger
                 .element_ref(&anchor)
                 .accessibility_state(move || AccessibilityState {
                     expanded: Some(open.get()),
                     ..AccessibilityState::default()
                 })
-                .on_press(move || toggle(!open.get_untracked(), OpenChangeReason::TriggerPress))
+                .on_press(move || toggle(!open.get_untracked(), OpenChangeReason::TriggerPress));
+            bar_trigger(around.clone(), trigger, anchor)
         }))
         .child(surface(
             open,
@@ -315,6 +395,18 @@ pub struct ContextMenuProps {
     /// The inline style of the popup or sheet, over its classes.
     #[prop(default)]
     pub popup_style: Prop<Style>,
+    /// Desktops: classes the popup has in its first frame, which its
+    /// `transition` classes animate from: its entrance (as `Menu`'s).
+    pub popup_starting_class: Prop<Option<SharedString>>,
+    /// Desktops: the inline style of the popup in its first frame.
+    #[prop(default)]
+    pub popup_starting_style: Prop<Style>,
+    /// Desktops: classes the popup has while it goes, until the
+    /// transitions it has then ran: its exit (as `Menu`'s).
+    pub popup_ending_class: Prop<Option<SharedString>>,
+    /// Desktops: the inline style of the popup while it goes.
+    #[prop(default)]
+    pub popup_ending_style: Prop<Style>,
     /// Touch screens: the classes of the backdrop behind the sheet.
     pub backdrop_class: Prop<Option<SharedString>>,
     /// The inline style of the backdrop, over its classes.
@@ -350,6 +442,10 @@ pub fn ContextMenu(props: ContextMenuProps, cx: Scope<MenuEvent>) -> impl IntoEl
         margin: props.margin,
         popup_class: props.popup_class,
         popup_style: props.popup_style,
+        popup_starting_class: props.popup_starting_class,
+        popup_starting_style: props.popup_starting_style,
+        popup_ending_class: props.popup_ending_class,
+        popup_ending_style: props.popup_ending_style,
         backdrop_class: props.backdrop_class,
         backdrop_style: props.backdrop_style,
     };
@@ -420,11 +516,36 @@ pub struct MenuItemProps {
     /// it is dimmed.
     #[prop(default)]
     pub disabled: Prop<bool>,
+    /// Checked or not, which makes it a checkable item (a setting the menu
+    /// shows, one choice of a group): screen readers say whether it is
+    /// checked, and `checked:` styles apply to it and its indicator while
+    /// it is. The app owns the value: choosing the item reports `onSelect`,
+    /// and the item shows the value the app passes back.
+    pub checked: Prop<Option<bool>>,
+    /// The style while checked, as `checked:` classes.
+    #[prop(default)]
+    pub checked_style: Prop<Style>,
+    /// What it is for screen readers: `"menuitemcheckbox"` while `checked`
+    /// is set, `"menuitem"` otherwise; `"menuitemradio"` for one choice of a
+    /// group of items, which the app checks one at a time.
+    pub role: Prop<Option<AccessibilityRole>>,
     /// Choosing it closes the menu (default true).
     #[prop(default = true)]
     pub close_on_select: Prop<bool>,
     /// What screen readers say, when its content is not enough.
     pub accessibility_label: Prop<Option<SharedString>>,
+    /// The Tailwind classes of the indicator, the part around the mark
+    /// before the content; `checked:` and `disabled:` follow the item, and
+    /// with `group` the mark's `group-checked:` classes do too.
+    pub indicator_class: Prop<Option<SharedString>>,
+    /// The style of the indicator, over `indicatorClass`.
+    #[prop(default)]
+    pub indicator_style: Prop<Style>,
+    /// The content of the indicator: the mark that shows the item checked
+    /// (a check, a radio's dot), the app's element. It stays while the
+    /// value changes; the indicator's `checked:` styles (or the mark's
+    /// `group-checked:`) show and hide it.
+    pub indicator: Prop<Option<Slot>>,
     /// The content.
     pub children: Prop<Children>,
 }
@@ -432,28 +553,72 @@ pub struct MenuItemProps {
 /// The events of a [`MenuItem`].
 #[derive(Debug, Clone, PartialEq, Event)]
 pub enum MenuItemEvent {
-    /// It was chosen.
+    /// It was chosen (a checkable item asks for the other value: the app
+    /// sets `checked`).
     Select,
 }
 
 /// An item of a `Menu`, `ContextMenu` or `Submenu`: pressing it chooses it
-/// (`onSelect`) and closes the menu. Its look is the app's: `class`,
-/// `style` and the `active:`, `hover:`, `disabled:` states.
+/// (`onSelect`) and closes the menu (unless `closeOnSelect` is false). With
+/// `checked` it is a checkable item, alone or one choice of a group (`role`
+/// `"menuitemradio"`), as `gpui-component`'s `PopupMenuItem::checked`. Its
+/// look is the app's: `class`, `style`, the `active:`, `hover:`,
+/// `disabled:` and `checked:` states, and the `indicator` it shows checked
+/// with.
 #[component]
 pub fn MenuItem(props: MenuItemProps, cx: Scope<MenuItemEvent>) -> impl IntoElement {
     let menu = use_context::<MenuContext>();
     let hover = menu.clone();
     let chosen = menu.clone();
     let sheet = menu.filter(|m| m.sheet);
+    let (checked, disabled) = (props.checked, props.disabled);
+    let (indicator, children) = (props.indicator, props.children);
+    let (indicator_class, indicator_style) = (props.indicator_class, props.indicator_style);
+    // The indicator is a part that takes the item's states, as
+    // `Checkbox`'s: it is no checkable element of its own for screen
+    // readers, and only it restyles when the value changes.
+    let parts = move || {
+        vec![
+            // A view of its own, as `Checkbox`'s indicator: the projected
+            // states and the app's classes land on one node, which the
+            // mark inside reads as a group.
+            when(
+                move || indicator.get().is_some(),
+                move || {
+                    view()
+                        .project_checked(move || checked.get() == Some(true))
+                        .project_disabled(disabled)
+                        .app_class(indicator_class)
+                        .inline_style(indicator_style)
+                        .child(indicator.place(|mark| mark))
+                },
+            )
+            .into_element(),
+            children.into_element(),
+        ]
+    };
     let content = match sheet.clone() {
         // Only the items of the level shown are there (for screen readers
         // and tests too).
-        Some(m) => when(move || m.shown(), move || props.children).into_element(),
-        None => props.children.into_element(),
+        Some(m) => vec![when(move || m.shown(), parts).into_element()],
+        None => parts(),
     };
     view()
-        .role(AccessibilityRole::Menuitem)
-        .disabled(props.disabled)
+        .role(move || {
+            props.role.get().unwrap_or(if checked.get().is_some() {
+                AccessibilityRole::MenuItemCheckbox
+            } else {
+                AccessibilityRole::Menuitem
+            })
+        })
+        .accessibility_state(move || AccessibilityState {
+            checked: checked
+                .get()
+                .map(|on| if on { Checked::True } else { Checked::False }),
+            ..AccessibilityState::default()
+        })
+        .checked_style(props.checked_style)
+        .disabled(disabled)
         .optional_label(props.accessibility_label)
         .when_some(sheet, |v, m| {
             v.style_when(move || !m.shown(), |s| s.hidden())
@@ -472,7 +637,7 @@ pub fn MenuItem(props: MenuItemProps, cx: Scope<MenuItemEvent>) -> impl IntoElem
                 (m.close)(OpenChangeReason::Select);
             }
         })
-        .child(content)
+        .children(content)
 }
 
 /// The props of [`MenuSeparator`].
@@ -512,7 +677,8 @@ pub struct SubmenuProps {
 /// trigger, opened as the pointer comes over the trigger or presses it; on
 /// touch screens pressing the trigger shows its items in the sheet instead
 /// of the ones around it, with its `back` row first. Its popups take the
-/// menu's `popupClass` / `popupStyle`.
+/// menu's `popupClass` / `popupStyle` and its states' looks
+/// (`popupStartingClass`, `popupEndingClass`, ...).
 #[component]
 pub fn Submenu(props: SubmenuProps, cx: Scope<NoEvent>) -> impl IntoElement {
     let _ = cx;
@@ -524,13 +690,17 @@ pub fn Submenu(props: SubmenuProps, cx: Scope<NoEvent>) -> impl IntoElement {
         *n += 1;
         *n
     });
+    let (path, open_sub, around) = (menu.path, menu.open_sub, menu.open);
+    // Open while chosen at its level and every level around it is open:
+    // closing the menu closes it, no state written.
+    let sub_open = computed(move || around.get() && open_sub.get() == Some(id));
     let inner = MenuContext {
         level: id,
         open_sub: signal(None),
+        open: sub_open,
         ..menu.clone()
     };
     provide_context(inner.clone());
-    let (path, open_sub) = (menu.path, menu.open_sub);
     if menu.sheet {
         let shown = menu.clone();
         let into = move || {
@@ -575,6 +745,7 @@ pub fn Submenu(props: SubmenuProps, cx: Scope<NoEvent>) -> impl IntoElement {
             open_sub.set(Some(id));
         }
     };
+    let presence = PopupPresence::new(move || sub_open.get(), inner.looks);
     view()
         .child(props.trigger.place(move |t| {
             t.element_ref(&anchor)
@@ -587,15 +758,16 @@ pub fn Submenu(props: SubmenuProps, cx: Scope<NoEvent>) -> impl IntoElement {
                 .on_press(open)
         }))
         .child(when(
-            move || open_sub.get() == Some(id),
+            move || presence.mounted(),
             move || {
                 overlay()
                     .anchor(&anchor)
                     .placement(Placement::Right)
                     .align(Align::Start)
                     .role(AccessibilityRole::Menu)
-                    .app_class(inner.popup_class)
-                    .inline_style(inner.popup_style)
+                    .element_ref(&presence.popup())
+                    .app_class(move || presence.class())
+                    .state_inline_style(move || presence.style())
                     .on_cancel(move || open_sub.set(None))
                     .child(props.children)
             },

@@ -77,10 +77,11 @@ impl Animator {
         changed
     }
 
-    /// Whether the graph animates.
+    /// Whether the graph runs an animation that ends by itself (not one
+    /// looping forever, which no test step waits for).
     #[cfg(feature = "dev")]
-    pub(crate) fn animating(&self) -> bool {
-        self.graph.is_animating()
+    pub(crate) fn finishing(&self) -> bool {
+        self.graph.is_finishing()
     }
 
     pub(crate) fn take_finished(&mut self) -> Vec<Finished> {

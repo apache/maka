@@ -8,8 +8,7 @@ use nsh_core::{
     SvgPaint,
     canvas::{CanvasOp, Num, PathOp},
     element::{
-        JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, RowAccessor, RowText, Rows, Style,
-        TsTypes,
+        JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, RowAccessor, RowText, Style, TsTypes,
     },
     prelude::*,
 };
@@ -212,6 +211,12 @@ pub struct BarProps {
     /// The style of its background, over `backgroundClass`.
     #[prop(default)]
     pub background_style: Prop<Style>,
+    /// The category of each bar, which the plot's `colorScale` gives a
+    /// color (d3's `scaleOrdinal` of a field): a field name (its text, a
+    /// number as JS writes it) or a function of the row and its index.
+    /// That color is the bar's `fill` where nothing sets one, in place of
+    /// `currentColor`, so the app's `fill-*` classes and `fill` style win.
+    pub color: Prop<Option<RowText>>,
 }
 
 /// A bar a plot knows, for laying out its stacks and groups.
@@ -385,8 +390,9 @@ struct Geometry {
 /// the same `stack` pile up; the others stand side by side in each band
 /// (`groupPadding` between them). It fills with its `fill` (`fill-*`
 /// classes; inherited from the plot as CSS inherits it), `currentColor`
-/// where none is set, over its `background` part (a gradient per bar,
-/// `bg-linear-*`; `fill` is then `none` where none is set), its corners
+/// where none is set (with `color`, each bar's category's color of the
+/// plot's `colorScale` instead), over its `background` part (a gradient
+/// per bar, `bg-linear-*`; `fill` is then `none` where none is set), its corners
 /// rounded by `cornerRadii`. Its values and base count in the value
 /// scale's domain when the plot has none. With the plot's appear, its bars
 /// grow out of their base (one after another with `stagger`); while the
@@ -505,8 +511,9 @@ pub fn Bar(props: BarProps, _cx: Scope<NoEvent>) -> impl IntoElement {
             .staggered(row, g.rows, stagger.get().0.clamp(0.0, 0.95))
     };
     // The opacity of row `row`'s bars: `inactiveOpacity` away from the
-    // hover's row, by the distance of the hover's band (gliding on the
-    // pointer spring) in bands, as far as the hover has faded in.
+    // hover's row, by the distance of the hover's band (on the row under
+    // the pointer at once, gliding on the pointer spring when the keys step)
+    // in bands, as far as the hover has faded in.
     let opacity = move |g: &Geometry, bar: &BarRect| -> Option<AnimatedNode> {
         let dim = 1.0 - inactive.get()?.0.clamp(0.0, 1.0);
         if dim <= 0.0 || g.step <= 0.0 || !plot.interactive.get() {
@@ -607,22 +614,33 @@ pub fn Bar(props: BarProps, _cx: Scope<NoEvent>) -> impl IntoElement {
             .app_class(background_class)
             .inline_style(background_style)
         }))
-        .child(mark_canvas(
-            Some(plot),
-            || STROKE_ROOM,
-            move |p, _| {
-                let initial = match has_background() {
-                    true => SvgPaint::None,
-                    false => SvgPaint::CurrentColor,
-                };
-                draw(p.fill_style_from_view(initial), &|p, _| p.fill())
-            },
-        ))
+        .child({
+            let colors = series::colors(plot, move || plot.rows.get(), props.color);
+            mark_canvas(
+                Some(plot),
+                || STROKE_ROOM,
+                move |p, _| {
+                    let initial = match has_background() {
+                        true => SvgPaint::None,
+                        false => SvgPaint::CurrentColor,
+                    };
+                    match colors.get() {
+                        None => draw(p.fill_style_from_view(initial), &|p, _| p.fill()),
+                        // Each bar its row's color.
+                        Some(colors) => draw(p, &|p, bar| {
+                            let color = colors.get(bar.row).copied().flatten();
+                            p.fill_style_from_view(series::paint_of(color, initial))
+                                .fill()
+                        }),
+                    }
+                },
+            )
+        })
         // The label part: a text at each bar's value end.
         .child(when(
             move || label.with(Option::is_some),
             move || {
-                let texts = texts(move || plot.rows.get(), move || label.get());
+                let texts = series::texts(move || plot.rows.get(), move || label.get());
                 // A label per row with a bar, made again when the rows the
                 // appear staggers over or the bars' direction change.
                 let shown = move || {
@@ -657,38 +675,6 @@ pub fn Bar(props: BarProps, _cx: Scope<NoEvent>) -> impl IntoElement {
                 )
             },
         ))
-}
-
-/// The texts `label` reads of `rows`, once known (as [`series::values`]):
-/// a bar's labels and a pie's.
-pub(super) fn texts(
-    rows: impl Fn() -> Rows + 'static,
-    label: impl Fn() -> Option<RowText> + 'static,
-) -> Signal<Option<Arc<[SharedString]>>> {
-    let out = signal(None::<Arc<[SharedString]>>);
-    // A newer run wins over the answers of an older one.
-    let generation = stored(0u64);
-    effect(move || {
-        let (rows, label) = (rows(), label());
-        let run = generation.get() + 1;
-        generation.replace(run);
-        let Some(label) = label else {
-            out.set(None);
-            return;
-        };
-        match label.texts_now(&rows) {
-            Some(texts) => out.set(Some(texts)),
-            None => {
-                spawn(async move {
-                    let texts = label.texts(&rows).await;
-                    if generation.get() == run {
-                        out.set(Some(texts));
-                    }
-                });
-            }
-        }
-    });
-    out
 }
 
 /// What a bar's label needs.

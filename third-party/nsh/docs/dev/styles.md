@@ -61,15 +61,20 @@
   `focus:` / `focus-within:` / `disabled:` / `enabled:` / `selected:` (`accessibilityState.selected`, a `Button`'s
   `selected`) / `checked:` (`accessibilityState.checked`, not mixed) / `indeterminate:` (`accessibilityState.checked`
   mixed, CSS's `:indeterminate`) / `aria-expanded:` (`accessibilityState.expanded`: a `Popover`'s or `Menu`'s trigger
-  while its popup is open), `group-*:` (named groups `group/name`), `first:` / `last:` /
+  while its popup is open) / `aria-pressed:` (`accessibilityState.pressed` true: a toggle button that is on; not
+  `active:`, a press in progress) / `aria-busy:` / `aria-checked:` / `aria-selected:` (Tailwind v4's
+  `&[aria-busy="true"]`, ...: `busy`, `checked` true, `selected`; `aria-current:` and Tailwind's other `aria-*` names are
+  unknown, NSH has no such states), `group-*:` (named groups `group/name`), `first:` / `last:` /
   `odd:` / `even:` / `only:`, `placeholder:` / `selection:` (a color only, the pseudo-element's: `placeholder:text-*` / `selection:bg-*`, the
   `placeholderColor` / `selectionColor` style keys; other utilities under them are unknown), `!` (important). The state classes have style props of their own (`activeStyle`, `hoverStyle`,
-  `focusStyle`, `disabledStyle`, `checkedStyle`, `indeterminateStyle`, `expandedStyle`, a `Button`'s `selectedStyle`),
-  resolved the same way: later states win, `disabled` over all. `selected`, `checked`, `indeterminate` and `expanded`
-  are value states the core sets from the accessibility state (never reported by the platform). The first three are
+  `focusStyle`, `disabledStyle`, `checkedStyle`, `indeterminateStyle`, `expandedStyle`, `pressedStyle`, a `Button`'s
+  `selectedStyle`), resolved the same way: later states win, `disabled` over all. `selected`, `checked`, `indeterminate`,
+  `expanded`, `pressed` (`state::ARIA_PRESSED`) and `busy` are value states (`state::ACCESSIBILITY`, set by
+  `Core::set_accessibility_states` from `classes::accessibility_states`) the core sets from the accessibility state (never reported by the platform). The first three are
   below the interaction states: `checked`, then `indeterminate` (Tailwind's order), then `selected`, then `hover`,
-  `focus`, `active` (gpui-base's order of value states); `expanded` is above them, as Tailwind's `aria-*` variants
-  come after its pseudo-classes, so an open popup's trigger keeps its look while hovered or pressed. `disabled` (any element) applies `disabled:` and drops
+  `focus`, `active` (gpui-base's order of value states); the `aria-*` variants are above them (`aria-busy`,
+  `aria-checked`, `aria-expanded`, `aria-pressed`, `aria-selected`, by name), as Tailwind's `aria-*` variants come
+  after its pseudo-classes, so an open popup's trigger keeps its look while hovered or pressed. `disabled` (any element) applies `disabled:` and drops
   the node's press listeners from what is mounted, so it shows no press feedback either. A part of a Rust component
   shows its control's `checked`, `indeterminate` and `disabled` to its own classes and state styles
   (`Interactive::project_checked`, `project_indeterminate`, `project_disabled`, and `project_focused` for the part the keys act on; `Prop::ProjectedStates`): a switch's thumb styled `checked:translate-x-4`, with no accessibility
@@ -247,7 +252,9 @@
   and `blur`, applied while decoding); iOS texts draw no gradients or inset shadows; Android has no backdrop blur, `blur` or
   `drop-shadow` before API 31; Linux and GPUI draw no backdrop filter, GPUI no `blur()` or `mixBlendMode`; iOS, macOS and Android draw one `drop-shadow()`,
   the widest of the chain's (the last of equals; the web, Linux, Windows and GPUI draw every layer a class or
-  style gives); a text shadow is one layer everywhere (`text-shadow-*` keep the theme's widest).
+  style gives); a text shadow is one layer everywhere (`text-shadow-*` keep the theme's widest); a text's `color`
+  transitions (`transition-colors`) on every backend when the whole text is one color before and after (a text of
+  several colors, and spans with their own `transition`, take the new colors at once).
 - **View styles**: `backgroundColor`, `borderWidth` / `borderColor` (also per side: `borderTopWidth`, `borderLeftColor`, ...),
   `borderStyle` (`solid` / `dashed` / `dotted`; `none` / `hidden` zero the used widths in layout and paint whatever
   order the widths come in, as `outlineStyle: "none"` does, `Pending`), `borderRadius` + the four `borderTopLeftRadius`-style corners, `borderCurve`

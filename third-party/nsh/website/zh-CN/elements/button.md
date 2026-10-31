@@ -1,7 +1,6 @@
 ---
 title: Button
 description: Button 组件：一个负责按压、禁用和选中状态以及屏幕阅读器角色的按压目标，样式由应用决定。
-order: 20
 group: base
 demo: el-button
 ---

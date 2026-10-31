@@ -8,7 +8,9 @@
 // (`selectedStyle`) and of the marker it puts inside, whose
 // `group-selected:` and `group-disabled:` classes follow the tab. The
 // marker's widths move the label after it, which is how its script sees
-// them.
+// them. The list's indicator (`indicatorClass`, `indicatorStyle`) is a bar
+// at the left of the column of tabs, inside margins of 2 along it, which
+// the core places on the selected tab (the view below the first tab).
 import { Text, View, signal } from "nsh";
 import { Tab, Tabs } from "nsh/base";
 
@@ -37,7 +39,12 @@ function App() {
   );
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
-      <Tabs testID="sections" class="gap-[4px]">
+      <Tabs
+        testID="sections"
+        class="gap-[4px]"
+        indicatorClass="left-0 w-[3px] my-[2px]"
+        indicatorStyle={{ backgroundColor: "#ff0000" }}
+      >
         {section("overview", "Overview")}
         {section("activity", "Activity")}
         {section("billing", "Billing", true)}

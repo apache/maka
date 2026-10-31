@@ -125,8 +125,8 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/nsh-test-tmp"
           echo "TMPDIR=$RUNNER_TEMP/nsh-test-tmp" >> "$GITHUB_ENV"
-      # QuickJS is C: bindgen needs libclang, its WebAssembly build clang
-      # and llvm-ar. The describe program links the gallery's crate,
+      # QuickJS is C: bindgen needs libclang for the CLI; the web runtime's
+      # C code (zstd) clang and llvm-ar. The describe program links the gallery's crate,
       # whose native entry (`cargo run`) uses GTK 4 on Linux.
       - name: Install clang, LLVM and GTK 4
         run: sudo apt-get update && sudo apt-get install -y clang llvm libclang-dev libgtk-4-dev
@@ -178,6 +178,10 @@ jobs:
           for app in counter gallery rust-exports; do
             ./target/debug/nsh test "examples/$app"
           done
+      # NSH's generated declarations type-check themselves: apps skip
+      # checking them (`skipLibCheck`), which would hide a broken one.
+      - name: Type-check the generated declarations
+        run: ./target/debug/nsh check examples/counter -- --skipLibCheck false
       # The same tests in the runner's Chrome, headless, with the browser's
       # trusted input (`nsh test --target web`): those a real platform runs
       # (real time).

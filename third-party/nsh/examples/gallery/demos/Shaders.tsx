@@ -195,9 +195,10 @@ const GLOW_COLORS = ["#f43f5e", "#7c3aed", "#2563eb"];
 function Glow() {
   const x = createAnimatedValue(0.5);
   const y = createAnimatedValue(0.5);
+  // The orb is under the finger in the same frame: a drag never trails.
   const follow = (px: number, py: number) => {
-    Animated.spring(x, { toValue: px }).start();
-    Animated.spring(y, { toValue: py }).start();
+    x.set(px);
+    y.set(py);
   };
   return (
     <Card icon="spark" title="Glow" subtitle="Soft orbs of light that blend">

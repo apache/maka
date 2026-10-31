@@ -226,6 +226,60 @@ fn seatbelt_network_policy_controls_real_loopback_connections() {
 }
 
 #[test]
+fn seatbelt_allowed_network_reaches_system_dns_without_opening_other_host_sockets() {
+    use std::os::unix::net::{UnixListener, UnixStream};
+    const CONNECT: &str = "MAKA_SANDBOX_TEST_DNS_SOCKET";
+    if let Some(path) = std::env::var_os(CONNECT) {
+        std::process::exit(if UnixStream::connect(path).is_ok() {
+            0
+        } else {
+            1
+        });
+    }
+    let resolver = Path::new("/private/var/run/mDNSResponder");
+    UnixStream::connect(resolver).expect("the host system resolver must be reachable");
+    let temp = tempfile::tempdir().unwrap();
+    let private = temp.path().canonicalize().unwrap().join("host.sock");
+    let _private = UnixListener::bind(&private).unwrap();
+    let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+    for network in [
+        Network::Denied,
+        Network::Allowed,
+        Network::destination(maka_sandbox::Destination::new("example.org", 443).unwrap()),
+    ] {
+        for path in [resolver, private.as_path()] {
+            let sandbox = Sandbox::Managed {
+                filesystem: Policy::uniform(Access::Read),
+                network: network.clone(),
+            };
+            let Launch::Wrapped { program, args } = sandbox
+                .prepare_with_proxy(Path::new("/"), proxy.local_addr().unwrap())
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            let output = std::process::Command::new(program)
+                .args(args)
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "seatbelt::seatbelt_allowed_network_reaches_system_dns_without_opening_other_host_sockets",
+                ])
+                .env_clear()
+                .env(CONNECT, path)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.success(),
+                network == Network::Allowed && path == resolver,
+                "{network:?} connecting to {path:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
 fn seatbelt_globs_match_host_decisions_and_protect_future_matches_from_rename() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();

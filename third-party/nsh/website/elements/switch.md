@@ -1,7 +1,6 @@
 ---
 title: Switch
 description: "The Switch component: an on / off control that owns presses, keyboard activation, the disabled state and its role and value for screen readers, with a track and a thumb the app styles."
-order: 20.5
 group: base
 demo: el-switch
 ---

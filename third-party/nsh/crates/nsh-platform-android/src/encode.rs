@@ -18,12 +18,12 @@
 
 use jni::objects::GlobalRef;
 use nsh_core::{
-    AccessibilityRole, AudioSession, AutoCapitalize, AutoFill, BorderStyle, Checked, Color,
-    Command, DialogButtonStyle, InputConfig, KeyboardDismissMode, KeyboardTaps, KeyboardType,
-    LayoutCurve, LayoutProperty, LayoutTransition, LiveRegion, ModalAnimation, ModalPresentation,
-    MountBatch, MountItem, NativeProps, PointerEvents, ResizeMode, ReturnKeyType, ScreenAnimation,
-    ScreenConfig, SnapAlignment, StatusBarStyle, SubmitBehavior, TextAlign, ViewKind, ViewProps,
-    ViewStyle, WebSource,
+    AccessibilityCurrent, AccessibilityRole, AudioSession, AutoCapitalize, AutoFill, BorderStyle,
+    Checked, Color, Command, DialogButtonStyle, InputConfig, KeyboardDismissMode, KeyboardTaps,
+    KeyboardType, LayoutCurve, LayoutProperty, LayoutTransition, LiveRegion, ModalAnimation,
+    ModalPresentation, MountBatch, MountItem, NativeProps, PointerEvents, ResizeMode,
+    ReturnKeyType, ScreenAnimation, ScreenConfig, SnapAlignment, StatusBarStyle, SubmitBehavior,
+    TextAlign, ViewKind, ViewProps, ViewStyle, WebSource,
     geometry::{DefiniteLength, REM_SIZE},
 };
 
@@ -249,6 +249,9 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                     None => 2,
                 });
                 opt_color(&mut e, text.selection_color);
+                // The one color all of it is drawn in, if there is one: a
+                // change of it transitions (`transition-colors`, `TextBox`).
+                opt_color(&mut e, text.uniform_color());
             }
             MountItem::Events { id, events } => {
                 e.int(EVENTS);
@@ -671,7 +674,15 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                     | Command::Desktop(_)
                     // No host answers `nsh/host` here (`Environment::host`):
                     // the core rejects the calls first.
-                    | Command::HostCall { .. } => e.int(-1),
+                    | Command::HostCall { .. }
+                    // No eyedropper (`Environment::screen_color`): the core
+                    // answers no color first.
+                    | Command::PickScreenColor { .. }
+                    // No file dialogs (`Environment::file_requests`): the
+                    // core answers first.
+                    | Command::FileRequest { .. }
+                    // No menus of the platform's own to color.
+                    | Command::Tokens(_) => e.int(-1),
                 }
             }
         }
@@ -1065,6 +1076,23 @@ fn view_props(e: &mut Encoded, p: &ViewProps) {
         Some(true) => flags |= 64 | 128,
         None => {}
     }
+    match s.pressed {
+        Some(Checked::False) => flags |= 256,
+        Some(Checked::True) => flags |= 256 | 512,
+        Some(Checked::Mixed) => flags |= 256 | 1024,
+        None => {}
+    }
+    // The current item's kind, in bits 11 to 13 (`A11y.java`
+    // `CURRENT_DESCRIPTIONS`).
+    flags |= match s.current {
+        None => 0,
+        Some(AccessibilityCurrent::True) => 1,
+        Some(AccessibilityCurrent::Page) => 2,
+        Some(AccessibilityCurrent::Step) => 3,
+        Some(AccessibilityCurrent::Location) => 4,
+        Some(AccessibilityCurrent::Date) => 5,
+        Some(AccessibilityCurrent::Time) => 6,
+    } << 11;
     e.int(flags);
     match &a.value {
         Some(v) => {
@@ -1154,6 +1182,13 @@ fn role_index(role: AccessibilityRole) -> i32 {
         RowGroup => 33,
         Listbox => 34,
         Option => 35,
+        Group => 36,
+        Region => 37,
+        Navigation => 38,
+        Tree => 39,
+        TreeItem => 40,
+        MenuItemCheckbox => 41,
+        MenuItemRadio => 42,
     }
 }
 

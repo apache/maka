@@ -1,7 +1,6 @@
 ---
 title: DiffView
 description: "The DiffView component: the changes between two texts or of a patch, side by side or unified, with the words changed within lines highlighted, unchanged lines collapsed into separators that expand, syntax highlighting, soft wrap, per-change actions, line selection and review annotations."
-order: 26.3
 group: base
 demo: el-diff-view
 ---
@@ -245,7 +244,8 @@ out of the proposal. A view showing a `patch` shows excerpts of the files, and i
 
 `ref={diff}` gives the view's methods (`DiffViewRef`). Methods that return a value (`hunks()`, `stats()`) return a
 `Promise` of it in JS, so `await` them: `const changes = await diff.hunks()`. For counts shown on screen,
-`onStatsChange` reports them as they change.
+`onStatsChange` reports them as they change. A method given a change, a separator or a file the diff does not have
+changes nothing and logs a warning naming the method and the value.
 
 | Method | Description |
 |---|---|

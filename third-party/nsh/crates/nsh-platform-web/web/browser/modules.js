@@ -13,7 +13,20 @@ export function createModules(invoke, values, live, wake, makeComponent) {
     values.classPeers.delete(id);
     invoke(203, [id]);
   });
-  const call = (op, prefix, receiver, args, promise, throws) => {
+  // A function Rust made (a `Stop`): it calls back into Rust, which
+  // drops what it runs once the function is collected.
+  const functions = new FinalizationRegistry(id => { if (live()) invoke(209, [id]); });
+  values.makeFunction = id => {
+    const fn = () => {
+      if (!live()) return;
+      invoke(208, [id]);
+      wake();
+    };
+    functions.register(fn, id);
+    return fn;
+  };
+  // A call returning a promise never throws: what Rust refuses rejects it.
+  const call = (op, prefix, receiver, args, promise) => {
     if (!live()) throw new Error("the app was disposed");
     let id = 0, result;
     if (promise) {
@@ -28,7 +41,7 @@ export function createModules(invoke, values, live, wake, makeComponent) {
     } catch (error) {
       const waiter = pending.get(id);
       pending.delete(id);
-      if (waiter && !throws) { waiter.reject(error); return result; }
+      if (waiter) { waiter.reject(error); return result; }
       throw error;
     }
   };
@@ -64,7 +77,7 @@ export function createModules(invoke, values, live, wake, makeComponent) {
       const Constructor = function (...args) {
         if (!new.target) throw new TypeError(`${spec.name} requires new`);
         if (!ctor) throw new TypeError(`${spec.name} has no public constructor`);
-        return call(202, [spec.id, ctor.id], this, args, false, true);
+        return call(202, [spec.id, ctor.id], this, args, false);
       };
       Object.defineProperty(Constructor, "name", { value: spec.name });
       classes.set(spec.id, Constructor);
@@ -75,7 +88,7 @@ export function createModules(invoke, values, live, wake, makeComponent) {
       for (const member of spec.members) {
         if (member.kind === "constructor") continue;
         const fn = function (...args) {
-          return call(202, [spec.id, member.id], this, args, member.promise, member.throws);
+          return call(202, [spec.id, member.id], this, args, member.promise);
         };
         Object.defineProperty(fn, "name", { value: member.name });
         const target = member.kind === "static" ? Constructor : Constructor.prototype;
@@ -97,7 +110,7 @@ export function createModules(invoke, values, live, wake, makeComponent) {
       const object = module.flat ? namespace : (namespace[module.name] ??= {});
       Object.assign(object, module.constants);
       for (const spec of module.functions) {
-        const fn = function (...args) { return call(201, [spec.id], this, args, spec.promise, spec.throws); };
+        const fn = function (...args) { return call(201, [spec.id], this, args, spec.promise); };
         Object.defineProperty(fn, "name", { value: spec.name });
         Object.defineProperty(object, spec.name, spec.getter
           ? { get: fn, enumerable: true, configurable: true }

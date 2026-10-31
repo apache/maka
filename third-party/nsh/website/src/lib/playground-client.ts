@@ -10,6 +10,7 @@ import { syntaxHighlighting } from '@codemirror/language';
 import { classHighlighter } from '@lezer/highlight';
 import { onThemeChange, siteTheme } from './demo-client';
 import { inlineGalleryUi } from './inline-gallery-ui';
+import { mountSelect } from './ui/select';
 
 // Each demo's source, loaded when picked.
 const DEMOS = import.meta.glob('/demos/*.tsx', { query: '?raw', import: 'default' }) as Record<
@@ -69,98 +70,6 @@ async function decodeCode(text: string): Promise<string> {
   return new TextDecoder().decode(await pipe(fromBase64Url(text), new DecompressionStream('deflate-raw')));
 }
 
-/**
- * The example picker: a trigger button and a listbox popover (WAI-ARIA
- * select-only combobox pattern, simplified). Focus moves to the list while
- * it is open; `aria-activedescendant` names the option the keys point at.
- */
-function mountPicker(el: HTMLElement, onPick: (value: string) => void) {
-  const trigger = el.querySelector<HTMLButtonElement>('[data-trigger]')!;
-  const menu = el.querySelector<HTMLElement>('[data-menu]')!;
-  const current = el.querySelector<HTMLElement>('[data-current]')!;
-  const options = [...menu.querySelectorAll<HTMLElement>('[role="option"]')];
-  let active = 0;
-
-  const index = () => Math.max(0, options.findIndex((o) => o.dataset.value === el.dataset.value));
-  const setActive = (i: number) => {
-    active = Math.max(0, Math.min(options.length - 1, i));
-    options.forEach((o, k) => o.toggleAttribute('data-active', k === active));
-    menu.setAttribute('aria-activedescendant', options[active].id);
-    options[active].scrollIntoView({ block: 'nearest' });
-  };
-  const isOpen = () => !menu.hidden;
-  const open = () => {
-    menu.hidden = false;
-    trigger.setAttribute('aria-expanded', 'true');
-    setActive(index());
-    menu.focus();
-  };
-  const close = (refocus = true) => {
-    if (!isOpen()) return;
-    menu.hidden = true;
-    trigger.setAttribute('aria-expanded', 'false');
-    if (refocus) trigger.focus();
-  };
-  const set = (value: string) => {
-    el.dataset.value = value;
-    for (const o of options) o.setAttribute('aria-selected', String(o.dataset.value === value));
-    current.textContent = `${value}.tsx`;
-  };
-  const choose = (i: number) => {
-    const value = options[i].dataset.value!;
-    close();
-    if (value === el.dataset.value) return;
-    set(value);
-    onPick(value);
-  };
-
-  trigger.addEventListener('click', () => (isOpen() ? close() : open()));
-  trigger.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      open();
-    }
-  });
-  menu.addEventListener('keydown', (e) => {
-    switch (e.key) {
-      case 'ArrowDown': setActive(active + 1); break;
-      case 'ArrowUp': setActive(active - 1); break;
-      case 'Home': setActive(0); break;
-      case 'End': setActive(options.length - 1); break;
-      case 'PageDown': setActive(active + 8); break;
-      case 'PageUp': setActive(active - 8); break;
-      case 'Enter':
-      case ' ': choose(active); break;
-      case 'Escape': close(); break;
-      // Tab leaves the menu closed, focus back on the trigger it belongs to.
-      case 'Tab': close(); break;
-      default: return;
-    }
-    e.preventDefault();
-  });
-  menu.addEventListener('click', (e) => {
-    const option = (e.target as HTMLElement).closest<HTMLElement>('[role="option"]');
-    if (option) choose(options.indexOf(option));
-  });
-  menu.addEventListener('pointermove', (e) => {
-    const option = (e.target as HTMLElement).closest<HTMLElement>('[role="option"]');
-    if (option && options.indexOf(option) !== active) setActive(options.indexOf(option));
-  });
-  document.addEventListener('pointerdown', (e) => {
-    if (isOpen() && !el.contains(e.target as Node)) close(false);
-  });
-  menu.addEventListener('focusout', (e) => {
-    if (isOpen() && !el.contains(e.relatedTarget as Node | null)) close(false);
-  });
-
-  return {
-    get value() {
-      return el.dataset.value ?? '';
-    },
-    set,
-  };
-}
-
 function storage(): Storage | null {
   try {
     return window.localStorage;
@@ -171,12 +80,23 @@ function storage(): Storage | null {
 
 export async function mountPlayground(root: HTMLElement) {
   const t: Copy = JSON.parse(root.dataset.copy ?? '{}');
-  const select = mountPicker(root.querySelector<HTMLElement>('[data-example]')!, (value) => pick(value));
+  const picker = root.querySelector<HTMLElement>('[data-example]')!;
+  const select = mountSelect(picker);
+  picker.addEventListener('change', () => pick(select.value));
   const status = root.querySelector<HTMLElement>('[data-status]')!;
   const log = root.querySelector<HTMLElement>('[data-log]')!;
   const frame = root.querySelector<HTMLIFrameElement>('[data-frame]');
   // The app's appearance follows the page's theme until changed here.
-  const dark = root.querySelector<HTMLInputElement>('[data-dark]')!;
+  // A toggle (`aria-pressed`): pressed is dark.
+  const darkToggle = root.querySelector<HTMLButtonElement>('[data-dark]')!;
+  const dark = {
+    get checked() {
+      return darkToggle.getAttribute('aria-pressed') === 'true';
+    },
+    set checked(on: boolean) {
+      darkToggle.setAttribute('aria-pressed', String(on));
+    },
+  };
   dark.checked = siteTheme() === 'dark';
   onThemeChange((theme) => {
     dark.checked = theme === 'dark';
@@ -283,7 +203,8 @@ export async function mountPlayground(root: HTMLElement) {
       setStatus(link);
     }
   });
-  dark.addEventListener('change', () => {
+  darkToggle.addEventListener('click', () => {
+    dark.checked = !dark.checked;
     frame?.contentWindow?.postMessage({ theme: dark.checked ? 'dark' : 'light' }, '*');
   });
 

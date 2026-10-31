@@ -78,6 +78,7 @@ mount(() => <Text>{{shown()}}</Text>);
             trace: false,
             network: None,
             websocket: None,
+            refuse_connections: None,
             filesystem: None,
             assets: None,
             chunk_loader: None,
@@ -193,28 +194,43 @@ fn run_keeps_split_utf8_and_captures_both_pipes() {
     );
     assert_eq!(
         app.shown("done"),
-        r#"done {"code":0,"stdout":"€","stderr":"warning"}"#
+        r#"done {"code":0,"signal":null,"stdout":"€","stderr":"warning"}"#
     );
 }
 
 #[test]
-fn a_refused_command_and_a_failed_launch_throw_and_run_rejects_a_failed_launch() {
+fn run_reports_the_signal_that_ended_the_child() {
     let app = App::start(
-        r#"const lines = [];
-const shape = (e) => `${e.constructor.name} ${e.code} ${e.syscall} ${e.path} ${e.message.includes("capability denied")}`;
-for (const command of ["definitely-not-granted", "/nonexistent/nsh-fixture"]) {
-  try { process.spawn(command); lines.push("spawned"); } catch (e) { lines.push(shape(e)); }
+        r#"process.run("/bin/sh", ["-c", "kill -TERM $$"])
+  .then((r) => report(`${r.code} ${r.signal}`), (e) => report(String(e)));"#,
+        shell(),
+    );
+    assert_eq!(app.shown("done"), "done null SIGTERM");
 }
-try { process.run("not-granted"); } catch (e) { lines.push(shape(e)); }
-process.run("/nonexistent/nsh-fixture").then(() => report("ran"), (e) => report(`${lines.join("|")}|${shape(e)}`));"#,
+
+#[test]
+fn a_refused_command_and_a_failed_launch_throw_and_run_rejects_both() {
+    let app = App::start(
+        r#"(async () => {
+  const lines = [];
+  const shape = (e) => `${e.constructor.name} ${e.code} ${e.syscall} ${e.path}`;
+  const denial = (e) => `${e.constructor.name} ${e.code} ${e.permission} ${e.resource}`;
+  try { process.spawn("definitely-not-granted"); lines.push("spawned"); } catch (e) { lines.push(denial(e)); }
+  try { process.spawn("/nonexistent/nsh-fixture"); lines.push("spawned"); } catch (e) { lines.push(shape(e)); }
+  let refused;
+  try { refused = process.run("not-granted"); } catch { lines.push("threw"); }
+  lines.push(await refused.then(() => "ran", denial));
+  lines.push(await process.run("/nonexistent/nsh-fixture").then(() => "ran", shape));
+  report(lines.join("|"));
+})().catch((e) => report(String(e)));"#,
         shell(),
     );
     assert_eq!(
         app.shown("done"),
-        "done TypeError EACCES spawn definitely-not-granted definitely-not-granted true|\
-         Error ENOENT spawn /nonexistent/nsh-fixture /nonexistent/nsh-fixture false|\
-         TypeError EACCES spawn not-granted not-granted true|\
-         Error ENOENT spawn /nonexistent/nsh-fixture /nonexistent/nsh-fixture false"
+        "done Error ERR_ACCESS_DENIED process definitely-not-granted|\
+         Error ENOENT spawn /nonexistent/nsh-fixture /nonexistent/nsh-fixture|\
+         Error ERR_ACCESS_DENIED process not-granted|\
+         Error ENOENT spawn /nonexistent/nsh-fixture /nonexistent/nsh-fixture"
     );
 }
 
@@ -267,15 +283,15 @@ fn dropping_the_engine_kills_every_child_at_once_even_when_they_ignore_sigterm()
 fn run_rejects_a_timeout_and_output_past_its_limit() {
     let app = App::start(
         r#"Promise.all([
-  process.run("/bin/sh", ["-c", "sleep 30"], { timeoutMs: 25 }).then(() => "ran", (e) => String(e)),
+  process.run("/bin/sh", ["-c", "sleep 30"], { timeoutMs: 25 }).then(() => "ran", (e) => `${e.constructor.name}:${e.code}`),
   // `head` is found on the child's PATH, which the host passes on.
-  process.run("/bin/sh", ["-c", "head -c 9437184 /dev/zero"]).then(() => "ran", (e) => String(e)),
+  process.run("/bin/sh", ["-c", "head -c 9437184 /dev/zero"]).then(() => "ran", (e) => `${e.constructor.name}:${e.code}`),
 ]).then((r) => report(r.join("|")));"#,
         shell(),
     );
     assert_eq!(
         app.shown("done"),
-        "done Error: process timed out|Error: process output exceeded 8388608 bytes on one stream"
+        "done Error:ETIMEDOUT|RangeError:ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
     );
 }
 
@@ -385,7 +401,7 @@ fn the_cwd_is_the_data_directory_or_one_within_a_write_grant() {
   const lines = [String(pwd === process.dataDir)];
   for (const cwd of ["${pluginDir}", "${homeDir}", "${pluginDir}/escape"]) {
     try { lines.push((await process.run("/bin/sh", ["-c", "pwd"], { cwd })).stdout.trim().split("/").pop()); }
-    catch (e) { lines.push(e.message.includes("not granted") ? "refused" : e.message); }
+    catch (e) { lines.push(e.code === "ERR_ACCESS_DENIED" && e.permission === "fs" && e.resource === cwd ? "refused" : e.message); }
   }
   report(lines.join("|"));
 })().catch((e) => report(String(e)));"#,
@@ -410,10 +426,10 @@ fn the_cwd_is_the_data_directory_or_one_within_a_write_grant() {
 #[test]
 fn timeouts_signals_and_exit_errors_have_their_shapes() {
     let app = App::start(
-        r#"let thrown = false;
-try { process.run("/bin/sh", [], { timeoutMs: -1 }); } catch (e) { thrown = e instanceof TypeError; }
-const child = process.spawn("/bin/sh", ["-c", "sleep 20"], { timeoutMs: 20 });
-child.on("exit", (r) => report(`${thrown} ${r.code} ${r.signal} ${r.error}`));"#,
+        r#"process.run("/bin/sh", [], { timeoutMs: -1 }).then(() => false, (e) => e instanceof TypeError).then((rejected) => {
+  const child = process.spawn("/bin/sh", ["-c", "sleep 20"], { timeoutMs: 20 });
+  child.on("exit", (r) => report(`${rejected} ${r.code} ${r.signal} ${r.error}`));
+});"#,
         shell(),
     );
     assert_eq!(
@@ -457,20 +473,23 @@ fn a_late_exit_listener_hears_the_exit_and_children_free_their_place() {
 }
 
 #[test]
-fn past_the_children_limit_spawn_throws_and_run_rejects_a_range_error() {
+fn past_the_children_limit_spawn_throws_and_run_rejects_a_quota_error() {
     let app = App::start(
         r#"(async () => {
   const children = [];
   for (let i = 0; i < 32; i++) children.push(process.spawn("/bin/sh", ["-c", "sleep 5"]));
   let thrown = "";
-  try { process.spawn("/bin/sh", ["-c", "exit 0"]); } catch (e) { thrown = e.constructor.name; }
-  const rejected = await process.run("/bin/sh", ["-c", "exit 0"]).then(() => "ran", (e) => e.constructor.name);
+  try { process.spawn("/bin/sh", ["-c", "exit 0"]); } catch (e) { thrown = `${e.constructor.name}:${e.code}`; }
+  const rejected = await process.run("/bin/sh", ["-c", "exit 0"]).then(() => "ran", (e) => `${e.constructor.name}:${e.code}`);
   for (const child of children) child.kill();
   report(`${thrown} ${rejected}`);
 })().catch((e) => report(String(e)));"#,
         shell(),
     );
-    assert_eq!(app.shown("done"), "done RangeError RangeError");
+    assert_eq!(
+        app.shown("done"),
+        "done Error:ERR_NSH_QUOTA_EXCEEDED Error:ERR_NSH_QUOTA_EXCEEDED"
+    );
 }
 
 #[test]

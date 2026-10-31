@@ -2,11 +2,14 @@
 
 use nsh_core::{AccessibilityState, element::Style, prelude::*};
 
+use crate::roving::bar_item;
+
 /// The props of [`Button`].
 #[derive(Debug, Clone, PartialEq, Props)]
 pub struct ButtonProps {
     /// No presses, no press feedback; `disabled:` styles apply and screen
-    /// readers say it is dimmed.
+    /// readers say it is dimmed. A button in a disabled `Toolbar` is
+    /// disabled too.
     #[prop(default)]
     pub disabled: Prop<bool>,
     /// Selected (a toggled trigger, the current tab): screen readers say so.
@@ -43,10 +46,13 @@ pub enum ButtonEvent {
 /// style it, its states with `active:`, `hover:`, `focus:`, `selected:` and
 /// `disabled:` classes or `activeStyle`, `hoverStyle`, `focusStyle`,
 /// `selectedStyle` and `disabledStyle`, and its children are its content.
+/// In a `Toolbar` (or a `ToggleGroup`), it is one of the toolbar's items:
+/// a stop of the keyboard focus only while it is the item Tab enters the
+/// toolbar at, disabled with the toolbar too.
 #[component]
 pub fn Button(props: ButtonProps, cx: Scope<ButtonEvent>) -> impl IntoElement {
-    view()
-        .disabled(props.disabled)
+    let (view, disabled) = bar_item(view(), None, props.disabled);
+    view.disabled(disabled)
         .role(move || props.role.get().unwrap_or(AccessibilityRole::Button))
         .optional_label(props.accessibility_label)
         .accessibility_state(move || AccessibilityState {

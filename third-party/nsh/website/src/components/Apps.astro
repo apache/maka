@@ -1,0 +1,413 @@
+---
+// App Stories: apps built with Native Shell, from `longbridge/nsh-showcases`.
+// Every card is rendered here; the script below searches, filters, sorts and
+// pages them with `lib/showcase-browser.ts`.
+import ShowcaseCard from './ShowcaseCard.astro';
+import Button from './ui/Button.astro';
+import Input from './ui/Input.astro';
+import Label from './ui/Label.astro';
+import Select from './ui/Select.astro';
+import ToggleGroup from './ui/ToggleGroup.astro';
+import ToggleGroupItem from './ui/ToggleGroupItem.astro';
+import type { ShowcaseApp } from '../lib/showcases';
+import { SHOWCASES_URL, type Lang } from '../lib/site';
+
+export interface Props {
+  apps: ShowcaseApp[];
+  lang: Lang;
+}
+
+const { apps, lang } = Astro.props;
+const zh = lang === 'zh-CN';
+
+const CATEGORIES: [string, string, string][] = [
+  ['all', 'All', '全部'],
+  ['dev', 'Developer Tools', '开发工具'],
+  ['finance', 'Finance & Trading', '金融与交易'],
+  ['work', 'Productivity & Business', '效率与商务'],
+  ['media', 'Media & Lifestyle', '媒体与生活'],
+  ['utility', 'Utilities & System', '实用工具与系统'],
+];
+const categories = CATEGORIES.map(([id, en, cn]) => ({
+  id,
+  label: zh ? cn : en,
+  count: id === 'all' ? apps.length : apps.filter((app) => app.category === id).length,
+})).filter((category) => category.id === 'all' || category.count > 0);
+const featured = apps.filter((app) => app.featured);
+// The page as it first shows, before its script runs: newest first.
+const byNewest = [...apps].sort((a, b) => (Date.parse(b.publishedAt ?? '') || 0) - (Date.parse(a.publishedAt ?? '') || 0) || a.name.localeCompare(b.name));
+
+const t = zh
+  ? {
+      kicker: '应用案例',
+      title: '用 Native Shell 做出来的真实应用。',
+      lead: '探索基于 Native Shell 构建的应用：手机、桌面与 Web 上的原生界面，从文件传输、系统监控到 Markdown 阅读。',
+      selectionLabel: '应用收录与精选规则',
+      selectionPolicy: '向 Showcase 仓库提交 PR，审核合并后，应用都会列在应用案例中，但不保证进入 Featured。',
+      rankingPolicy: 'Featured 由维护者结合项目历史、实现情况、完整度与品质挑选。我们会根据各应用后续更新和整体情况微调名单，尽量展示更完整、有代表性的应用。全部应用可按发布时间或 GitHub Stars 排序，也可搜索。',
+      signalCount: `${apps.length} 个应用`,
+      signalLicense: '开源与商业产品',
+      featured: 'Featured · 精选应用',
+      featuredLead: '由维护者挑选，展示完整、优质的应用案例。',
+      community: '全部应用',
+      communityLead: '探索社区应用，找到适合你的工具。GitHub Stars 每周及案例 PR 合并后更新。',
+      searchLabel: '搜索应用',
+      searchPlaceholder: '名称、作者、平台…',
+      sortLabel: '应用排序',
+      newest: '最新发布',
+      mostStars: 'GitHub Stars 最多',
+      filterLabel: '按类别筛选',
+      clearFilters: '清除筛选',
+      empty: '没有找到匹配的应用。',
+      emptyHint: '试试其他关键词或分类。',
+      catalogPending: '应用案例读取 nsh-showcases 仓库：把它克隆到本仓库旁边（../nsh-showcases），然后重新加载。',
+      ctaTitle: '你也用 Native Shell 做了应用？',
+      ctaLead: '请在 Showcase 仓库提交 PR，包含应用清单和清晰、完整、整洁的截图。审核合并后自动列在本页，Featured 由维护者另行挑选。',
+      ctaAction: '提交你的应用',
+      featuredPagination: '精选应用分页',
+      allPagination: '全部应用分页',
+      previousPage: '上一页',
+      nextPage: '下一页',
+      pageLabel: '第 {page} 页',
+      pageStatus: '第 {page} / {total} 页',
+      results: '找到 {count} 个应用',
+    }
+  : {
+      kicker: 'App Stories',
+      title: 'Real apps, shipped with Native Shell.',
+      lead: 'Explore apps built with Native Shell: native UI on phones, desktops and the web, from file sharing and system monitoring to reading Markdown.',
+      selectionLabel: 'How apps are selected',
+      selectionPolicy: 'Every app accepted through a merged PR in the Showcase repository is listed in App Stories. A listing does not guarantee a place in Featured.',
+      rankingPolicy: 'Maintainers select Featured apps based on project history, implementation, completeness and quality, and revisit the selection as apps evolve to highlight complete, representative examples. Browse all apps by publication date or GitHub Stars, or search the collection.',
+      signalCount: `${apps.length} ${apps.length === 1 ? 'app' : 'apps'}`,
+      signalLicense: 'Open source and commercial',
+      featured: 'Featured',
+      featuredLead: 'Complete, carefully crafted apps selected by the maintainers.',
+      community: 'All apps',
+      communityLead: 'Explore apps from the community. GitHub Stars refresh weekly and after Showcase PRs merge.',
+      searchLabel: 'Search apps',
+      searchPlaceholder: 'Name, author, platform…',
+      sortLabel: 'Sort apps',
+      newest: 'Newest published',
+      mostStars: 'Most GitHub Stars',
+      filterLabel: 'Filter by category',
+      clearFilters: 'Clear filters',
+      empty: 'No apps match your search.',
+      emptyHint: 'Try another keyword or category.',
+      catalogPending: 'App Stories reads the nsh-showcases repository: clone it next to this repository (../nsh-showcases) and reload.',
+      ctaTitle: 'Built something with Native Shell?',
+      ctaLead: 'Open a PR in the Showcase repository with your app manifest and clear, complete, tidy screenshots. Every merged app PR is published here automatically; maintainers select Featured apps separately.',
+      ctaAction: 'Submit your app',
+      featuredPagination: 'Featured apps pagination',
+      allPagination: 'All apps pagination',
+      previousPage: 'Previous page',
+      nextPage: 'Next page',
+      pageLabel: 'Page {page}',
+      pageStatus: 'Page {page} of {total}',
+      results: '{count} apps found',
+    };
+
+// What the script needs: the fields browsing reads, and the strings it writes.
+const data = JSON.stringify({
+  apps: apps.map(({ id, name, author, description, category, platforms, source, featured, stars, publishedAt }) => ({
+    id, name, author, description, category, platforms, source, featured, stars, publishedAt,
+  })),
+  copy: { previousPage: t.previousPage, nextPage: t.nextPage, pageLabel: t.pageLabel, pageStatus: t.pageStatus, results: t.results },
+});
+---
+
+<div class="apps-page" data-apps>
+  <script type="application/json" data-apps-json set:html={data.replace(/</g, '\\u003c')} />
+  <div class="apps-hero">
+    <span class="apps-kicker">{t.kicker}</span>
+    <h1>{t.title}</h1>
+    <p class="apps-lead">{t.lead}</p>
+    <details class="apps-policy">
+      <summary>{t.selectionLabel}</summary>
+      <p>{t.selectionPolicy}</p>
+      <p>{t.rankingPolicy}</p>
+    </details>
+    <ul class="apps-signals">
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
+        {t.signalCount}
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="20" x="5" y="2" rx="2"/><path d="M12 18h.01"/></svg>
+        iOS / Android / macOS / Windows / Linux / Web
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.8 1.19 1.83 1.19 3.09 0 4.42-2.7 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+        {t.signalLicense}
+      </li>
+    </ul>
+  </div>
+
+  {apps.length === 0 && <p class="apps-pending">{t.catalogPending}</p>}
+
+  {featured.length > 0 && (
+    <section class="apps-section" aria-labelledby="apps-featured" data-section="featured">
+      <h2 id="apps-featured">{t.featured} <span>{featured.length}</span></h2>
+      <p class="apps-section__lead">{t.featuredLead}</p>
+      <div class="apps-grid" data-grid>
+        {featured.map((app) => <ShowcaseCard app={app} lang={lang} />)}
+      </div>
+      <nav class="apps-pagination" aria-label={t.featuredPagination} data-pagination hidden></nav>
+    </section>
+  )}
+
+  {apps.length > 0 && (
+    <section class="apps-section" aria-labelledby="apps-all" data-section="all">
+      <h2 id="apps-all">{t.community} <span data-total>{apps.length}</span></h2>
+      <p class="apps-section__lead">{t.communityLead}</p>
+      <div class="apps-browser">
+        <div class="apps-toolbar">
+          <div class="apps-field apps-search">
+            <Label for="apps-query">{t.searchLabel}</Label>
+            <Input type="search" id="apps-query" size="sm" placeholder={t.searchPlaceholder} autocomplete="off" data-query>
+              <svg slot="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+            </Input>
+          </div>
+          <div class="apps-field apps-sort">
+            <Label id="apps-sort-label">{t.sortLabel}</Label>
+            <Select
+              id="apps-sort"
+              size="sm"
+              labelledby="apps-sort-label"
+              options={[{ value: 'newest', label: t.newest }, { value: 'stars', label: t.mostStars }]}
+              data-sort
+            />
+          </div>
+        </div>
+        <div class="apps-filter">
+          <ToggleGroup type="multiple" variant="outline" size="sm" spacing={1} aria-label={t.filterLabel}>
+            {categories.map((category) => (
+              <ToggleGroupItem type="multiple" on={category.id === 'all'} count={category.count} data-category={category.id}>{category.label}</ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+          <Button variant="ghost" size="sm" class="apps-reset" disabled data-reset>{t.clearFilters}</Button>
+        </div>
+        <p class="sr-only" role="status" data-status></p>
+      </div>
+      <div class="apps-grid" data-grid>
+        {byNewest.map((app) => <ShowcaseCard app={app} lang={lang} />)}
+      </div>
+      <nav class="apps-pagination" aria-label={t.allPagination} data-pagination hidden></nav>
+      <div class="apps-empty" data-empty hidden>
+        <h3>{t.empty}</h3>
+        <p>{t.emptyHint}</p>
+        <Button variant="secondary" data-reset>{t.clearFilters}</Button>
+      </div>
+    </section>
+  )}
+
+  <div class="apps-cta">
+    <h2>{t.ctaTitle}</h2>
+    <p>{t.ctaLead}</p>
+    <Button variant="secondary" href={`${SHOWCASES_URL}#submit-an-app`} target="_blank" rel="noopener noreferrer">
+      {t.ctaAction}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+    </Button>
+  </div>
+</div>
+
+<script>
+  import { mountSelect } from '../lib/ui/select';
+  import { paginateAll, paginateFeatured, selectShowcases, type BrowsedApp, type ShowcaseSort } from '../lib/showcase-browser';
+
+  interface Copy {
+    previousPage: string;
+    nextPage: string;
+    pageLabel: string;
+    pageStatus: string;
+    results: string;
+  }
+
+  const fill = (template: string, values: Record<string, number>) => template.replace(/\{(\w+)\}/g, (_, key) => String(values[key]));
+  const chevron = (d: string) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`;
+
+  for (const root of document.querySelectorAll<HTMLElement>('[data-apps]')) {
+    const json = root.querySelector('[data-apps-json]');
+    if (!json?.textContent) continue;
+    const { apps, copy } = JSON.parse(json.textContent) as { apps: BrowsedApp[]; copy: Copy };
+    const featuredSection = root.querySelector<HTMLElement>('[data-section="featured"]');
+    const allSection = root.querySelector<HTMLElement>('[data-section="all"]');
+    if (!allSection) continue;
+    const query = allSection.querySelector<HTMLInputElement>('[data-query]')!;
+    const sort = mountSelect(allSection.querySelector<HTMLElement>('[data-sort]')!);
+    const sortRoot = allSection.querySelector<HTMLElement>('[data-sort]')!;
+    const chips = [...allSection.querySelectorAll<HTMLButtonElement>('[data-category]')];
+    const resets = [...allSection.querySelectorAll<HTMLButtonElement>('[data-reset]')];
+    const status = allSection.querySelector<HTMLElement>('[data-status]')!;
+    const total = allSection.querySelector<HTMLElement>('[data-total]')!;
+    const empty = allSection.querySelector<HTMLElement>('[data-empty]')!;
+    const state = { category: 'all', featuredPage: 1, allPage: 1 };
+
+    const cardsOf = (section: HTMLElement) => {
+      const grid = section.querySelector<HTMLElement>('[data-grid]')!;
+      const cards = new Map([...grid.querySelectorAll<HTMLElement>('[data-app]')].map((card) => [card.dataset.app!, card]));
+      return { grid, cards };
+    };
+    const featured = featuredSection && cardsOf(featuredSection);
+    const all = cardsOf(allSection);
+
+    /** Shows `ids` in order in a section's grid, and its page buttons. */
+    const show = (section: HTMLElement, { grid, cards }: ReturnType<typeof cardsOf>, ids: string[], page: number, totalPages: number, go: (page: number) => void) => {
+      for (const card of cards.values()) card.hidden = true;
+      for (const id of ids) {
+        const card = cards.get(id)!;
+        card.hidden = false;
+        grid.append(card);
+      }
+      const nav = section.querySelector<HTMLElement>('[data-pagination]')!;
+      nav.hidden = totalPages <= 1;
+      nav.replaceChildren();
+      if (totalPages <= 1) return;
+      const statusText = document.createElement('span');
+      statusText.className = 'apps-pagination__status';
+      statusText.textContent = fill(copy.pageStatus, { page, total: totalPages });
+      nav.append(statusText);
+      const button = (label: string, html: string, target: number, disabled: boolean, current = false) => {
+        // shadcn's Pagination: ghost icon buttons, the current page outlined.
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.dataset.slot = 'button';
+        b.dataset.variant = current ? 'outline' : 'ghost';
+        b.dataset.size = 'icon-sm';
+        b.setAttribute('aria-label', label);
+        b.title = label;
+        b.innerHTML = html;
+        b.disabled = disabled;
+        if (current) b.setAttribute('aria-current', 'page');
+        b.addEventListener('click', () => go(target));
+        nav.append(b);
+      };
+      button(copy.previousPage, chevron('m15 18-6-6 6-6'), page - 1, page === 1);
+      for (let n = 1; n <= totalPages; n++) button(fill(copy.pageLabel, { page: n }), String(n), n, false, n === page);
+      button(copy.nextPage, chevron('m9 18 6-6-6-6'), page + 1, page === totalPages);
+    };
+
+    const render = () => {
+      if (featuredSection && featured) {
+        const pageOf = paginateFeatured(apps, state.featuredPage);
+        state.featuredPage = pageOf.page;
+        show(featuredSection, featured, pageOf.apps.map((app) => app.id), pageOf.page, pageOf.totalPages, (page) => {
+          state.featuredPage = page;
+          render();
+        });
+      }
+      const matches = selectShowcases(apps, { query: query.value, category: state.category, sort: sort.value as ShowcaseSort }).all;
+      const pageOf = paginateAll(matches, state.allPage);
+      state.allPage = pageOf.page;
+      show(allSection, all, pageOf.apps.map((app) => app.id), pageOf.page, pageOf.totalPages, (page) => {
+        state.allPage = page;
+        render();
+      });
+      total.textContent = String(matches.length);
+      status.textContent = fill(copy.results, { count: matches.length });
+      empty.hidden = matches.length > 0;
+      for (const chip of chips) chip.setAttribute('aria-pressed', String(chip.dataset.category === state.category));
+      const filtered = query.value.trim() !== '' || state.category !== 'all';
+      for (const reset of resets) reset.disabled = !filtered;
+    };
+    const refilter = () => {
+      state.allPage = 1;
+      render();
+    };
+
+    query.addEventListener('input', refilter);
+    sortRoot.addEventListener('change', refilter);
+    for (const chip of chips) {
+      chip.addEventListener('click', () => {
+        state.category = chip.dataset.category!;
+        refilter();
+      });
+    }
+    for (const reset of resets) {
+      reset.addEventListener('click', () => {
+        query.value = '';
+        state.category = 'all';
+        refilter();
+      });
+    }
+    render();
+  }
+</script>
+
+<style is:global>
+  .apps-page {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 3rem clamp(1rem, 3vw, 2.5rem) 4rem;
+    color: var(--foreground);
+  }
+  .apps-hero { max-width: 46rem; margin-bottom: 2.5rem; }
+  .apps-kicker { display: block; margin-bottom: 1rem; color: var(--muted-foreground); font: 600 0.6875rem/1 var(--font-mono); letter-spacing: 0.14em; text-transform: uppercase; }
+  .apps-hero h1 { margin: 0; font-size: clamp(2rem, 3.6vw, 3rem); font-weight: 660; letter-spacing: -0.045em; line-height: 1.15; text-wrap: balance; }
+  .apps-lead { margin: 1rem 0 0; color: var(--muted-foreground); font-size: 1rem; line-height: 1.65; }
+  .apps-policy { margin: 1rem 0 0; color: var(--muted-foreground); font-size: 0.875rem; }
+  .apps-policy summary { width: fit-content; cursor: pointer; border-radius: var(--radius-control); }
+  .apps-policy summary:hover { color: var(--foreground); }
+  .apps-policy p { margin: 0.75rem 0 0; line-height: 1.6; }
+  .apps-signals { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; margin: 1rem 0 0; padding: 0; list-style: none; color: var(--muted-foreground); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+  .apps-signals li { display: inline-flex; align-items: center; gap: 0.5rem; margin: 0; line-height: 1.5; }
+  .apps-signals svg { flex-shrink: 0; width: 1rem; height: 1rem; }
+  .apps-pending { padding: 3rem 1rem; border: 1px dashed var(--border); border-radius: var(--radius-card); color: var(--muted-foreground); text-align: center; }
+
+  .apps-section + .apps-section { margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 2rem; }
+  .apps-section h2 { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin: 0; font-size: 1.5rem; font-weight: 620; line-height: 1.3; }
+  .apps-section h2 span { flex-shrink: 0; color: var(--muted-foreground); font-size: 0.875rem; font-weight: 400; font-variant-numeric: tabular-nums; }
+  .apps-section__lead { margin: 0.5rem 0 1.5rem; color: var(--muted-foreground); font-size: 0.875rem; line-height: 1.5; }
+  .apps-browser { margin-bottom: 1.5rem; border: 1px solid var(--border); border-radius: var(--radius-card); }
+  .apps-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem; padding: 0.5rem; border-bottom: 1px solid var(--border); }
+  .apps-field { display: grid; gap: 0.375rem; min-width: 0; }
+  .apps-search { flex: 0 1 20rem; }
+  .apps-sort { flex: 0 1 12rem; }
+  .apps-filter > [data-slot="toggle-group"] { flex: 1; min-width: 0; }
+  .apps-reset { align-self: start; }
+  .apps-filter { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; }
+  .apps-empty { display: flex; flex-direction: column; align-items: center; gap: 0.75rem; padding: 3rem 1rem; border: 1px dashed var(--border); border-radius: var(--radius-card); text-align: center; }
+  .apps-empty[hidden] { display: none; }
+  .apps-empty h3 { margin: 0; font-size: 1rem; font-weight: 550; line-height: 1.5; }
+  .apps-empty p { margin: 0; color: var(--muted-foreground); font-size: 0.875rem; line-height: 1.5; }
+
+  .apps-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: end; gap: 0.25rem; margin-top: 1rem; }
+  .apps-pagination[hidden] { display: none; }
+  .apps-pagination__status { margin-right: auto; color: var(--muted-foreground); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+
+  .apps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(20rem, 100%), 1fr)); gap: 1rem; }
+  .app-card { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--card); }
+  .app-card[hidden] { display: none; }
+  .app-card:hover { border-color: var(--brand-line); }
+  .app-card__shot { display: block; flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--secondary); }
+  .app-card__shot img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; object-position: top center; }
+  .app-card__body { display: flex; flex: 1; flex-direction: column; min-width: 0; padding: 1rem 1rem 0.5rem; overflow-wrap: anywhere; }
+  .app-card__header { display: flex; align-items: start; justify-content: space-between; gap: 0.75rem; }
+  .app-card__identity { min-width: 0; }
+  .app-card__name { margin: 0; font-size: 1.0625rem; font-weight: 620; letter-spacing: -0.015em; line-height: 1.3; }
+  .app-card__author { margin: 0.25rem 0 0; color: var(--muted-foreground); font-size: 0.8125rem; line-height: 1.5; }
+  .app-card__blurb { margin: 0.75rem 0 auto; padding-bottom: 1rem; color: var(--foreground); font-size: 0.875rem; line-height: 1.5; }
+  .app-card__platform-row { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.75rem; color: var(--muted-foreground); font-size: 0.8125rem; line-height: 1.5; }
+  .app-card__platform-row > time { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .app-card__footer { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-height: 2.5rem; border-top: 1px solid var(--border); padding-top: 0.5rem; color: var(--muted-foreground); font-size: 0.8125rem; line-height: 1; }
+  .app-card__footer-start { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; min-width: 0; }
+  .app-card__commercial, .app-card__stats { display: inline-flex; align-items: center; gap: 0.25rem; min-height: 2rem; }
+  .app-card__stats { font-variant-numeric: tabular-nums; }
+  .app-card__links { display: flex; flex-shrink: 0; align-items: center; gap: 0.25rem; }
+  .app-card__stats svg, .app-card__links svg { display: block; flex-shrink: 0; width: 1rem; height: 1rem; }
+
+  .apps-cta { display: flex; flex-direction: column; align-items: start; gap: 0.75rem; margin-top: 3rem; padding-top: 2rem; border-top: 1px solid var(--border); }
+  .apps-cta h2 { margin: 0; font-size: 1.375rem; font-weight: 620; letter-spacing: -0.02em; line-height: 1.3; }
+  .apps-cta p { margin: 0; max-width: 46rem; color: var(--muted-foreground); font-size: 0.875rem; line-height: 1.6; }
+  .apps-page :is(a, summary):not([data-slot]):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .apps-page .app-card__shot:focus-visible { outline-offset: -2px; }
+  html[lang^="zh"] :is(.apps-hero h1, .app-card__name, .apps-cta h2) { letter-spacing: normal; }
+  html[lang^="zh"] .apps-kicker { letter-spacing: 0.06em; }
+  @media (prefers-reduced-motion: no-preference) {
+    .app-card { transition: border-color 150ms ease; }
+  }
+  @media (max-width: 640px) {
+    .apps-search { flex: 1 1 15rem; }
+    .apps-sort { flex: 1 1 11rem; }
+  }
+</style>

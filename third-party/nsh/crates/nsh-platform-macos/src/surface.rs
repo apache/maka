@@ -354,6 +354,8 @@ impl Surface {
                 control.set_tokens(tokens);
             }
         };
+        // Remote images download with NSURLSession.
+        crate::image::install_transport();
         match Engine::start_with(config, CoreTextEngine::default, sink, setup) {
             Ok(engine) => {
                 // The app's downloaded images go through its disk cache.
@@ -697,12 +699,13 @@ impl Surface {
         let _ = on;
     }
 
-    /// Whether a native animation runs: the graph's, or the platform's own
+    /// Whether a native animation runs: the graph's (not one looping
+    /// forever, which no test step waits for), or the platform's own
     /// (scroll glides, zooms; not a scroll indicator's fade, after which
     /// nothing changes); or batches wait for the next frame.
     #[cfg(feature = "dev")]
     pub(crate) fn animating(&self) -> bool {
-        self.anim.borrow().animating()
+        self.anim.borrow().finishing()
             || self.frame_callbacks.borrow().len() > self.cosmetic_frames.get()
             || !self.queued.borrow().is_empty()
     }

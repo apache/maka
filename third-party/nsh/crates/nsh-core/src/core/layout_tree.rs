@@ -28,6 +28,15 @@
 //!   ([`LayoutTree::measures_as_before`]): every layout above was computed
 //!   from those answers alone, so all of them stand. A price that keeps its
 //!   width, a wrapped paragraph that keeps its lines, cost their text.
+//! - **holders laid out through.** A holder of the app's JSX in a Rust
+//!   component's tree (a slot's, a render's: [`LayoutTree::set_holder`])
+//!   that nothing styles and holds one node is not a box of its own: that
+//!   node is laid out in its place, an item of the holder's parent, so the
+//!   app's `flex: 1`, `alignSelf` or `margin-left: auto` on it act in the
+//!   component's layout as on a child of its own. The holder takes the
+//!   node's box, and the node sits at its origin
+//!   ([`LayoutPartialTree::set_unrounded_layout`]): its native view stays
+//!   the holder's child, with the frame it would have as the parent's.
 
 use slab::Slab;
 use taffy::{
@@ -58,6 +67,15 @@ struct LayoutNode<C> {
     last: Option<(LayoutInput, LayoutOutput)>,
     /// It is a boundary waiting in [`LayoutTree::dirty_boundaries`].
     queued: bool,
+    /// A holder of the app's JSX ([`LayoutTree::set_holder`]).
+    holder: bool,
+    /// Its style is a view's that nothing styles ([`unstyled`]); kept for
+    /// holders only.
+    unstyled: bool,
+    /// Its layout, its style or its children changed, or a node's under it
+    /// did, since the core last emitted its frame
+    /// ([`LayoutTree::mark_stale`]); a stale node's ancestors are stale.
+    stale: bool,
     /// A leaf's answers to the inputs the layout asked of it since its
     /// cache was last cleared, each once: what the layouts above it were
     /// computed from. `None` once there were more than [`MEASURED`] to keep.
@@ -79,11 +97,14 @@ impl<C> LayoutNode<C> {
             children: Vec::new(),
             cache: Cache::new(),
             unrounded: Layout::new(),
+            stale: true,
             detailed: DetailedLayoutInfo::None,
             context,
             tag: None,
             last: None,
             queued: false,
+            holder: false,
+            unstyled: false,
             measured: Some(Vec::new()),
         }
     }
@@ -174,10 +195,56 @@ impl<C> LayoutTree<C> {
         &self.nodes[key(node)].style
     }
 
+    /// Records that `node` holds the app's JSX in a Rust component's tree:
+    /// unstyled and holding one node, it is laid out through (the module's
+    /// docs).
+    pub(crate) fn set_holder(&mut self, node: NodeId) {
+        let n = &mut self.nodes[key(node)];
+        if n.holder {
+            return;
+        }
+        n.holder = true;
+        n.unstyled = unstyled(&n.style);
+        n.clear_cache();
+        if let Some(parent) = n.parent {
+            self.mark_dirty(parent);
+        }
+    }
+
+    /// Whether `node` is a holder laid out through: what its parent lays
+    /// out in its place is its one child.
+    fn through(&self, node: NodeId) -> bool {
+        let n = &self.nodes[key(node)];
+        n.holder && n.unstyled && n.children.len() == 1
+    }
+
+    /// What is laid out in `node`'s place: `node`, or the node the holders
+    /// it is are laid out through.
+    fn laid_out(&self, mut node: NodeId) -> NodeId {
+        while self.through(node) {
+            node = self.nodes[key(node)].children[0];
+        }
+        node
+    }
+
+    /// The node whose layout lays `node` out: its parent, above the holders
+    /// laid out through.
+    fn layout_parent(&self, node: NodeId) -> Option<NodeId> {
+        let mut parent = self.nodes[key(node)].parent?;
+        while self.through(parent) {
+            parent = self.nodes[key(parent)].parent?;
+        }
+        Some(parent)
+    }
+
     /// Replaces `node`'s style: its own size may change, so its parent is
     /// laid out again (whether it is a boundary or not).
     pub(crate) fn set_style(&mut self, node: NodeId, style: Style) {
+        self.mark_stale(node);
         let n = &mut self.nodes[key(node)];
+        if n.holder {
+            n.unstyled = unstyled(&style);
+        }
         n.style = style;
         n.clear_cache();
         if let Some(parent) = n.parent {
@@ -219,6 +286,7 @@ impl<C> LayoutTree<C> {
         self.nodes[key(child)].parent = Some(parent);
         self.nodes[key(parent)].children.insert(index, child);
         self.mark_dirty(parent);
+        self.mark_stale(child);
     }
 
     /// Detaches `child` from `parent`.
@@ -234,6 +302,7 @@ impl<C> LayoutTree<C> {
     /// the module's docs), or up to the first boundary on the way, `node`
     /// included, which is queued to be laid out again on its own.
     pub(crate) fn mark_dirty(&mut self, node: NodeId) {
+        self.mark_stale(node);
         let mut at = Some(node);
         while let Some(node) = at {
             self.nodes[key(node)].clear_cache();
@@ -247,6 +316,39 @@ impl<C> LayoutTree<C> {
             }
             at = self.nodes[key(node)].parent;
         }
+    }
+
+    /// Sets `node`'s unrounded layout; a changed one makes it stale.
+    fn set_unrounded(&mut self, node: NodeId, layout: Layout) {
+        let n = &mut self.nodes[key(node)];
+        if n.unrounded != layout {
+            n.unrounded = layout;
+            self.mark_stale(node);
+        }
+    }
+
+    /// `node`'s frame, and those of the nodes above it, are to be emitted
+    /// again: something about it changed. All the way up, never stopping at
+    /// a stale node: one the core's walks do not reach (a view not made yet,
+    /// a list's cell) stays stale under emitted ones.
+    pub(crate) fn mark_stale(&mut self, node: NodeId) {
+        let mut at = Some(node);
+        while let Some(node) = at {
+            let n = &mut self.nodes[key(node)];
+            n.stale = true;
+            at = n.parent;
+        }
+    }
+
+    /// Whether nothing in `node`'s subtree changed since
+    /// [`LayoutTree::emitted`] was last called on it.
+    pub(crate) fn stale(&self, node: NodeId) -> bool {
+        self.nodes[key(node)].stale
+    }
+
+    /// The core emitted `node`'s frame (and goes on to its children).
+    pub(crate) fn emitted(&mut self, node: NodeId) {
+        self.nodes[key(node)].stale = false;
     }
 
     /// Whether what changes inside `node` cannot change what its parent's
@@ -264,7 +366,7 @@ impl<C> LayoutTree<C> {
     /// compared after ([`LayoutTree::relayout_boundaries`]).
     fn is_boundary(&self, node: NodeId) -> bool {
         let n = &self.nodes[key(node)];
-        let Some(parent) = n.parent else {
+        let Some(parent) = self.layout_parent(node) else {
             return false;
         };
         let fixed = |d: taffy::Dimension| d.into_raw().tag() == taffy::CompactLength::LENGTH_TAG;
@@ -371,6 +473,14 @@ impl<C> LayoutTree<C> {
     }
 }
 
+/// Whether `style` is a view's that nothing styles: React Native's
+/// defaults ([`crate::style::unstyled_layout`]), in either direction.
+fn unstyled(style: &Style) -> bool {
+    let mut plain = crate::style::unstyled_layout();
+    plain.direction = style.direction;
+    *style == plain
+}
+
 /// The tree being laid out, with what measures its leaves: what Taffy's
 /// algorithms run over.
 struct View<'t, C, M> {
@@ -442,12 +552,15 @@ where
     M: FnMut(LayoutInput, NodeId, Option<&mut C>, &Style) -> LayoutOutput,
 {
     type ChildIter<'a>
-        = std::iter::Copied<std::slice::Iter<'a, NodeId>>
+        = ChildIds<'a, C>
     where
         Self: 'a;
 
     fn child_ids(&self, parent: NodeId) -> Self::ChildIter<'_> {
-        self.node(parent).children.iter().copied()
+        ChildIds {
+            tree: self.tree,
+            children: self.node(parent).children.iter(),
+        }
     }
 
     fn child_count(&self, parent: NodeId) -> usize {
@@ -455,7 +568,26 @@ where
     }
 
     fn get_child_id(&self, parent: NodeId, index: usize) -> NodeId {
-        self.node(parent).children[index]
+        self.tree.laid_out(self.node(parent).children[index])
+    }
+}
+
+/// The children a node lays out: its own, each through the holders it is
+/// ([`LayoutTree::laid_out`]).
+struct ChildIds<'a, C> {
+    tree: &'a LayoutTree<C>,
+    children: std::slice::Iter<'a, NodeId>,
+}
+
+impl<C> Iterator for ChildIds<'_, C> {
+    type Item = NodeId;
+
+    fn next(&mut self) -> Option<NodeId> {
+        self.children.next().map(|&child| self.tree.laid_out(child))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.children.size_hint()
     }
 }
 
@@ -481,7 +613,24 @@ where
     }
 
     fn set_unrounded_layout(&mut self, node: NodeId, layout: &Layout) {
-        self.tree.nodes[key(node)].unrounded = *layout;
+        // Laid out in the place of the holders around it: the outermost
+        // takes its box where it was placed, each holder inside it and the
+        // node itself sit at the origin of the one around them.
+        let mut node = node;
+        let mut own = *layout;
+        while let Some(parent) = self.tree.nodes[key(node)].parent
+            && self.tree.through(parent)
+        {
+            own.location = taffy::Point::ZERO;
+            self.tree.set_unrounded(node, own);
+            node = parent;
+            own = Layout {
+                location: layout.location,
+                size: layout.size,
+                ..Layout::with_order(layout.order)
+            };
+        }
+        self.tree.set_unrounded(node, own);
     }
 
     fn resolve_calc_value(&self, _: *const (), _: f32) -> f32 {

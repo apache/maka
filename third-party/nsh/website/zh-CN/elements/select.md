@@ -1,7 +1,6 @@
 ---
 title: Select
 description: Select 组件：从一组条目中选出一个值，桌面上是触发元素处的弹出层，手机上是 sheet，支持键盘、输入跳转、搜索和分组，样式由应用决定。
-order: 20.65
 group: base
 demo: el-select
 ---

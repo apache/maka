@@ -5,7 +5,7 @@ function fetched(url: string) {
   const shown = signal("waiting");
   fetch(url).then(
     (r) => shown.set(`ok ${r.status}`),
-    (e: Error) => shown.set(`refused ${e.message}`),
+    (e: Error & { code?: string }) => shown.set(`refused ${e.code}`),
   );
   return shown;
 }

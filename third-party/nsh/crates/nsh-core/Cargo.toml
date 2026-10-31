@@ -36,6 +36,9 @@ naga.workspace = true
 # SVG images for the native backends (`svg`: sniffing, sizes and rasters with
 # resvg). The web runtime leaves it off: the browser draws SVG itself.
 svg = ["dep:resvg", "dep:flate2"]
+# Remote images for the shared image loader (`image::loader`: downloads with
+# ureq). Without it, the loader reads files, assets and inline bytes only.
+loader = ["dep:ureq"]
 # Shaders as GLSL ES 3.00 (`Shader::glsl_es`), for the web runtime's WebGL 2.
 glsl = ["naga/glsl-out"]
 
@@ -52,15 +55,19 @@ webpki-roots.workspace = true
 libc.workspace = true
 # The image disk cache (`image/cache.rs`).
 httpdate.workspace = true
+# The image loader's downloads (`image/loader.rs`, feature `loader`).
+ureq = { workspace = true, optional = true }
 crc32fast.workspace = true
 
-# `process`'s children on Windows: their jobs (`runtime/process.rs`).
+# `process`'s children on Windows: their jobs (`runtime/process.rs`); the
+# machine's memory for the image budget (`image/memory.rs`).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
   "Win32_Foundation",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_IO",
   "Win32_System_JobObjects",
+  "Win32_System_SystemInformation",
   "Win32_System_Threading",
 ] }
 

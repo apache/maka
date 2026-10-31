@@ -189,7 +189,8 @@ picks what reaches the app.
 
 Lets the app open URLs outside it ([`openUrl`](../modules/nsh.md#openurl), a `TextView`'s links with
 `links="open"`): `"openUrl": true` for every scheme, `"openUrl": { "schemes": ["https", "mailto"] }` for the schemes
-listed. A URL whose scheme is not granted throws a `TypeError`. URLs that would run code or reach the app's own data
+listed. A URL whose scheme is not granted rejects with `ERR_ACCESS_DENIED` (`permission` `"openUrl"`, `resource` the
+URL). URLs that would run code or reach the app's own data
 (`javascript:`, `data:`, `file:`, ...) are never opened, whatever the capability.
 
 ### Storage
@@ -211,24 +212,49 @@ import { host } from "nsh";
 
 if (host.available()) {
   const user = await host.call("getUserInfo");
-  const sub = host.on("loginChanged", (payload) => console.log(payload));
-  sub.remove();
+  const stop = host.on("loginChanged", (payload) => console.log(payload));
+  stop();
 }
 ```
 
-`host.available()` is true on platforms that embed a host; elsewhere `host.call` rejects with
-`nsh/host: this platform has no host`.
+`host.available()` is true on platforms that embed a host; elsewhere `host.call` rejects with `code`
+`"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"`.
 
 ### What a refusal looks like
 
 | Request | Result |
 |---|---|
-| `fetch` | The promise rejects; the request never reaches the network. |
-| Remote image | The image fails with `onError`. |
-| Video source, web view source, status bar change | Nothing is shown or changed. |
-| Clipboard | `writeText` and `writeImage` do nothing; `readText` resolves `""`, `readImage` `null`, `readFiles` `[]`, and `hasText` and `hasImage` `false`. |
-| Picker | `pickImages` shows nothing and resolves `[]`. |
-| Host call | The promise rejects, saying to add the function to `capabilities.host`; the call never reaches the host. |
+| `fetch` | The promise rejects with a `TypeError`, as every failed request, whose `code` is `ERR_ACCESS_DENIED`, `permission` `"network"` and `resource` the URL (the request's, or the redirect's); the request never reaches the network. |
+| `Image.getSize`, `Image.prefetch` | The promise rejects with `ERR_ACCESS_DENIED`, `permission` `"network"` and `resource` the URL; the image is never requested. |
+| Remote image, video source, web view source or `html` | Nothing is shown, and the element's `onError` reports it with `code` `"ERR_ACCESS_DENIED"`. A web view's navigation to a host not granted is cancelled and reported the same way. |
+| Status bar change, canvas image | Nothing changes or is drawn; the refusal is logged. |
+| Clipboard | Every function of `Clipboard` rejects with `ERR_ACCESS_DENIED`, `permission` `"clipboard"` and `resource` `""`; the system clipboard is never touched. |
+| Picker | `pickImages` shows nothing and rejects with `ERR_ACCESS_DENIED`, `permission` `"picker"` and `resource` `""`. |
+| `openUrl` | The promise rejects with `ERR_ACCESS_DENIED`, `permission` `"openUrl"` and `resource` the URL; nothing opens. |
+| Host call | `host.call` rejects with `ERR_ACCESS_DENIED`, `permission` `"host"` and `resource` the function's name (`host.post` throws it); the call never reaches the host. |
+| Files (`fs/promises`) | The promise rejects with `ERR_ACCESS_DENIED`, `permission` `"fs"` and `resource` the path; the disk is never touched. |
+| Processes (`process`) | `run` rejects, and `spawn` and `exit` throw, with `ERR_ACCESS_DENIED`, `permission` `"process"` and `resource` the command (`"exit"` for `exit`); no child starts. |
+| TCP socket (`net.connect`) | The promise rejects with `ERR_ACCESS_DENIED`, `permission` `"network"` and `resource` the `"host:port"`, before any DNS lookup. |
+| WebSocket | The `websocket` module's `connect` rejects with `ERR_ACCESS_DENIED`, `permission` `"network"` and `resource` the URL; the global `WebSocket` fires `error` and then `close` (code 1006), as a connection that fails does. |
+
+The errors of the [standard modules](../modules/standard-modules.md#failures) carry `code` `"ERR_ACCESS_DENIED"`, so an
+app tells a refusal apart from a failed operation, and their `permission` and `resource` name the capability and what
+was asked for. The modules of [`nsh`](../modules/nsh.md) refuse the same way: their promises reject with
+`ERR_ACCESS_DENIED`, `permission` and `resource` (`fetch` with a `TypeError`, the class of every failed request).
+
+```ts
+import { Clipboard } from "nsh";
+
+try {
+  await Clipboard.writeText(link);
+} catch (error) {
+  if (error.code !== "ERR_ACCESS_DENIED") throw error;
+  console.warn(`${error.permission} is not granted`); // "clipboard"
+}
+```
+
+Rust components get the same refusals in Rust's terms: a refused clipboard read answers what an empty clipboard does, a
+refused pick no files, a refused `open_url` `false` and a refused `fetch` an `Err` with the message.
 
 Each refusal is logged once, saying which key to add:
 
@@ -288,7 +314,7 @@ them.
 |---|---|---|
 | Limits (heap, stack, time, nodes) | the runtime, per VM | the host app per view (embedded apps) |
 | Hardening | the runtime, on load | always on outside development |
-| Capabilities | the runtime (fetch, images, video, web views, status bar) | the app (`nsh.json`) and the host app (grant) |
+| Capabilities | the runtime (fetch, images, video, web views, status bar, files, processes, sockets) | the app (`nsh.json`) and the host app (grant) |
 | Code integrity | signature verification | `nsh publish`; the host app's trusted roots |
 
 ## See also

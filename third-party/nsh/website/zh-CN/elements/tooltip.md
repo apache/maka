@@ -1,7 +1,6 @@
 ---
 title: Tooltip
 description: Tooltip 组件：关于它所在元素的提示，在桌面上指针停留时出现，样式由应用决定。
-order: 28
 group: base
 demo: el-tooltip
 ---
@@ -59,6 +58,18 @@ function SaveButton(props: { onSave: () => void }) {
 
 它默认显示在触发元素上方（`placement`），空间不够时换到另一侧，并始终位于安全区之内。设置 `open` 后由应用决定何时显示：应用跟随 `onOpenChange`（它报告指针在触发元素上停留或离开），并且可以在任何设备上显示它。
 
+它随你的过渡出现和离开：`startingClass` 是它第一帧的外观，`endingClass` 是隐藏后的外观，在它的 `class` 里的 `transition-*` 类播放期间保留，随后触发 `onClose`。
+
+```tsx
+<Tooltip
+  class="rounded-md bg-gray-900 px-2 py-1 transition-opacity duration-100"
+  startingClass="opacity-0"
+  endingClass="opacity-0"
+>
+  <Text class="text-white">Save the document</Text>
+</Tooltip>
+```
+
 <a id="props"></a>
 
 ## 属性
@@ -67,6 +78,8 @@ function SaveButton(props: { onSave: () => void }) {
 |---|---|---|---|---|
 | `children` | `.child(..)` | `JSX.Element` | 无 | 提示的内容。 |
 | `class`、`style` | `.app_class(..)`、`Styled` 方法 | `string`、`StyleProp<ViewStyle>` | 无 | 气泡的外观：即工具提示本身。 |
+| `startingClass`、`startingStyle` | `.starting_class(..)`、`.starting_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 它第一帧的外观：它的过渡从这里开始。 |
+| `endingClass`、`endingStyle` | `.ending_class(..)`、`.ending_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 它隐藏后的外观：过渡播放期间它会保留。 |
 | `open` | `.open(..)` | `boolean` | 无 | 是否显示，由应用控制。 |
 | `defaultOpen` | `.default_open(..)` | `boolean` | `false` | 没有 `open` 时，初始是否显示。 |
 | `delay` | `.delay(..)` | `number` | `500` | 指针在触发元素上停留多少毫秒后显示。 |
@@ -84,7 +97,7 @@ function SaveButton(props: { onSave: () => void }) {
 |---|---|---|
 | `onOpenChange` | `.on_open_change(\|e\| ..)` | 指针在触发元素上停留了，或离开、按下了它（`reason` 为 `"hover"`）。 |
 | `onOpen` | `.on_open(\|\| ..)` | 它已显示。 |
-| `onClose` | `.on_close(\|\| ..)` | 它已消失，应用隐藏它时也会触发。 |
+| `onClose` | `.on_close(\|\| ..)` | 它已消失（在离开过渡之后），应用隐藏它时也会触发。 |
 
 <a id="accessibility"></a>
 

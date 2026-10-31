@@ -401,7 +401,7 @@ impl TableMap {
                 cells.push((pos, rect));
             }
         }
-        cells.sort_by_key(|(pos, _)| *pos);
+        crate::sort::sort_by_key(&mut cells, |(pos, _)| *pos);
         cells
     }
 }

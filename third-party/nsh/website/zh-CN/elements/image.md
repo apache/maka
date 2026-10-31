@@ -1,7 +1,7 @@
 ---
 title: Image
 description: 显示打包资源或远程图片的元素，支持占位图、模糊、淡入、着色和加载事件。
-order: 4
+order: 30
 group: primitives
 demo: el-image
 ---
@@ -83,7 +83,7 @@ upload(photo).then((url) => {
 开发期间资源由开发服务器提供；`nsh build` 和 `nsh package` 会把它们拷贝进应用（Rust crate 用 `registry.assets(assets!())` 发布它的 `assets/` 目录）。参见[图片与资源](../docs/images-and-assets.md)。
 
 > [!NOTE]
-> 应用声明了[能力](../docs/sandbox-and-capabilities.md)时，远程图片从其中列出的主机加载；来自其他主机的图片会以 `onError` 失败。`asset:` URI、`data:` URI 和 `blob:` URL 始终可以加载。
+> 应用声明了[能力](../docs/sandbox-and-capabilities.md)时，远程图片从其中列出的主机加载；来自其他主机的图片不会被请求，并以 `onError` 失败，其 `code` 为 `"ERR_ACCESS_DENIED"`。`asset:` URI、`data:` URI 和 `blob:` URL 始终可以加载。
 
 ## 属性
 
@@ -101,7 +101,7 @@ upload(photo).then((url) => {
 | `onLoadStart` | `.on_load_start(..)` | `() => void` | | 开始加载。 |
 | `onProgress` | `.on_progress(..)` | `(e: { loaded: number; total: number }) => void` | | 以字节计的下载进度（未知时 `total` 为 0），最多每 100 ms 一次。 |
 | `onLoad` | `.on_load(..)` | `(e: { size: PixelSize }) => void` | | 加载完成；给出源图片的像素尺寸（不是解码、降采样后的尺寸；SVG 为它的点尺寸，[在 Web 上为浏览器测得的尺寸](../docs/images-and-assets.md#svg-图片)）；带有变体的图片给出所加载变体的尺寸。 |
-| `onError` | `.on_error(..)` | `(e: { message: string }) => void` | | 加载失败。 |
+| `onError` | `.on_error(..)` | `(e: { message: string; code?: string }) => void` | | 加载失败；URL 不在应用的能力范围内时 `code` 为 `"ERR_ACCESS_DENIED"`。 |
 | `onLoadEnd` | `.on_load_end(..)` | `() => void` | | 在 `onLoad` 或 `onError` 之后。 |
 
 `ImageStyle` 在视图样式之上增加了 `tintColor`，为模板图片（单色绘制的图标）重新着色；以及 `objectPosition`，决定图片在盒子中的位置（[图片位置](../docs/images-and-assets.md#图片位置)）。
@@ -121,7 +121,7 @@ image(ICON).size(px(24.0)).tint_color(rgb(0x0969da))
 | `onLoadStart` | `.on_load_start` | 无 | 开始加载。 |
 | `onProgress` | `.on_progress` | `{ loaded, total }`（`ImageProgress`） | 收到数据（最多每 100 ms 一次）。 |
 | `onLoad` | `.on_load` | `{ size }`（`Size<DevicePixels>`） | 图片已显示；给出源图片的像素尺寸（SVG 为点，[在 Web 上为浏览器测得的尺寸](../docs/images-and-assets.md#svg-图片)）。 |
-| `onError` | `.on_error` | `{ message }`（`&str`） | 加载或解码失败，或主机不在应用的能力范围内。 |
+| `onError` | `.on_error` | `{ message, code? }`（`&str`，即消息） | 加载或解码失败，或主机不在应用的能力范围内（`code` 为 `"ERR_ACCESS_DENIED"`）。 |
 | `onLoadEnd` | `.on_load_end` | 无 | 在 `onLoad` 或 `onError` 之后。 |
 
 ```rust tabs

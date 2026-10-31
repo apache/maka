@@ -8,9 +8,12 @@
 //! until a listener is there). The engine (`nsh_engine::HostChannel`) owns
 //! the embedding app's side, `nsh-js` (`host_channel.rs`) the app's.
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Duration};
 
-use crate::JsonValue;
+use crate::{
+    JsonValue,
+    element::{JsError, codes},
+};
 
 /// Events kept at most for listeners not there yet: by an engine, until
 /// the app listens to their names, and by the embedding app's channel,
@@ -18,7 +21,7 @@ use crate::JsonValue;
 pub const MAX_QUEUED_EVENTS: usize = 256;
 
 /// Calls of one app waiting for the embedding app's answers at once; one
-/// more is refused (a `RangeError`).
+/// more rejects ([`too_many_calls`]).
 pub const MAX_PENDING_CALLS: usize = 1024;
 
 /// The longest name of an event, a call or a post, in bytes.
@@ -37,6 +40,69 @@ pub fn check_name(name: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// What a call rejects with when the platform has no host
+/// ([`codes::UNAVAILABLE`]).
+pub fn no_host() -> JsError {
+    JsError::Error("nsh/host: this platform has no host".into()).with_code(codes::UNAVAILABLE)
+}
+
+/// What a call rejects with when the embedding app answered with error
+/// `message` (its handler failed, or it handles no such name): the host's
+/// message, [`codes::HOST_ERROR`].
+pub fn host_error(message: &str) -> JsError {
+    JsError::Error(message.to_owned()).with_code(codes::HOST_ERROR)
+}
+
+/// What a call or post of `name`, which no host function may have
+/// ([`crate::access::valid_host_name`]), fails with: a `TypeError`.
+pub fn invalid_name(name: &str) -> JsError {
+    JsError::Type(format!(
+        "nsh/host: invalid function name {name:?} ({})",
+        crate::access::HOST_NAME_CHARS
+    ))
+}
+
+/// What a call or post of `name` fails with when `capabilities.host` does
+/// not grant it ([`JsError::access_denied`], permission `"host"`).
+pub fn not_granted(name: &str) -> JsError {
+    JsError::access_denied(
+        format!("nsh/host: `{name}` is not granted: add it to capabilities.host in nsh.json"),
+        "host",
+        name,
+    )
+}
+
+/// Checks a call or post of `name` against the host names' rules and the
+/// app's `access`, before it crosses into the embedding app's code.
+pub fn check_call(access: &crate::access::Access, name: &str) -> Result<(), JsError> {
+    if !crate::access::valid_host_name(name) {
+        return Err(invalid_name(name));
+    }
+    if !access.allows_host(name) {
+        return Err(not_granted(name));
+    }
+    Ok(())
+}
+
+/// What a call of `name` rejects with when the embedding app did not answer
+/// within `timeout` ([`codes::TIMED_OUT`]).
+pub fn timed_out(name: &str, timeout: Duration) -> JsError {
+    JsError::Error(format!(
+        "nsh/host: {name} timed out after {} ms",
+        timeout.as_millis()
+    ))
+    .with_code(codes::TIMED_OUT)
+}
+
+/// What a call of `name` rejects with while [`MAX_PENDING_CALLS`] calls
+/// wait already ([`codes::QUOTA_EXCEEDED`]).
+pub fn too_many_calls(name: &str) -> JsError {
+    JsError::Error(format!(
+        "host.call(\"{name}\"): {MAX_PENDING_CALLS} calls already wait for the embedding app's answers"
+    ))
+    .with_code(codes::QUOTA_EXCEEDED)
 }
 
 /// What an app's `nsh/host` reaches of the embedding app, on the engine

@@ -86,8 +86,8 @@ impl Window {
 
     /// Moves and sizes the window in points; omitted fields keep their values.
     /// macOS and Windows use the outer frame, including window decorations;
-    /// Linux uses GTK's default window size. `x` and `y` are the bottom left
-    /// corner in macOS screen coordinates and the top left on Windows.
+    /// Linux uses GTK's default window size. `x` and `y` are the top left
+    /// corner, from the primary screen's top left with `y` growing down.
     /// `animated` enables macOS's resize animation (false by default).
     /// Sizing is supported on macOS, Windows and Linux; positioning and levels
     /// on macOS and Windows. A view embedded in another app's window leaves
@@ -99,7 +99,6 @@ impl Window {
             width: frame.width.filter(|v| v.is_finite() && v.0 > 0.0),
             height: frame.height.filter(|v| v.is_finite() && v.0 > 0.0),
             animated: frame.animated,
-            anchor_top: frame.anchor_top,
         };
         desktop(cx, DesktopCommand::SetFrame(frame));
     }

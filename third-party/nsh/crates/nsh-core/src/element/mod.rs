@@ -16,7 +16,7 @@
 //! it), changed by listeners, timers and tasks ([`spawn`]); the
 //! component's listeners hear its elements' events first and decide what
 //! reaches JS ([`Scope::emit`]). The environment and the design tokens are
-//! signals too ([`window`], [`tokens`]): reading one in a binding
+//! signals too ([`window`], [`tokens()`]): reading one in a binding
 //! subscribes it.
 //!
 //! Props are a struct (`#[derive(Props)]`), events an enum
@@ -51,6 +51,7 @@ mod js;
 pub(crate) mod json_host;
 mod keyboard;
 pub(crate) mod keys;
+pub(crate) mod menus;
 pub(crate) mod module;
 mod once;
 pub mod palette;
@@ -130,7 +131,7 @@ pub use self::{
         MethodSpec, Methods, NoEvent, Param, PropDecode, PropKind, PropSpec, Props, Registry, Root,
         ScrollbarSource, ValueSpec, declarations,
     },
-    element_ref::{ComponentRef, ElementRef},
+    element_ref::{ComponentRef, ElementRef, FollowTarget},
     engine_context::{EngineContext, EngineContextGuard, engine_context},
     env::Environment,
     events::{
@@ -141,11 +142,11 @@ pub use self::{
     flow::{Each, If, IntoElements, Reset, catch_error, dynamic, each, when},
     host::{
         CanvasArg, CanvasPaint, CanvasView, Input, InputAccessoryView, IntoUniform, Modal,
-        NativeView, Orientation, Overlay, Painter, Screen, Scroll, ShaderView, Stack, Uniform,
-        Video, WebView, canvas, input, input_accessory_view, native, overlay, scroll, shader,
+        NativeView, Orientation, Overlay, Painter, Screen, Scroll, ShaderView, Stack, Svg, Uniform,
+        Video, WebView, canvas, input, input_accessory_view, native, overlay, scroll, shader, svg,
         video, web_view, web_view_html,
     },
-    js::{JsHost, JsIn, JsKind, JsOwned, JsRaw},
+    js::{JsClass, JsHost, JsIn, JsKind, JsOwned, JsPrimitive, JsRaw},
     json_host::from_json,
     keyboard::Keyboard,
     module::{
@@ -171,19 +172,20 @@ pub use self::{
     },
     system::{
         CallCx, Cleanup, ErrorClass, ErrorFields, Held, IntoThrown, JsError, Later, Local, Locals,
-        Quotas, System, io_code,
+        Quotas, RefuseConnections, Stop, System, codes, io_code,
     },
     task::{Answer, ClipboardImage, DialogAnswer, ImageSize, Task},
     tokens::{FONT_MONO, FONT_SANS, ThemeTokens, Token, TokenSource, Tokens},
     value::{JsValue, NodeRef, PropEnum, PropError, SharedString, TsType, TsTypes, ts_of},
     virtual_list::{ListLayout, ViewableItems, VirtualList, virtual_list},
+    watch::OrderWatch,
 };
 pub(crate) use self::{
     animated::LiveNode,
     back::BackListener,
     builder::{ElKind, PlaceFn},
     component::{AnyInstance, caught},
-    task::{Action, AnswerSlot, ClipboardRead, Executor},
+    task::{Action, AnswerSlot, ClipboardRead, Executor, FileAnswer},
 };
 /// The geometry Rust components style with (`crate::geometry`).
 pub use crate::geometry::{
@@ -254,7 +256,12 @@ pub mod __private {
         fn pick(event: &Self) -> Option<&Self::Data>;
     }
 
-    pub use super::{callback::NamedArgs, class::__private::*, value::object_field};
+    pub use super::{
+        callback::NamedArgs,
+        class::__private::*,
+        prop::{set_held, set_plain},
+        value::object_field,
+    };
 
     /// Implemented by nothing: what the generated workspace of an app
     /// calls when a crate of the app has no `#[native_module]`

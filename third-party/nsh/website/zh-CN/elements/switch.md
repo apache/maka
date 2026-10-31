@@ -1,7 +1,6 @@
 ---
 title: Switch
 description: Switch 组件：一个开 / 关控件，负责按压、键盘激活、禁用状态以及屏幕阅读器的角色和值，轨道和滑块由应用设置样式。
-order: 20.5
 group: base
 demo: el-switch
 ---

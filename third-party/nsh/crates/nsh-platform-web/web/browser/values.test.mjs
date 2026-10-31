@@ -92,3 +92,18 @@ test("bytes and dates cross app realms without relying on instanceof", () => {
     assert.ok(Number.isNaN(value(11, object, 0, 0, 0)));
   });
 });
+
+test("every value operation has a code of its own", async () => {
+  // Two cases of one code: only the first runs (op 48 made a function
+  // where Rust asked for an object's keys).
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("./values.js", import.meta.url), "utf8");
+  const codes = [...source.matchAll(/^\s*case (\d+):/gm)].map(m => Number(m[1]));
+  assert.deepEqual(codes.filter((code, i) => codes.indexOf(code) !== i), []);
+  const values = new Values();
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const { value } = values.imports(() => memory);
+  values.makeFunction = () => { throw new Error("not a function's id"); };
+  const keys = value(50, values.put({ a: 1, b: 2 }), 0, 0, 0);
+  assert.equal(values.get(keys), "a\0b");
+});

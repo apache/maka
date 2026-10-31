@@ -1082,7 +1082,9 @@ final class ScrollBox extends FrameLayout implements Node {
     }
 
     private void hideKeyboard() {
-        View focused = findFocus();
+        // The focused field is usually outside this scroll view (a chat's composer below its list).
+        View focused = getRootView().findFocus();
+        if (focused == null) focused = mounter.focusedInput();
         if (focused == null) return;
         InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
         imm.hideSoftInputFromWindow(focused.getWindowToken(), 0);

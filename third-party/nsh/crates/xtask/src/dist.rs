@@ -12,7 +12,7 @@
 //! dist/nsh/runtime/tui/{nsh-tui-host,nsh-tui-app}[.exe]       terminal host, packaged app runner
 //! dist/nsh/runtime/android/{release,dev}/                      classes.dex, lib/<abi>/libnsh.so (stripped),
 //!                                                              symbols/<abi>/libnsh.so (with symbols)
-//! dist/nsh/runtime/web/{nsh.wasm,nsh-browser-lite.wasm,nsh-dev.wasm,nsh.js}  the web runtimes (published apps', the dev host's)
+//! dist/nsh/runtime/web/{nsh-browser.wasm,nsh-dev.wasm,nsh.js,browser/}  the web runtimes (published apps' to link from, the dev host's)
 //! dist/nsh/runtime/web/nsh-syntaxes.bin                       the syntaxes they fetch to highlight code
 //! dist/nsh/embed/ios/{NativeShell,NativeShellDev}.xcframework  embedding in iOS apps
 //! dist/nsh/embed/android/{nsh,nsh-dev}.aar                     embedding in Android apps
@@ -145,22 +145,20 @@ pub(crate) fn dist() -> anyhow::Result<()> {
         )?;
     }
 
-    // The web runtimes: the same files on every machine. Published apps'
-    // (no QuickJS parser: bytecode only), the lite one for those that use
-    // only `nsh/base`'s core and neither `zlib` nor `crypto`, and the
-    // development host's (JS source and hot updates). They build to the same
-    // file, copied in turn.
+    // The web runtimes, the same files on every machine, all running TSX on
+    // the browser's JavaScript engine: the linkable one `nsh package` links
+    // each published app's from (only what the app uses), and the
+    // development host's (hot updates, `nsh test --target web`). They build
+    // to the same file, copied in turn.
     for (features, file) in [
-        (&["--features", "bytecode-only"][..], "nsh.wasm"),
         (
-            &["--no-default-features", "--features", "browser"][..],
+            &["--no-default-features", "--features", "browser,linkable"][..],
             "nsh-browser.wasm",
         ),
         (
-            &["--no-default-features", "--features", "browser-core"][..],
-            "nsh-browser-lite.wasm",
+            &["--no-default-features", "--features", "dev"][..],
+            "nsh-dev.wasm",
         ),
-        (&["--features", "dev"][..], "nsh-dev.wasm"),
     ] {
         let mut web = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
         web.current_dir(&root)
@@ -286,7 +284,19 @@ fn ios_runtimes(release: &Path, out: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// An Android library archive: the Java runtime and `libnsh.so` per ABI.
+/// R8 rules the archive carries (`proguard.txt`), which an app's Gradle
+/// build applies when it shrinks the app: `libnsh.so` finds the runtime's
+/// classes, methods and fields by name over JNI (`TextLayouts` in
+/// `JNI_OnLoad`) and binds `native` methods by their Java names, which R8
+/// would remove or rename, Java code never naming most of them.
+const AAR_KEEP_RULES: &str = "\
+# Native Shell: libnsh.so finds these classes and members by name over JNI
+# and binds native methods by their Java names.
+-keep class com.longbridge.nsh.** { *; }
+";
+
+/// An Android library archive: the Java runtime and `libnsh.so` per ABI,
+/// with the R8 rules that keep the runtime ([`AAR_KEEP_RULES`]).
 ///
 /// The development library allows cleartext HTTP (merged into the app's
 /// manifest): it loads assets from the `nsh dev` server over plain HTTP.
@@ -314,6 +324,7 @@ fn make_aar(built: &Path, abis: &[String], dev: bool, aar: &Path) -> anyhow::Res
         ),
     )?;
     fs::write(work.join("R.txt"), "")?;
+    fs::write(work.join("proguard.txt"), AAR_KEEP_RULES)?;
     copy(&built.join("classes.jar"), &work.join("classes.jar"))?;
     // With their symbols: the app's Gradle build strips what it packages
     // and keeps them for its crash reports.
@@ -417,4 +428,32 @@ pub(crate) fn copy(from: &Path, to: &Path) -> anyhow::Result<()> {
     }
     fs::copy(from, to).with_context(|| format!("copy {} -> {}", from.display(), to.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, io::Read as _};
+
+    use super::{AAR_KEEP_RULES, make_aar};
+
+    #[test]
+    fn an_aar_carries_the_rules_that_keep_the_runtime() {
+        let dir = std::env::temp_dir().join(format!("nsh-aar-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let built = dir.join("built");
+        fs::create_dir_all(built.join("symbols/arm64-v8a")).unwrap();
+        fs::write(built.join("classes.jar"), b"jar").unwrap();
+        fs::write(built.join("symbols/arm64-v8a/libnsh.so"), b"so").unwrap();
+        let aar = dir.join("nsh.aar");
+        make_aar(&built, &["arm64-v8a".to_string()], false, &aar).unwrap();
+        let mut zip = zip::ZipArchive::new(fs::File::open(&aar).unwrap()).unwrap();
+        let mut rules = String::new();
+        zip.by_name("proguard.txt")
+            .unwrap()
+            .read_to_string(&mut rules)
+            .unwrap();
+        assert_eq!(rules, AAR_KEEP_RULES);
+        assert!(rules.contains("-keep class com.longbridge.nsh.** { *; }"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

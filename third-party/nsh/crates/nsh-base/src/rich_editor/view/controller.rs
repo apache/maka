@@ -1182,7 +1182,15 @@ impl Rv {
         let state = self.session.state();
         let doc = state.doc();
         let size = doc.content().size();
-        let (Ok(a), Ok(h)) = (doc.resolve(anchor.min(size)), doc.resolve(head.min(size))) else {
+        // A ref's command runs at the commit and cannot throw: positions
+        // outside the document leave the selection as it is, logged.
+        if anchor > size || head > size {
+            log::warn!(
+                "RichEditor.setSelection: {anchor}..{head} out of range (the document's positions are 0 to {size})"
+            );
+            return;
+        }
+        let (Ok(a), Ok(h)) = (doc.resolve(anchor), doc.resolve(head)) else {
             return;
         };
         let selection = if anchor == head

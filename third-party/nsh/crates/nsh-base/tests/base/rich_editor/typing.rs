@@ -6,8 +6,6 @@
 
 use std::time::Duration;
 
-use nsh_core::{EventKind, EventPayload, PayloadValue};
-
 use super::*;
 
 fn tree(s: &str) -> String {
@@ -348,7 +346,8 @@ fn composition_shows_its_text_without_changing_the_document() {
     keys(&mut app, &["end"]);
     compose(&mut app, true, "に");
     compose(&mut app, true, "にほ");
-    see(&mut app, "にほ");
+    // In the line, after the caret, in the paragraph's typography.
+    see(&mut app, "abにほ");
     see(&mut app, &tree(r#"doc(paragraph("ab"))"#));
     see(&mut app, "Sel 3-3");
 }
@@ -363,7 +362,7 @@ fn committing_a_composition_inserts_its_text_as_one_undo_step() {
     compose(&mut app, false, "");
     see(&mut app, &tree(r#"doc(paragraph("ab日本"))"#));
     see(&mut app, "Sel 5-5");
-    app.wait_for_gone("text:にほん", Duration::from_secs(5))
+    app.wait_for_gone("text:abにほん", Duration::from_secs(5))
         .unwrap();
     keys(&mut app, &["mod+z"]);
     see(&mut app, &tree(r#"doc(paragraph("ab"))"#));
@@ -376,9 +375,9 @@ fn a_cancelled_composition_leaves_the_document() {
     focus(&mut app);
     keys(&mut app, &["end"]);
     compose(&mut app, true, "にほ");
-    see(&mut app, "にほ");
+    see(&mut app, "abにほ");
     compose(&mut app, false, "");
-    app.wait_for_gone("text:にほ", Duration::from_secs(5))
+    app.wait_for_gone("text:abにほ", Duration::from_secs(5))
         .unwrap();
     see(&mut app, &tree(r#"doc(paragraph("ab"))"#));
     see(&mut app, "Sel 3-3");
@@ -435,10 +434,11 @@ fn a_cancelled_composition_in_the_sink_leaves_the_document() {
 #[test]
 fn the_placeholder_shows_while_the_document_is_empty() {
     let mut app = start_configured(paragraphs(&[""]), Some("Write here"), true);
+    // The block reads its filler, a zero-width space, then the placeholder.
     see(&mut app, "\u{200b}Write here");
     app.type_text("id:editor", "a").unwrap();
     see(&mut app, &doc("a"));
-    app.wait_for_gone("text:Write here", Duration::from_secs(5))
+    app.wait_for_gone("text:\u{200b}Write here", Duration::from_secs(5))
         .unwrap();
     keys(&mut app, &["backspace"]);
     see(&mut app, &doc(""));
@@ -451,6 +451,33 @@ fn the_placeholder_shows_in_the_current_empty_block() {
     // caret shows it, whatever else the document holds.
     let mut app = start_configured(paragraphs(&["", ""]), Some("Write here"), true);
     see(&mut app, "Sel 1-1");
+    see(&mut app, "\u{200b}Write here");
+}
+
+#[test]
+fn the_placeholder_leaves_an_empty_line_blank_beside_content() {
+    let mut app = start_configured(paragraphs(&["", "ab"]), Some("Write here"), true);
+    see(&mut app, "Sel 1-1");
+    app.wait(Duration::from_millis(100)).unwrap();
+    assert!(!app.shows("\u{200b}Write here"));
+}
+
+#[test]
+fn the_placeholder_hides_while_an_input_method_composes() {
+    // As a native input's, though the document holds the composition only
+    // once it commits.
+    let mut app = start_configured(paragraphs(&[""]), Some("Write here"), true);
+    focus(&mut app);
+    see(&mut app, "\u{200b}Write here");
+    compose(&mut app, true, "ni");
+    sink_text(&mut app, "ni");
+    see(&mut app, "ni");
+    app.wait_for_gone("text:\u{200b}Write here", Duration::from_secs(5))
+        .unwrap();
+    see(&mut app, &doc(""));
+    // Cancelled: the block is empty again, and shows it.
+    sink_text(&mut app, "");
+    compose(&mut app, false, "");
     see(&mut app, "\u{200b}Write here");
 }
 
@@ -511,41 +538,6 @@ fn backspace_on_a_selected_atom_deletes_it() {
 }
 
 // Helpers.
-
-/// An input method's composition in the editor's sink: started or
-/// changed (`composing`) with `text`, or ended. The headless driver has
-/// no composition step and does not expose an input's node id, so the
-/// event goes to every node; only the sink listens to it.
-fn compose(app: &mut Headless, composing: bool, text: &str) {
-    for id in 1..4096 {
-        app.engine().control().dispatch_event(
-            id,
-            EventKind::CompositionChange,
-            EventPayload::Map(vec![
-                ("composing", PayloadValue::Bool(composing)),
-                ("text", PayloadValue::Str(text.to_owned())),
-            ]),
-        );
-    }
-    app.wait(Duration::from_millis(50)).unwrap();
-}
-
-/// The sink's text changed to `text`, as platforms report it while an
-/// input method composes (the uncommitted text in it). Sent to every node,
-/// as [`compose`] is.
-fn sink_text(app: &mut Headless, text: &str) {
-    for id in 1..4096 {
-        app.engine().control().dispatch_event(
-            id,
-            EventKind::ChangeText,
-            EventPayload::Text {
-                text: text.to_owned(),
-                count: 0,
-            },
-        );
-    }
-    app.wait(Duration::from_millis(50)).unwrap();
-}
 
 #[derive(Clone, PartialEq, Props)]
 struct ConfiguredProps {

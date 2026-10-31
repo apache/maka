@@ -227,46 +227,71 @@ impl Standard {
         }
         #[cfg(feature = "std-zlib")]
         {
-            let bytes = args
-                .index(1)?
-                .read_bytes()
-                .ok_or_else(|| PropError("expected bytes".into()))?;
-            if op != 901 {
-                return Err(PropError("unknown standard operation".into()));
-            }
-            let level = args.index(2)?.as_number().unwrap_or(6.0) as i32;
-            let limit = args
-                .index(3)?
-                .as_number()
-                .unwrap_or((64 * 1024 * 1024) as f64) as usize;
-            let limit = limit.min(64 * 1024 * 1024);
-            let compression = flate2::Compression::new(level.max(0) as u32);
-            let input = bytes.as_slice();
-            let io = |e: std::io::Error| PropError(e.to_string());
-            let reader: Box<dyn Read + '_> = match name.as_str() {
-                "gzip" => Box::new(flate2::read::GzEncoder::new(input, compression)),
-                "gunzip" => Box::new(flate2::read::GzDecoder::new(input)),
-                "deflate" => Box::new(flate2::read::ZlibEncoder::new(input, compression)),
-                "inflate" => Box::new(flate2::read::ZlibDecoder::new(input)),
-                "deflateRaw" => Box::new(flate2::read::DeflateEncoder::new(input, compression)),
-                "inflateRaw" => Box::new(flate2::read::DeflateDecoder::new(input)),
-                "brotliCompress" => Box::new(brotli::CompressorReader::new(input, 8096, 11, 22)),
-                "brotliDecompress" => Box::new(brotli::Decompressor::new(input, 8096)),
-                "zstdCompress" => {
-                    Box::new(zstd::stream::read::Encoder::new(input, level).map_err(io)?)
-                }
-                "zstdDecompress" => Box::new(zstd::stream::read::Decoder::new(input).map_err(io)?),
-                _ => return Err(PropError("unknown compression operation".into())),
+            let Some(compress) = ZLIB.with(|z| z.get()) else {
+                return Err(PropError("zlib is not linked into this runtime".into()));
             };
-            let mut output = Vec::new();
-            reader
-                .take(limit as u64 + 1)
-                .read_to_end(&mut output)
-                .map_err(io)?;
-            if output.len() > limit {
-                return Err(PropError(format!("output exceeds {limit} bytes")));
-            }
-            Value::bytes(&output)
+            compress(op, &name, args)
         }
+    }
+}
+
+#[cfg(feature = "std-zlib")]
+type Compress = fn(u32, &str, &Value) -> Result<Value, PropError>;
+
+#[cfg(feature = "std-zlib")]
+thread_local! {
+    /// `zlib`'s operations, once the page asked for them (`nsh_std_zlib`).
+    static ZLIB: std::cell::Cell<Option<Compress>> = const { std::cell::Cell::new(None) };
+}
+
+/// Links `zlib`'s operations: the page calls it when the app imports
+/// `zlib`, and a runtime linked for an app that does not drops them.
+#[cfg(feature = "std-zlib")]
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn nsh_std_zlib() {
+    ZLIB.with(|z| z.set(Some(compress)));
+}
+
+#[cfg(feature = "std-zlib")]
+fn compress(op: u32, name: &str, args: &Value) -> Result<Value, PropError> {
+    {
+        let bytes = args
+            .index(1)?
+            .read_bytes()
+            .ok_or_else(|| PropError("expected bytes".into()))?;
+        if op != 901 {
+            return Err(PropError("unknown standard operation".into()));
+        }
+        let level = args.index(2)?.as_number().unwrap_or(6.0) as i32;
+        let limit = args
+            .index(3)?
+            .as_number()
+            .unwrap_or((64 * 1024 * 1024) as f64) as usize;
+        let limit = limit.min(64 * 1024 * 1024);
+        let compression = flate2::Compression::new(level.max(0) as u32);
+        let input = bytes.as_slice();
+        let io = |e: std::io::Error| PropError(e.to_string());
+        let reader: Box<dyn Read + '_> = match name {
+            "gzip" => Box::new(flate2::read::GzEncoder::new(input, compression)),
+            "gunzip" => Box::new(flate2::read::GzDecoder::new(input)),
+            "deflate" => Box::new(flate2::read::ZlibEncoder::new(input, compression)),
+            "inflate" => Box::new(flate2::read::ZlibDecoder::new(input)),
+            "deflateRaw" => Box::new(flate2::read::DeflateEncoder::new(input, compression)),
+            "inflateRaw" => Box::new(flate2::read::DeflateDecoder::new(input)),
+            "brotliCompress" => Box::new(brotli::CompressorReader::new(input, 8096, 11, 22)),
+            "brotliDecompress" => Box::new(brotli::Decompressor::new(input, 8096)),
+            "zstdCompress" => Box::new(zstd::stream::read::Encoder::new(input, level).map_err(io)?),
+            "zstdDecompress" => Box::new(zstd::stream::read::Decoder::new(input).map_err(io)?),
+            _ => return Err(PropError("unknown compression operation".into())),
+        };
+        let mut output = Vec::new();
+        reader
+            .take(limit as u64 + 1)
+            .read_to_end(&mut output)
+            .map_err(io)?;
+        if output.len() > limit {
+            return Err(PropError(format!("output exceeds {limit} bytes")));
+        }
+        Value::bytes(&output)
     }
 }
