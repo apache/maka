@@ -19,7 +19,7 @@
 
 // Keep this process-spawning check in its own binary: fork temporarily inherits
 // other test threads' OFD leases even when their files are close-on-exec.
-use maka_event_log::root::{RootNamespaces, RootOwner};
+use maka_event_log::root::{FileLease, RootNamespaces, RootOwner};
 use std::{fs, path::Path, process::Command};
 
 fn namespaces(base: &Path) -> RootNamespaces {
@@ -43,6 +43,7 @@ fn durable_lease_blocks_other_process_even_after_cache_removal() {
     let ns = namespaces(temp.path());
     let path = temp.path().join("root");
     let owner = RootOwner::create(&path, &ns).unwrap();
+    let _management = FileLease::acquire(&path.join("skills-management.lock")).unwrap();
     fs::create_dir(path.join("arbitrary-business-data")).unwrap();
     fs::write(path.join("arbitrary-business-data/domain.bin"), b"opaque").unwrap();
     assert_eq!(
