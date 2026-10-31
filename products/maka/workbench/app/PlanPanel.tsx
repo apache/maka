@@ -51,10 +51,12 @@ export function createPlanPanel(plan: ComposerPlan) {
       : showing() === 'execution'
         ? execution()!.artifact
         : null;
-  const statusOf = (id: string): PlanStepStatus | null =>
-    showing() === 'execution'
-      ? (execution()!.steps.find((step) => step.id === id)?.status ?? 'pending')
-      : null;
+  // A step the model left in progress is not running once the execution has stopped.
+  const statusOf = (id: string): PlanStepStatus | null => {
+    if (showing() !== 'execution') return null;
+    const status = execution()!.steps.find((step) => step.id === id)?.status ?? 'pending';
+    return status === 'in_progress' && !live(execution()) ? 'pending' : status;
+  };
   const finished = () =>
     execution()?.steps.filter((step) => step.status === 'completed' || step.status === 'skipped')
       .length ?? 0;

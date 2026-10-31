@@ -316,4 +316,11 @@ async fn plan_proposal_opens_for_approval_and_then_shows_its_progress() {
     );
     support::evidence("composer-plan-running", &view.snapshot());
     support::evidence_cells("composer-plan-running", &view);
+    support::click_button(&mut view, "Cancel Plan").await;
+    // The step the model left in progress no longer looks like it is running.
+    wait_view(&mut view, |screen| {
+        screen.contains("plan:cancel:execution-one") && screen.contains("Plan cancelled")
+    })
+    .await;
+    assert!(!view.snapshot().contains('◌'), "{}", view.snapshot());
 }

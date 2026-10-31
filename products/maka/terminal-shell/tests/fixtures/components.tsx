@@ -293,6 +293,15 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
         mode.set(next);
       },
       async change(input) {
+        if (input.kind === 'cancel') {
+          action.set(`plan:cancel:${input.executionId}`);
+          const current = planView().current;
+          planView.set({
+            enabled: true,
+            current: { ...current, execution: { ...current.execution!, phase: 'cancelled' } },
+          });
+          return;
+        }
         if (input.kind !== 'approve') throw new Error('Unexpected plan action');
         action.set(`plan:approve:${input.proposalId}:${input.proposalRevision}`);
         planView.set({
