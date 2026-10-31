@@ -19,11 +19,10 @@
 
 use maka_agent_facts::event::LogPrefix;
 use maka_agent_facts::event::LogScope;
+use maka_agent_facts::event::StoredEvent;
 use sqlx::Connection;
 
 use crate::{EventLog, StoreError, context::selection::Selection, sequence_number};
-
-mod decode;
 
 impl EventLog {
     /// Read one complete bounded execution prefix, or fail without returning a partial
@@ -86,28 +85,31 @@ impl EventLog {
         let root_scope = session.is_none();
         let (events, root_digest) = if count == 0 {
             (Vec::new(), root_scope.then(crate::context::evidence::RootDigest::new))
-        } else { decode::run(count as usize, |sender| crate::connection::worker_query(&mut transaction, move |worker| Box::pin(async move {
+        } else { crate::connection::worker_query(&mut transaction, move |worker| Box::pin(async move {
             // SAFETY: this callback exclusively owns the original SQLite worker.
             // The wrapper and all borrowed rows/statements close before return.
             let raw = unsafe { rusqlite::Connection::from_handle(worker.as_raw_handle().as_ptr()) }?;
             let result = (|| {
                 let mut digest = session.is_none().then(crate::context::evidence::RootDigest::new);
+                let mut events = Vec::new();
                 let mut statement = raw.prepare(&query)?;
                 let mut rows = statement.query(rusqlite::params![session, selected_lineage])?;
                 while let Some(row) = rows.next()? {
                     let sequence: i64 = row.get("sequence")?;
-                    let prepared = crate::canonical::prepare_event_on_handle(row, |parts| {
+                    let event = crate::canonical::decode_event_on_handle(row, |parts| {
                         if let Some(digest) = &mut digest { digest.record(sequence, &parts); }
                     })?;
-                    if sender.send((sequence_number(sequence)?, prepared)).is_err() {
-                        return Ok(decode::Produced::DecoderStopped);
-                    }
+                    events.push(StoredEvent { sequence: sequence_number(sequence)?, event });
                 }
-                Ok(decode::Produced::Complete(digest))
+                if events.len() as u64 != sequence_number(count)? {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                        "prefix decoder stopped before completing the admitted snapshot").into());
+                }
+                Ok((events, digest))
             })();
             drop(raw);
             result
-        }))).await? };
+        })).await? };
         let digest = match root_digest {
             Some(digest) => digest.finish(high_water)?,
             None => crate::context::evidence::selected(

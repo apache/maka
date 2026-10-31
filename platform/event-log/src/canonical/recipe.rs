@@ -244,13 +244,13 @@ impl<'a> Recipe<'a> {
             Ok(())
         })
     }
-    pub fn prepare(
+    pub fn decode(
         &self,
         body: Option<&'a [u8]>,
-    ) -> Result<(super::event::PreparedEvent, [&'a [u8]; 3]), StoreError> {
+    ) -> Result<(maka_agent_facts::event::RuntimeEvent, [&'a [u8]; 3]), StoreError> {
         match (self.layout.slot, body) {
             (None, None) => Ok((
-                super::event::PreparedEvent::inline(self.header),
+                serde_json::from_str(self.header)?,
                 [self.header.as_bytes(), &[], &[]],
             )),
             (Some(slot), Some(body)) => {
@@ -259,7 +259,7 @@ impl<'a> Recipe<'a> {
                 }
                 let position = usize::try_from(slot.offset)
                     .map_err(|_| invalid("slot offset exceeds memory range"))?;
-                let event = super::event::prepare(self.header, position, body)?;
+                let event = super::event::decode(self.header, position, body)?;
                 Ok((
                     event,
                     [

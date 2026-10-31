@@ -126,12 +126,12 @@ pub(crate) fn json(row: &SqliteRow) -> Result<Cow<'_, str>, StoreError> {
 pub(crate) fn json_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Cow<'a, str>, StoreError> {
     reconstruct(fields_on_handle(row)?)
 }
-pub(crate) fn prepare_event_on_handle<'a>(
+pub(crate) fn decode_event_on_handle<'a>(
     row: &'a rusqlite::Row<'_>,
     visit: impl FnOnce([&'a [u8]; 3]),
-) -> Result<super::event::PreparedEvent, StoreError> {
+) -> Result<maka_agent_facts::event::RuntimeEvent, StoreError> {
     let (recipe, body) = material(fields_on_handle(row)?)?;
-    let (event, parts) = recipe.prepare(body)?;
+    let (event, parts) = recipe.decode(body)?;
     visit(parts);
     Ok(event)
 }

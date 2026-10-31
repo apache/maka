@@ -25,8 +25,7 @@ mod recipe;
 mod source;
 mod write;
 
-pub(crate) use event::PreparedEvent;
-pub(crate) use read::{COLUMNS, JOINS, json, json_on_handle, one, prepare_event_on_handle};
+pub(crate) use read::{COLUMNS, JOINS, decode_event_on_handle, json, json_on_handle, one};
 pub(crate) use recipe::projection;
 pub(crate) use source::{
     SPAN_COLUMNS, SpanMetadata, with_span, with_span_metadata, with_span_on_row,

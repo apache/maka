@@ -53,64 +53,7 @@ struct HeaderOutcome<'a> {
     artifacts: Vec<ArtifactEvidence>,
 }
 
-pub(crate) struct PreparedEvent(Prepared);
-
-enum Prepared {
-    Inline(String),
-    Tool {
-        header: Box<ToolHeader>,
-        projection: String,
-    },
-}
-struct ToolHeader {
-    id: String,
-    recorded_at: SystemTime,
-    invocation: Invocation,
-    operation_id: String,
-    raw: RawToolResultRef,
-    artifacts: Vec<ArtifactEvidence>,
-}
-
-impl PreparedEvent {
-    pub(super) fn inline(json: &str) -> Self {
-        Self(Prepared::Inline(json.to_owned()))
-    }
-    pub(crate) fn decode(self) -> Result<RuntimeEvent, StoreError> {
-        match self.0 {
-            Prepared::Inline(json) => Ok(serde_json::from_str(&json)?),
-            Prepared::Tool { header, projection } => {
-                let model_projection: DurableToolProjection = serde_json::from_str(&projection)?;
-                let ToolHeader {
-                    id,
-                    recorded_at,
-                    invocation,
-                    operation_id,
-                    raw,
-                    artifacts,
-                } = *header;
-                Ok(RuntimeEvent {
-                    id,
-                    recorded_at,
-                    invocation,
-                    fact: Fact::ToolSettled {
-                        operation_id,
-                        outcome: ToolOutcome::Succeeded {
-                            raw,
-                            model_projection,
-                            artifacts,
-                        },
-                    },
-                })
-            }
-        }
-    }
-}
-
-pub(super) fn prepare(
-    header: &str,
-    offset: usize,
-    body: &[u8],
-) -> Result<PreparedEvent, StoreError> {
+pub(super) fn decode(header: &str, offset: usize, body: &[u8]) -> Result<RuntimeEvent, StoreError> {
     let Header {
         id,
         recorded_at,
@@ -142,17 +85,20 @@ pub(super) fn prepare(
     }
     let body = std::str::from_utf8(body)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    Ok(PreparedEvent(Prepared::Tool {
-        header: Box::new(ToolHeader {
-            id,
-            recorded_at,
-            invocation,
+    let model_projection: DurableToolProjection = serde_json::from_str(body)?;
+    Ok(RuntimeEvent {
+        id,
+        recorded_at,
+        invocation,
+        fact: Fact::ToolSettled {
             operation_id,
-            raw,
-            artifacts,
-        }),
-        projection: body.to_owned(),
-    }))
+            outcome: ToolOutcome::Succeeded {
+                raw,
+                model_projection,
+                artifacts,
+            },
+        },
+    })
 }
 
 #[cfg(test)]
@@ -205,8 +151,7 @@ mod tests {
                 }),
             )
             .unwrap();
-            let (prepared, parts) = recipe.prepare(Some(projection.json.as_bytes())).unwrap();
-            let event = prepared.decode().unwrap();
+            let (event, parts) = recipe.decode(Some(projection.json.as_bytes())).unwrap();
             assert_eq!(event, expected);
             assert_eq!(parts.concat(), json.as_bytes());
         }
@@ -230,7 +175,7 @@ mod tests {
             }),
         )
         .unwrap();
-        assert!(recipe.prepare(Some(projection.json.as_bytes())).is_err());
+        assert!(recipe.decode(Some(projection.json.as_bytes())).is_err());
     }
 
     #[test]
@@ -252,11 +197,7 @@ mod tests {
         ] {
             let position = changed.find("\"model_projection\": null").unwrap()
                 + "\"model_projection\": ".len();
-            assert!(
-                prepare(&changed, position, projection.json.as_bytes())
-                    .and_then(PreparedEvent::decode)
-                    .is_err()
-            );
+            assert!(decode(&changed, position, projection.json.as_bytes()).is_err());
         }
     }
 }
