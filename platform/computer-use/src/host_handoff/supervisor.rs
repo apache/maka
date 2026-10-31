@@ -192,6 +192,7 @@ async fn serve(
         let plan = setup_config.prepare().map_err(failed)?;
         let origin = format!("chrome-extension://{}/", setup_config.extension_id());
         let hosts = process::find(&plan.original.executable, &origin, setup_config.browser())?;
+        setup_config.remember_selection().map_err(failed)?;
         setup_config
             .remember_original(&plan.original)
             .map_err(failed)?;

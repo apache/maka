@@ -48,19 +48,43 @@ pub(crate) fn bootstrap() -> Option<ExitCode> {
             .is_some_and(|arg| arg == ENTRY || arg == RESTORE)
     {
         let result = (|| {
-            let config = ConfiguredHandoff::load().map_err(failed)?;
-            let Some(config) = config else {
-                if restore_cli {
-                    return cua_driver_core::browser::host_handoff::restore_current()
-                        .map_err(failed);
-                }
-                return Err(failed("on-demand browser host is not configured"));
-            };
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .map_err(failed)?;
-            if restore_cli || argument.as_deref() == Some(std::ffi::OsStr::new(RESTORE)) {
+            if restore_cli {
+                use cua_driver_core::browser::host_handoff::{BrowserFamily, restore_browser};
+                let mut errors = Vec::new();
+                for browser in [BrowserFamily::Chrome, BrowserFamily::Chromium] {
+                    let result = match ConfiguredHandoff::captured(browser).map_err(failed) {
+                        Ok(Some(config)) => runtime.block_on(supervisor::recover(config)),
+                        Ok(None) => restore_browser(browser).map_err(failed),
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = result {
+                        errors.push(format!("{}: {error}", browser.as_str()));
+                    }
+                }
+                return if errors.is_empty() {
+                    Ok(())
+                } else {
+                    Err(failed(errors.join("; ")))
+                };
+            }
+            let recovering = argument.as_deref() == Some(std::ffi::OsStr::new(RESTORE));
+            let config = if recovering {
+                let family = std::env::args()
+                    .nth(2)
+                    .ok_or_else(|| failed("browser recovery scope is missing"))?;
+                let family =
+                    serde_json::from_value(serde_json::Value::String(family)).map_err(failed)?;
+                ConfiguredHandoff::captured(family)
+            } else {
+                ConfiguredHandoff::load()
+            }
+            .map_err(failed)?;
+            let config = config.ok_or_else(|| failed("on-demand browser host is unavailable"))?;
+            if recovering {
                 runtime.block_on(supervisor::recover(config))
             } else {
                 runtime.block_on(supervisor::run(config))
@@ -85,14 +109,17 @@ pub(crate) fn bootstrap() -> Option<ExitCode> {
         return None;
     }
     let result = (|| {
-        let Some(config) = ConfiguredHandoff::load().map_err(failed)? else {
+        let Some(browser) = process::native_browser()? else {
+            return Ok(None);
+        };
+        let Some(config) = ConfiguredHandoff::native_launch(browser).map_err(failed)? else {
             return Ok(None);
         };
         let selected = origin_text == format!("chrome-extension://{}/", config.extension_id());
         if selected && native::admit(&config)? {
-            return Ok(None);
+            return config.bootstrap_native().map_err(failed);
         }
-        let original = config.original().map_err(failed)?;
+        let original = config.forwarding_host().map_err(failed)?;
         if !original
             .allowed_origins
             .iter()
@@ -287,6 +314,7 @@ async fn recover_owner(config: &ConfiguredHandoff, owner: uuid::Uuid) -> Result<
         let mut command = tokio::process::Command::new(config.executable());
         command
             .arg(RESTORE)
+            .arg(config.browser().as_str())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());

@@ -57,7 +57,7 @@ Load and enable that directory through Chrome's extension UI, then register its 
 maka browser install --provider maka --extension-id ACTUAL_MAKA_EXTENSION_ID
 ```
 
-To use an already installed ChatGPT extension, select its adapter explicitly instead:
+For an explicit permanent ChatGPT registration instead of automatic handoff:
 
 ```sh
 maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_ID
@@ -65,7 +65,7 @@ maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_
 
 These are alternative registration selections for an executable. Host installation refuses conflicting registrations. Re-export refuses to overwrite modified extension source. Setup does not install extensions, change browser policies or grant site access. Remove the matching extension-host registration with `maka browser uninstall --provider maka` for Maka or `maka browser uninstall --provider chatgpt` for ChatGPT; removal does not uninstall the extension or delete exported source.
 
-To share OpenAI's existing native host registration instead of replacing it permanently, opt into on-demand handoff:
+Maka automatically discovers an installed ChatGPT extension and its original native host in Chrome or Chromium. Selection takes over the connection on demand; no setup command is required. Chrome is preferred when both are installed. To explicitly select an extension or Chromium instead:
 
 ```sh
 maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_ID --on-demand
@@ -77,7 +77,7 @@ Setup leaves the original registration in place. Browser discovery lists the con
 
 Acquiring and returning the connector reconnect the extension to the selected native host. Browser operations already running in the previous host do not carry over to the new connection.
 
-Without on-demand setup, an installed ChatGPT extension connected to OpenAI's native host does not connect to Maka automatically. The separate Maka connector remains available. With no configured provider, `cua.listBrowsers()` returns an empty list.
+Discovery is read-only. The separate Maka connector and explicit permanent selections remain available. With neither an installed ChatGPT connector nor a configured provider, `cua.listBrowsers()` returns an empty list.
 
 Extension providers expose `browser.user` for user-tab discovery and claiming. The [API reference](src/api.md) covers its permission rules, the `tab.ax` facade, Playwright, clipboard and downloads. Host `browserPreparation` defaults to `popup: false` and `requestHeaders: []`; nonempty headers also enable effective popup adoption/relay. These controls grant no site access and do not prove ChatGPT page hooks are off. See the [typed configuration](../../plugins/workspace/api/src/computer.rs).
 

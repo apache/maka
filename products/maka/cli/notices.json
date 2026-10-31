@@ -1,7 +1,7 @@
 {
   "inputs": {
-    "Cargo.lock": "ab7a86c3293762a35a200d23034f83c492e7acbe77a7dc1d8665916617338c96",
-    "Cargo.toml": "e2f99a1541c03f2af94eacb52860825ac6dde9834d2ef8031310c0508583e6ef",
+    "Cargo.lock": "1cba42c46d30fd60d2607dc5ef2b074604648e6a490fb8cd7d62c96ddc6d99d2",
+    "Cargo.toml": "cc999e086d5a5085b5c43ce1813d6e767c59950c9d1d93f093cae78ba33aa8ce",
     "package-lock.json": "863e20d94f46507befd14d7abe94982bb110dff3efaa13b9d1c3b60333f8d64a",
     "package.json": "a513ba49c73a1cd6d8060d9a4f2edb47f5286469553cf3b3f4959b9ceb64fa58",
     "packages/plugin-sdk/src/composer-view.ts": "fe9dd6320ecf4ef715b9c987ab1d4940bfdccb3b249307d6d076578eece6d18c",
@@ -18,7 +18,7 @@
     "platform/background-health/Cargo.toml": "41e89dc7e43adf066306b03b3083cbd4163a5550f39d5be6669463d3c16c53a5",
     "platform/capabilities/Cargo.toml": "9b5407113c0595744e1da903e41171f6311be1a543309fe35cd977c3c62041d7",
     "platform/code-runtime/Cargo.toml": "30a8e555effeaa063b11d255d60d6f858d53e3bd950e2f162382324ef0a7cc20",
-    "platform/computer-use/Cargo.toml": "40eb5959696c361d3783736915a3c3f247de711680e3b8e38eee4a2d76810b8c",
+    "platform/computer-use/Cargo.toml": "846c1917cdb76363d081572e08fd0bf3ff2f7cc23265505a0cb19beb91880f1f",
     "platform/computer-use/THIRD_PARTY_NOTICES": "8b25853c9fe8f668531e01e69c6c803e511b7beac5b642f52b4fdf545bfa5dea",
     "platform/event-log/Cargo.toml": "e8d149e2fee903a4fd155931cd3191f986416797c4e6ddf60be4e556583e2e14",
     "platform/host-js/Cargo.toml": "881688e22e1325226dc54c1d94ad370fef2b4ce68fbc0c61b3574fbbae29541f",
@@ -96,7 +96,7 @@
     "plugins/workspace/protocol-processes/package.ts": "0e8e7786c7afd811e88c8d5a4791fe707ac78e2fafd348e97b2897650ba225f3",
     "plugins/workspace/support/Cargo.toml": "a8986fea250bf1480412a3c347cd3211ff3c48bb293f845a9a6ffbacf09e6678",
     "plugins/workspace/workspace-computer/native/Cargo.toml": "a948b9898c644bac97fb97f5c6444cbdc403273005beda9020e9610fa1c17bcc",
-    "plugins/workspace/workspace-computer/package.ts": "710fe896e7181b2b5b5b8d8ddfd6bc4108cbcd6f3eff438e6667117df5410c67",
+    "plugins/workspace/workspace-computer/package.ts": "cd5eb099f8cdded96fc797d71e45c0ef8531d7cc98d70e7172af1334af17e205",
     "plugins/workspace/workspace-files/engine/Cargo.toml": "81f4ef26f630e81b1afb417fa1f99cfea898e9084801bd37c8e71f6d8beb24eb",
     "plugins/workspace/workspace-files/native/Cargo.toml": "0b0d88c7d5f7140fa42e8e17e1d75bd0fa53ec8e0fbb85efc1b5503a0869acb0",
     "plugins/workspace/workspace-files/package.ts": "e932456ace8094c2c6477897794213160e837b7ef72bed088e4600e2c8ce6a97",
@@ -2772,5 +2772,5 @@
     "tools/ui-build/src/lib.rs": "a47a8b18ae4056eb408601bbdcc9b88f971bf62437b3f1e39a64cfb194f19af4",
     "tools/ui-build/src/main.rs": "9dc0ce6be54d8ed5cf6f40d151fde718822b65a3c36eca7c2b0008d5d9fd5426"
   },
-  "sha256": "4cd2453fcc7f43bcc13421d66bc7b23ce8ecf808d8b4d75e4ec804f3e7379262"
+  "sha256": "82edd08ac8074f4ed33066fe45039f93ce945947411dfe1770042c0e5ac269a3"
 }

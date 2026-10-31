@@ -1,4 +1,7 @@
 Computer Use 是独立且持久的 JavaScript REPL，直接调用 cua_repl；无需 Code Mode。变量与绑定对象在当前 Host 进程内跨调用和 Turn 保留。重启后 REPL 没有历史变量；请遵循模型请求提供的当前 Computer Use 状态。
+网页操作先调用 `await cua.listBrowsers()`，优先通过浏览器 Tab 操作。已安装的 ChatGPT 连接可按需接管，无需 Shell 配置或启动 ChatGPT 桌面应用。
+使用顶层 `await`，不要使用顶层 `return`。REPL 会保留声明，请复用绑定或换用新变量名；这里没有 Node API 或 `setTimeout`。
+
 `cua.computer.target` 标识选定的桌面平台（`mac`、`linux`、`windows`）。WSL 默认选择 Windows 主机；Shell 命令仍可能在 Linux 中运行。
 
 `cua.computer` 另提供平台原生 snake_case 方法，参数为选项对象，与下文 App/Tab 的位置参数不同。`list_apps()`、`list_windows()` 和 Linux `get_screenshot()` 无需选项。先发现当前接口并读取清单：
@@ -44,6 +47,8 @@ Maka 提供 AX 浏览器模式：`tab.ax` 包含 `get`、`write`、`click`、`dr
 在 `state`、`screenshot`、`both` 模式下分别返回文本、图像字节或 `{state, screenshot?}`，不自动输出。
 `await tab.ax.write(mode = 'state', options?)` 输出可用结果并返回 undefined。现有 Tab 平铺方法继续可用。
 AX 门面与平铺方法操作同一绑定的 Tab。
+
+Chrome 或 Chromium 中已安装、且保留原生宿主注册的 ChatGPT 扩展会自动被发现。`listBrowsers()` 将其标为 `on_demand`；选中时接管，`browser.release()` 或本轮清理时归还原宿主，无需安装命令、调试端口或启动 ChatGPT 桌面应用。网页优先使用这个连接，再考虑原生浏览器窗口操作。
 
 App 和 Tab 观察：
 - `getAXState({emit?, disableDiffing?})` 返回文本。标签页和 macOS 应用默认返回差异；Windows 和 Linux 应用返回完整状态。
@@ -141,11 +146,11 @@ confirm 还有 `accept()`，prompt 有 `accept(text)`，允许空字符串。旧
 CDP 页数接受有限数字，包括小数、零和负数。一页使用目标内容的宽或高，最小为 100 CSS 像素；坐标目标使用视口尺寸。CDP 的 `{pixels:n}` 扩展接受正的有限像素增量。
 Linux 拒绝数字页数。Linux X11 默认使用 `{pixels:800}`，接受 1 到 65535 的整数像素距离，并发送 `max(round(pixels/100),1)` 个滚轮步进；实际内容移动量由应用决定。Linux Wayland 目前拒绝像素输入。
 
-macOS 滚动使用正的有限数字页数，默认一页，并拒绝 `{pixels}`。当前原生适配器仅能交付 1 到 50 的整数页数；小数或更大页数仍未支持。Windows 要求坐标点和正的有限 `{pixels:500}`，拒绝省略距离及数字页数；坐标和按方向取正负后的距离使用 JavaScript `Math.round`，舍入结果须在有符号 32 位整数范围内。原生滚轮每轴增量限制在 [-32768,32767]，指针停留在目标点；内容移动量由应用决定。原生索引滚动保留选定的无障碍目标。App 包装对象的原生索引点击支持一次语义点击；多次点击需使用截图坐标。macOS 的 raw `cua.computer.click` 还支持通过模拟鼠标事件进行多次索引点击。
+macOS 滚动使用正的有限数字页数，默认一页，并拒绝 `{pixels}`。支持小数页数。Windows 要求坐标点和正的有限 `{pixels:500}`，拒绝省略距离及数字页数；坐标和按方向取正负后的距离使用 JavaScript `Math.round`，舍入结果须在有符号 32 位整数范围内。原生滚轮每轴增量限制在 [-32768,32767]，指针停留在目标点；内容移动量由应用决定。原生索引滚动保留选定的无障碍目标。App 包装对象的原生索引点击支持一次语义点击；多次点击需使用截图坐标。macOS 的 raw `cua.computer.click` 还支持通过模拟鼠标事件进行多次索引点击。
 
 输入派发成功不代表已经确定应用的结果状态。
 浏览器坐标操作使用 CSS 视口坐标，无需先截图；截图不缩放坐标。Linux 窗口局部坐标无需先截图即可使用。Linux/Windows 原生截图映射在输入操作后继续有效，直到下一次观察替换；仅 AX 观察会清除图像映射，Windows 此后按坐标操作需要重新截图。窗口几何变化会使已保存的映射失效。macOS 当前仍要求在操作后重新截图再按坐标输入。原生语义操作使用保留的无障碍元素。应用菜单仅限所属进程和确切绑定窗口，关闭菜单的内容不会显示。菜单交互可能激活绑定窗口，并在菜单打开时保持激活。
-macOS/Windows 坐标和键盘输入通过确切窗口的前台路径交付；macOS 在支持时恢复先前应用。Linux 保持后台交付。坐标输入可能移动系统指针。未验证的输入效果会在调用输出中报告。没有公开的 `delivery_mode` 选项，也不会自动重放。
+原生坐标和键盘输入默认向绑定的确切窗口后台投递。不支持后台投递时会报告原因，不会自动改为前台重发；未验证的操作可能已经投递。网页优先使用浏览器 Tab 操作，避免桌面焦点和指针输入。原生文本优先使用 `typeText` 或 `setValue`；macOS `paste` 会使用系统剪贴板和前台按键，原生菜单也可能激活窗口。部分坐标路径可能移动系统指针，投递元数据会报告实际路径。需要时可明确调用原生 `app.pressKey(key, {deliveryMode:"foreground"})` 或 `app.typeText(text, {deliveryMode:"foreground"})` 请求前台投递，默认是 `"background"`。不要自动重试未验证的输入或静默切换模式。
 
 `nodeRepl.write(value)` 输出文本/JSON。`await nodeRepl.emitImage(bytes | dataUrl | {bytes, mimeType})` 输出图像。不提供文件/HTTP 图像 URL、Node、任意文件系统和网络 API。`cua.rewriteDocumentation()` 重新输出此参考文档。
 

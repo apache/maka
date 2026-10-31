@@ -17,9 +17,8 @@
  * under the License.
  */
 
-//! Public Session smoke for an installed on-demand browser connector.
-//! Register this executable with the ordinary `browser install ... --on-demand`
-//! command first. Running it inventories tabs, ends the turn and restores the host.
+//! Public Session smoke for automatic ChatGPT browser discovery and handoff.
+//! Running it inventories tabs, ends the turn and restores the original host.
 
 use maka_agent_facts::language::Language;
 use maka_computer_use::{

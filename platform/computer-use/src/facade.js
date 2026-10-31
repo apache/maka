@@ -1093,9 +1093,11 @@ const bind = async (method, args, document = true) => {
       });
     }
     Object.assign(target, {
-      typeText: (text) => action('typeText', { text }),
+      typeText: (text, options = {}) =>
+        action('typeText', { text, deliveryMode: options.deliveryMode }),
       paste: (text, options = {}) => action('paste', { text, options }),
-      pressKey: (key) => action('pressKey', { key }),
+      pressKey: (key, options = {}) =>
+        action('pressKey', { key, deliveryMode: options.deliveryMode }),
     });
   }
   if (result.kind === 'tab') target.capabilities = tabCapabilities(result, handle);

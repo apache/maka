@@ -65,7 +65,7 @@ maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_
 
 这些命令为同一个可执行文件选择不同的注册方式。扩展宿主安装拒绝覆盖冲突注册，重新导出扩展时也拒绝覆盖修改过的源码。安装命令不安装扩展、不修改浏览器策略，也不授予站点访问权限。Maka 使用 `maka browser uninstall --provider maka`，ChatGPT 使用 `maka browser uninstall --provider chatgpt`，移除匹配的 扩展宿主注册；此操作不卸载扩展或删除导出源码。
 
-若希望按需共用 OpenAI 已有的原生宿主，而不是长期替换注册，可启用按需接管：
+Maka 会自动发现 Chrome 或 Chromium 中已安装的 ChatGPT 扩展及其原生宿主，使用时按需接管，无需执行配置命令；两者均存在时优先选择 Chrome。若需要明确选择扩展或改用 Chromium：
 
 ```sh
 maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_ID --on-demand
@@ -77,7 +77,7 @@ maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_
 
 安装时保留原注册。浏览器发现会列出已配置的连接器，但不会接管；选择或使用时才取得共享租约。正常轮次清理、Session 关闭及 `await browser.release()` 会归还当前 Session 的租约，最后一个使用者归还后恢复原宿主。长时间运行的 Agent 应在休眠前主动归还浏览器。`maka browser restore` 可恢复遗留注册；仍在运行的监督进程会持有注册锁。
 
-未启用按需接管时，已连接 OpenAI 原生宿主的 ChatGPT 扩展不会自动连接 Maka，也可以使用上面独立的 Maka 连接扩展。没有配置提供方时，`cua.listBrowsers()` 返回空列表。
+发现过程只读，不改动浏览器注册。独立的 Maka 连接扩展和显式永久连接仍然可用。既没有已安装的 ChatGPT 连接，也没有配置提供方时，`cua.listBrowsers()` 返回空列表。
 
 Extension 提供方通过 `browser.user` 提供用户标签页发现和取得入口。[API 说明](src/api.zh-CN.md)涵盖其权限规则、`tab.ax` 门面、Playwright、剪贴板和下载。Host 的 `browserPreparation` 默认为 `popup: false`、`requestHeaders: []`；非空 headers 也会启用有效的 popup 采用与 relay。这些设置不授予站点访问权限，也不证明 ChatGPT 页面 hooks 已关闭，详见[类型化配置](../../plugins/workspace/api/src/computer.rs)。
 

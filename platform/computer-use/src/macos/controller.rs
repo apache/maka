@@ -2934,7 +2934,7 @@ mod tests {
             Err(ToolError::Failed(reason)) if reason == "stale_element: observe the application before semantic input"
         ));
         assert!(matches!(
-            application.action(Action::TypeText { index: None, text: "text".into() }, &CancellationToken::new()),
+            application.action(Action::TypeText { index: None, text: "text".into(), delivery_mode: Default::default() }, &CancellationToken::new()),
             Err(ToolError::Failed(reason)) if reason == "application slot requires a retained semantic action"
         ));
         assert!(application.observed.is_none());

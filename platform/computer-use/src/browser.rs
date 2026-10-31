@@ -3056,7 +3056,7 @@ impl Tab {
             Action::Close => {
                 unreachable!("tab closure is admitted by its Host owner")
             }
-            Action::TypeText { index, text } => {
+            Action::TypeText { index, text, .. } => {
                 self.focus(index, cancellation, language).await?;
                 self.before_element_input(selected_index, cancellation, language)
                     .await?;
@@ -3140,7 +3140,7 @@ impl Tab {
                     input.release(held).await
                 })).await?;
             }
-            Action::PressKey { index, key } => {
+            Action::PressKey { index, key, .. } => {
                 self.focus(index, cancellation, language).await?;
                 self.before_element_input(selected_index, cancellation, language)
                     .await?;
@@ -3825,14 +3825,27 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(listed.as_array().unwrap().len(), 1);
-            assert_eq!(listed[0]["id"], "actual-cdp");
-            assert!(listed[0].get("tabs").is_none());
+            let actual = listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|browser| browser["id"] == "actual-cdp")
+                .unwrap();
+            assert!(actual.get("tabs").is_none());
+            assert!(
+                !listed
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|browser| browser["id"] == "unconfirmed-cdp")
+            );
             let (state, errors) = browsers.state().await;
-            assert_eq!(state.len(), 1);
-            assert_eq!(state[0]["id"], "actual-cdp");
-            assert_eq!(errors.len(), 1);
-            assert!(errors[0].starts_with("unconfirmed-cdp: tool cleanup unconfirmed:"));
+            assert!(state.iter().any(|browser| browser["id"] == "actual-cdp"));
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.starts_with("unconfirmed-cdp: tool cleanup unconfirmed:"))
+            );
             let selected = browsers
                 .invoke(
                     Command::GetBrowser {

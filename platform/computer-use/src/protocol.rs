@@ -419,6 +419,22 @@ impl BrowserEvaluateOptions {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeliveryMode {
+    #[default]
+    Background,
+    Foreground,
+}
+impl DeliveryMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Foreground => "foreground",
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum BrowserSelection {
@@ -607,6 +623,8 @@ pub enum Action {
     TypeText {
         index: Option<u64>,
         text: String,
+        #[serde(default, rename = "deliveryMode")]
+        delivery_mode: DeliveryMode,
     },
     Paste {
         index: Option<u64>,
@@ -616,6 +634,8 @@ pub enum Action {
     PressKey {
         index: Option<u64>,
         key: String,
+        #[serde(default, rename = "deliveryMode")]
+        delivery_mode: DeliveryMode,
     },
     Navigate {
         url: String,

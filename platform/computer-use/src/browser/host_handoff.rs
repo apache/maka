@@ -159,9 +159,7 @@ impl Browsers {
                 .iter()
                 .any(|provider| provider.extension_mode() != Some(ExtensionAdapterMode::Chatgpt))
             {
-                return Err(failed(
-                    "browser_ambiguous: choose a browser ID from listBrowsers before on-demand handoff",
-                ));
+                return Ok(false);
             }
         }
         self.acquire_owner_handoff(config, cancellation).await

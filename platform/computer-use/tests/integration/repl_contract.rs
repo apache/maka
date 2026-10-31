@@ -461,7 +461,7 @@ async fn persistent_repl_uses_each_evaluations_language_without_rewriting_user_o
         assert!(
             outputs
                 .iter()
-                .any(|part| matches!(part, CellOutput::Text { text } if text == "[]"))
+                .any(|part| matches!(part, CellOutput::Text { text } if serde_json::from_str::<Value>(text).is_ok_and(|value| value.is_array())))
         );
     }
     repl.close().await.unwrap();

@@ -81,6 +81,24 @@ pub(super) fn find(
     Ok(targets)
 }
 
+pub(super) fn native_browser() -> Result<Option<BrowserFamily>, ToolError> {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        ProcessRefreshKind::new().with_exe(UpdateKind::Always),
+    );
+    let parent = system
+        .process(Pid::from_u32(std::process::id()))
+        .and_then(|process| process.parent());
+    let mut browsers = HashMap::new();
+    for family in [BrowserFamily::Chrome, BrowserFamily::Chromium] {
+        if has_browser_parent(&system, parent, family, &mut browsers)? {
+            return Ok(Some(family));
+        }
+    }
+    Ok(None)
+}
+
 fn has_browser_parent(
     system: &System,
     mut parent: Option<Pid>,

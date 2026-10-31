@@ -71,6 +71,7 @@ pub(super) fn admit(config: &ConfiguredHandoff) -> Result<bool, ToolError> {
                             let mut command = std::process::Command::new(config.executable());
                             command
                                 .arg(RESTORE)
+                                .arg(config.browser().as_str())
                                 .stdin(Stdio::null())
                                 .stdout(Stdio::null())
                                 .stderr(Stdio::inherit());

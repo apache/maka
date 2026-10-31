@@ -67,7 +67,6 @@ if entry.exists() or testentry.exists():
 guards = []
 sockets = []
 child = None
-installed = False
 owned = None
 with tempfile.TemporaryFile(mode="w+") as log:
 
@@ -158,34 +157,11 @@ with tempfile.TemporaryFile(mode="w+") as log:
         original()
 
     try:
-        subprocess.run(
-            [
-                str(host),
-                "browser",
-                "install",
-                "--provider",
-                "chatgpt",
-                "--extension-id",
-                args.extension_id,
-                "--on-demand",
-                "--browser",
-                args.browser,
-            ],
-            check=True,
-        )
-        installed = True
-        config = json.loads(entry.read_text())
-        state = pathlib.Path(config["privateStateDirectory"]) / (
-            "chatgpt-handoff"
-            if args.browser == "chrome"
-            else "chatgpt-handoff-chromium"
+        state = pathlib.Path.home() / ".maka-browser" / (
+            "chatgpt-handoff" if args.browser == "chrome" else "chatgpt-handoff-chromium"
         )
         if (state / "registration.json").exists():
             raise RuntimeError("Another handoff is active")
-        config["executable"] = str(test)
-        testentry.parent.mkdir(mode=0o700, exist_ok=True)
-        testentry.write_text(json.dumps(config))
-        testentry.chmod(0o600)
         guard, sock = acquire()
         env = os.environ.copy()
         env["MAKA_BROWSER_HANDOFF_SMOKE"] = "1"
@@ -249,16 +225,9 @@ with tempfile.TemporaryFile(mode="w+") as log:
                 except subprocess.TimeoutExpired:
                     guard.terminate()
                     guard.wait(timeout=5)
-        if installed:
-            subprocess.run([str(host), "browser", "restore"], check=True)
-            original()
-            subprocess.run(
-                [str(host), "browser", "uninstall", "--provider", "chatgpt"], check=True
-            )
-        if testentry.exists():
-            testentry.unlink()
-            if not any(testentry.parent.iterdir()):
-                testentry.parent.rmdir()
+        subprocess.run([str(host), "browser", "restore"], check=True)
+        original()
+        assert not entry.exists() and not testentry.exists(), "automatic handoff wrote connector setup"
         log.seek(0)
         if child is None or child.returncode != 0:
             sys.stderr.write(log.read())
