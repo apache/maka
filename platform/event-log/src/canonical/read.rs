@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Complete canonical reads join one immutable body into the same selected row.
+//! Canonical reads resolve immutable bodies within the selected event snapshot.
 use super::recipe::{Recipe, Slot};
 use crate::StoreError;
 use sqlx::{Row, sqlite::SqliteRow};
@@ -126,16 +126,30 @@ pub(crate) fn json(row: &SqliteRow) -> Result<Cow<'_, str>, StoreError> {
 pub(crate) fn json_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Cow<'a, str>, StoreError> {
     reconstruct(fields_on_handle(row)?)
 }
-pub(crate) fn decode_event_on_handle<'a>(
-    row: &'a rusqlite::Row<'_>,
-    visit: impl FnOnce([&'a [u8]; 3]),
+pub(crate) fn decode_event_on_handle(
+    row: &rusqlite::Row<'_>,
+    bodies: &mut rusqlite::Statement<'_>,
+    visit: impl FnOnce([&[u8]; 3]),
 ) -> Result<maka_agent_facts::event::RuntimeEvent, StoreError> {
-    let (recipe, body) = material(fields_on_handle(row)?)?;
+    let mut fields = header_fields_on_handle(row)?;
+    let mut body_rows = match fields.reference {
+        Some(reference) => Some(bodies.query([reference])?),
+        None => None,
+    };
+    if let Some(rows) = &mut body_rows {
+        let body = rows
+            .next()?
+            .ok_or_else(|| invalid("canonical body is missing"))?;
+        fields.body = body.get("canonical_body_id")?;
+        fields.raw_bytes = body.get("canonical_raw_bytes")?;
+        fields.payload = payload_on_handle(body)?;
+    }
+    let (recipe, body) = material(fields)?;
     let (event, parts) = recipe.decode(body)?;
     visit(parts);
     Ok(event)
 }
-fn fields_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Fields<'a>, StoreError> {
+fn header_fields_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Fields<'a>, StoreError> {
     let header = row
         .get_ref("event_header")?
         .as_str_or_null()
@@ -150,18 +164,22 @@ fn fields_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Fields<'a>, StoreE
         })?;
     let length = row.get("canonical_length")?;
     let reference: Option<i64> = row.get("canonical_body_reference")?;
-    if reference.is_none() {
-        return Ok(Fields {
-            header,
-            length,
-            reference,
-            offset: None,
-            body: None,
-            raw_bytes: None,
-            payload: None,
-        });
-    }
-    let payload = row
+    Ok(Fields {
+        header,
+        length,
+        reference,
+        offset: if reference.is_some() {
+            row.get("canonical_offset")?
+        } else {
+            None
+        },
+        body: None,
+        raw_bytes: None,
+        payload: None,
+    })
+}
+fn payload_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Option<&'a [u8]>, StoreError> {
+    Ok(row
         .get_ref("canonical_payload")?
         .as_blob_or_null()
         .map_err(|error| {
@@ -172,16 +190,16 @@ fn fields_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Fields<'a>, StoreE
                 rusqlite::types::Type::Blob,
                 Box::new(error),
             )
-        })?;
-    Ok(Fields {
-        header,
-        length,
-        reference,
-        offset: row.get("canonical_offset")?,
-        body: row.get("canonical_body_id")?,
-        raw_bytes: row.get("canonical_raw_bytes")?,
-        payload,
-    })
+        })?)
+}
+fn fields_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Fields<'a>, StoreError> {
+    let mut fields = header_fields_on_handle(row)?;
+    if fields.reference.is_some() {
+        fields.body = row.get("canonical_body_id")?;
+        fields.raw_bytes = row.get("canonical_raw_bytes")?;
+        fields.payload = payload_on_handle(row)?;
+    }
+    Ok(fields)
 }
 pub(crate) async fn one(
     connection: &mut sqlx::SqliteConnection,
@@ -199,6 +217,33 @@ pub(crate) async fn one(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn missing_body_lookup_fails_without_visiting_partial_canonical_bytes() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        let mut headers = db
+            .prepare(
+                "SELECT 'null' AS event_header,4 AS canonical_length,
+             1 AS canonical_body_reference,0 AS canonical_offset",
+            )
+            .unwrap();
+        let mut bodies = db
+            .prepare(
+                "SELECT 1 AS canonical_body_id,4 AS canonical_raw_bytes,
+             X'6E756C6C' AS canonical_payload WHERE ?1 IS NULL AND 0",
+            )
+            .unwrap();
+        let mut rows = headers.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        let error = decode_event_on_handle(row, &mut bodies, |_| {
+            panic!("missing body must not publish canonical bytes");
+        })
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("canonical body is missing"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn corrupt_large_length_is_rejected_before_reserving_the_event() {
         let result = reconstruct(Fields {

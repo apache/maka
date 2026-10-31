@@ -77,8 +77,9 @@ impl EventLog {
             return Err(StoreError::PrefixTooLarge);
         }
         let query = format!(
-            "SELECT e.sequence,e.event_header,{columns} FROM {source} e {joins} WHERE {filter} ORDER BY e.sequence",
-            columns=crate::canonical::COLUMNS,joins=crate::canonical::JOINS
+            "SELECT e.sequence,e.event_header,e.canonical_bytes AS canonical_length,
+             e.body_id AS canonical_body_reference,e.header_offset AS canonical_offset
+             FROM {source} e WHERE {filter} ORDER BY e.sequence"
         );
         let session = selection.session.clone();
         let selected_lineage = selection.lineage.clone();
@@ -93,10 +94,16 @@ impl EventLog {
                 let mut digest = session.is_none().then(crate::context::evidence::RootDigest::new);
                 let mut events = Vec::new();
                 let mut statement = raw.prepare(&query)?;
+                // Keep large body payloads out of the ordered event records.
+                // Both statements borrow the original transaction's snapshot.
+                let mut bodies = raw.prepare(
+                    "SELECT id AS canonical_body_id,raw_bytes AS canonical_raw_bytes,
+                     payload AS canonical_payload FROM event_bodies WHERE id=?"
+                )?;
                 let mut rows = statement.query(rusqlite::params![session, selected_lineage])?;
                 while let Some(row) = rows.next()? {
                     let sequence: i64 = row.get("sequence")?;
-                    let event = crate::canonical::decode_event_on_handle(row, |parts| {
+                    let event = crate::canonical::decode_event_on_handle(row, &mut bodies, |parts| {
                         if let Some(digest) = &mut digest { digest.record(sequence, &parts); }
                     })?;
                     events.push(StoredEvent { sequence: sequence_number(sequence)?, event });
