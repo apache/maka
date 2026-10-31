@@ -27,7 +27,10 @@
 //! window connects to the Root's next Host, which the launcher named by
 //! `MAKA_LAUNCHER` starts, and loads the workbench again. Opened directly,
 //! from Finder, the Dock or a file manager, it runs `maka desktop` beside it.
+//! On macOS, `MAKA_APPKIT` selects NSH's AppKit backend instead (`appkit`).
 
+#[cfg(target_os = "macos")]
+mod appkit;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod host;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -163,6 +166,10 @@ fn run() -> Result<(), String> {
         let handle = tokio::runtime::Handle::current();
         host::Connection::admit(host, target.endpoint, root.path(), handle).await
     })?;
+    #[cfg(target_os = "macos")]
+    if std::env::var_os(appkit::ENABLE).is_some_and(|value| !value.is_empty()) {
+        return appkit::run(first, runtime);
+    }
     window::run(first, root, runtime)
 }
 

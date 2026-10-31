@@ -21,7 +21,7 @@
 //!
 //! Closing the window, the quit key and the quit menu item all close the
 //! window; once no window is left the client detaches from the Host (its
-//! tasks stop and its connection closes, within [`DETACH_LIMIT`]) and then the
+//! tasks stop and its connection closes, within [`host::DETACH_LIMIT`]) and then the
 //! app quits. On macOS quitting ends the process (`terminate:`), so the
 //! detach runs before it, not after the event loop returns.
 //!
@@ -51,13 +51,11 @@ use std::{
 };
 use tokio::{runtime::Handle, sync::watch};
 
-const APP_ID: &str = "org.apache.maka.desktop";
-const TITLE: &str = "Maka";
-const SIZE: (i32, i32) = (1280, 820);
+pub(crate) const APP_ID: &str = "org.apache.maka.desktop";
+pub(crate) const TITLE: &str = "Maka";
+pub(crate) const SIZE: (i32, i32) = (1280, 820);
 /// The narrowest layout the workbench folds its sidebar for.
-const MIN_SIZE: (f32, f32) = (640., 480.);
-/// How long quitting waits for the Host connection to close.
-const DETACH_LIMIT: Duration = Duration::from_secs(5);
+pub(crate) const MIN_SIZE: (f32, f32) = (640., 480.);
 /// The first pause between attempts to reach the Root's next Host.
 const FIRST_PAUSE: Duration = Duration::from_secs(1);
 /// The longest pause between attempts to reach the Root's next Host.
@@ -78,18 +76,15 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
     let handle = runtime.handle().clone();
     let detach = Detach::new(bindings, (endpoint.clone(), epoch), runtime);
     let (active, foreground) = watch::channel(false);
-    let (exit, mut exits) = tokio::sync::mpsc::unbounded_channel();
-    let (folder, mut folders) = tokio::sync::mpsc::unbounded_channel::<HostCall>();
-    let (text_size, mut text_sizes) = tokio::sync::mpsc::unbounded_channel::<f32>();
-    let (notify, mut notices) = tokio::sync::mpsc::unbounded_channel::<SystemNotification>();
-    let shell = Shell {
-        foreground,
-        exit,
-        folder,
-        text_size,
-        notify,
-        events: Arc::default(),
-    };
+    let (
+        shell,
+        Requests {
+            mut exits,
+            mut folders,
+            mut text_sizes,
+            mut notices,
+        },
+    ) = Shell::new(foreground);
     let mut start = Some((config, Placement::new(&directory), endpoint, epoch, root));
     // Quitting waits for the detach: GPUI's default quits Linux and Windows
     // apps as their last window closes, giving the detach no more than its
@@ -405,9 +400,17 @@ fn follow(
     .detach();
 }
 
+/// What the workbench asks of its window, for the window to carry out.
+pub(crate) struct Requests {
+    pub(crate) exits: tokio::sync::mpsc::UnboundedReceiver<()>,
+    pub(crate) folders: tokio::sync::mpsc::UnboundedReceiver<HostCall>,
+    pub(crate) text_sizes: tokio::sync::mpsc::UnboundedReceiver<f32>,
+    pub(crate) notices: tokio::sync::mpsc::UnboundedReceiver<SystemNotification>,
+}
+
 /// What the window gives each workbench it loads, beside its Host.
 #[derive(Clone)]
-struct Shell {
+pub(crate) struct Shell {
     /// Whether the window is active.
     foreground: watch::Receiver<bool>,
     /// Closes the window.
@@ -422,7 +425,29 @@ struct Shell {
 }
 
 impl Shell {
-    fn attach(&self, mut config: EngineConfig) -> EngineConfig {
+    pub(crate) fn new(foreground: watch::Receiver<bool>) -> (Self, Requests) {
+        let (exit, exits) = tokio::sync::mpsc::unbounded_channel();
+        let (folder, folders) = tokio::sync::mpsc::unbounded_channel();
+        let (text_size, text_sizes) = tokio::sync::mpsc::unbounded_channel();
+        let (notify, notices) = tokio::sync::mpsc::unbounded_channel();
+        let shell = Self {
+            foreground,
+            exit,
+            folder,
+            text_size,
+            notify,
+            events: Arc::default(),
+        };
+        let requests = Requests {
+            exits,
+            folders,
+            text_sizes,
+            notices,
+        };
+        (shell, requests)
+    }
+
+    pub(crate) fn attach(&self, mut config: EngineConfig) -> EngineConfig {
         config.context = config
             .context
             .with(maka_workbench::Foreground(self.foreground.clone()));
@@ -517,18 +542,7 @@ impl Detach {
                 Some(bindings) => {
                     let (endpoint, epoch) = state.host.clone();
                     state.runtime.spawn(async move {
-                        let error = match tokio::time::timeout(DETACH_LIMIT, bindings.close()).await
-                        {
-                            Ok(Ok(())) => None,
-                            Ok(Err(error)) => Some(format!("Host cleanup: {error}")),
-                            Err(_) => Some("Host cleanup did not finish in time".to_owned()),
-                        };
-                        // A Host that stopped has no client left to detach.
-                        if let Some(error) = error
-                            && host::runs(&endpoint, epoch).await
-                        {
-                            eprintln!("maka-desktop-shell: {error}");
-                        }
+                        host::detach(bindings, &endpoint, epoch).await;
                         done.send_replace(true);
                     });
                 }
@@ -539,7 +553,7 @@ impl Detach {
                     let mut moving = state.moving.subscribe();
                     state.runtime.spawn(async move {
                         let settled = moving.wait_for(|moving| !*moving);
-                        let _ = tokio::time::timeout(DETACH_LIMIT, settled).await;
+                        let _ = tokio::time::timeout(host::DETACH_LIMIT, settled).await;
                         done.send_replace(true);
                     });
                 }
@@ -582,10 +596,10 @@ impl Detach {
     }
 
     /// Closes `bindings` taken from the window, whatever their Host
-    /// answers, within [`DETACH_LIMIT`].
+    /// answers, within [`host::DETACH_LIMIT`].
     fn close(&self, bindings: Bindings) -> tokio::task::JoinHandle<()> {
         self.0.borrow().runtime.spawn(async move {
-            let _ = tokio::time::timeout(DETACH_LIMIT, bindings.close()).await;
+            let _ = tokio::time::timeout(host::DETACH_LIMIT, bindings.close()).await;
         })
     }
 
@@ -601,7 +615,7 @@ impl Detach {
 }
 
 /// A move of the window's client to another Host. Quitting waits (within
-/// [`DETACH_LIMIT`]) until it is dropped.
+/// [`host::DETACH_LIMIT`]) until it is dropped.
 struct Moving(watch::Sender<bool>);
 
 impl Drop for Moving {

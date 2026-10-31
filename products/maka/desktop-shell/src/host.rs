@@ -37,6 +37,8 @@ const CHECK_EVERY: Duration = Duration::from_secs(2);
 const RECHECK_AFTER: Duration = Duration::from_millis(500);
 /// How long a check waits for the Host to answer.
 const STATUS_LIMIT: Duration = Duration::from_secs(2);
+/// How long quitting waits for the Host connection to close.
+pub const DETACH_LIMIT: Duration = Duration::from_secs(5);
 
 /// The workbench on one Host: its bindings, the engine configuration made
 /// from them, the Root's client directory, and the Host they reach.
@@ -133,6 +135,19 @@ pub async fn runs(endpoint: &Path, epoch: Uuid) -> bool {
     match tokio::time::timeout(STATUS_LIMIT, HostClient::status(endpoint, Some(epoch))).await {
         Ok(status) => status.is_ok_and(|status| !status.closing && !status.closed),
         Err(_) => true,
+    }
+}
+
+/// Closes `bindings` for good, within [`DETACH_LIMIT`]. A failure is reported
+/// only while their Host runs: one that stopped has no client left to detach.
+pub async fn detach(bindings: Bindings, endpoint: &Path, epoch: Uuid) {
+    let error = match tokio::time::timeout(DETACH_LIMIT, bindings.close()).await {
+        Ok(Ok(())) => return,
+        Ok(Err(error)) => format!("Host cleanup: {error}"),
+        Err(_) => "Host cleanup did not finish in time".to_owned(),
+    };
+    if runs(endpoint, epoch).await {
+        eprintln!("maka-desktop-shell: {error}");
     }
 }
 

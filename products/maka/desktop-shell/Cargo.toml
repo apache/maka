@@ -39,3 +39,6 @@ embed-resource = "3.0"
 # Shaders compile at run time, so building needs no Metal Toolchain (macOS).
 nsh-platform-gpui = { workspace = true, features = ["runtime-shaders"] }
 gpui_platform = { package = "gpui-fast-platform", version = "0.1.10", default-features = false, features = ["font-kit", "wayland", "x11"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos.workspace = true
