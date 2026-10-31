@@ -38,11 +38,11 @@ jobs:
     timeout-minutes: 180
     env:
       MBX_CACHE_EXPORT_GROUP: ci-${{ github.run_id }}-${{ github.run_attempt }}-test
-      MBX_GC_AUTO: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview') && '0' || '1' }}
+      MBX_GC_AUTO: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview'))) && '0' || '1' }}
       MBX_TARGET_VIEWS: "0"
       # Linked outputs already live in target; retain cache copies only for export.
-      # Pushes to either long-lived branch save the cache their pull requests restore.
-      MBX_CACHE_LINKS: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview') && '1' || '0' }}
+      # Manual runs and pushes to either long-lived branch publish compiled caches.
+      MBX_CACHE_LINKS: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview'))) && '1' || '0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -117,11 +117,49 @@ jobs:
           node scripts/rust/dependencies.mjs generate
           sha256sum products/maka/cli/DEPENDENCIES.rust.tsv
           git diff --exit-code -- products/maka/cli/DEPENDENCIES.rust.tsv
-      - name: Verify Computer Use bridge build
+      - name: Compile Computer Use bridge and tests
         run: |
           node scripts/rust/check-cua-build.mjs
           cargo build --locked -p maka-cli --no-default-features
+          # Later feature builds replace target/debug/maka.
+          cp target/debug/maka "$RUNNER_TEMP/maka-bridge"
+          cargo test --locked -p maka-computer-use --no-default-features --lib --test integration --no-run
+      - name: Check Termina Windows input
+        run: |
+          rustup target add x86_64-pc-windows-msvc
+          cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}"
+          cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}" --features windows-legacy
+      - name: Compile workspace tests
+        run: cargo nextest run --locked --workspace --no-run
+        env:
+          NEXTEST_PROFILE: ci
+      - name: Compile desktop conversation tests
+        run: cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test integration -E 'test(terminal::desktop_new_session)' --no-run
+      - name: Compile Termina tests
+        run: cargo test --locked --manifest-path third-party/termina/Cargo.toml --lib --target-dir "${CARGO_TARGET_DIR:-target}" --no-run
+      - run: just build
+      # Publish complete compiler outputs before any behavior tests can fail.
+      - name: Export compiled Rust cache
+        id: mbx-export
+        if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview'))) && steps.mbx-cache.outputs.cache-hit != 'true'
+        run: mbx cache export --group "$MBX_CACHE_EXPORT_GROUP" --format directory "$RUNNER_TEMP/mbx-cache"
+      - name: Save compiled Rust cache
+        if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview'))) && steps.mbx-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/mbx-cache
+          key: ${{ steps.mbx-cache.outputs.cache-primary-key }}
+      - name: Remove exported cache staging files
+        if: ${{ always() && steps.mbx-export.outcome == 'success' }}
+        run: rm -rf "$RUNNER_TEMP/mbx-cache"
+      - name: Native CLI smoke
+        run: |
           target/debug/maka --version
+          target/debug/maka desktop --version
+          target/debug/maka-desktop-shell --version
+      - name: Verify Computer Use bridge
+        run: |
+          "$RUNNER_TEMP/maka-bridge" --version
           cargo test --locked -p maka-computer-use --no-default-features --lib --test integration
       - name: Verify model search keyboard selection before full checks
         shell: bash
@@ -141,11 +179,6 @@ jobs:
             'terminal::keyboard::connection_filter_preserves_model_search_focus_and_keyboard_selection', false]]);
           NODE
           cargo nextest run --locked --workspace -E "$filter"
-      - name: Check Termina Windows input
-        run: |
-          rustup target add x86_64-pc-windows-msvc
-          cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}"
-          cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}" --features windows-legacy
       - name: Report storage before checks
         run: |
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
@@ -164,21 +197,6 @@ jobs:
           for path in "$GITHUB_WORKSPACE/target" "$HOME/.cache/mbx" "$HOME/.cargo/registry" "$HOME/.cargo/git"; do
             if [ -d "$path" ]; then du -sh "$path"; fi
           done
-      - run: just build
-      - name: Native CLI smoke
-        run: |
-          target/debug/maka --version
-          target/debug/maka desktop --version
-          target/debug/maka-desktop-shell --version
-      - name: Export compiled Rust cache
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview') && steps.mbx-cache.outputs.cache-hit != 'true'
-        run: mbx cache export --group "$MBX_CACHE_EXPORT_GROUP" --format directory "$RUNNER_TEMP/mbx-cache"
-      - name: Save compiled Rust cache
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview') && steps.mbx-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/mbx-cache
-          key: ${{ steps.mbx-cache.outputs.cache-primary-key }}
 
   # Root workspace tests compile NSH dependencies but do not select the nested
   # workspace's own tests. Run them serially on a fresh runner when dispatched.
