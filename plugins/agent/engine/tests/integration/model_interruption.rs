@@ -209,6 +209,35 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_inp
                 source_messages: Vec::new(), },
         };
         let route = format!("sha256:{}", hex::encode(Sha256::digest(serde_json::to_vec(&source.provider).unwrap())));
+        let settled = input(&base, "settled").invocation;
+        for fact in [
+            opening("earlier settled call"),
+            Fact::ModelRequested {
+                source_capture: maka_agent_facts::event::SourceCapture { publication_watermark: 0, prior_unknown: false },
+                item_acceptance: false, step_id: "rejected".into(), model_id: "test".into(),
+                purpose: maka_agent_facts::context::ModelPurpose::Main, context: None, context_breakdown: None,
+                source_scope: LogScope::Session { id: "session".into() }, source_high_water: 1,
+                source_digest: "fixture".into(), input_digest: "fixture".into(), route_identity: route.clone(),
+                checkpoint_event_id: None, effective_source_digest: None,
+            },
+            Fact::ModelCompleted {
+                step_id: "rejected".into(),
+                output: crate::support::model_records::completion(settled.clone(), "rejected", vec![
+                    ModelPart::ToolCall { call: maka_agent_facts::model::ModelToolCall {
+                        id: "rejected-read".into(), name: "read".into(), input: json!({}).into(),
+                        provider_options: None, provider_executed: false,
+                    } },
+                ], maka_agent_facts::model::ModelFinishReason::ToolCalls),
+            },
+            Fact::ToolRejected {
+                operation_id: "rejected:rejected-read".into(),
+                call: maka_agent_facts::tool_call::ToolCallIdentity::provider("rejected".into(), "rejected-read".into()),
+                name: "read".into(), input: json!({}).into(), reason: maka_agent_facts::tool_call::ToolRejection::Unavailable,
+            },
+            Fact::InvocationEnded { outcome: InvocationOutcome::Completed },
+        ] {
+            log.append(&EventWrite::plain(RuntimeEvent::new(settled.clone(), fact)).unwrap()).await.unwrap();
+        }
         for fact in [
             opening("question source"),
             Fact::ModelRequested {
@@ -254,6 +283,11 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_inp
         assert_eq!(requests[0], requests[1]);
         let prompt = serde_json::to_string(&requests[0]["messages"]).unwrap();
         assert!(prompt.contains("question source"));
+        let replayed_calls = requests[0]["messages"].as_array().unwrap().iter()
+            .filter_map(|message| message["tool_calls"].as_array())
+            .flatten().map(|call| call["function"]["name"].as_str().unwrap()).collect::<Vec<_>>();
+        assert_eq!(replayed_calls, ["read"]);
+        assert!(prompt.contains("tool is unavailable"));
         for excluded in ["trimmed old tail", "unrelated later branch", "question child", "unfinished-secret-fragment"] {
             assert!(!prompt.contains(excluded), "{excluded}: {prompt}");
         }

@@ -202,12 +202,12 @@ impl RootStore {
             SessionPosition::At(id) | SessionPosition::After(id) | SessionPosition::Before(id) => {
                 let key = match self.published_partition(id).await? {
                     Some(index) => self.partitions[index].catalog_key(id).await?,
-                    None => CatalogKey {
-                        unpinned: true,
-                        id: id.to_owned(),
-                    },
+                    None => None,
                 };
-                CatalogPosition::new(position, key)
+                match key {
+                    Some(key) => CatalogPosition::new(position, key),
+                    None => CatalogPosition::Start,
+                }
             }
         };
         let page = self
