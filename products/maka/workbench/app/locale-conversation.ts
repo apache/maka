@@ -876,10 +876,50 @@ export const conversationMessages = {
   'Pause response': ['Pause response', '暂停', '暫停'],
   'Continue response': ['Continue response', '继续', '繼續'],
   'Confirming continuation…': ['Confirming continuation…', '正在确认继续…', '正在確認繼續…'],
-  'Continuation is unavailable: {reason}.': [
-    'Continuation is unavailable: {reason}.',
-    '暂时无法继续：{reason}。',
-    '暫時無法繼續：{reason}。',
+  'Maka is shutting down. Continue after it restarts.': [
+    'Maka is shutting down. Continue after it restarts.',
+    'Maka 正在关闭，重启后再继续。',
+    'Maka 正在關閉，重新啟動後再繼續。',
+  ],
+  'Restore this conversation to continue it.': [
+    'Restore this conversation to continue it.',
+    '恢复这个对话后才能继续。',
+    '還原這個對話後才能繼續。',
+  ],
+  'This conversation is busy or has queued messages. Continue once it is idle.': [
+    'This conversation is busy or has queued messages. Continue once it is idle.',
+    '对话正在运行或有排队消息，空闲后再继续。',
+    '對話正在執行或有排隊訊息，閒置後再繼續。',
+  ],
+  'There is no stopped response to continue.': [
+    'There is no stopped response to continue.',
+    '没有可继续的已停止回复。',
+    '沒有可繼續的已停止回覆。',
+  ],
+  'The conversation changed after this response stopped. Send a new message instead.': [
+    'The conversation changed after this response stopped. Send a new message instead.',
+    '回复停止后对话已有变化，请改为发送新消息。',
+    '回覆停止後對話已有變化，請改為傳送新訊息。',
+  ],
+  'This response cannot be continued. Send a new message instead.': [
+    'This response cannot be continued. Send a new message instead.',
+    '这条回复无法继续，请改为发送新消息。',
+    '這則回覆無法繼續，請改為傳送新訊息。',
+  ],
+  'This response has already been continued.': [
+    'This response has already been continued.',
+    '这条回复已经继续过了。',
+    '這則回覆已經繼續過了。',
+  ],
+  'The workspace changed after this response stopped. Send a new message instead.': [
+    'The workspace changed after this response stopped. Send a new message instead.',
+    '回复停止后工作区已变化，请改为发送新消息。',
+    '回覆停止後工作區已變化，請改為傳送新訊息。',
+  ],
+  'This response cannot be continued safely. Send a new message instead.': [
+    'This response cannot be continued safely. Send a new message instead.',
+    '这条回复无法安全地继续，请改为发送新消息。',
+    '這則回覆無法安全地繼續，請改為傳送新訊息。',
   ],
   'Resume a conversation': ['Resume a conversation', '继续对话', '繼續對話'],
   'Retry attachment metadata': ['Retry attachment metadata', '重试附件信息', '重試附件資訊'],
