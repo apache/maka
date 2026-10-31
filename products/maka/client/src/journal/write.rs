@@ -75,6 +75,7 @@ pub(super) enum Command {
         id: Uuid,
         reference: RecoveryRef,
     },
+    DismissControl(Uuid),
     Abandon {
         host: DeploymentRef,
         id: Uuid,
@@ -121,6 +122,16 @@ impl Command {
             Self::Prepared { id, reference } => prepared(connection, id, &reference)
                 .await
                 .map(|()| Output::Unit),
+            Self::DismissControl(id) => {
+                sqlx::query(
+                    "INSERT INTO dismissed_controls(operation) VALUES(?) ON CONFLICT DO NOTHING",
+                )
+                .bind(id.to_string())
+                .execute(&mut *connection)
+                .await
+                .map_err(error)?;
+                Ok(Output::Unit)
+            }
             Self::Abandon { host, id } => abandon(connection, &host, id)
                 .await
                 .map(|operation| Output::Operation(Box::new(operation))),

@@ -19,6 +19,7 @@
 
 import {
   createText,
+  createTransientText,
   UiError,
   errorText,
   type UiText,
@@ -368,7 +369,7 @@ export function Conversation(props: ConversationProps) {
   const unresolved = signal<any[]>([]);
   const receiptsKnown = signal(false);
   const recovering = signal(false);
-  const notice = createText();
+  const notice = createTransientText();
   const reading = signal<'chat' | 'trajectory'>('chat');
   // In the Bot Session, Chat shows what the Bot told the user (SendUser); its own
   // replies and steps stay in Trajectory.

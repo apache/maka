@@ -733,6 +733,8 @@ pub struct ReplyGate {
     armed: Arc<AtomicBool>,
     pub held: Arc<Notify>,
     release: Arc<Notify>,
+    #[cfg(feature = "desktop-tests")]
+    discard: Arc<AtomicBool>,
     worker: JoinHandle<()>,
 }
 impl ReplyGate {
@@ -762,10 +764,12 @@ impl ReplyGate {
         let armed = Arc::new(AtomicBool::new(false));
         let held = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
+        let discard = Arc::new(AtomicBool::new(false));
         let worker = tokio::spawn({
             let armed = armed.clone();
             let held = held.clone();
             let release = release.clone();
+            let discard = discard.clone();
             async move {
                 let mut connections = JoinSet::new();
                 loop {
@@ -773,6 +777,7 @@ impl ReplyGate {
                         accepted=listener.accept()=> {
                             let downstream=accepted.unwrap(); let upstream=ipc::connect(&target).await.unwrap();
                             let armed=armed.clone(); let held=held.clone(); let release=release.clone();
+                            let discard=discard.clone();
                             connections.spawn(async move {
                                 let (down_read,mut down_write)=tokio::io::split(downstream);
                                 let (up_read,mut up_write)=tokio::io::split(upstream);
@@ -798,6 +803,7 @@ impl ReplyGate {
                                             && armed.swap(false,Ordering::SeqCst) {
                                             held.notify_one();
                                             release.notified().await;
+                                            if discard.swap(false,Ordering::SeqCst) { break; }
                                         }
                                         if gate_write(&mut down_write,&frame).await.is_err(){break;}
                                     }
@@ -816,6 +822,8 @@ impl ReplyGate {
             armed,
             held,
             release,
+            #[cfg(feature = "desktop-tests")]
+            discard,
             worker,
         }
     }
@@ -824,6 +832,11 @@ impl ReplyGate {
     }
     pub fn release(&self) {
         self.release.notify_one();
+    }
+    #[cfg(feature = "desktop-tests")]
+    pub fn discard_reply(&self) {
+        self.discard.store(true, Ordering::SeqCst);
+        self.release();
     }
 }
 impl Drop for ReplyGate {

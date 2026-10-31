@@ -825,11 +825,24 @@ export const conversationMessages = {
   'Recorded write': ['Recorded write', '已记录的写入', '已記錄的寫入'],
   'Recording answer…': ['Recording answer…', '正在记录答案…', '正在記錄答案…'],
   'Recover original': ['Recover original', '恢复原操作', '恢復原操作'],
-  'Recover original actions ({count})': [
-    'Recover original actions ({count})',
-    '恢复原操作（{count}）',
-    '恢復原操作（{count}）',
+  'Check action status ({count})': [
+    'Check action status ({count})',
+    '检查操作状态（{count}）',
+    '檢查操作狀態（{count}）',
   ],
+  'No confirmed result is available. Check the current state before repeating the action. You can dismiss this notice.':
+    [
+      'No confirmed result is available. Check the current state before repeating the action. You can dismiss this notice.',
+      '操作结果仍无法确认。再次执行前请先检查当前状态，也可以忽略这条提示。',
+      '操作結果仍無法確認。再次執行前請先檢查目前狀態，也可以忽略這則提示。',
+    ],
+  'Dismiss this notice': ['Dismiss this notice', '忽略这条提示', '忽略這則提示'],
+  'Dismiss action notice {id}': [
+    'Dismiss action notice {id}',
+    '忽略操作提示 {id}',
+    '忽略操作提示 {id}',
+  ],
+  'Action notice dismissed.': ['Action notice dismissed.', '已忽略这条提示。', '已忽略這則提示。'],
   'Recover original send receipt': [
     'Recover original send receipt',
     '恢复原发送回执',

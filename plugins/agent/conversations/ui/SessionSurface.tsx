@@ -59,6 +59,7 @@ import {
 import { delayed } from '../../../../products/maka/workbench/app/delayed';
 import {
   createText,
+  createTransientText,
   UiError,
   errorText,
   message as uiMessage,
@@ -200,7 +201,7 @@ export function createConversationUi(
   });
   const browserFocus = signal(false);
   const error = createText();
-  const status = createText();
+  const status = createTransientText();
   const switching = signal(false);
   const busy = signal(false);
   // Shown only when saving a draft or confirming an action takes a while, so a
@@ -441,7 +442,9 @@ export function createConversationUi(
         'The action outcome is unknown. Check the current state before trying again.',
       );
     if (receipt?.kind !== 'recorded' || receipt.outcome?.kind !== 'returned')
-      throw new UiError('Confirmation is still unknown. Recover the original action below.');
+      throw new UiError(
+        'No confirmed result is available. Check the current state before repeating the action. You can dismiss this notice.',
+      );
     const value = receipt.outcome.value;
     return value;
   };
@@ -1276,9 +1279,11 @@ export function createConversationUi(
     if (recovering()) return;
     recovering.set(true);
     error.set('');
+    status.set('');
+    let responseConfirmed = false;
+    let failed = false;
     try {
       const originals = await host.pendingControls();
-      let responseConfirmed = false;
       for (const original of originals) {
         if (!original.reference) continue;
         try {
@@ -1333,20 +1338,35 @@ export function createConversationUi(
               });
           }
         } catch (reason) {
+          failed = true;
           report(reason);
         }
       }
       const owner = handle();
       if (owner && selected() === owner.sessionId) await owner.refresh();
       await browsing.refresh();
-      if (!responseConfirmed) status.set(uiMessage('Original actions checked.'));
     } catch (reason) {
+      failed = true;
       report(reason);
     } finally {
-      await refreshControls().catch(report);
-      if (alive) recovering.set(false);
+      await refreshControls().catch((reason) => {
+        failed = true;
+        controlsKnown.set(false);
+        report(reason);
+      });
+      if (alive) {
+        recovering.set(false);
+        if (!failed && !responseConfirmed && controls().length === 0)
+          status.set(uiMessage('Original actions checked.'));
+      }
     }
   };
+  const controlStatusLabel = () =>
+    recovering()
+      ? tr('Reading original action receipts…')
+      : controlsKnown()
+        ? tr('Check action status ({count})', { count: controls().length })
+        : tr('Recheck original actions');
   const openBrowsed = ({ id, origin }: { id: string; origin: string | null }) =>
     selectBrowsed(id, origin);
   const abandonControl = async (id: string) => {
@@ -1358,6 +1378,25 @@ export function createConversationUi(
       await refreshControls();
     } catch (reason) {
       report(reason);
+    }
+  };
+  const dismissControl = async (id: string) => {
+    if (recovering()) return;
+    recovering.set(true);
+    status.set('');
+    try {
+      await host.dismissControl(id);
+      if (alive && id === pendingCreateAttempt()) updatePending({ target: null });
+      await refreshControls();
+      if (alive) {
+        error.set('');
+        status.set(uiMessage('Action notice dismissed.'));
+        focusComposer();
+      }
+    } catch (reason) {
+      report(reason);
+    } finally {
+      if (alive) recovering.set(false);
     }
   };
   const previewImage = (image: ImagePreview) => {
@@ -1924,6 +1963,7 @@ export function createConversationUi(
                       </If>
                       <If when={!controlsKnown() || controls().length > 0}>
                         <Button
+                          accessibilityLabel={controlStatusLabel()}
                           disabled={recovering()}
                           onPress={inputAction(recoverControls, null)}
                           style={controlStyle}
@@ -1931,15 +1971,30 @@ export function createConversationUi(
                           focusStyle={controlFocusStyle()}
                         >
                           <Text style={{ ...bodyTextStyle, color: C.warning }}>
-                            {recovering()
-                              ? tr('Reading original action receipts…')
-                              : controlsKnown()
-                                ? tr('Recover original actions ({count})', {
-                                    count: controls().length,
-                                  })
-                                : tr('Recheck original actions')}
+                            {controlStatusLabel()}
                           </Text>
                         </Button>
+                        <Each
+                          of={controls().filter((original) => original.reference)}
+                          key={(original) => original.id}
+                        >
+                          {(original) => (
+                            <Button
+                              accessibilityLabel={tr('Dismiss action notice {id}', {
+                                id: original().id.slice(0, 8),
+                              })}
+                              disabled={recovering()}
+                              onPress={inputAction(dismissControl, original().id)}
+                              style={controlStyle}
+                              hoverStyle={controlHoverStyle()}
+                              focusStyle={controlFocusStyle()}
+                            >
+                              <Text style={{ ...bodyTextStyle, color: C.secondary }}>
+                                {tr('Dismiss this notice')}
+                              </Text>
+                            </Button>
+                          )}
+                        </Each>
                         <Each
                           of={controls().filter((original) => !original.reference)}
                           key={(original) => original.id}

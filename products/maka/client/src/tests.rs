@@ -561,6 +561,7 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
         let id = Uuid::new_v4();
         let mutation = client.control(id,"editQueue",json!({"sessionId":"session-one","expectedRevision":4,"edit":{"kind":"update","messageId":"queued-one","message":"private draft text"}})).await.unwrap();
         assert_eq!(client.pending_controls().await.unwrap().iter().map(|operation| operation.id).collect::<Vec<_>>(),[id]);
+        assert!(client.dismiss_control(id).await.is_err(), "an unprepared original must retain its dispatch fence");
         let original = mutation.prepare().await.unwrap();
         assert_eq!(original.session_id.as_deref(),Some("session-one"));
         assert_eq!(original.correlation,json!({"kind":"agent-control","owner":owner}));
@@ -578,6 +579,18 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
         mutation.disconnect().await;
         assert!(mutation.close().await.is_err(),"disconnect is not a cleanup acknowledgement");
         assert_eq!(client.pending_requests().await,1);
+        client.dismiss_control(id).await.unwrap();
+        client.dismiss_control(id).await.unwrap();
+        assert!(client.pending_controls().await.unwrap().is_empty());
+        let observer = fixture.client().await;
+        assert!(observer.pending_controls().await.unwrap().is_empty(), "dismissal survives reopening the client journal before the action returns");
+        let retained = observer.operation_for_control(id).await.unwrap();
+        assert_eq!(retained.reference, original.reference);
+        assert!(retained.receipt.is_none());
+        assert!(!retained.abandoned, "dismissing a notice is not a non-dispatch acknowledgement");
+        assert!(observer.control(id,"editQueue",json!({"sessionId":"session-one"})).await.is_err(), "dismissal cannot replay the original identity");
+        observer.close().await.unwrap();
+        assert_eq!(client.pending_requests().await,1, "dismissal does not settle the original physical request");
         fixture.counter.release.notify_one();
         loop {
             let reply = client.recover(id).await.unwrap();

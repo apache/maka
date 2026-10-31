@@ -911,11 +911,15 @@ async fn disconnected_desktop(
     fixture.finish().await;
 }
 
-// GPUI owns process-wide application state; visual cases run in separate processes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_connection_failure_has_one_status_below_the_workspace() {
+fn visual_case() -> (
+    &'static str,
+    nsh_core::platform::Appearance,
+    &'static str,
+    i32,
+    i32,
+) {
     let case = std::env::var("MAKA_UI_VISUAL_CASE").unwrap_or_else(|_| "dark-wide".into());
-    let (theme, appearance, layout, width, height) = match case.as_str() {
+    match case.as_str() {
         "light-narrow" => (
             "light",
             nsh_core::platform::Appearance::Light,
@@ -945,6 +949,124 @@ async fn desktop_connection_failure_has_one_status_below_the_workspace() {
             800,
         ),
         _ => panic!("unsupported visual case: {case}"),
-    };
+    }
+}
+
+// GPUI owns process-wide application state; visual cases run in separate processes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_connection_failure_has_one_status_below_the_workspace() {
+    let (theme, appearance, layout, width, height) = visual_case();
     disconnected_desktop(theme, appearance, layout, width, height).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_unknown_control_can_be_dismissed_and_feedback_expires() {
+    let fixture = images_fixture().await;
+    let (path, _) = image_file(&fixture);
+    let client = fixture.client().await;
+    let before = client
+        .query("agent", "observe", json!({"sessionId":fixture.session}))
+        .await
+        .unwrap();
+    let id = Uuid::new_v4();
+    let mutation = client
+        .control(
+            id,
+            "metadata",
+            json!({
+                "sessionId":fixture.session, "expectedRevision":before["session"]["revision"],
+                "title":"THIS_RENAME_MUST_NOT_RUN", "labels":[]
+            }),
+        )
+        .await
+        .unwrap();
+    let original = mutation.prepare().await.unwrap();
+    let create = ReplyGate::create(fixture.directory.path(), fixture.address.clone());
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &create.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+    )
+    .await;
+    desktop.type_text("DRAFT_KEPT_AFTER_DISMISSAL").await;
+    desktop.press("Check action status (1)").await;
+    let dismiss = format!("Dismiss action notice {}", &id.to_string()[..8]);
+    desktop.control(&dismiss).await;
+    assert!(
+        desktop.controls("Dismiss action feedback").is_empty(),
+        "an unknown result must not show success feedback"
+    );
+    if let Some(directory) = std::env::var_os("MAKA_UI_ARTIFACT_DIR") {
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let guard = desktop.frame.lock().unwrap();
+        let frame = guard.as_ref().unwrap();
+        assert_eq!(
+            frame.size(),
+            size(gpui::DevicePixels(width), gpui::DevicePixels(height))
+        );
+        let mut ppm = format!("P6\n{} {}\n255\n", width, height).into_bytes();
+        for pixel in frame.pixels().chunks_exact(4) {
+            ppm.extend_from_slice(&pixel[..3]);
+        }
+        std::fs::write(
+            directory.join(format!("unconfirmed-action-{theme}-{layout}.ppm")),
+            ppm,
+        )
+        .unwrap();
+    }
+    desktop.press(&dismiss).await;
+    desktop.control("Dismiss action feedback").await;
+    assert!(desktop.controls("Check action status (1)").is_empty());
+    desktop
+        .until("completed action feedback did not expire", || {
+            desktop
+                .controls("Dismiss action feedback")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    let retained = client.operation_for_control(id).await.unwrap();
+    assert_eq!(retained.reference, original.reference);
+    assert!(retained.receipt.is_none());
+    assert!(!retained.abandoned);
+    let after = client
+        .query("agent", "observe", json!({"sessionId":fixture.session}))
+        .await
+        .unwrap();
+    assert_eq!(after["session"]["title"], before["session"]["title"]);
+    desktop.expect_text("DRAFT_KEPT_AFTER_DISMISSAL").await;
+    mutation.close().await.unwrap();
+    desktop.new_draft().await;
+    desktop.attach(&path).await;
+    desktop
+        .type_text("NEW_SESSION_DRAFT_KEPT_AFTER_DISMISSAL")
+        .await;
+    create.arm();
+    desktop.key("enter", false);
+    desktop.held(&create).await;
+    create.discard_reply();
+    desktop.control("Check action status (1)").await;
+    let controls = desktop.client.pending_controls().await.unwrap();
+    assert_eq!(controls.len(), 1);
+    assert_eq!(controls[0].method, "create");
+    let dismiss = format!("Dismiss action notice {}", &controls[0].id.to_string()[..8]);
+    desktop.press(&dismiss).await;
+    desktop.control("Send message").await;
+    desktop
+        .expect_text("NEW_SESSION_DRAFT_KEPT_AFTER_DISMISSAL")
+        .await;
+    assert!(desktop.controls("Check action status (1)").is_empty());
+    desktop.control("Remove attachment selected.png").await;
+    assert_eq!(
+        fixture.request_count.load(Ordering::SeqCst),
+        0,
+        "neither checking nor dismissing may send the preserved draft"
+    );
+    client.close().await.unwrap();
+    desktop.close().await;
+    drop(create);
+    fixture.finish().await;
 }

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { signal } from 'nsh';
+import { cleanup, signal } from 'nsh';
 import { tr, type MessageKey } from './locale';
 import { message, type UiText, type UiTextValues } from './text-value';
 
@@ -43,6 +43,25 @@ export function createText() {
   const read = () => renderText(value());
   read.set = (text: UiText) => value.set(text);
   return read;
+}
+
+/** Brief action feedback; pending states and actionable errors keep their own owners. */
+export function createTransientText() {
+  const text = createText();
+  const set = text.set;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+    clearTimeout(timer);
+  });
+  text.set = (value: UiText) => {
+    if (!alive) return;
+    clearTimeout(timer);
+    set(value);
+    if (value !== '') timer = setTimeout(() => set(''), 4000);
+  };
+  return text;
 }
 
 export class UiError extends Error {
