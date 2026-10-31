@@ -570,9 +570,13 @@ async fn only_the_bot_session_carries_bot_instructions() {
         };
         assert!(instructed(&prompts[0]), "{}", prompts[0]);
         assert!(
-            prompts[0].contains("cannot read or edit files")
-                && prompts[0].contains("workhub_tasks"),
-            "the Bot is told what it can and cannot do"
+            prompts[0].contains("cannot read or edit files"),
+            "the Bot is told what it cannot do"
+        );
+        // This fixture has no WorkHub, so the Bot must not be told to delegate.
+        assert!(
+            !prompts[0].contains("workhub_tasks") && prompts[0].contains("ScheduledTask"),
+            "the Bot is told only about tools it holds"
         );
         assert!(!instructed(&prompts[1]), "{}", prompts[1]);
         f.app.shutdown().await.unwrap();
@@ -680,46 +684,6 @@ async fn a_live_slow_creator_keeps_its_claim() {
         assert_eq!(opened["kind"], "opened", "{opened}");
         assert_eq!(opened["created"], true);
         assert_eq!(bot_count(&f).await, 1);
-        f.app.shutdown().await.unwrap();
-        f.config.shutdown().await.unwrap();
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-async fn the_bot_opens_without_naming_a_workspace() {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
-        // No other conversation exists and no workspace is given.
-        let opened = f
-            .mutation(2, "openBot", json!({}), Uuid::new_v4())
-            .await
-            .unwrap();
-        assert_eq!(opened["kind"], "opened", "{opened}");
-        assert_eq!(opened["created"], true);
-        let bot = opened["sessionId"].as_str().unwrap().to_owned();
-        let roots = f
-            .query("directories", json!({"kind":"roots"}))
-            .await
-            .unwrap();
-        let workspace = f.owner.session(&bot).await.unwrap().configuration.workspace;
-        assert_eq!(
-            workspace.path,
-            roots["roots"][0]["path"].as_str().unwrap(),
-            "the Bot starts in the Host's first workspace root"
-        );
-        // A second open, also without a workspace, returns the same Bot.
-        let again = f
-            .mutation(2, "openBot", json!({}), Uuid::new_v4())
-            .await
-            .unwrap();
-        assert_eq!(
-            again,
-            json!({"kind":"opened","sessionId":bot,"created":false})
-        );
-        assert!(sees_send_user(&f, &listener, &bot).await);
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })
@@ -847,6 +811,83 @@ async fn sleep_is_refused_while_a_message_is_bound_for_the_next_step() {
         assert!(sent.to_string().contains("urgent: change of plan"));
         service_tools::named_tool_response(&mut socket, "sleep", json!({})).await;
         idle(&f, &bot).await;
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[test]
+fn the_instructions_name_only_the_tools_the_bot_holds() {
+    use crate::owner::bot::bot_prompt;
+    let held = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>()
+    };
+    for language in [Language::ZhCn, Language::ZhTw, Language::En] {
+        // Identity grants SendUser and sleep; nothing else is promised.
+        let bare = bot_prompt(language, &[]);
+        for absent in [
+            "workhub_tasks",
+            "ScheduledTask",
+            "GoalStatus",
+            "Recall",
+            "todo_read",
+            "SkillSearch",
+        ] {
+            assert!(
+                !bare.contains(absent),
+                "{language:?} promised {absent}: {bare}"
+            );
+        }
+        assert!(bare.contains("SendUser") && bare.contains("sleep"));
+        // A held tool is named, and delegation is offered only with WorkHub.
+        let some = bot_prompt(language, &held(&["ScheduledTask", "todo_read", "Skill"]));
+        assert!(
+            some.contains("ScheduledTask") && some.contains("todo_read") && some.contains("Skill")
+        );
+        assert!(!some.contains("workhub_tasks"), "{language:?}: {some}");
+        let hub = bot_prompt(language, &held(&["workhub_tasks"]));
+        assert!(hub.contains("workhub_tasks"), "{language:?}: {hub}");
+    }
+}
+
+#[tokio::test]
+async fn the_bot_opens_without_naming_a_workspace() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        // No other conversation exists and no workspace is given.
+        let opened = f
+            .mutation(2, "openBot", json!({}), Uuid::new_v4())
+            .await
+            .unwrap();
+        assert_eq!(opened["kind"], "opened", "{opened}");
+        assert_eq!(opened["created"], true);
+        let bot = opened["sessionId"].as_str().unwrap().to_owned();
+        let roots = f
+            .query("directories", json!({"kind":"roots"}))
+            .await
+            .unwrap();
+        let workspace = f.owner.session(&bot).await.unwrap().configuration.workspace;
+        assert_eq!(
+            workspace.path,
+            roots["roots"][0]["path"].as_str().unwrap(),
+            "the Bot starts in the Host's first workspace root"
+        );
+        // A second open, also without a workspace, returns the same Bot.
+        let again = f
+            .mutation(2, "openBot", json!({}), Uuid::new_v4())
+            .await
+            .unwrap();
+        assert_eq!(
+            again,
+            json!({"kind":"opened","sessionId":bot,"created":false})
+        );
+        assert!(sees_send_user(&f, &listener, &bot).await);
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })
