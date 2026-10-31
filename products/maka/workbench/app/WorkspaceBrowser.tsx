@@ -50,6 +50,7 @@ import {
 import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
+import { nestCreated } from './sessionNesting';
 import {
   hasForkPrefix,
   sessionActionTarget,
@@ -94,6 +95,8 @@ type WorkspaceGroup = {
   name: string;
   project: BrowserProject | null;
   sessions: string[];
+  /** The conversations shown under the one that created them. */
+  nested: ReadonlySet<string>;
 };
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
@@ -167,7 +170,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     const projects = new Map(browser.projects().map((project) => [project.reference.id, project]));
     const byKey = new Map<string, WorkspaceGroup>();
     const add = (key: string, name: string, project: BrowserProject | null) => {
-      const group = { key, name, project, sessions: [] };
+      const group: WorkspaceGroup = { key, name, project, sessions: [], nested: new Set() };
       byKey.set(key, group);
       return group;
     };
@@ -196,8 +199,15 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       for (const project of projects.values())
         if (!project.archived && !byKey.has(`project:${project.reference.id}`))
           add(`project:${project.reference.id}`, project.name, project);
+    const byId = sessionsById();
+    for (const group of byKey.values()) {
+      const { order, nested } = nestCreated(group.sessions.map((id) => byId.get(id)!));
+      group.sessions = order;
+      group.nested = nested;
+    }
     return [...byKey.values()];
   });
+  const nestedRows = computed(() => new Set(groups().flatMap((group) => [...group.nested])));
   const groupsById = computed(
     () => new Map(groups().map((group) => [`group:${group.key}`, group])),
   );
@@ -710,6 +720,12 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               // the selected row, while the pointer is on the row, or while its
               // menu is open.
               const hovered = signal(false);
+              // The conversation that created this one, when the list shows it
+              // elsewhere rather than just above (the row has no room to say).
+              const creator = () => {
+                const parent = session()?.parentSessionId;
+                return parent && !nestedRows().has(key()) ? sessionsById().get(parent) : undefined;
+              };
               // The desktop names the workspace only where the group does not.
               const desktopCaption = () => {
                 const current = session();
@@ -766,6 +782,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       flexDirection: 'row',
                       height: rowHeight(),
                       paddingVertical: compact() ? 0 : 2,
+                      // Under the conversation that created it.
+                      paddingLeft: !platform.isTerminal && nestedRows().has(key()) ? 16 : 0,
                     }}
                   >
                     <View
@@ -794,6 +812,17 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         })}
                         disabled={props.switching() || !session()}
                         selected={props.selected() === key()}
+                        tooltip={
+                          platform.isTerminal
+                            ? undefined
+                            : textTooltip(() =>
+                                creator()
+                                  ? tr('From {title}', {
+                                      title: creator()!.title || tr('Untitled conversation'),
+                                    })
+                                  : undefined,
+                              )
+                        }
                         onPress={inputAction(select, { id: key(), origin: props.selected() })}
                         style={{
                           flex: 1,
