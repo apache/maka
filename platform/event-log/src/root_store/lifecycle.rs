@@ -82,8 +82,8 @@ impl Lifecycle {
                         result
                     });
                     if unconfirmed {
-                        // Quarantine seals admission, but is not evidence that the
-                        // accepted owners have stopped using SQL. Keep their live
+                        // Closing admission is not evidence that accepted owners
+                        // have stopped using SQL. Keep their live
                         // actors and original authority so valid execution pins
                         // can still persist known results before quarantining.
                         return Err("accepted Root work cleanup is unconfirmed".into());
@@ -210,6 +210,7 @@ impl StageRegistration {
             if clean {
                 owner.gates.finish_work();
             } else {
+                owner.gates.close();
                 owner.gates.retain_unconfirmed(owner.root);
             }
         }
