@@ -38,7 +38,7 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
     await mkdir(join(root, 'assets'));
     await writeFile(join(root, 'assets/logo.png'), png);
     await mkdir(join(root, 'packages/cli'), { recursive: true });
-    for (const name of ['LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt'])
+    for (const name of ['DISCLAIMER', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt'])
       await writeFile(join(root, name), 'reviewed ' + name);
     for (const name of ['README.md', 'README.zh-CN.md'])
       await writeFile(join(root, 'packages/cli', name), 'package documentation');
@@ -86,7 +86,11 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
         assert.match(plist, /<key>CFBundleShortVersionString<\/key>\n  <string>0.2.0<\/string>/);
         assert.equal(execFileSync('tar', ['-xOf', archive, bundle + 'Resources/Maka.icns']).subarray(0, 4).toString(), 'icns');
       }
-      assert.equal(execFileSync('tar', ['-xOf', archive, 'package/THIRD_PARTY_NOTICES.txt'], {encoding:'utf8'}), 'reviewed THIRD_PARTY_NOTICES.txt');
+      for (const name of ['DISCLAIMER', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt']) {
+        assert.equal(execFileSync('tar', ['-xOf', archive, 'package/' + name], {encoding:'utf8'}), 'reviewed ' + name);
+        if (macos) assert.equal(execFileSync('tar', ['-xOf', archive, bundle + 'Resources/' + name], {encoding:'utf8'}), 'reviewed ' + name);
+      }
+      for (const name of ['README.md', 'README.zh-CN.md']) assert.ok(execFileSync('tar', ['-xOf', archive, 'package/' + name], {encoding:'utf8'}).includes('reviewed DISCLAIMER'));
     `,
     );
     process.chdir(root);

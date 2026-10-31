@@ -537,6 +537,7 @@ mod tests {
         };
         append("package.json", &serde_json::to_vec(&manifest).unwrap());
         for name in [
+            "DISCLAIMER",
             "LICENSE",
             "NOTICE",
             "THIRD_PARTY_NOTICES.txt",
@@ -590,6 +591,12 @@ mod tests {
                 b"<plist version=\"1.0\"/>\n",
             );
             append("bin/Maka.app/Contents/Resources/Maka.icns", b"icns");
+            for name in ["DISCLAIMER", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt"] {
+                append(
+                    &format!("bin/Maka.app/Contents/Resources/{name}"),
+                    b"test license",
+                );
+            }
         }
         if let Some(name) = extra {
             append(
@@ -877,6 +884,7 @@ mod tests {
             (linux, None, true, None),
             (linux, Some("bin/maka"), false, None),
             (linux, Some("bin/extra"), false, None),
+            (linux, None, false, Some("DISCLAIMER")),
             (linux, None, false, Some("bin/maka-python-worker")),
             (
                 Target::Win32X64,
@@ -890,6 +898,12 @@ mod tests {
                 None,
                 false,
                 Some("bin/Maka.app/Contents/Resources/Maka.icns"),
+            ),
+            (
+                macos,
+                None,
+                false,
+                Some("bin/Maka.app/Contents/Resources/DISCLAIMER"),
             ),
             // A package has no optional files.
             (

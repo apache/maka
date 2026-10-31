@@ -64,6 +64,7 @@ fn allowed(target: Target, name: &str) -> bool {
 fn required(target: Target) -> impl Iterator<Item = &'static str> {
     [
         "package.json",
+        "DISCLAIMER",
         "LICENSE",
         "NOTICE",
         "THIRD_PARTY_NOTICES.txt",
