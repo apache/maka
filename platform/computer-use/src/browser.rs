@@ -786,12 +786,12 @@ impl Browsers {
                 extension_instance_id: None,
             }),
         };
-        if let Some(options) = options {
-            if self.acquire_handoff(&options, cancellation).await? {
-                let discovered = provider::discover(&self.driver, self.owner).await;
-                self.extension_providers = discovered.providers;
-                self.extension_errors = discovered.errors;
-            }
+        if let Some(options) = options
+            && self.acquire_handoff(&options, cancellation).await?
+        {
+            let discovered = provider::discover(&self.driver, self.owner).await;
+            self.extension_providers = discovered.providers;
+            self.extension_errors = discovered.errors;
         }
         self.reconcile_extension_command(&command).await?;
         match command {
