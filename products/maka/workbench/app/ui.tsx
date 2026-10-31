@@ -205,7 +205,14 @@ export function Disclosure(props: {
   trailing?: JSX.Element;
 }) {
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', minWidth: 0 }}>
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        minWidth: 0,
+        marginHorizontal: platform.isTerminal ? 0 : -8,
+      }}
+    >
       <Button
         accessibilityLabel={props.label}
         tooltip={props.tooltip === undefined ? undefined : textTooltip(() => props.tooltip)}
@@ -342,7 +349,7 @@ export function Header(props: {
           ref={props.filesOpener}
           onPress={props.files}
           style={{
-            ...controlStyle,
+            ...toolbarControlStyle,
             flexDirection: 'row',
             alignItems: 'center',
             gap: 8,

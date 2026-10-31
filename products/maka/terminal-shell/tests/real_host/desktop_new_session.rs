@@ -703,7 +703,10 @@ async fn desktop_composer_keeps_one_inset() {
     desktop.type_text("COMPOSER_GEOMETRY").await;
     desktop.assert_composer_geometry().await;
     desktop.key("enter", false);
-    desktop.request(&mut fixture).await.finish().await;
+    let mut reply = desktop.request(&mut fixture).await;
+    reply.thinking("Thinking first.").await;
+    reply.delta("Done.").await;
+    reply.finish().await;
     let session = desktop
         .sessions()
         .await
@@ -721,9 +724,16 @@ async fn desktop_composer_keeps_one_inset() {
         .await;
     desktop.type_text("COMPOSER_GEOMETRY_AGAIN").await;
     let card = desktop.assert_composer_geometry().await;
-    // The card's border sits outside the backdrop the window reports.
+    // The card's border sits outside the backdrop the window reports, and icon
+    // buttons reach 8 points past the column so their glyphs land on its edges.
+    let (left, right) = (card.left() - px(1.), card.right() + px(1.));
     let edit = desktop.control("Edit and resend in a fork").await;
-    assert_eq!(edit.right(), card.right() + px(1.));
+    assert_eq!(edit.right() - px(8.), right);
+    let source = desktop.controls("Copy message");
+    assert_eq!(source[0].left() + px(8.), left);
+    let turn = desktop.control("Turn work details").await;
+    assert_eq!(turn.left() + px(8.), left);
+    assert_eq!(turn.right() - px(8.), right);
     desktop.close().await;
     fixture.finish().await;
 }

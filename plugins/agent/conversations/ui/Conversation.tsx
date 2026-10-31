@@ -64,6 +64,7 @@ import {
   Header,
   captionTextStyle,
   controlStyle,
+  toolbarControlStyle,
   type BrowserHeader,
 } from '../../../../products/maka/workbench/app/ui';
 import {
@@ -2527,7 +2528,7 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Chat')}
           selected={reading() === 'chat'}
-          style={controlStyle}
+          style={toolbarControlStyle}
           onPress={inputAction(chooseReading, { owner: sessionId, mode: 'chat' })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
@@ -2546,7 +2547,7 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Trajectory')}
           selected={reading() === 'trajectory'}
-          style={controlStyle}
+          style={toolbarControlStyle}
           onPress={inputAction(chooseReading, { owner: sessionId, mode: 'trajectory' })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
