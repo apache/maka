@@ -507,7 +507,7 @@ impl Owner {
             if settings.bot {
                 catalog.tools = catalog
                     .tools
-                    .with_always_visible(&[bot::SEND_USER])
+                    .with_always_visible(&[bot::SEND_USER, bot::SLEEP])
                     .map_err(|error| error.to_string())?;
             }
             if settings.recall {
@@ -750,10 +750,12 @@ impl Owner {
             });
         }
         let mut tools = input.tools;
-        // SendUser follows Bot identity, never a requested tool list.
-        if tools
-            .as_ref()
-            .is_some_and(|names| names.iter().any(|name| name == bot::SEND_USER))
+        // SendUser and sleep follow Bot identity, never a requested tool list.
+        if tools.as_ref().is_some_and(|names| {
+            names
+                .iter()
+                .any(|name| name == bot::SEND_USER || name == bot::SLEEP)
+        })
         {
             return Ok(Created::Rejected {
                 reason: Rejection::ToolsUnavailable,
@@ -1078,13 +1080,13 @@ impl Owner {
             None => self.mcp_projects.catalog(basis.mcp_revision.as_deref())?,
         };
         let selected = plan::select(&catalog.tools, basis, &catalog.planning);
-        // SendUser is granted by Bot identity, independent of the tool list.
+        // SendUser and sleep are granted by Bot identity, independent of the tool list.
         let bot = self.bot.is(session);
         let excluded: Vec<_> = selected
             .definitions()
             .map(|definition| definition.name.as_str())
             .filter(|name| {
-                let speaks = *name == bot::SEND_USER;
+                let speaks = *name == bot::SEND_USER || *name == bot::SLEEP;
                 (speaks && !bot)
                     || (basis.graph.is_none() && crate::workhub::tasks::graph::NAMES.contains(name))
                     || (!(speaks && bot)
