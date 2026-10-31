@@ -219,8 +219,8 @@ nsh package --target web --run
 ```
 
 Writes `.nsh/out/<Name>/`, a static site: `index.html`, `manifest.webmanifest`, the page script (`nsh.<digest>.js`)
-and `nsh.<digest>.wasm` (a Rust app's engine and crate; for a TSX app the runtime, next to the app's bytecode
-`app.<digest>.nshc`), its assets and icons, each named after its content
+and `nsh.<digest>.wasm` (a Rust app's engine and crate; for a TSX app the runtime, next to the app's ES module
+`app.<digest>.js`), its assets and icons, each named after its content
 so hosts can cache them for good. Deploy the directory to any web server or CDN; `--run` serves it on
 `http://127.0.0.1:4173/` for you to open. Cache headers and embedding: [Web](./web.md#publish-an-app).
 
@@ -253,7 +253,7 @@ assets it imports, next to the prebuilt runtime:
 | Linux | the `nsh-linux-app` executable, renamed `<Name>` | `<Name>/nsh/bundle.nshc`, `nsh/assets/…` |
 | Windows | the `nsh-windows-app.exe` executable, renamed `<Name>.exe` | `<Name>\nsh\bundle.nshc`, `nsh\assets\…` |
 | Terminal | `nsh-tui-app`, renamed `<Name>` (`<Name>.exe` on Windows) | `<Name>/nsh/bundle.nshc`, `nsh/assets/…` |
-| Web | `nsh.<digest>.wasm`, `nsh.<digest>.js` | `<Name>/app.<digest>.nshc`, `assets/…`, `index.html` |
+| Web | `nsh.<digest>.wasm`, `nsh.<digest>.js` | `<Name>/app.<digest>.js`, `assets/…`, `index.html` |
 
 A packaged app registers no [native components](./native-components.md); for those, embed NSH in your own app.
 

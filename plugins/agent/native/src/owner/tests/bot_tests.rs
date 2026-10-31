@@ -166,6 +166,46 @@ async fn bot_identity_alone_grants_send_user() {
 }
 
 #[tokio::test]
+async fn new_conversation_from_bot_uses_installed_tools_in_the_same_workspace() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            Some(service_tools::Setup::files("readText")),
+            |settings| {
+                settings.bot = true;
+                settings.todo = true;
+            },
+        ).await;
+        let opened = open(&f).await;
+        let bot = opened["sessionId"].as_str().unwrap();
+        let bot_configuration = f.owner.session(bot).await.unwrap().configuration;
+        assert!(!bot_configuration.tools.as_ref().unwrap().iter().any(|name| name == "WorkspaceFile"));
+        let created = f.mutation(
+            2, "create",
+            json!({"title":"New conversation", "labels":[], "workspace":{"kind":"session","sessionId":bot}}),
+            Uuid::new_v4(),
+        ).await.unwrap();
+        assert_eq!(created["kind"], "created");
+        let session = created["session"]["id"].as_str().unwrap();
+        let configuration = f.owner.session(session).await.unwrap().configuration;
+        assert!(configuration.tools.is_none(), "a workspace reference must not copy the Bot tool ceiling");
+        assert_eq!(configuration.workspace, bot_configuration.workspace);
+        f.send(session).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let names = tool_names(&request(&mut socket).await);
+        assert!(names.iter().any(|name| name == "WorkspaceFile"), "{names:?}");
+        assert!(!names.iter().any(|name| name == "SendUser"), "{names:?}");
+        response(&mut socket).await;
+        idle(&f, session).await;
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
 async fn bot_opened_from_a_restricted_session_still_speaks() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -767,6 +807,46 @@ async fn sleep_is_refused_while_a_message_is_bound_for_the_next_step() {
         assert!(sent.to_string().contains("urgent: change of plan"));
         service_tools::named_tool_response(&mut socket, "sleep", json!({})).await;
         idle(&f, &bot).await;
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn the_bot_opens_without_naming_a_workspace() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        // No other conversation exists and no workspace is given.
+        let opened = f
+            .mutation(2, "openBot", json!({}), Uuid::new_v4())
+            .await
+            .unwrap();
+        assert_eq!(opened["kind"], "opened", "{opened}");
+        assert_eq!(opened["created"], true);
+        let bot = opened["sessionId"].as_str().unwrap().to_owned();
+        let roots = f
+            .query("directories", json!({"kind":"roots"}))
+            .await
+            .unwrap();
+        let workspace = f.owner.session(&bot).await.unwrap().configuration.workspace;
+        assert_eq!(
+            workspace.path,
+            roots["roots"][0]["path"].as_str().unwrap(),
+            "the Bot starts in the Host's first workspace root"
+        );
+        // A second open, also without a workspace, returns the same Bot.
+        let again = f
+            .mutation(2, "openBot", json!({}), Uuid::new_v4())
+            .await
+            .unwrap();
+        assert_eq!(
+            again,
+            json!({"kind":"opened","sessionId":bot,"created":false})
+        );
+        assert!(sees_send_user(&f, &listener, &bot).await);
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })

@@ -1,7 +1,6 @@
 ---
 title: DiffView
 description: DiffView 组件：两段文本之间或一个补丁中的改动，并排或合并显示，高亮行内改动的单词，未改动的行折叠成可以展开的分隔行，带语法高亮、自动换行、针对每处改动的操作、行选择和评审批注。
-order: 26.3
 group: base
 demo: el-diff-view
 ---
@@ -212,7 +211,7 @@ function Proposal(props: { file: string; current: string; proposed: string; onAp
 
 ## 方法
 
-`ref={diff}` 提供视图的方法（`DiffViewRef`）。返回值的方法（`hunks()`、`stats()`）在 JS 中返回一个 `Promise`，所以要 `await` 它们：`const changes = await diff.hunks()`。要在界面上显示的统计数字，由 `onStatsChange` 在变化时报告。
+`ref={diff}` 提供视图的方法（`DiffViewRef`）。返回值的方法（`hunks()`、`stats()`）在 JS 中返回一个 `Promise`，所以要 `await` 它们：`const changes = await diff.hunks()`。要在界面上显示的统计数字，由 `onStatsChange` 在变化时报告。方法收到差异中没有的改动、分隔处或文件时什么也不改变，并在日志中记一条警告，写明方法和那个值。
 
 | 方法 | 说明 |
 |---|---|

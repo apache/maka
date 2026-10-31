@@ -9,9 +9,10 @@
 //!
 //! What a view looks like is mostly Core Animation: its layer's background,
 //! corners, border and shadow, and sublayers for the rest
-//! ([`crate::decor`]). Text and canvas drawings are drawn into the layer by
-//! `drawRect:` (CoreText / Core Graphics); other views use `updateLayer`
-//! and get no backing store.
+//! ([`crate::decor`]). Every view uses `updateLayer` and gets no backing
+//! store; text and canvas drawings (CoreText / Core Graphics) go into a
+//! content sublayer whose delegate draws them (`drawLayer:inContext:`,
+//! [`NshView::redraw`]).
 //!
 //! Children are subviews of the view, or of its container when it has one:
 //! scroll views always do, and a view that clips its children and casts a
@@ -214,7 +215,7 @@ impl ViewState {
             )
     }
 
-    /// True if it draws content with `drawRect:` (text, canvas).
+    /// True if it draws content into its content layer (text, canvas).
     pub(crate) fn draws(&self) -> bool {
         self.text.is_some() || self.canvas.is_some()
     }

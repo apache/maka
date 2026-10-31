@@ -2409,7 +2409,13 @@ pub(crate) fn draw(cx: &mut DrawCx<'_>, state: &ViewState) {
             draw_shadow(cx, &res, drawn, layout, shadow);
         }
     }
-    painter.paint(&drawn.text, layout, ox, oy, state.anim.color);
+    // An animated color, or a transition of the text's color, over the
+    // runs' own.
+    let color = state
+        .anim
+        .color
+        .or_else(|| state.live.as_ref()?.text_color());
+    painter.paint(&drawn.text, layout, ox, oy, color);
 }
 
 /// Draws a blurred text shadow: the glyphs recorded into a command list

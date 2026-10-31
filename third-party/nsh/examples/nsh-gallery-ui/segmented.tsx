@@ -1,4 +1,4 @@
-import { LayoutAnimation, platform, reduceMotion, signal, Text, View } from "nsh";
+import { platform, Text } from "nsh";
 import { Tab, Tabs } from "nsh/base";
 import { colors, finish } from "./theme";
 
@@ -9,6 +9,11 @@ import { colors, finish } from "./theme";
  * labels (30 points high, 12-point type, the thumb's corners 6 and the
  * track's 9); on a touch screen, or with `fill`, it spans the row and its
  * segments share it equally, their labels centered.
+ *
+ * The thumb is the list's indicator: the core places it on the selected
+ * tab and springs it to the next one natively, as its own frame alone, so
+ * what the value shows (a page's content) changes at once in the same
+ * commit, and with reduced motion it moves at once too.
  */
 export function Segmented<T extends string>(props: {
   options: readonly { value: T; label: string; count?: number }[];
@@ -17,28 +22,11 @@ export function Segmented<T extends string>(props: {
   size?: "small" | "regular";
   fill?: boolean;
 }) {
-  const pointer = platform.idiom === "desktop";
+  const pointer = platform.desktop;
   const spread = !pointer || !!props.fill;
-  // Where each segment lies in the track, as the tabs report it.
-  const spans = signal<{ x: number; width: number }[]>([]);
-  // The segment pressed, until the app has the value: the thumb moves in a
-  // commit of its own, so the layout animation springs it alone and what
-  // the value shows (a page's content) appears at once in the next one.
-  const pending = signal<T | null>(null);
-  const selected = () => pending() ?? props.value;
-  const index = () => Math.max(0, props.options.findIndex((o) => o.value === selected()));
-  // The track's border and padding: the thumb is placed inside the border
-  // (an absolute child's containing block is the padding box), the tabs'
-  // origins are from the border's outer edge.
-  const border = 1;
+  // The track's padding: the thumb sits inside it.
   const inset = 2;
   const height = pointer ? (props.size === "small" ? 26 : 30) : props.size === "small" ? 32 : 36;
-  const thumb = () => spans()[index()] ?? { x: border + inset, width: 0 };
-  const measure = (i: number, x: number, width: number) => {
-    const next = spans().slice();
-    next[i] = { x, width };
-    spans.set(next);
-  };
   return (
     <Tabs
       style={{
@@ -50,41 +38,25 @@ export function Segmented<T extends string>(props: {
         borderCurve: "continuous",
         backgroundColor: colors.track,
         boxShadow: finish.track.boxShadow,
-        borderWidth: border,
+        borderWidth: 1,
         borderColor: finish.track.borderColor,
       }}
+      indicatorStyle={{
+        top: inset,
+        bottom: inset,
+        borderRadius: pointer ? 6 : 7,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        ...finish.raised,
+      }}
     >
-      <View
-        style={{
-          pointerEvents: "none",
-          position: "absolute",
-          top: inset,
-          bottom: inset,
-          // A layout animation springs it to the next segment (`onPress`).
-          left: thumb().x - border,
-          width: thumb().width,
-          borderRadius: pointer ? 6 : 7,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          ...finish.raised,
-        }}
-      />
       <Each of={props.options}>
-        {(option, i) => (
+        {(option) => (
           <Tab
-            selected={selected() === option().value}
+            selected={props.value === option().value}
             onPress={() => {
-              const value = option().value;
-              if (value === selected()) return;
-              if (reduceMotion()) return props.onChange(value);
-              LayoutAnimation.configureNext(LayoutAnimation.Presets.spring);
-              pending.set(value);
-              setTimeout(() => {
-                pending.set(null);
-                props.onChange(value);
-              }, 0);
+              if (option().value !== props.value) props.onChange(option().value);
             }}
-            onLayout={({ bounds }) => measure(i(), bounds.origin.x, bounds.size.width)}
             style={{
               ...(spread ? { flex: 1, paddingHorizontal: 8 } : { paddingHorizontal: 10 }),
               flexDirection: "row",
@@ -98,7 +70,7 @@ export function Segmented<T extends string>(props: {
                 numberOfLines: 1,
                 fontSize: pointer ? 12 : props.size === "small" ? 13 : 14,
                 fontWeight: "500",
-                color: selected() === option().value ? colors.text : colors.muted,
+                color: props.value === option().value ? colors.text : colors.muted,
               }}
             >
               {option().label}

@@ -500,8 +500,9 @@ impl DataTableApi {
 
     /// Sets the column `key` as wide as its widest text in the rows given
     /// (the rows in view, and up to a thousand more around them) and its
-    /// title need; the width, `null` for no such column.
-    pub fn fit_column(&self, key: String) -> Option<Points> {
+    /// title need; the width. Rejects with a `TypeError` for a key no
+    /// column has.
+    pub fn fit_column(&self, key: String) -> Result<Points, JsError> {
         self.dt.fit_column(&key)
     }
 

@@ -912,7 +912,10 @@ pub enum MountItem {
         label: Option<Arc<str>>,
     },
     /// Animate the frame changes, insertions and removals that follow in
-    /// this batch.
+    /// this batch, until the next one replaces it: a batch may lead runs
+    /// of frames with different ones, an empty one for frames that do not
+    /// animate (`core/layout_scope.rs`). Platforms animate each frame with
+    /// the one before it.
     LayoutAnimation(LayoutAnimation),
     /// An animation graph change, in order with the other items.
     Animation(AnimationOp),

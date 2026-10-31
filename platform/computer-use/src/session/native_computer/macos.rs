@@ -279,10 +279,12 @@ impl Session {
                 action: text("action")?,
             },
             NativeComputerMethod::PressKey => Action::PressKey {
+                delivery_mode: Default::default(),
                 index: None,
                 key: text("key")?,
             },
             NativeComputerMethod::TypeText => Action::TypeText {
+                delivery_mode: Default::default(),
                 index: None,
                 text: text("text")?,
             },

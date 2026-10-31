@@ -282,16 +282,34 @@ impl DiskCache {
     /// A cache in `dir` (created when it first stores), bounded to
     /// `max_size`; `None` when that is no bytes (no disk cache). Touches
     /// no file.
+    ///
+    /// Handles opened on one directory with one bound are one cache (the
+    /// platform's image views and the core's `svg()`s share an app's), so
+    /// its size is counted once.
     pub fn open(dir: impl Into<PathBuf>, max_size: ByteSize) -> Option<Self> {
+        static OPEN: Mutex<Vec<std::sync::Weak<Inner>>> = Mutex::new(Vec::new());
         let max_bytes = max_size.bytes();
-        (max_bytes > 0).then(|| {
-            Self(Arc::new(Inner {
-                dir: dir.into(),
-                max_size,
-                max_bytes,
-                size: Mutex::new(None),
-            }))
-        })
+        if max_bytes == 0 {
+            return None;
+        }
+        let dir = dir.into();
+        let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
+        open.retain(|c| c.strong_count() > 0);
+        let same = open
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .find(|c| c.dir == dir && c.max_bytes == max_bytes);
+        if let Some(inner) = same {
+            return Some(Self(inner));
+        }
+        let inner = Arc::new(Inner {
+            dir,
+            max_size,
+            max_bytes,
+            size: Mutex::new(None),
+        });
+        open.push(Arc::downgrade(&inner));
+        Some(Self(inner))
     }
 
     /// Its directory.

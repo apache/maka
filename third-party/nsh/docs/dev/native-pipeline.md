@@ -3,7 +3,8 @@
 An app is TSX importing NSH's modules. The bundler compiles each module with NSH's JSX compiler and rolldown bundles
 them into one ES module holding only the app's code (split into chunks loaded on demand for the web: "Split bundles"): imports of NSH's modules stay imports, and `nsh-js` serves them
 natively. The reactive graph, the renderer and every API apps import are Rust; nothing of NSH is JS. Apps cannot
-import `solid-js` (the bundler refuses it, pointing to `nsh`'s `signal` / `computed` / `effect` / ...). It also refuses a named import a
+import `solid-js` (the bundler refuses it, pointing to `nsh`'s `signal` / `computed` / `effect` / ...), nor a module named as
+NSH's that NSH does not have (`nsh/list`: the bundler refuses it, naming NSH's modules). It also refuses a named import a
 native module does not export, as the names `nsh-js` serves say (`native_module_exports`), when the code uses it as a
 value (types need no `type` keyword), with the place in the source and the closest export's name. Since those imports
 stay in the output, the bundle also says what the app uses of each native module (`Bundle::native_use`, `natives.rs`):

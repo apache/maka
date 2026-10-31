@@ -562,7 +562,7 @@ function Editor() {
   // Listening only while selecting: otherwise the stack pops, with the gesture's preview.
   effect(() => {
     if (selecting()) {
-      BackHandler.onBackPress(() => {
+      BackHandler.on("press", () => {
         selecting.set(false);
         return true;
       });
@@ -573,7 +573,7 @@ function Editor() {
 ```
 
 A listener made in an effect lasts until the effect runs again or its component goes; in TSX, the function
-`BackHandler.onBackPress` returns also stops it. In TSX, `BackHandler.exitApp()` leaves the app; `nsh/mobile` can be imported on iOS too, where `BackHandler`'s calls return at once, so the same code runs on both platforms. See [Platform-specific code](./platform-specific.md).
+`BackHandler.on` returns also stops it. In TSX, `BackHandler.exitApp()` leaves the app; `nsh/mobile` can be imported on iOS too, where `BackHandler`'s calls return at once, so the same code runs on both platforms. See [Platform-specific code](./platform-specific.md).
 
 ## Tabs and other layouts
 

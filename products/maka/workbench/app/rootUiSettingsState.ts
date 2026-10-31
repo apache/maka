@@ -31,7 +31,7 @@ import type {
   UiRuntime,
 } from '../../../../packages/plugin-sdk/src/workbench.js';
 import { sameValue } from '../../../../plugins/shared/value';
-import { createText, errorText, message, UiError } from './text';
+import { createTransientText, createText, errorText, message, UiError } from './text';
 
 type RootUiAction = { source: DeploymentRef; key: string };
 export const rootUiTitle = (choice: UiContributionRef) =>
@@ -53,7 +53,7 @@ export function createRootUiSettings(
     idle.clear();
   };
   const error = createText();
-  const notice = createText();
+  const notice = createTransientText();
   const pending = signal<ClientOperation[]>([]);
   const pendingKnown = signal(false);
   let alive = true;

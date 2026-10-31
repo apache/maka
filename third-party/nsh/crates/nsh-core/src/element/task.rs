@@ -90,7 +90,7 @@ pub(crate) enum Action {
     HostCall {
         name: String,
         args: crate::JsonValue,
-        answer: AnswerSlot<Result<crate::JsonValue, String>>,
+        answer: AnswerSlot<Result<crate::JsonValue, super::JsError>>,
     },
     /// Drops the slots of the host calls whose answers are gone (they
     /// timed out).
@@ -99,6 +99,12 @@ pub(crate) enum Action {
     /// [`crate::open_url::check_url`]); whether it opened resolves the
     /// slot.
     OpenUrl(String, AnswerSlot<bool>),
+    /// Lets the user pick a color on the screen; the color (none when
+    /// cancelled or not supported) resolves the slot.
+    PickScreenColor(AnswerSlot<Option<crate::Hsla>>),
+    /// A request on local paths for the platform
+    /// ([`crate::file_dialog`]); its answer resolves the slot.
+    FileRequest(crate::file_dialog::FileRequest, FileAnswer),
     /// An operation on the native animation graph.
     Animation(crate::animation::AnimationOp),
     /// Starts an animation; its end resolves the slot.
@@ -122,12 +128,55 @@ pub(crate) enum Action {
     Frame(AnswerSlot<Instant>),
     /// Sets the app's appearance.
     Appearance(crate::platform::Appearance),
+    /// Sets the app's design tokens.
+    Tokens(super::Tokens),
     /// Draws the scroll views' bars with the built-in bar the source makes
     /// of the theme, or (no theme) with the platform's indicator.
     BuiltInScrollbars(super::ScrollbarSource, Option<super::AnyValue>),
     /// Measures the node with the layout of the commit the action goes out
     /// with; the measurement resolves the slot.
     Measure(NodeId, AnswerSlot<Option<crate::Measurement>>),
+    /// How long the node's transitions run with the styles of the commit
+    /// the action goes out with; the time resolves the slot.
+    TransitionTime(NodeId, AnswerSlot<std::time::Duration>),
+}
+
+/// A request on local paths waiting for the platform's answer
+/// ([`Action::FileRequest`]).
+pub(crate) enum FileAnswer {
+    /// The paths picked in the open dialog, none when cancelled.
+    OpenDialog(AnswerSlot<Result<Option<Vec<std::path::PathBuf>>, String>>),
+    /// The path chosen in the save dialog, none when cancelled.
+    SaveDialog(AnswerSlot<Result<Option<std::path::PathBuf>, String>>),
+    /// The path opened or showed in the file manager, or why not.
+    Done(AnswerSlot<Result<(), String>>),
+    /// Where the trashed item went, or why it was not.
+    Trash(AnswerSlot<Result<Option<std::path::PathBuf>, String>>),
+}
+
+impl FileAnswer {
+    /// Answers with the platform's `paths` (none: cancelled), or its
+    /// `error`.
+    pub(crate) fn deliver(self, mut paths: Vec<std::path::PathBuf>, error: Option<String>) {
+        match self {
+            FileAnswer::OpenDialog(slot) => slot.borrow_mut().deliver(match error {
+                Some(error) => Err(error),
+                None => Ok((!paths.is_empty()).then_some(paths)),
+            }),
+            FileAnswer::SaveDialog(slot) => slot.borrow_mut().deliver(match error {
+                Some(error) => Err(error),
+                None => Ok((!paths.is_empty()).then(|| paths.swap_remove(0))),
+            }),
+            FileAnswer::Done(slot) => slot.borrow_mut().deliver(match error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }),
+            FileAnswer::Trash(slot) => slot.borrow_mut().deliver(match error {
+                Some(error) => Err(error),
+                None => Ok((!paths.is_empty()).then(|| paths.swap_remove(0))),
+            }),
+        }
+    }
 }
 
 /// A clipboard read waiting for the platform's answer.
@@ -136,8 +185,12 @@ pub(crate) enum ClipboardRead {
     Text(AnswerSlot<String>),
     /// Whether it holds text.
     Has(AnswerSlot<bool>),
-    /// The image (`None` when it holds none).
+    /// The image (`None` when it holds none, or one over
+    /// [`crate::platform::clipboard::MAX_IMAGE_BYTES`]).
     Image(AnswerSlot<Option<ClipboardImage>>),
+    /// The image for `Clipboard.readImage`: `Err` with the size in encoded
+    /// bytes of one over [`crate::platform::clipboard::MAX_IMAGE_BYTES`].
+    CheckedImage(AnswerSlot<Result<Option<ClipboardImage>, usize>>),
     /// Whether it holds an image.
     HasImage(AnswerSlot<bool>),
     /// The `file:` URLs of the local files on it.
@@ -147,10 +200,10 @@ pub(crate) enum ClipboardRead {
 /// An image read from the system clipboard (`Clipboard.readImage`).
 #[derive(Debug, Clone, Default, PartialEq, super::JsObject)]
 pub struct ClipboardImage {
-    /// The image as a `data:` URL (`data:image/png;base64,…`): an image's
-    /// `src`, and `fetch(url)` gives its bytes.
+    /// A URL of the image that an `Image` shows (its `src`) and `fetch`
+    /// reads the bytes of; `Clipboard.writeImage` takes it back.
     pub url: String,
-    /// Its size in pixels.
+    /// Its size in pixels, as decoded.
     pub size: Size<DevicePixels>,
 }
 
@@ -244,6 +297,8 @@ pub(crate) struct Executor {
     pub(crate) back: Rc<RefCell<super::back::BackListeners>>,
     /// The views' keyboard shortcuts.
     pub(crate) keys: Rc<RefCell<super::keys::ViewKeys>>,
+    /// The views' menus' handlers.
+    pub(crate) menus: Rc<RefCell<super::menus::ViewMenus>>,
     /// The views' watches of nodes they did not make.
     pub(crate) watches: Rc<RefCell<super::watch::Watches>>,
     /// The timers tasks wait for ([`super::timer`]), soonest first: the core

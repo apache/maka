@@ -20,7 +20,9 @@ fn with_host() -> Environment {
 }
 
 /// Calls each of `names` with `{ a: 1 }` and shows `available()` and what
-/// each call settled with.
+/// each call settled with: its value, or the error's class, `code`,
+/// `permission` and `resource` (and the host's message, which its errors
+/// keep).
 fn calls(names: &[&str]) -> String {
     let names = serde_json::to_string(names).unwrap();
     format!(
@@ -29,7 +31,10 @@ import {{ host }} from "nsh";
 
 const shown = signal("waiting");
 const settled = async (p) => {{
-  try {{ return JSON.stringify(await p); }} catch (e) {{ return `rejected ${{e.message}}`; }}
+  try {{ return JSON.stringify(await p); }} catch (e) {{
+    const host = e.code === "ERR_NSH_HOST_ERROR" ? e.message : "";
+    return `rejected ${{[e.name, e.code, e.permission, e.resource, host].filter(Boolean).join(" ")}}`;
+  }}
 }};
 setTimeout(async () => {{
   const results = [];
@@ -107,7 +112,7 @@ fn host_call_round_trips_through_the_platform() {
     // Without a host, nothing reaches the platform and calls reject.
     let (engine, rx) = start_with(&calls(&["echo"]), Environment::default(), echo, None);
     let commands = serve_host(&engine, &rx, |t| {
-        t == "false rejected nsh/host: this platform has no host"
+        t == "false rejected Error ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"
     });
     assert!(commands.is_empty(), "{commands:?}");
 }
@@ -123,7 +128,7 @@ fn a_failing_host_call_rejects_with_its_message() {
         }
         done
     });
-    assert_eq!(shown, "true rejected boom");
+    assert_eq!(shown, "true rejected Error ERR_NSH_HOST_ERROR boom");
 }
 
 #[test]
@@ -148,10 +153,7 @@ fn host_call_is_denied(capabilities: Option<&str>) {
         done
     });
     assert!(commands.is_empty(), "{commands:?}");
-    assert!(
-        shown.starts_with("true rejected ") && shown.contains("capabilities.host"),
-        "{shown}"
-    );
+    assert_eq!(shown, "true rejected Error ERR_ACCESS_DENIED host echo");
     // The refusal is logged, saying which key to add.
     let logged = crate::logs::lines_containing("nsh/host: `echo` is not granted");
     assert!(
@@ -177,7 +179,10 @@ fn host_allowlist_matches_prefixes() {
         done
     });
     assert_eq!(names(&commands), ["bridge.call"]);
-    assert!(shown.starts_with(r#"true {"a":1} | rejected "#), "{shown}");
+    assert_eq!(
+        shown,
+        r#"true {"a":1} | rejected Error ERR_ACCESS_DENIED host other"#
+    );
 }
 
 const EVENTS: &str = r#"import { mount, signal, Text } from "nsh";
@@ -188,7 +193,7 @@ let once = 0;
 let all = 0;
 const first = host.on("tick", () => {
   once++;
-  first.remove();
+  first();
 });
 host.on("tick", (payload) => {
   all++;
@@ -230,7 +235,7 @@ const shown = signal("waiting");
 setTimeout(() => {{
   host.call("slow", null, {options}).then(
     (value) => shown.set(`ok ${{JSON.stringify(value)}}`),
-    (e) => shown.set(`rejected ${{e.message}}`),
+    (e) => shown.set(`rejected ${{e.name}}${{e.code ? " " + e.code : ""}}`),
   );
 }}, 0);
 
@@ -269,13 +274,9 @@ fn reply_with_id(engine: &Engine, id: serde_json::Value, value: serde_json::Valu
 #[test]
 fn a_host_call_times_out_and_its_late_reply_is_ignored() {
     let (engine, rx) = start_with(&timed("{ timeout: 200 }"), with_host(), ALL, None);
-    let batches = until(&rx, |b| {
-        shows(b, "rejected nsh/host: slow timed out after 200 ms")
-    });
+    let batches = until(&rx, |b| shows(b, "rejected Error ETIMEDOUT"));
     assert!(
-        batches
-            .iter()
-            .any(|b| shows(b, "rejected nsh/host: slow timed out after 200 ms")),
+        batches.iter().any(|b| shows(b, "rejected Error ETIMEDOUT")),
         "{:?}",
         batches.iter().flat_map(texts).collect::<Vec<_>>()
     );
@@ -366,9 +367,7 @@ fn host_function_names_outside_their_charset_are_refused() {
     let results: Vec<&str> = shown.trim_start_matches("true ").split(" | ").collect();
     assert_eq!(results.len(), bad.len(), "{shown}");
     assert!(
-        results
-            .iter()
-            .all(|r| r.starts_with("rejected nsh/host: invalid function name")),
+        results.iter().all(|r| *r == "rejected TypeError"),
         "{shown}"
     );
     // The longest name and every character of the set pass.
@@ -407,13 +406,13 @@ fn timeouts_past_the_clocks_reach_wait_without_limit() {
 
 #[test]
 fn negative_and_non_finite_timeouts_reject() {
-    for (timeout, shown) in [("-1", "-1"), ("NaN", "NaN"), ("Infinity", "inf")] {
+    for timeout in ["-1", "NaN", "Infinity"] {
         let options = format!("{{ timeout: {timeout} }}");
         let (_engine, rx) = start_with(&timed(&options), with_host(), ALL, None);
-        let wanted = format!("rejected nsh/host: invalid timeout {shown}");
-        let batches = until(&rx, |b| shows(b, &wanted));
+        let wanted = "rejected RangeError";
+        let batches = until(&rx, |b| shows(b, wanted));
         assert!(
-            batches.iter().any(|b| shows(b, &wanted)),
+            batches.iter().any(|b| shows(b, wanted)),
             "{timeout}: {:?}",
             batches.iter().flat_map(texts).collect::<Vec<_>>()
         );

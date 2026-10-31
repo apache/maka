@@ -43,6 +43,7 @@ tar.workspace = true
 sha2.workspace = true
 base64.workspace = true
 image.workspace = true
+wasmparser.workspace = true
 
 [build-dependencies]
 serde_json.workspace = true

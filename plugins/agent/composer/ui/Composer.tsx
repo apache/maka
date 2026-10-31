@@ -29,6 +29,7 @@ import { keymap } from 'nsh';
 import { DraftAttachments } from '../../../../products/maka/workbench/app/Attachments';
 import { ComposerDetails } from '../../../../products/maka/workbench/app/ComposerDetails';
 import { SessionPermissionsSelect } from '../../../../products/maka/workbench/app/SessionPermissionsSelect';
+import { PlanModeToggle } from '../../../../products/maka/workbench/app/PlanModeToggle';
 import type { AgentExecution } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import type {
   ComposerBackend,
@@ -41,6 +42,7 @@ import {
   controlStyle,
 } from '../../../../products/maka/workbench/app/ui';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
+import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
 import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
@@ -69,6 +71,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     else pending()?.selectFiles(event.uris);
   });
   const hero = () => props.session() === null || props.session()!.empty();
+  // On the desktop the card's 8-point inset makes its corners concentric with the 32-point round buttons.
+  const cardRadius = () => (platform.isTerminal && compact() ? 16 : 24);
   // Desktop only: the terminal keeps its start pane as it is.
   const noConnections = () => !platform.isTerminal && (props.needsConnection?.() ?? false);
   const pending = () => props.pending?.() ?? null;
@@ -151,7 +155,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     props.session()?.invocation() != null ? tr('Queue message') : tr('Send message');
   const hasContent = () =>
     !!props.session()?.draft().trim() || !!props.session()?.attachments.files().length;
-  const primaryStops = () => props.session()?.invocation() != null && !hasContent();
+  const primaryStops = () =>
+    props.session()?.connected() === true && props.session()?.invocation() != null && !hasContent();
   const resumeSource = () => {
     const value = props.session()?.resumable();
     return !props.session()?.invocation() && !hasContent() && value?.kind === 'ready'
@@ -364,7 +369,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                 <ComposerDetails session={owner} />
                 <If when={owner.recoverable()}>
                   <Button
-                    disabled={owner.recovering()}
+                    disabled={!owner.connected() || owner.recovering()}
                     onPress={inputAction(owner.recover, null)}
                     style={controlStyle}
                     hoverStyle={{ backgroundColor: C.raised }}
@@ -380,7 +385,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                 <Each of={owner.unconfirmed()} key={(id: string) => id}>
                   {(id) => (
                     <Button
-                      disabled={owner.recovering()}
+                      disabled={!owner.connected() || owner.recovering()}
                       onPress={inputAction(owner.abandon, id())}
                       style={controlStyle}
                       hoverStyle={{ backgroundColor: C.raised }}
@@ -418,13 +423,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           style={{
             flexShrink: 0,
             backgroundColor: C.raised,
-            borderRadius: compact() ? 16 : 24,
+            borderRadius: cardRadius(),
             borderWidth: 1,
             borderColor: fileDragging() ? C.accent : C.line,
-            paddingHorizontal: 16,
-            paddingTop: 12,
-            paddingBottom: 8,
-            gap: 12,
+            ...(platform.isTerminal
+              ? { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, gap: 12 }
+              : { padding: 8, gap: 8 }),
             minHeight: hero() && !compact() ? 120 : undefined,
           }}
         >
@@ -473,10 +477,17 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     focusStyle={{
                       borderWidth: 1,
                       borderColor: C.accent,
-                      borderRadius: compact() ? 16 : 24,
+                      borderRadius: cardRadius(),
                     }}
                   />
-                  <View style={[{ gap: 8 }, { pointerEvents: 'box-none' }]}>
+                  <View
+                    style={[
+                      platform.isTerminal
+                        ? { gap: 8 }
+                        : { gap: 8, flexGrow: 1, paddingHorizontal: 8, paddingTop: 4 },
+                      { pointerEvents: 'box-none' },
+                    ]}
+                  >
                     <If when={owner !== null}>
                       <DraftAttachments draft={owner!.attachments} preview={owner!.previewImage} />
                     </If>
@@ -627,7 +638,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           </Each>
           <View
             style={[
-              { flexDirection: 'row', alignItems: 'center', gap: 8 },
+              { flexDirection: 'row', alignItems: 'center', gap: platform.isTerminal ? 8 : 4 },
               { pointerEvents: 'box-none' },
             ]}
           >
@@ -667,8 +678,32 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               owner={props.session()?.permissions ?? null}
               pending={pending()?.permissions ?? null}
             />
+            <PlanModeToggle
+              plan={props.session()?.plan ?? null}
+              pending={pending()?.permissions ?? null}
+              busy={props.session()?.invocation() != null}
+            />
             <If when={props.session() !== null || pending() !== null}>
-              <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'box-none' }]}>
+              <View
+                style={[
+                  platform.isTerminal
+                    ? { flex: 1, minWidth: 0 }
+                    : {
+                        flex: 1,
+                        minWidth: 0,
+                        flexDirection: 'row',
+                        justifyContent: 'flex-end',
+                        alignItems: 'center',
+                        gap: 4,
+                      },
+                  { pointerEvents: 'box-none' },
+                ]}
+              >
+                {/* The desktop shows context use beside the model; the terminal
+                    keeps it in the line under the composer. */}
+                <If when={!platform.isTerminal && props.session()?.contextUsage?.()}>
+                  <ContextGauge usage={() => props.session()!.contextUsage!()!} />
+                </If>
                 {props.models}
               </View>
             </If>
@@ -725,21 +760,21 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             </Button>
           </View>
           <If when={fileDragging()}>
-            <FileDropHint radius={compact() ? 16 : 24} />
+            <FileDropHint radius={cardRadius()} />
           </If>
           <ComposerCompletion state={completion} />
         </View>
         {/* The terminal reserves the warning row so the composer never jumps; the
             desktop shows it only when there is a warning, so no empty band sits
             under the box. */}
-        <If when={platform.isTerminal || blocked()}>
+        <If when={platform.isTerminal || (props.session()?.connected() && blocked())}>
           <View style={{ minHeight: 24, paddingTop: 8 }}>
-            <If when={blocked()}>
+            <If when={props.session()?.connected() && blocked()}>
               <Text style={{ color: C.warning, fontSize: 12, lineHeight: 16 }}>{blocked()}</Text>
             </If>
           </View>
         </If>
-        <If when={props.session()?.metrics()}>
+        <If when={platform.isTerminal && props.session()?.metrics()}>
           <Text style={[{ color: C.muted, fontSize: 12, paddingTop: 4 }, { numberOfLines: 1 }]}>
             {props.session()?.metrics()}
           </Text>

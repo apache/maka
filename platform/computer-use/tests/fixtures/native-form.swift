@@ -19,7 +19,8 @@
 
 import AppKit
 
-final class ClickCanvas: NSButton {
+final class ClickCanvas: NSView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     var dragged = false
     override func mouseDown(with event: NSEvent) {
         dragged = false
@@ -77,7 +78,8 @@ final class Fixture: NSObject, NSApplicationDelegate {
         name.setAccessibilityLabel("Name")
         message.frame = NSRect(x: 24, y: 140, width: 360, height: 28)
         message.setAccessibilityLabel("Message")
-        canvas.title = "Event canvas"
+        canvas.setAccessibilityElement(true)
+        canvas.setAccessibilityRole(.group)
         canvas.setAccessibilityLabel("Event canvas")
         let button = NSButton(title: "Submit fixture", target: self, action: #selector(submit(_:)))
         button.frame = NSRect(x: 24, y: 85, width: 160, height: 32)

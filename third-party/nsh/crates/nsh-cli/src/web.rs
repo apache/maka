@@ -25,8 +25,9 @@
 //! fonts are fetched before the app starts, as text is measured with them
 //! synchronously.
 //!
-//! Published standalone TSX runs as browser ES modules. Its Wasm runtime
-//! has no QuickJS; the existing embedded/development players retain it.
+//! The app's TSX runs as browser ES modules on the browser's JavaScript
+//! engine; the development host's page does the same with development
+//! bundles and hot updates.
 
 use std::{
     collections::BTreeSet,
@@ -47,6 +48,8 @@ use crate::{
     runtime::{self, WebRuntime},
     ui,
 };
+
+mod prune;
 
 /// The packaged page; `{{…}}` are filled in by [`page`].
 const PAGE: &str = include_str!("web/index.html");
@@ -91,9 +94,7 @@ pub(crate) fn package(
             missing.join(", ")
         );
     }
-    // The lite runtime when the app uses nothing it leaves out.
-    let lite = built.native_use.as_ref().is_some_and(serves_lite);
-    let (runtime, kind) = runtime::package_web(lite)?;
+    let runtime = runtime::package_web()?;
     let dir = options.out.join(name);
     let step = ui::Step::start(format!("packaging {}", ui::path(&dir)));
     if dir.exists() {
@@ -112,10 +113,25 @@ pub(crate) fn package(
     // shows (the app's code is minified as it is bundled).
     let js = nsh_bundler::minify_module("nsh.js", &js).map_err(anyhow::Error::msg)?;
     let js = site.add("nsh.js", js.as_bytes())?;
-    let wasm = site.add(
-        "nsh.wasm",
-        &fs::read(&runtime.wasm).with_context(|| format!("read {}", runtime.wasm.display()))?,
-    )?;
+    // Linked for the app: the parts of `nsh/base` and the standard
+    // modules it does not use are left out. An app with Rust components of
+    // its own has a runtime built for it.
+    let linkable =
+        fs::read(&runtime.wasm).with_context(|| format!("read {}", runtime.wasm.display()))?;
+    let linked = match crate::rust_app::current() {
+        Some(_) => linkable,
+        None => {
+            let gates = linked_gates(built.native_use.as_ref());
+            let exports = prune::exports(&linkable)?;
+            let keep: Vec<&str> = exports
+                .iter()
+                .map(String::as_str)
+                .filter(|name| !is_gate(name) || gates.iter().any(|g| g == name))
+                .collect();
+            prune::prune(&linkable, &keep)?
+        }
+    };
+    let wasm = site.add("nsh.wasm", &linked)?;
     // What the runtime fetches when it first needs it: the syntaxes it
     // highlights code with, which every page would download otherwise.
     let mut data = serde_json::Map::new();
@@ -133,15 +149,12 @@ pub(crate) fn package(
         .as_deref()
         .map(|path| publish_glue(&site, path))
         .transpose()?;
-    // A Rust app has no code of its own besides its runtime (no QuickJS):
-    // the page mounts its root.
-    let (code, harden) = if built.rust_root {
-        (String::new(), String::new())
+    // A Rust app has no code of its own besides its runtime: the page
+    // mounts its root.
+    let code = if built.rust_root {
+        String::new()
     } else {
-        let code = site.add("app.js", built.code.as_bytes())?;
-        // The runtime cannot compile its hardening: it comes compiled by
-        // the QuickJS that compiled the app.
-        (code, String::new())
+        site.add("app.js", built.code.as_bytes())?
     };
     // Chunk id -> URL: the page hands the map to the runtime, which fetches
     // lazy chunks on demand. Static entry dependencies are staged before startup.
@@ -185,10 +198,8 @@ pub(crate) fn package(
         "id": id,
         "wasm": wasm,
         "code": code,
-        "harden": harden,
         "capabilities": built.capabilities_json(),
         "rust": built.rust_root,
-        "browser": !built.rust_root,
         "assets": assets,
         "data": data,
         "fonts": fonts,
@@ -208,7 +219,6 @@ pub(crate) fn package(
         wasm: &wasm,
         glue: glue.as_deref(),
         code: &code,
-        harden: &harden,
         fonts: &fonts
             .iter()
             .map(|path| assets[path].as_str().unwrap_or_default().to_owned())
@@ -221,14 +231,10 @@ pub(crate) fn package(
         .as_deref(),
     });
     fs::write(dir.join("index.html"), html)?;
-    let which = match kind {
-        runtime::WebKind::Lite => ", the lite runtime",
-        _ => "",
-    };
     step.done(format!(
         "packaged {}{}",
         ui::path(&dir),
-        ui::dim(format!(", {}{which}", ui::bytes(dir_size(&dir))))
+        ui::dim(format!(", {}", ui::bytes(dir_size(&dir))))
     ));
     if options.run {
         serve(&dir)?;
@@ -236,28 +242,106 @@ pub(crate) fn package(
     Ok(())
 }
 
-/// Whether the lite web runtime ([`runtime::WebKind::Lite`]) serves an app
-/// that uses `uses` of the native modules: nothing of `nsh/base` beyond its
-/// core part, neither `nsh/base/plot`, `zlib` nor `crypto`, no global
-/// `crypto` and no `import()` of a computed specifier. What the bundler
-/// cannot tell apart counts as everything, so the answer is never yes for
-/// an app that needs more.
-pub(crate) fn serves_lite(uses: &nsh_bundler::NativeUse) -> bool {
-    if uses.global_crypto || uses.computed_import {
-        return false;
-    }
-    uses.imports
+/// Whether `name` is the export of a part of `nsh/base`, of a standard
+/// module or of a feature (shaders), which a runtime linked for an app
+/// keeps only when it uses them.
+fn is_gate(name: &str) -> bool {
+    ["nsh_part_", "nsh_std_", "nsh_feature_"]
         .iter()
-        .all(|(module, imported)| match module.as_str() {
-            "zlib" | "crypto" | "nsh/base/plot" => false,
-            nsh_base::SPECIFIER => match imported {
-                nsh_bundler::Imported::All => false,
+        .any(|prefix| name.starts_with(prefix))
+}
+
+/// The gates ([`is_gate`]) a runtime linked for an app that uses `uses` of
+/// the native modules keeps: `nsh/base`'s core, the part of each other
+/// name it imports from `nsh/base` (`nsh/base/plot` is the plot part's),
+/// `zlib`'s operations when it imports `zlib`, and shaders when it may
+/// make a shader view (`NativeUse::shader`, or an import of `Shader`). What the bundler cannot
+/// tell apart (no analysis, `import * as`, an `import()` of a computed
+/// specifier) keeps everything, so a runtime never lacks what an app needs.
+pub(crate) fn linked_gates(uses: Option<&nsh_bundler::NativeUse>) -> Vec<String> {
+    let all = || {
+        let mut gates: Vec<String> = nsh_base::parts::ALL
+            .iter()
+            .map(|(name, _)| format!("nsh_part_{name}"))
+            .collect();
+        gates.push("nsh_std_zlib".into());
+        gates.push("nsh_feature_shader".into());
+        gates
+    };
+    let Some(uses) = uses else { return all() };
+    if uses.computed_import {
+        return all();
+    }
+    let mut gates = vec!["nsh_part_core".to_owned()];
+    if uses.shader {
+        gates.push("nsh_feature_shader".into());
+    }
+    let mut add = |gate: String| {
+        if !gates.contains(&gate) {
+            gates.push(gate);
+        }
+    };
+    for (module, imported) in &uses.imports {
+        match module.as_str() {
+            "zlib" => add("nsh_std_zlib".into()),
+            // Shaders are `nsh`'s `Shader` element.
+            "nsh" => match imported {
+                nsh_bundler::Imported::All => add("nsh_feature_shader".into()),
                 nsh_bundler::Imported::Names(names) => {
-                    names.iter().all(|name| core_exports().contains(name))
+                    if names.iter().any(|n| n == "Shader") {
+                        add("nsh_feature_shader".into());
+                    }
                 }
             },
-            _ => true,
-        })
+            "nsh/base/plot" => add("nsh_part_plot".into()),
+            nsh_base::SPECIFIER => match imported {
+                nsh_bundler::Imported::All => return all(),
+                nsh_bundler::Imported::Names(names) => {
+                    for name in names {
+                        if let Some(part) = part_of(name) {
+                            add(format!("nsh_part_{part}"));
+                        }
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+    gates
+}
+
+/// The part of `nsh/base` beyond its core that exports `name`.
+fn part_of(name: &str) -> Option<&'static str> {
+    static PARTS: OnceLock<Vec<(&'static str, BTreeSet<String>)>> = OnceLock::new();
+    let parts = PARTS.get_or_init(|| {
+        let core = core_exports();
+        nsh_base::parts::ALL
+            .iter()
+            .filter(|(name, _)| *name != "core")
+            .map(|(name, part)| {
+                let set =
+                    nsh_base::registry_of([nsh_base::parts::core as nsh_base::parts::Part, *part]);
+                let names = set_exports(&set)
+                    .into_iter()
+                    .filter(|n| !core.contains(n))
+                    .collect();
+                (*name, names)
+            })
+            .collect()
+    });
+    parts
+        .iter()
+        .find(|(_, names)| names.contains(name))
+        .map(|(part, _)| *part)
+}
+
+/// The names a UI set exports: components, classes, modules and values.
+fn set_exports(set: &nsh_core::element::Registry) -> BTreeSet<String> {
+    let mut names: BTreeSet<String> = set.specs().iter().map(|s| s.export.to_string()).collect();
+    names.extend(set.class_specs().iter().map(|c| c.name.to_owned()));
+    names.extend(set.module_specs().iter().map(|m| m.name.to_owned()));
+    names.extend(set.native_value_names().iter().map(|n| (*n).to_owned()));
+    names
 }
 
 /// What `nsh/base`'s core part exports (`nsh_base::parts::core`, with
@@ -265,13 +349,9 @@ pub(crate) fn serves_lite(uses: &nsh_bundler::NativeUse) -> bool {
 fn core_exports() -> &'static BTreeSet<String> {
     static EXPORTS: OnceLock<BTreeSet<String>> = OnceLock::new();
     EXPORTS.get_or_init(|| {
-        let set = nsh_base::registry_of([nsh_base::parts::core as nsh_base::parts::Part]);
-        let mut names: BTreeSet<String> =
-            set.specs().iter().map(|s| s.export.to_string()).collect();
-        names.extend(set.class_specs().iter().map(|c| c.name.to_owned()));
-        names.extend(set.module_specs().iter().map(|m| m.name.to_owned()));
-        names.extend(set.native_value_names().iter().map(|n| (*n).to_owned()));
-        names
+        set_exports(&nsh_base::registry_of([
+            nsh_base::parts::core as nsh_base::parts::Part
+        ]))
     })
 }
 
@@ -297,10 +377,16 @@ fn serve(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Version the complete facade directory together so relative ES imports
-/// remain valid, and every public file keeps immutable cache semantics.
-fn publish_browser_host(site: &Site, root: &Path) -> anyhow::Result<String> {
-    let mut paths = fs::read_dir(root.join("browser"))?
+/// The browser host's modules and their licenses next to `nsh.js` in
+/// `root` (its `browser/`), by name: what the page imports them as. None
+/// without the directory (a runtime that only runs a Rust app).
+fn browser_host_paths(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let dir = root.join("browser");
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut paths = fs::read_dir(&dir)
+        .with_context(|| format!("read {}", dir.display()))?
         .map(|entry| entry.map(|e| e.path()))
         .collect::<Result<Vec<_>, _>>()?;
     paths.retain(|path| {
@@ -308,9 +394,32 @@ fn publish_browser_host(site: &Site, root: &Path) -> anyhow::Result<String> {
             .is_some_and(|ext| ext == "js" || ext == "txt")
     });
     paths.sort();
+    Ok(paths)
+}
+
+/// The dev host's copies of the browser host's files ([`browser_host_paths`]),
+/// served under `browser/`.
+fn browser_host_files(root: &Path) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    browser_host_paths(root)?
+        .into_iter()
+        .map(|path| {
+            let name = path
+                .file_name()
+                .context("host file has no name")?
+                .to_string_lossy()
+                .into_owned();
+            let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+            Ok((format!("browser/{name}"), bytes))
+        })
+        .collect()
+}
+
+/// Version the complete facade directory together so relative ES imports
+/// remain valid, and every public file keeps immutable cache semantics.
+fn publish_browser_host(site: &Site, root: &Path) -> anyhow::Result<String> {
     let mut files = Vec::new();
     let mut content = Vec::new();
-    for path in paths {
+    for path in browser_host_paths(root)? {
         let name = path
             .file_name()
             .context("host file has no name")?
@@ -406,7 +515,14 @@ pub(crate) fn dev_host(runtime: &WebRuntime, rust: bool) -> anyhow::Result<(Stri
             .collect::<anyhow::Result<Vec<_>>>()?,
         None => Vec::new(),
     };
+    // The browser host's modules, which `nsh.js` imports from `./browser/`.
+    let browser = browser_host_files(runtime.js.parent().context("runtime has no parent")?)?;
     let mut parts = vec![digest(&js), digest(&wasm)];
+    parts.extend(
+        browser
+            .iter()
+            .map(|(name, bytes)| digest(&[name.as_bytes(), bytes].concat())),
+    );
     parts.extend(glue.as_deref().map(digest));
     parts.extend(
         snippets
@@ -435,6 +551,7 @@ pub(crate) fn dev_host(runtime: &WebRuntime, rust: bool) -> anyhow::Result<(Stri
         ("nsh.wasm".to_owned(), wasm),
         ("nsh.version".to_owned(), version.into_bytes()),
     ];
+    files.extend(browser);
     if let Some(glue) = glue {
         files.push((crate::bindgen::GLUE.to_owned(), glue));
     }
@@ -756,7 +873,6 @@ struct PageParts<'a> {
     /// URL of the wasm-bindgen glue, if the runtime has one.
     glue: Option<&'a str>,
     code: &'a str,
-    harden: &'a str,
     /// URLs of the fonts fetched before the app starts.
     fonts: &'a [String],
     /// What the page's script reads.
@@ -820,7 +936,7 @@ fn page(parts: &PageParts<'_>) -> String {
     // before then from being logged as unhandled). Not `<link rel=preload>`:
     // WebKit does not hand a preload still in flight to the `fetch` of the
     // same URL, which downloads the file again.
-    let urls: Vec<&str> = [parts.wasm, parts.code, parts.harden]
+    let urls: Vec<&str> = [parts.wasm, parts.code]
         .into_iter()
         .filter(|url| !url.is_empty())
         .chain(parts.fonts.iter().map(String::as_str))
@@ -941,31 +1057,51 @@ mod tests {
     }
 
     #[test]
-    fn the_lite_runtime_serves_apps_using_the_core_of_nsh_base_only() {
+    fn a_linked_runtime_keeps_the_parts_and_modules_the_app_uses() {
+        let gates = |imports: &[(&str, Option<&[&str]>)]| {
+            let mut gates = linked_gates(Some(&uses(imports)));
+            gates.sort();
+            gates
+        };
         let core: &[&str] = &["Button", "Switch", "Tabs", "Tab", "NavStack", "AlertDialog"];
-        assert!(serves_lite(&uses(&[("nsh", Some(&["mount", "View"]))])));
-        assert!(serves_lite(&uses(&[
-            ("nsh", Some(&["mount"])),
-            ("nsh/base", Some(core)),
-            ("buffer", None),
-            ("nsh/image", None),
-        ])));
-        for imports in [
-            &[("nsh/base", Some(&["Button", "Editor"][..]))][..],
-            &[("nsh/base", Some(&["TextView"][..]))],
-            &[("nsh/base", None)],
-            &[("nsh/base/plot", Some(&["Plot"][..]))],
-            &[("zlib", Some(&["gzipSync"][..]))],
-            &[("crypto", Some(&["createHash"][..]))],
-        ] {
-            assert!(!serves_lite(&uses(imports)), "{imports:?}");
-        }
-        let mut crypto = uses(&[("nsh", Some(&["mount"]))]);
-        crypto.global_crypto = true;
-        assert!(!serves_lite(&crypto));
+        assert_eq!(
+            gates(&[("nsh", Some(&["mount", "View"]))]),
+            ["nsh_part_core"]
+        );
+        assert_eq!(
+            gates(&[
+                ("nsh", Some(&["mount"])),
+                ("nsh/base", Some(core)),
+                ("buffer", None),
+                ("crypto", Some(&["createHash"])),
+            ]),
+            ["nsh_part_core"]
+        );
+        assert_eq!(
+            gates(&[("nsh/base", Some(&["Button", "Editor"]))]),
+            ["nsh_part_core", "nsh_part_editor"]
+        );
+        assert_eq!(
+            gates(&[
+                ("nsh/base", Some(&["TextView"])),
+                ("zlib", Some(&["gzipSync"]))
+            ]),
+            ["nsh_part_core", "nsh_part_text_view", "nsh_std_zlib"]
+        );
+        assert_eq!(
+            gates(&[("nsh/base/plot", Some(&["Plot"]))]),
+            ["nsh_part_core", "nsh_part_plot"]
+        );
+        assert_eq!(
+            gates(&[("nsh", Some(&["mount", "Shader"]))]),
+            ["nsh_feature_shader", "nsh_part_core"]
+        );
+        let every = nsh_base::parts::ALL.len() + 2;
+        assert_eq!(gates(&[("nsh/base", None)]).len(), every);
         let mut computed = uses(&[]);
         computed.computed_import = true;
-        assert!(!serves_lite(&computed));
+        assert_eq!(linked_gates(Some(&computed)).len(), every);
+        assert_eq!(linked_gates(None).len(), every);
     }
 
     #[test]
@@ -1190,8 +1326,7 @@ mod tests {
             runtime: "nsh.0123456789.js",
             wasm: "nsh.0123456789.wasm",
             glue,
-            code: "app.1.nshc",
-            harden: "harden.2.nshc",
+            code: "app.1.js",
             fonts: &[],
             app: &app,
             connect: None,
@@ -1216,7 +1351,7 @@ mod tests {
 
     #[test]
     fn the_page_names_the_files_and_cannot_be_broken_out_of() {
-        let app = serde_json::json!({ "code": "app.1.nshc", "x": "</script><b>" });
+        let app = serde_json::json!({ "code": "app.1.js", "x": "</script><b>" });
         let html = page(&PageParts {
             name: "A <b> & \"c\"",
             appearance: Appearance::System,
@@ -1224,8 +1359,7 @@ mod tests {
             runtime: "nsh.0123456789.js",
             wasm: "nsh.0123456789.wasm",
             glue: None,
-            code: "app.1.nshc",
-            harden: "harden.2.nshc",
+            code: "app.1.js",
             fonts: &["assets/f.1.ttf".to_owned()],
             app: &app,
             connect: Some("'self' api.example.com:*"),
@@ -1236,12 +1370,7 @@ mod tests {
             .lines()
             .find(|line| line.starts_with("<script>const fetches = "))
             .unwrap_or_default();
-        for url in [
-            "nsh.0123456789.wasm",
-            "app.1.nshc",
-            "harden.2.nshc",
-            "assets/f.1.ttf",
-        ] {
+        for url in ["nsh.0123456789.wasm", "app.1.js", "assets/f.1.ttf"] {
             assert!(fetches.contains(&format!("\"{url}\"")), "{fetches}");
         }
         assert!(html.contains("wasm: take(app.wasm)"));

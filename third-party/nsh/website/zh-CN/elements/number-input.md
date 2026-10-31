@@ -1,7 +1,6 @@
 ---
 title: NumberInput
 description: "NumberInput 组件：在输入框里输入、或用按钮、方向键和屏幕阅读器步进的数字，保留步长的小数位并止于 min 和 max；输入框、按钮和按钮列由应用设置样式。"
-order: 20.87
 group: base
 demo: el-number-input
 ---

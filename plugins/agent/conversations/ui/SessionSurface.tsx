@@ -39,6 +39,7 @@ import type { StagedFile } from 'maka/host';
 import type {
   AgentInteractionResult,
   AgentWorkspaceAccess,
+  CollaborationMode,
   ModelSelection,
   UiTarget,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
@@ -58,6 +59,7 @@ import {
 import { delayed } from '../../../../products/maka/workbench/app/delayed';
 import {
   createText,
+  createTransientText,
   UiError,
   errorText,
   message as uiMessage,
@@ -108,6 +110,10 @@ import {
   type BrowserWorkspace,
 } from '../../../../products/maka/workbench/app/browsing';
 import {
+  browserOrder,
+  groupConversations,
+} from '../../../../products/maka/workbench/app/conversationGroups';
+import {
   WorkspaceBrowser,
   type WorkspaceBrowserProps,
 } from '../../../../products/maka/workbench/app/WorkspaceBrowser';
@@ -154,6 +160,7 @@ type PendingDraft = {
   backend: ModelBackend | null;
   access: AgentWorkspaceAccess | null;
   requests: boolean | null;
+  mode: CollaborationMode;
   modelChosen: boolean;
   files: PendingFile[];
   target: { kind: 'creating'; operationId: string } | { kind: 'session'; sessionId: string } | null;
@@ -194,7 +201,7 @@ export function createConversationUi(
   });
   const browserFocus = signal(false);
   const error = createText();
-  const status = createText();
+  const status = createTransientText();
   const switching = signal(false);
   const busy = signal(false);
   // Shown only when saving a draft or confirming an action takes a while, so a
@@ -229,6 +236,15 @@ export function createConversationUi(
   const pendingPicker = signal(false);
   const pendingAccess = computed(() => pending()?.access ?? null);
   const pendingRequests = computed(() => pending()?.requests ?? null);
+  // Known from the last conversation read; a new one cannot ask the Host first.
+  const plansEnabled = signal<boolean | null>(null);
+  effect(() => {
+    const enabled = handle()?.plan.view()?.enabled;
+    if (enabled !== undefined) plansEnabled.set(enabled);
+  });
+  const pendingMode = computed(() =>
+    plansEnabled() === false ? 'agent' : (pending()?.mode ?? 'agent'),
+  );
   const pendingBackend = computed(() => pending()?.backend ?? null);
   const pendingModelChosen = computed(() => pending()?.modelChosen ?? false);
   const pendingModelDetails = signal<ModelDetails>({
@@ -421,8 +437,14 @@ export function createConversationUi(
   };
   const returned = (reply: any) => {
     const receipt = reply?.receipt;
+    if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'unknown')
+      throw new UiError(
+        'The action outcome is unknown. Check the current state before trying again.',
+      );
     if (receipt?.kind !== 'recorded' || receipt.outcome?.kind !== 'returned')
-      throw new UiError('Confirmation is still unknown. Recover the original action below.');
+      throw new UiError(
+        'No confirmed result is available. Check the current state before repeating the action. You can dismiss this notice.',
+      );
     const value = receipt.outcome.value;
     return value;
   };
@@ -647,6 +669,7 @@ export function createConversationUi(
         backend: null,
         access: null,
         requests: null,
+        mode: 'agent',
         modelChosen: false,
         files: [],
         target: null,
@@ -793,6 +816,12 @@ export function createConversationUi(
             updatePending({ requests });
           }
         },
+        mode: () => (plansEnabled() === false ? null : pendingMode()),
+        selectMode: (mode: CollaborationMode) => {
+          if (owns() && !pendingSending() && pendingMode() !== mode) {
+            updatePending({ mode });
+          }
+        },
       },
       changeDraft: (text: string) => {
         if (owns() && pendingText() !== text) {
@@ -836,6 +865,7 @@ export function createConversationUi(
         const files = staged.map((item) => item.file);
         const access = pendingAccess();
         const requests = pendingRequests();
+        const mode = pendingMode();
         if (
           !owns() ||
           !workspace ||
@@ -888,6 +918,7 @@ export function createConversationUi(
                 sendFirst = !history.chunks.some((row) => row.role === 'user');
               }
             }
+            const reusingSession = id !== null;
             if (!id) {
               const result = await control('create', {
                 title: tr('New conversation'),
@@ -902,7 +933,7 @@ export function createConversationUi(
               id = result.session.id as string;
             }
             requireUnchangedDraft();
-            if (access !== null || requests !== null) {
+            if (reusingSession || access !== null || requests !== null || mode !== 'agent') {
               if (
                 !controlsKnown() ||
                 controls().some(
@@ -918,21 +949,38 @@ export function createConversationUi(
                 access: access ?? session.permissions.access,
                 requestPermissions: requests ?? session.permissions.requestPermissions,
               };
-              if (
+              const permissionsChanged =
                 settings.access !== session.permissions.access ||
-                settings.requestPermissions !== session.permissions.requestPermissions
-              ) {
+                settings.requestPermissions !== session.permissions.requestPermissions;
+              const modeChanged = mode !== (session.collaborationMode ?? 'agent');
+              if (permissionsChanged || modeChanged) {
                 const changed = await control('metadata', {
                   sessionId: id,
                   expectedRevision: session.revision,
                   title: session.title,
                   labels: session.labels,
-                  permissions: { settings, revokeGrants: true },
+                  ...(permissionsChanged ? { permissions: { settings, revokeGrants: true } } : {}),
+                  ...(modeChanged ? { collaborationMode: mode } : {}),
                 });
+                if (
+                  changed.kind === 'rejected' &&
+                  modeChanged &&
+                  changed.reason === 'tools_unavailable'
+                ) {
+                  // This Agent does not plan: say so once and send in agent mode next time.
+                  plansEnabled.set(false);
+                  updatePending({ mode: 'agent' });
+                  throw new UiError('Plans are unavailable in this Agent.');
+                }
                 if (changed.kind !== 'committed')
-                  throw new UiError('Sandbox settings rejected: {reason}', {
-                    reason: changed.reason ?? changed.kind,
-                  });
+                  throw new UiError(
+                    permissionsChanged
+                      ? 'Sandbox settings rejected: {reason}'
+                      : 'Planning mode could not start: {reason}',
+                    {
+                      reason: changed.reason ?? changed.kind,
+                    },
+                  );
               }
             }
             const choice = await control('selectBackend', {
@@ -1020,6 +1068,7 @@ export function createConversationUi(
       !(shell()?.visible() ?? false) ||
       overlay() ||
       !owner ||
+      !owner.connected() ||
       selected() !== sessionId ||
       owner.sessionId !== sessionId ||
       owner.invocation() !== invocationId
@@ -1079,11 +1128,8 @@ export function createConversationUi(
           await switchSession(existing, { sessionId, instance: null });
           return;
         }
-        if (sessionId === null)
-          throw new UiError('Open a conversation first; the Bot starts in its workspace.');
-        const result = await control('openBot', {
-          workspace: { kind: 'session', sessionId },
-        });
+        // The Host picks the workspace of the Bot's first open itself.
+        const result = await control('openBot', {});
         if (!alive) return;
         if (result.kind !== 'opened')
           throw new UiError('Bot could not be opened: {reason}', {
@@ -1129,7 +1175,18 @@ export function createConversationUi(
     if (closeCommand(context)) handle()?.focusActivity(context.turnId);
   };
   const commandStop = (context: ActionContext & { invocationId: string | null }) => {
-    if (closeCommand(context)) void handle()?.stop(context.invocationId).catch(report);
+    if (closeCommand(context) && handle()?.connected())
+      void handle()?.stop(context.invocationId).catch(report);
+  };
+  const commandPlan = (context: ActionContext) => {
+    if (!closeCommand(context)) return;
+    const owner = handle();
+    if (owner) {
+      void owner.plan.selectMode(owner.plan.mode() === 'plan' ? 'agent' : 'plan');
+      return;
+    }
+    const draft = pendingComposer();
+    draft.permissions.selectMode(pendingMode() === 'plan' ? 'agent' : 'plan');
   };
   const commandCompact = async (context: ActionContext, prompt?: string) => {
     if (!closeCommand(context)) return false;
@@ -1222,9 +1279,11 @@ export function createConversationUi(
     if (recovering()) return;
     recovering.set(true);
     error.set('');
+    status.set('');
+    let responseConfirmed = false;
+    let failed = false;
     try {
       const originals = await host.pendingControls();
-      let responseConfirmed = false;
       for (const original of originals) {
         if (!original.reference) continue;
         try {
@@ -1279,20 +1338,35 @@ export function createConversationUi(
               });
           }
         } catch (reason) {
+          failed = true;
           report(reason);
         }
       }
       const owner = handle();
       if (owner && selected() === owner.sessionId) await owner.refresh();
       await browsing.refresh();
-      if (!responseConfirmed) status.set(uiMessage('Original actions checked.'));
     } catch (reason) {
+      failed = true;
       report(reason);
     } finally {
-      await refreshControls().catch(report);
-      if (alive) recovering.set(false);
+      await refreshControls().catch((reason) => {
+        failed = true;
+        controlsKnown.set(false);
+        report(reason);
+      });
+      if (alive) {
+        recovering.set(false);
+        if (!failed && !responseConfirmed && controls().length === 0)
+          status.set(uiMessage('Original actions checked.'));
+      }
     }
   };
+  const controlStatusLabel = () =>
+    recovering()
+      ? tr('Reading original action receipts…')
+      : controlsKnown()
+        ? tr('Check action status ({count})', { count: controls().length })
+        : tr('Recheck original actions');
   const openBrowsed = ({ id, origin }: { id: string; origin: string | null }) =>
     selectBrowsed(id, origin);
   const abandonControl = async (id: string) => {
@@ -1304,6 +1378,25 @@ export function createConversationUi(
       await refreshControls();
     } catch (reason) {
       report(reason);
+    }
+  };
+  const dismissControl = async (id: string) => {
+    if (recovering()) return;
+    recovering.set(true);
+    status.set('');
+    try {
+      await host.dismissControl(id);
+      if (alive && id === pendingCreateAttempt()) updatePending({ target: null });
+      await refreshControls();
+      if (alive) {
+        error.set('');
+        status.set(uiMessage('Action notice dismissed.'));
+        focusComposer();
+      }
+    } catch (reason) {
+      report(reason);
+    } finally {
+      if (alive) recovering.set(false);
     }
   };
   const previewImage = (image: ImagePreview) => {
@@ -1368,13 +1461,25 @@ export function createConversationUi(
       textSize: changeTextSize,
     });
   // The conversation below (1) or above (-1) the open one in the session browser.
+  // Kept here so the browser's collapsed workspaces outlive its unmounting
+  // and stepping between conversations skips them as the browser does.
+  const collapsedGroups = signal<ReadonlySet<string>>(new Set());
   const stepSession = (step: 1 | -1) => {
     const current = overlay();
     if (switching() || busy() || (current && current.kind !== 'sessions')) return;
-    const rows = browsing.sessions();
-    const index = rows.findIndex((session) => session.id === selected());
+    const bot = botSession() ?? null;
+    const rows = browserOrder(
+      groupConversations(
+        browsing.sessions().filter((session) => session.id !== bot),
+        browsing.projects(),
+        false,
+      ),
+      collapsedGroups(),
+      selected(),
+    );
+    const index = rows.indexOf(selected() ?? '');
     const next = rows[index === -1 ? 0 : index + step];
-    if (next && next.id !== selected()) void selectBrowsed(next.id, selected());
+    if (next && next !== selected()) void selectBrowsed(next, selected());
   };
   const selectBrowsed = async (id: string, origin: string | null) => {
     const current = overlay();
@@ -1400,7 +1505,9 @@ export function createConversationUi(
     browserFocus.set(false);
     return true;
   };
+  const connectionLost = () => shell()?.connectionLost() ?? false;
   const browserProps: WorkspaceBrowserProps = {
+    connectionLost,
     docked: navigationDocked,
     browsing,
     selected,
@@ -1424,8 +1531,9 @@ export function createConversationUi(
     settings: (sessionId) => invokeCommand({ id: 'settings', sessionId }),
     search: (sessionId) => invokeCommand({ id: 'sessions', sessionId }),
     canOpenBeside: () => !!shell()?.openBeside,
-    beside: () => shell()?.besideSessionId?.() ?? null,
+    beside: () => shell()?.besideSessionIds?.() ?? [],
     openBeside: (sessionId) => shell()?.openBeside?.(sessionId),
+    collapsedGroups,
   };
   let wasDocked = shell()?.sidebarDocked();
   let previousWidth = windowSize().width;
@@ -1634,6 +1742,7 @@ export function createConversationUi(
               {(id) => (
                 <Conversation
                   client={host.session(id())}
+                  connectionLost={connectionLost}
                   botSession={botSession}
                   visible={() =>
                     selected() === id() && overlay() === null && (shell()?.visible() ?? false)
@@ -1737,7 +1846,12 @@ export function createConversationUi(
                                 requestId={entry().requestId}
                                 control={control}
                                 focusComposer={focusComposer}
-                                confirming={() => busy() || !controlsKnown()}
+                                confirming={() =>
+                                  connectionLost() ||
+                                  !owner.connected() ||
+                                  busy() ||
+                                  !controlsKnown()
+                                }
                               />
                             )}
                           </Each>
@@ -1745,7 +1859,7 @@ export function createConversationUi(
                       );
                     }}
                   </Each>
-                  <If when={status()}>
+                  <If when={!connectionLost() && status()}>
                     <View
                       style={{
                         flexDirection: 'row',
@@ -1784,11 +1898,13 @@ export function createConversationUi(
                   </If>
                   <If
                     when={
-                      error() ||
-                      working() ||
-                      !controlsKnown() ||
-                      controls().length ||
-                      forkNotice()?.id === selected()
+                      !connectionLost() &&
+                      (handle()?.connected() ?? true) &&
+                      (error() ||
+                        working() ||
+                        !controlsKnown() ||
+                        controls().length ||
+                        forkNotice()?.id === selected())
                     }
                   >
                     <Scroll
@@ -1847,6 +1963,7 @@ export function createConversationUi(
                       </If>
                       <If when={!controlsKnown() || controls().length > 0}>
                         <Button
+                          accessibilityLabel={controlStatusLabel()}
                           disabled={recovering()}
                           onPress={inputAction(recoverControls, null)}
                           style={controlStyle}
@@ -1854,15 +1971,30 @@ export function createConversationUi(
                           focusStyle={controlFocusStyle()}
                         >
                           <Text style={{ ...bodyTextStyle, color: C.warning }}>
-                            {recovering()
-                              ? tr('Reading original action receipts…')
-                              : controlsKnown()
-                                ? tr('Recover original actions ({count})', {
-                                    count: controls().length,
-                                  })
-                                : tr('Recheck original actions')}
+                            {controlStatusLabel()}
                           </Text>
                         </Button>
+                        <Each
+                          of={controls().filter((original) => original.reference)}
+                          key={(original) => original.id}
+                        >
+                          {(original) => (
+                            <Button
+                              accessibilityLabel={tr('Dismiss action notice {id}', {
+                                id: original().id.slice(0, 8),
+                              })}
+                              disabled={recovering()}
+                              onPress={inputAction(dismissControl, original().id)}
+                              style={controlStyle}
+                              hoverStyle={controlHoverStyle()}
+                              focusStyle={controlFocusStyle()}
+                            >
+                              <Text style={{ ...bodyTextStyle, color: C.secondary }}>
+                                {tr('Dismiss this notice')}
+                              </Text>
+                            </Button>
+                          )}
+                        </Each>
                         <Each
                           of={controls().filter((original) => !original.reference)}
                           key={(original) => original.id}
@@ -2078,7 +2210,18 @@ export function createConversationUi(
       if (id === 'bot') return true;
       if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
         return handle() !== null;
-      if (id === 'stop') return handle()?.invocation() != null;
+      if (id === 'stop') return !!handle()?.connected() && handle()?.invocation() != null;
+      if (id === 'plan') {
+        const owner = handle();
+        if (!owner) return pending() !== null && plansEnabled() !== false;
+        const phase = owner.plan.view()?.current.execution?.phase;
+        return (
+          !!owner.plan.view()?.enabled &&
+          owner.invocation() === null &&
+          phase !== 'awaiting_admission' &&
+          phase !== 'active'
+        );
+      }
       return true;
     },
     run(id: string, argument?: string) {
@@ -2126,6 +2269,8 @@ export function createConversationUi(
             ...source,
             invocationId: handle()?.invocation() ?? null,
           });
+        case 'plan':
+          return commandPlan(source);
       }
     },
     async prepareReload() {
@@ -2185,6 +2330,7 @@ function projectComposerSession(
       error: owner.permissions.error,
       select: owner.permissions.select,
     },
+    plan: owner.plan,
     projectMcp: {
       proposal: owner.projectMcp.proposal,
       pending: owner.projectMcp.pending,
@@ -2207,12 +2353,14 @@ function projectComposerSession(
     recoverable: owner.recoverable,
     recovering: owner.recovering,
     unconfirmed: owner.unconfirmed,
+    connected: owner.connected,
     invocation: owner.invocation,
     stopping: owner.stopping,
     resumable: owner.resumable,
     resuming: owner.resuming,
     resume: owner.resume,
     metrics: owner.metrics,
+    contextUsage: owner.contextUsage,
     changeDraft: owner.changeDraft,
     submit: owner.submit,
     sendRendered: owner.sendRendered,

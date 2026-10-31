@@ -283,7 +283,7 @@ async fn execution_reuses_binding_pin_behind_queued_writer_and_cannot_rebind() {
 }
 
 #[tokio::test]
-async fn quarantined_child_keeps_sql_for_accepted_parent_without_reopening_admission() {
+async fn unconfirmed_child_keeps_other_sessions_available_and_retains_shutdown_custody() {
     let directory = tempfile::tempdir().unwrap();
     let root = open(directory.path()).await;
     let session = root
@@ -296,20 +296,27 @@ async fn quarantined_child_keeps_sql_for_accepted_parent_without_reopening_admis
     let abandoned = child.store();
     child.retain_unconfirmed();
 
-    // Quarantine itself fences prebound ordinary handles, before shutdown sets
-    // the Root's explicit closed flag. Only the original accepted pins remain.
-    assert!(matches!(
-        root.session("session").await,
-        Err(StoreError::ConnectionClosed)
-    ));
-    assert!(matches!(
-        session.subscribe_commits(),
-        Err(StoreError::ConnectionClosed)
-    ));
-    assert!(matches!(
-        session.get::<Value>().await,
-        Err(StoreError::ConnectionClosed)
-    ));
+    assert!(root.session("session").await.is_ok());
+    assert!(session.subscribe_commits().is_ok());
+    assert!(session.get::<Value>().await.unwrap().is_some());
+    let healthy = root
+        .create_session("healthy", "healthy", &json!({"title":"still usable"}), 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        healthy.get::<Value>().await.unwrap().unwrap().configuration["title"],
+        "still usable"
+    );
+    let healthy_lease = healthy.execution_scope(None).await.unwrap().accept();
+    assert!(
+        healthy_lease
+            .store()
+            .get::<Value>()
+            .await
+            .unwrap()
+            .is_some()
+    );
+    healthy_lease.finish();
     assert!(matches!(
         abandoned.get::<Value>().await,
         Err(StoreError::ConnectionClosed)

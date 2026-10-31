@@ -6,7 +6,11 @@
 //! calls from a thread of its own; each call does its work on the main
 //! queue (`exec_sync`) and returns once the input is handed over.
 
-use std::{cell::RefCell, rc::Weak, time::Duration};
+use std::{
+    cell::RefCell,
+    rc::Weak,
+    time::{Duration, Instant},
+};
 
 use dispatch2::DispatchQueue;
 use nsh_core::{
@@ -28,10 +32,15 @@ use crate::{
 const TAP: Duration = Duration::from_millis(60);
 /// The time between typed keys.
 const KEY: Duration = Duration::from_millis(80);
+/// How long a typed key may take to land in the input before the next one
+/// is typed anyway.
+const KEY_LANDS: Duration = Duration::from_millis(600);
 /// A finger's moves, a display frame apart.
 const FRAME: Duration = Duration::from_millis(16);
-/// How far a finger moves in one frame at most, in points.
-const MOVE_STEP: f64 = 20.0;
+/// How far a finger moves in one frame on average, in points: a quick
+/// swipe's 2500 pt/s, so a gesture takes few frames, each a trip to the
+/// main thread.
+const MOVE_STEP: f64 = 40.0;
 /// How long a finger rests before it lifts at the end of a scroll, so the
 /// scroll view keeps no velocity (no fling after it).
 const REST: Duration = Duration::from_millis(120);
@@ -189,10 +198,30 @@ impl Native for IosNative {
     fn type_text(&self, text: &str) {
         // As the software keyboard types, a character at a time, at a
         // quick typist's pace: a controlled input's value comes back from
-        // the app between keys, as it does on a device.
+        // the app between keys, as it does on a device. Each key waits
+        // for the one before it to land in the input: the simulator's
+        // keyboard drops a key typed while it still handles the previous
+        // one, the second of two equal keys most often ("hello" became
+        // "HELO" in a controlled input on a slow runner).
         for ch in text.chars() {
+            let before = self
+                .on_main(|_, window| synth::focused_text(window))
+                .flatten();
             let s = ch.to_string();
             self.on_main(move |_, window| synth::insert_text(window, &s));
+            // Without a focused text there is nothing to watch: waiting
+            // would only add `KEY_LANDS` to every key.
+            let deadline = Instant::now() + KEY_LANDS;
+            while before.is_some() {
+                std::thread::sleep(KEY / 4);
+                let now = self
+                    .on_main(|_, window| synth::focused_text(window))
+                    .flatten();
+                // An input that refuses the key (`maxLength`) never changes.
+                if now != before || Instant::now() >= deadline {
+                    break;
+                }
+            }
             std::thread::sleep(KEY);
         }
     }

@@ -49,7 +49,9 @@ four trees and the docks' states as one value, where a move across trees is a de
 leaves the area on the way). Every edit, the user's or a method of the ref's (`DockAreaApi`), runs on the `Area` in
 the core and is reported as the whole new layout (`onLayoutChange`), every id included; a controlled area shows it
 once the app passes it back. Reported ids are what keep containers' identity across that round trip, and what the
-ref's methods name groups by.
+ref's methods name groups by. A method naming a panel, group, tab or dock the layout does not hold (checked against
+the layout the next edit builds on, `AreaCx::latest`) does nothing and logs a `log::warn!` (`docs/dev/components.md`
+"Methods").
 
 What crosses to JS is the result of an interaction, never its frames: a split or dock being resized, a tab being
 dragged over the groups and its drop indicator all run in the core on the engine thread (the touch responder,

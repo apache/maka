@@ -536,3 +536,189 @@ fn svg_safety_text_is_not_drawn() {
     assert!(transparent(&raster));
     assert_eq!(raster.size, pt(40.0, 20.0));
 }
+
+/// What a drawing of an SVG ([`drawing`]) fills and strokes, painted for a
+/// box of `size` with text color `current`: each paint with the operations
+/// before it (the state it draws with).
+mod as_drawing {
+    use super::*;
+    use crate::{
+        canvas::{
+            CanvasOp, Drawing, FillRule, GradientShape, Num, Paint, PathOp, ViewPaint,
+            point_in_path,
+        },
+        geometry::{Point, point, px},
+        style::{Color, PaintStyle},
+    };
+
+    const GREEN: Color = Color(0x00ff_00ff);
+
+    fn paint(drawing: &Drawing, size: Size<Points>) -> Drawing {
+        drawing.painted(&PaintStyle::default(), GREEN, Color::TRANSPARENT, &[], size)
+    }
+
+    /// The paint of each shape, in order: `(fill or stroke style, the
+    /// operations up to the shape, its path)`.
+    fn shapes(drawing: &Drawing) -> Vec<(Paint, &[CanvasOp], &[PathOp])> {
+        let (mut fill, mut stroke) = (None, None);
+        let mut out = Vec::new();
+        for (i, op) in drawing.ops.iter().enumerate() {
+            match op {
+                CanvasOp::FillStyle(p) => fill = Some(p.clone()),
+                CanvasOp::StrokeStyle(p) => stroke = Some(p.clone()),
+                CanvasOp::Fill(Some(path), _) => {
+                    out.push((fill.clone().unwrap(), &drawing.ops[..i], &path[..]))
+                }
+                CanvasOp::Stroke(Some(path)) => {
+                    out.push((stroke.clone().unwrap(), &drawing.ops[..i], &path[..]))
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn inside(ops: &[CanvasOp], path: &[PathOp], x: f32, y: f32) -> bool {
+        point_in_path(ops, Some(path), FillRule::NonZero, at(x, y), |_| 0.0)
+    }
+
+    fn at(x: f32, y: f32) -> Point<Points> {
+        point(px(x), px(y))
+    }
+
+    /// An icon stroked with `currentColor` takes the view's text color,
+    /// whatever it is when drawn; its own colors stay.
+    #[test]
+    fn svg_drawing_current_color_is_the_text_color() {
+        let icon = r##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M4 4h16v16H4z" fill="none" stroke="currentColor" stroke-width="2"/><rect width="4" height="4" fill="#0000ff"/></svg>"##;
+        let d = drawing(icon).unwrap();
+        assert!(
+            d.view_paints
+                .iter()
+                .any(|(_, v)| *v == ViewPaint::StrokeCurrentColor)
+        );
+        let painted = paint(&d, pt(24.0, 24.0));
+        let paints: Vec<_> = shapes(&painted).into_iter().map(|s| s.0).collect();
+        assert_eq!(
+            paints,
+            [Paint::Color(GREEN), Paint::Color(Color(0x0000_ffff))]
+        );
+        assert!(painted.ops.contains(&CanvasOp::LineWidth(Num::Const(2.0))));
+        // A `color` of the document's own is what its `currentColor` is.
+        let own = drawing(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4" color="#ff0000"><rect width="4" height="4" fill="currentColor"/></svg>"##,
+        )
+        .unwrap();
+        assert_eq!(
+            shapes(&painted_of(&own))[0].0,
+            Paint::Color(Color(0xff00_00ff))
+        );
+    }
+
+    fn painted_of(d: &Drawing) -> Drawing {
+        paint(d, d.fit().unwrap().size)
+    }
+
+    /// Gradients are drawn as gradients, in the shape's coordinates
+    /// (`objectBoundingBox` included), with their stops' opacity.
+    #[test]
+    fn svg_drawing_keeps_gradients() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+            <defs>
+              <linearGradient id="l"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff" stop-opacity="0.5"/></linearGradient>
+              <radialGradient id="r" cx="50" cy="50" r="40" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/></radialGradient>
+            </defs>
+            <rect x="10" y="0" width="80" height="20" fill="url(#l)"/>
+            <circle cx="50" cy="50" r="40" fill="url(#r)"/>
+          </svg>"##;
+        let painted = painted_of(&drawing(svg).unwrap());
+        let shapes = shapes(&painted);
+        let Paint::Gradient(linear) = &shapes[0].0 else {
+            panic!("{:?}", shapes[0].0)
+        };
+        let GradientShape::Linear { start, end } = linear.shape else {
+            panic!("{linear:?}")
+        };
+        // From the box's left edge to its right one.
+        assert!((start.x.0 - 10.0).abs() < 1e-3 && (end.x.0 - 90.0).abs() < 1e-3);
+        assert!((start.y.0 - end.y.0).abs() < 1e-3);
+        assert_eq!(
+            linear
+                .stops
+                .iter()
+                .map(|(o, c)| (o.0, *c))
+                .collect::<Vec<_>>(),
+            [(0.0, Color(0xff00_00ff)), (1.0, Color(0x0000_ff80))]
+        );
+        let Paint::Gradient(radial) = &shapes[1].0 else {
+            panic!("{:?}", shapes[1].0)
+        };
+        assert_eq!(
+            radial.shape,
+            GradientShape::Radial {
+                start: at(50.0, 50.0),
+                start_radius: Points::ZERO,
+                end: at(50.0, 50.0),
+                end_radius: px(40.0),
+            }
+        );
+    }
+
+    /// The view box is fitted into the canvas's box as
+    /// `preserveAspectRatio` says: in the middle by default, stretched by
+    /// `none`, covering it by `slice`; the canvas's natural size is the
+    /// SVG's `width` and `height`.
+    #[test]
+    fn svg_drawing_fits_its_view_box_into_the_box() {
+        let tall = |aspect: &str| {
+            drawing(&format!(
+                r##"<svg xmlns="http://www.w3.org/2000/svg" width="5" height="10" viewBox="0 0 10 20" {aspect}><rect width="10" height="20"/></svg>"##
+            ))
+            .unwrap()
+        };
+        let meet = tall("");
+        assert_eq!(meet.fit().unwrap().size, pt(5.0, 10.0));
+        let painted = paint(&meet, pt(40.0, 40.0));
+        let (_, ops, path) = shapes(&painted)[0];
+        // 20 × 40 in the middle of 40 × 40.
+        assert!(inside(ops, path, 11.0, 1.0) && inside(ops, path, 29.0, 39.0));
+        assert!(!inside(ops, path, 9.0, 20.0) && !inside(ops, path, 31.0, 20.0));
+        let painted = painted_of(&tall(r#"preserveAspectRatio="none""#));
+        let (_, ops, path) = shapes(&painted)[0];
+        assert!(inside(ops, path, 4.9, 9.9) && !inside(ops, path, 5.1, 5.0));
+        let stretched = drawing(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 20" preserveAspectRatio="none"><rect width="10" height="20"/></svg>"##,
+        )
+        .unwrap();
+        let painted = paint(&stretched, pt(40.0, 40.0));
+        let (_, ops, path) = shapes(&painted)[0];
+        assert!(inside(ops, path, 1.0, 1.0) && inside(ops, path, 39.0, 39.0));
+        // Sliced: 40 × 80 from 20 above the top; its top left quarter is
+        // a red square, the rest blue.
+        let sliced = drawing(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 20" preserveAspectRatio="xMinYMid slice"><rect width="10" height="20" fill="#00f"/><rect width="5" height="10" fill="#f00"/></svg>"##,
+        )
+        .unwrap();
+        let painted = paint(&sliced, pt(40.0, 40.0));
+        let (_, ops, red) = shapes(&painted)[1];
+        assert!(inside(ops, red, 19.0, 19.0) && !inside(ops, red, 21.0, 19.0));
+        assert!(!inside(ops, red, 19.0, 21.0));
+        // A `width` and `height` beside the view box scale what usvg
+        // draws; the drawing stays in the view box's coordinates.
+        let big = drawing(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24"><rect width="12" height="12"/></svg>"##,
+        )
+        .unwrap();
+        assert_eq!(big.fit().unwrap().size, pt(48.0, 48.0));
+        let painted = paint(&big, pt(24.0, 24.0));
+        let (_, ops, path) = shapes(&painted)[0];
+        assert!(inside(ops, path, 11.0, 11.0) && !inside(ops, path, 13.0, 5.0));
+    }
+
+    /// A document that is no SVG fails as the rasters do.
+    #[test]
+    fn svg_drawing_of_no_svg_fails() {
+        assert!(matches!(drawing("<html/>"), Err(Error::Invalid(_))));
+        assert!(drawing("not xml").is_err());
+    }
+}

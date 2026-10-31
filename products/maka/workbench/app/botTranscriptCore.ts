@@ -119,9 +119,15 @@ export function createBotTranscriptCore(
     }
     return false;
   };
-  void (async () => {
+  // The watch starts once the Session is known to be the Bot. If every lookup failed
+  // it ends unstarted, and a later answer from the application starts it (`resume`).
+  let running = false;
+  let identified = false;
+  const run = async () => {
+    running = true;
     try {
       if (!(await identify())) return;
+      identified = true;
       const opened = await host.subscribe('agent', 'watchBotOutbox', { limit: 0 });
       if (!alive) {
         await opened.close();
@@ -139,14 +145,28 @@ export function createBotTranscriptCore(
     } catch {
       // The watch ended; what was read stays.
     } finally {
+      running = false;
       ready();
     }
-  })();
+  };
+  const resume = () => {
+    if (alive && !running && !identified && fromKnown() === 'bot') void run();
+  };
+  void run();
 
   return {
     started,
-    identity: (): BotIdentity => (identity === 'unknown' ? fromKnown() : identity),
-    isBot: () => identity === 'bot' || (identity === 'unknown' && fromKnown() === 'bot'),
+    identity: (): BotIdentity => {
+      if (identity !== 'unknown') return identity;
+      resume();
+      return fromKnown();
+    },
+    isBot: () => {
+      if (identity === 'bot') return true;
+      if (identity !== 'unknown') return false;
+      resume();
+      return fromKnown() === 'bot';
+    },
     forTurn: (turnId: string): BotTranscriptMessage[] => byTurn.get(turnId) ?? [],
     close() {
       alive = false;

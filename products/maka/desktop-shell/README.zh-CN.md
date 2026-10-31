@@ -42,6 +42,8 @@ just build
 
 `--root` 可选，指定业务 Host Root，默认使用 `~/.maka/application/host`。启动器把缺失的 Root 初始化为标准只读业务 Host，或重开其已保存的部署；随后对照已连接 Host 的端点、来源和 epoch 校验发现信息，并把 `MAKA_HOST_ROOT`、`MAKA_HOST_ENDPOINT` 和 `MAKA_HOST_EPOCH` 传给 shell，同时用 `MAKA_LAUNCHER` 传入启动器自身的路径。shell 以与终端 shell 相同的方式接入该 Host，并把客户端数据保存在该 Root 下。
 
+从访达、程序坞或文件管理器直接打开时，shell 拿不到这些变量。它会运行所在目录里的 `maka desktop`（macOS 上是 `Maka.app` 旁边，其他平台是 shell 旁边），然后退出；由这个启动器为默认 Root 打开窗口。
+
 关闭窗口、应用菜单的退出项和退出快捷键都会关闭窗口；shell 随后与 Host 断开并退出。启动器同样只断开连接，因此 Host 会完成已接受的工作，在没有客户端后停止。取消启动器只会停止它启动的 shell。
 
 窗口会在上次关闭时所在的显示器上打开，位置、大小以及全屏或最大化状态都与当时相同；这些记录在 Root 的 `clients/desktop-window.json` 里。那个显示器已断开时，窗口在主显示器上居中打开；窗口顶边留在显示器上的部分不够拖动时，窗口在那个显示器上居中打开。

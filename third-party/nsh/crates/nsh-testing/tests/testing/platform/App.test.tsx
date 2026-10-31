@@ -7,7 +7,7 @@ test("back pops the screen pushed last", async () => {
   await app.back();
   expect(app.shows("Detail body")).toBe(false);
   expect(app.texts()).toContain("Answer: none");
-  await expect(() => app.back()).rejects.toThrow("nothing to go back from");
+  await expect(() => app.back()).rejects.toMatchObject({ code: "ERR_NSH_TEST_NO_BACK" });
 });
 
 test("a screen that prevents going back is asked", async () => {

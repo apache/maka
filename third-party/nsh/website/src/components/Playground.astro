@@ -6,6 +6,9 @@ import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { BASE, type Lang } from '../lib/site';
 import { frameBar, hasPlayer } from '../lib/demo.js';
+import Button from './ui/Button.astro';
+import Select from './ui/Select.astro';
+import Toggle from './ui/Toggle.astro';
 
 export interface Props {
   lang?: Lang;
@@ -71,40 +74,24 @@ const t = zh
   <div class="playground__toolbar">
     <div class="playground__field">
       <span id="pg-example-label">{t.example}</span>
-      <!-- A listbox in the site's look (the native <select> cannot be styled);
-           playground-client.ts drives it. -->
-      <div class="pg-select" data-example data-value={demos[0]}>
-        <button
-          type="button"
-          class="pg-select__trigger"
-          aria-haspopup="listbox"
-          aria-expanded="false"
-          aria-controls="pg-example-menu"
-          aria-labelledby="pg-example-label pg-example-value"
-          data-trigger
-        >
-          <span class="pg-select__value" id="pg-example-value" data-current>{demos[0]}.tsx</span>
-          <svg class="pg-select__chevron" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5" /></svg>
-        </button>
-        <ul class="pg-select__menu" id="pg-example-menu" role="listbox" tabindex="-1" aria-labelledby="pg-example-label" data-menu hidden>
-          {demos.map((name, i) => (
-            <li class="pg-select__option" role="option" id={`pg-example-${name}`} data-value={name} aria-selected={i === 0 ? 'true' : 'false'}>
-              <svg class="pg-select__check" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" /></svg>
-              <span>{name}.tsx</span>
-            </li>
-          ))}
-        </ul>
-      </div>
+      <Select
+        id="pg-example"
+        size="sm"
+        labelledby="pg-example-label"
+        class="playground__example"
+        options={demos.map((name) => ({ value: name, label: `${name}.tsx` }))}
+        data-example
+      />
     </div>
     <span class="playground__status" data-status aria-live="polite"></span>
     <div class="playground__actions">
-      <label class="playground__toggle">
-        <input type="checkbox" data-dark checked />
-        <span>{t.dark}</span>
-      </label>
-      <button type="button" class="pg-btn" data-reset>{t.reset}</button>
-      <button type="button" class="pg-btn" data-share>{t.share}</button>
-      <button type="button" class="pg-btn pg-btn--primary" data-run title="Ctrl / ⌘ + Enter">{t.run}</button>
+      <Toggle variant="outline" size="sm" pressed data-dark>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401" /></svg>
+        {t.dark}
+      </Toggle>
+      <Button variant="secondary" size="sm" data-reset>{t.reset}</Button>
+      <Button variant="secondary" size="sm" data-share>{t.share}</Button>
+      <Button size="sm" data-run title="Ctrl / ⌘ + Enter">{t.run}</Button>
     </div>
   </div>
 
@@ -124,7 +111,7 @@ const t = zh
       <div class="playground__output">
         <div class="playground__output-head">
           <span>{t.output}</span>
-          <button type="button" class="pg-link" data-clear>{t.clear}</button>
+          <Button variant="ghost" size="xs" data-clear>{t.clear}</Button>
         </div>
         <div class="playground__log" data-log><p class="playground__empty">{t.empty}</p></div>
       </div>
@@ -154,91 +141,11 @@ const t = zh
     margin: 1.25rem 0 0.75rem;
   }
   .playground__field { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--muted-foreground); }
-  /* The example picker: a raised control opening a listbox popover. */
-  .pg-select { --menu-bg: #1d1f22; position: relative; }
-  html.light .pg-select { --menu-bg: #ffffff; }
-  .pg-select__trigger {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.6rem;
-    min-width: 13.5rem;
-    height: 40px;
-    padding: 0 0.7rem 0 0.85rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-control);
-    background: var(--finish-raised-bg);
-    box-shadow: var(--finish-raised);
-    color: var(--foreground);
-    cursor: pointer;
-    transition: border-color 140ms ease, box-shadow 140ms ease;
-  }
-  .pg-select__trigger:hover { border-color: var(--border-hover); }
-  .pg-select__trigger:focus-visible,
-  .pg-select__trigger[aria-expanded="true"] { outline: none; border-color: color-mix(in srgb, var(--citrus) 55%, var(--border)); box-shadow: var(--finish-raised), 0 0 0 2px color-mix(in srgb, var(--citrus) 35%, transparent); }
-  .pg-select__value { flex: 1; text-align: left; font: 0.8rem/1 var(--font-mono); }
-  .pg-select__chevron { flex-shrink: 0; color: var(--muted-foreground); transition: transform 160ms ease; }
-  .pg-select__trigger[aria-expanded="true"] .pg-select__chevron { transform: rotate(180deg); }
-  .pg-select__menu {
-    position: absolute;
-    z-index: 30;
-    top: calc(100% + 6px);
-    left: 0;
-    min-width: 100%;
-    max-height: min(22rem, 60vh);
-    margin: 0;
-    padding: 4px;
-    overflow-y: auto;
-    border: 0;
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--menu-bg) 82%, transparent);
-    box-shadow: var(--glass-edge), var(--shadow-panel);
-    backdrop-filter: blur(20px) saturate(1.4);
-    -webkit-backdrop-filter: blur(20px) saturate(1.4);
-    list-style: none;
-    outline: none;
-  }
-  .pg-select__menu[hidden] { display: none; }
-  .pg-select__option {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.42rem 0.6rem 0.42rem 0.45rem;
-    border-radius: 8px;
-    color: var(--muted-foreground);
-    font: 0.8rem/1.3 var(--font-mono);
-    white-space: nowrap;
-    cursor: pointer;
-    scroll-margin: 4px;
-  }
-  .pg-select__option:hover,
-  .pg-select__option[data-active] { background: var(--secondary); color: var(--foreground); }
-  .pg-select__option[aria-selected="true"] { color: var(--foreground); }
-  .pg-select__check { flex-shrink: 0; color: var(--citrus); visibility: hidden; }
-  .pg-select__option[aria-selected="true"] .pg-select__check { visibility: visible; }
+  .playground__example { width: 14rem; font-family: var(--font-mono); }
   .playground__status { min-width: 0; max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8rem; color: var(--muted-foreground); }
   .playground__status[data-kind="error"] { color: var(--destructive); }
   .playground__status[data-kind="ok"] { color: var(--success); }
   .playground__actions { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
-  .playground__toggle { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--muted-foreground); cursor: pointer; }
-  .playground__toggle input { accent-color: var(--citrus); }
-  .pg-btn {
-    height: 2rem;
-    padding: 0 0.85rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-control);
-    background: var(--finish-raised-bg);
-    box-shadow: var(--finish-raised);
-    color: var(--foreground);
-    font: inherit;
-    font-size: 0.85rem;
-    font-weight: 560;
-    cursor: pointer;
-  }
-  .pg-btn:hover { border-color: var(--border-hover); }
-  .pg-btn--primary { border-color: transparent; background: var(--finish-primary-bg); box-shadow: var(--finish-primary); color: var(--brand-contrast); }
-  .pg-btn--primary:hover { border-color: transparent; background: var(--finish-primary-hover-bg); }
-  .pg-link { border: 0; background: none; color: var(--muted-foreground); font: inherit; font-size: 0.8rem; cursor: pointer; padding: 0; }
-  .pg-link:hover { color: var(--foreground); }
   .playground__body {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;

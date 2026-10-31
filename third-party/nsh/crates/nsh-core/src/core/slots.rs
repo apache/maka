@@ -31,6 +31,16 @@
 //! The bindings of the slot's element are live, as on the component's own
 //! nodes ([`Core::bind_parts`]): their patches ([`super::views::Patch`])
 //! reach the holder and the app's element the same way.
+//!
+//! A slot a Rust view fills has no holder of JS's: when the place gives it
+//! more than itself, the component's view wraps the fill in a node of its
+//! own (`Core::reconcile_wrapper`), which is a holder as JS's are. Its
+//! target follows the fill's nodes as they are placed and released, and
+//! the placing view's own props and listeners on the fill's element are
+//! the side JS's are ([`Core::apply_target_attrs`],
+//! [`Core::target_events`]). So a component's `on_focus` on its trigger
+//! hears the focus of the element a Rust app passes as it does a TSX
+//! app's.
 
 use super::{Core, Kind, components::Instance};
 use crate::{
@@ -51,10 +61,10 @@ pub(super) struct SlotTarget {
     own: Attrs,
     /// The events the component listens to on it.
     events: EventMask,
-    /// JS's own props on `node` that combine with the component's (none on
-    /// the holder).
+    /// JS's own props on `node` (the placing view's, on a fill's element)
+    /// that combine with the component's (none on the holder).
     js: Attrs,
-    /// The events JS listens to on `node`.
+    /// The events JS (or the placing view) listens to on `node`.
     js_events: EventMask,
 }
 
@@ -120,6 +130,8 @@ pub(super) fn merged(js: &Attrs, own: &Attrs) -> Attrs {
             checked: own.state.checked.or(js.state.checked),
             busy: own.state.busy || js.state.busy,
             expanded: own.state.expanded.or(js.state.expanded),
+            pressed: own.state.pressed.or(js.state.pressed),
+            current: own.state.current.or(js.state.current),
         },
         value: own.value.clone().or_else(|| js.value.clone()),
         pointer_events: if own.pointer_events == PointerEvents::default() {
@@ -176,6 +188,7 @@ impl<M: TextEngine> Core<M> {
         if matches!(node.kind, Kind::RawText | Kind::List)
             || self.is_host(id)
             || self.components.slot_hosts.contains_key(&id)
+            || self.components.fill_holders.contains(&id)
             || self.is_render_holder(id)
         {
             return holder;
@@ -187,6 +200,74 @@ impl<M: TextEngine> Core<M> {
     pub(super) fn adopted_host(&self, id: NodeId) -> Option<NodeId> {
         let holder = self.components.adopted.get(&id)?;
         self.components.slot_targets.get(holder).map(|t| t.host)
+    }
+
+    /// A view's own attributes `new` (its last ones `old`) on its node
+    /// `id`, when it takes the props of a slot it fills (it is the one
+    /// element in the node a view wraps the fill in): they are the side
+    /// JS's are on an app's element, combined with the component's. False
+    /// when it takes none (they apply as they are).
+    pub(super) fn apply_target_attrs(&mut self, id: NodeId, new: &Attrs, old: &Attrs) -> bool {
+        if self.components.adopted.is_empty() {
+            return false;
+        }
+        let Some(target) = self
+            .components
+            .adopted
+            .get(&id)
+            .and_then(|holder| self.components.slot_targets.get_mut(holder))
+        else {
+            return false;
+        };
+        let (mut rest, side) = split(new);
+        let (mut old_rest, old_side) = split(old);
+        let before = merged(&old_side, &target.own);
+        let after = merged(&side, &target.own);
+        // Its own ref goes with the rest: the combination carries the
+        // component's.
+        target.js = Attrs {
+            element_ref: None,
+            ..side
+        };
+        rest.element_ref = new.element_ref.clone();
+        old_rest.element_ref = old.element_ref.clone();
+        self.apply_attrs(id, &rest, &old_rest);
+        self.apply_attrs(id, &after, &before);
+        true
+    }
+
+    /// The view an overlay anchored to what `id` draws
+    /// ([`crate::overlay::OverlayAnchor::Content`]) goes by: the node a
+    /// view wraps a fill in when `id` is the fill's element taking the
+    /// slot's ref, so the element's own box is what shows (the box around
+    /// its children would leave out its size and padding), else `id`.
+    pub(super) fn content_anchor(&self, id: NodeId) -> NodeId {
+        if self.components.fill_holders.is_empty() {
+            return id;
+        }
+        match self.components.adopted.get(&id) {
+            Some(&holder) if self.components.fill_holders.contains(&holder) => holder,
+            _ => id,
+        }
+    }
+
+    /// The events the component listens to on node `id` when it takes a
+    /// slot's props, its own listening to `mask` now (none when it takes
+    /// none).
+    pub(super) fn target_events(&mut self, id: NodeId, mask: EventMask) -> EventMask {
+        if self.components.adopted.is_empty() {
+            return EventMask::default();
+        }
+        let Some(target) = self
+            .components
+            .adopted
+            .get(&id)
+            .and_then(|holder| self.components.slot_targets.get_mut(holder))
+        else {
+            return EventMask::default();
+        };
+        target.js_events = mask;
+        target.events
     }
 
     /// JS's own props of app element `id` that combine with a component's,

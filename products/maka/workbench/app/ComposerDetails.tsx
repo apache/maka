@@ -31,6 +31,7 @@ import {
 import { Button } from 'nsh/base';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { createChecklist } from './Checklist';
+import { createPlanPanel } from './PlanPanel';
 import { createComputerAppControls } from './ComputerAppControls';
 import { createQueueDock } from './QueueDock';
 import { Icon } from './Icon';
@@ -38,25 +39,29 @@ import { tr } from './locale';
 import { C, captionTextStyle, controlStyle, textTooltip } from './ui';
 
 export function ComposerDetails(props: {
-  session: Pick<ComposerSession, 'checklist' | 'computerAccess' | 'queue'>;
+  session: Pick<ComposerSession, 'checklist' | 'computerAccess' | 'plan' | 'queue' | 'connected'>;
 }) {
   const session = props.session;
   const height = () => windowSize().height / 4;
   const panels = {
+    plan: createPlanPanel(session.plan),
     todo: createChecklist(session.checklist, height),
     computer: createComputerAppControls(session.computerAccess, height),
-    queue: createQueueDock(session.queue, height),
+    queue: createQueueDock(session.queue, height, session.connected),
   };
   type Panel = keyof typeof panels;
-  const keys: Panel[] = ['todo', 'computer', 'queue'];
+  const keys: Panel[] = ['plan', 'todo', 'computer', 'queue'];
   const available = computed(() => keys.filter((key) => panels[key].shown()));
   const selected = signal<Panel | null>(null);
+  const previewed = () => available().length === 1 && selected() === null;
   const labels = {
+    plan: () => tr('Plan'),
     todo: () => tr('Todo'),
     computer: () => tr('Computer access'),
     queue: () => tr('Queued messages'),
   };
   const accessibilityLabels = {
+    plan: () => tr('Toggle plan'),
     todo: () => tr('Toggle conversation todo'),
     computer: () => tr('Toggle computer access'),
     queue: () => tr('Queued messages'),
@@ -71,6 +76,13 @@ export function ComposerDetails(props: {
   effect(() => {
     const current = selected();
     if (current !== null && !panels[current].shown()) selected.set(null);
+  });
+  // A proposal waiting for approval opens the plan once; closing it is kept.
+  let attended: string | null = null;
+  effect(() => {
+    const attention = panels.plan.attention();
+    if (attention !== null && attention !== attended && panels.plan.shown()) selected.set('plan');
+    attended = attention;
   });
   return (
     <If when={available().length > 0}>
@@ -110,7 +122,15 @@ export function ComposerDetails(props: {
                   focusStyle={{ backgroundColor: C.line }}
                 >
                   <Icon
-                    name={key === 'todo' ? 'check' : key === 'computer' ? 'shield' : 'queue'}
+                    name={
+                      key === 'plan'
+                        ? 'edit'
+                        : key === 'todo'
+                          ? 'check'
+                          : key === 'computer'
+                            ? 'shield'
+                            : 'queue'
+                    }
                     color={panel.problem() ? C.warning : C.secondary}
                   />
                   <Text style={{ ...captionTextStyle, color: C.text }}>{labels[key]()}</Text>
@@ -124,7 +144,10 @@ export function ComposerDetails(props: {
               );
             }}
           </Each>
-          <Each of={available().length === 1 ? available() : []} key={(key) => key}>
+          <Each
+            of={available().length === 1 && selected() === null ? available() : []}
+            key={(key) => key}
+          >
             {(key) => (
               <Text
                 style={[
@@ -149,12 +172,13 @@ export function ComposerDetails(props: {
               style={{
                 minHeight: 0,
                 flexShrink: 1,
-                maxHeight: height(),
+                // A plan to review needs more room than a list of items.
+                maxHeight: key() === 'plan' ? windowSize().height / 2 : height(),
                 borderTopWidth: 1,
                 borderTopColor: C.line,
               }}
             >
-              {panels[key()].content()}
+              {panels[key()].content(previewed)}
             </View>
           )}
         </Each>

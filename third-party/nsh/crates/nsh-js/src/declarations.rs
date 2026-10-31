@@ -72,13 +72,17 @@ export interface StateStyleProps<S = ViewStyle> {
   /** While `accessibilityState.expanded` is `true` (`aria-expanded:`): a
    * `Popover`'s or `Menu`'s trigger while its popup is open. */
   expandedStyle?: StyleProp<S>;
+  /** While `accessibilityState.pressed` is `true` (`aria-pressed:`;
+   * `"mixed"` is not pressed): a toggle button that is on. Not
+   * `activeStyle`, a press in progress. */
+  pressedStyle?: StyleProp<S>;
 }
 
 /** iOS-only props of every element (`ios={{…}}`); elements add their own. */
-export interface IOSProps {}
+export interface IOSProps extends IOSHostProps {}
 
 /** Desktop-only props of every element (`desktop={{…}}`); elements add their own. */
-export interface DesktopProps {}
+export interface DesktopProps extends DesktopHostProps {}
 
 /** Web-only props of every element (`web={{…}}`). */
 export interface WebProps {}
@@ -429,7 +433,7 @@ fn bodies(ui_sets: &[SetDescription]) -> Vec<(String, String)> {
         }
         files.push((path_of(m.name), body));
     }
-    // The registries that are modules of their own (`nsh/base`, `nsh/image`).
+    // The registries that are modules of their own (`nsh/base`, `os`).
     for registry in registries {
         let Some(specifier) = registry.specifier() else {
             continue;
@@ -654,6 +658,52 @@ fn relative(from: &str, to: &str) -> String {
     path.trim_end_matches(".d.ts").to_owned()
 }
 
+/// The types TypeScript declares itself, which a body naming them means:
+/// an import of a module's name would shadow them in that file.
+const TS_GLOBALS: &[&str] = &[
+    "Array",
+    "ArrayBuffer",
+    "ArrayLike",
+    "Awaited",
+    "Capitalize",
+    "ConstructorParameters",
+    "Date",
+    "Error",
+    "Exclude",
+    "Extract",
+    "Function",
+    "InstanceType",
+    "Iterable",
+    "IterableIterator",
+    "Lowercase",
+    "Map",
+    "NoInfer",
+    "NonNullable",
+    "Omit",
+    "OmitThisParameter",
+    "Parameters",
+    "Partial",
+    "Pick",
+    "Promise",
+    "PromiseLike",
+    "Readonly",
+    "ReadonlyArray",
+    "ReadonlyMap",
+    "ReadonlySet",
+    "Record",
+    "RegExp",
+    "Required",
+    "ReturnType",
+    "Set",
+    "ThisParameterType",
+    "ThisType",
+    "Uint8Array",
+    "Uncapitalize",
+    "Uppercase",
+    "WeakMap",
+    "WeakSet",
+];
+
 /// The files of `.nsh/types` for apps whose hosts serve `ui_sets`
 /// (`nsh/base`, an app's own, as data: their declarations come with
 /// them), as (path relative to it, contents): one per
@@ -675,7 +725,9 @@ pub fn type_definitions(ui_sets: &[SetDescription]) -> Vec<(String, String)> {
             let (used, local) = references(body);
             let mut imports: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
             for name in &used {
-                if local.contains(name) {
+                // TypeScript's own (`Pick<T, K>`): never another module's
+                // name, whatever it exports.
+                if local.contains(name) || TS_GLOBALS.contains(&name.as_str()) {
                     continue;
                 }
                 if let Some(&from) = owner.get(name)
@@ -948,7 +1000,7 @@ declare const text: "export default ignored";
 
     #[test]
     fn paths_are_relative() {
-        assert_eq!(relative("nsh/list.d.ts", "nsh/types.d.ts"), "./types");
+        assert_eq!(relative("nsh/base.d.ts", "nsh/types.d.ts"), "./types");
         assert_eq!(relative("nsh/acme/ui.d.ts", "nsh/types.d.ts"), "../types");
         assert_eq!(relative("nsh/types.d.ts", "nsh/acme/ui.d.ts"), "./acme/ui");
     }
@@ -966,6 +1018,56 @@ declare const text: "export default ignored";
         assert!(!used.contains(&"Baz".to_owned()));
         assert!(!used.contains(&"Foo".to_owned()));
         assert!(local.contains(&"Bar".to_owned()));
+    }
+
+    /// Every host element's props reach an element or a component: a
+    /// group of them declared but in no element's props (`IOSProps` once
+    /// was `{}`, so `ios={{ anything }}` type-checked) is a typo nobody is
+    /// told of.
+    #[test]
+    fn every_host_props_interface_is_used() {
+        let files = bodies(&[nsh_base::registry().into()]);
+        let all: String = files.iter().map(|(_, body)| body.as_str()).collect();
+        let mut unused = Vec::new();
+        for line in all.lines() {
+            let Some(rest) = line.strip_prefix("export interface ") else {
+                continue;
+            };
+            let name: String = rest.chars().take_while(|c| is_ident(*c)).collect();
+            if !name.ends_with("HostProps") {
+                continue;
+            }
+            let uses = all
+                .match_indices(name.as_str())
+                .filter(|(at, _)| {
+                    let before = all[..*at].chars().next_back();
+                    let after = all[at + name.len()..].chars().next();
+                    !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
+                })
+                .count();
+            // Its declaration, and at least one use.
+            if uses < 2 {
+                unused.push(name);
+            }
+        }
+        assert!(unused.is_empty(), "declared but used nowhere: {unused:?}");
+        assert!(all.contains("export interface IOSProps extends IOSHostProps {}"));
+        assert!(all.contains("export interface DesktopProps extends DesktopHostProps {}"));
+    }
+
+    /// No module exports a name TypeScript declares itself (`Pick`): an
+    /// app importing it would lose TypeScript's in that file.
+    #[test]
+    fn no_module_exports_a_typescript_global() {
+        let files = bodies(&[nsh_base::registry().into()]);
+        for (path, body) in &files {
+            for name in exported_names(body) {
+                assert!(
+                    !TS_GLOBALS.contains(&name.as_str()),
+                    "{path} exports `{name}`, TypeScript's own"
+                );
+            }
+        }
     }
 
     /// A name a file imports is declared in one file only.

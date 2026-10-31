@@ -1,7 +1,6 @@
 ---
 title: Checkbox
 description: "The Checkbox component: a checked, unchecked or indeterminate control that owns presses, keyboard activation, the disabled state and its role and value for screen readers, with an indicator the app styles and marks."
-order: 20.25
 group: base
 demo: el-checkbox
 ---

@@ -40,6 +40,7 @@ import {
   controlHoverStyle,
   controlFocusStyle,
   controlDisabledStyle,
+  toolbarControlStyle,
 } from './ui';
 
 const accessChoices: AgentWorkspaceAccess[] = [
@@ -85,7 +86,7 @@ export function SessionPermissionsSelect(props: {
           disabled
           accessibilityLabel={tr('Sandbox and approvals')}
           tooltip={textTooltip(() => tr('Choose a conversation to change sandbox settings.'))}
-          style={controlStyle}
+          style={toolbarControlStyle}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Sandbox')}</Text>
@@ -204,7 +205,7 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
           )}
           onPress={inputAction(changeOpen, !open())}
           style={{
-            ...controlStyle,
+            ...toolbarControlStyle,
             minWidth: 0,
             flexDirection: 'row',
             alignItems: 'center',
@@ -215,7 +216,10 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
           disabledStyle={controlDisabledStyle}
         >
           <Text
-            style={[{ ...captionTextStyle, color: C.muted, flexShrink: 1 }, { numberOfLines: 1 }]}
+            style={[
+              { ...captionTextStyle, color: C.secondary, flexShrink: 1 },
+              { numberOfLines: 1 },
+            ]}
           >
             {label()}
           </Text>

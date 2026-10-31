@@ -16,7 +16,7 @@ test("the watchlist ticks, filters and opens a stock that places an order", asyn
   // The clock moves a market second per tick.
   const before = clocks(app);
   expect(before).toHaveLength(1);
-  await app.clock.runFor(500);
+  await app.clock!.runFor(500);
   expect(clocks(app)).not.toEqual(before);
 
   // The strip opens breadth and the sectors.
@@ -50,7 +50,7 @@ test("the watchlist ticks, filters and opens a stock that places an order", asyn
     await app.waitFor(text);
   }
   const quoted = clocks(app);
-  await app.clock.runFor(500);
+  await app.clock!.runFor(500);
   expect(clocks(app)).not.toEqual(quoted);
 
   // Ten levels, still ticking.
@@ -59,7 +59,7 @@ test("the watchlist ticks, filters and opens a stock that places an order", asyn
   expect(app.texts()).toContain("A10");
   expect(app.texts()).toContain("B10");
   const deeper = clocks(app);
-  await app.clock.runFor(500);
+  await app.clock!.runFor(500);
   expect(clocks(app)).not.toEqual(deeper);
 
   // The ticket: review and place a sell order.

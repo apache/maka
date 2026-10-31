@@ -86,6 +86,7 @@ define_class!(
                     EventKind::Error,
                     EventPayload::Map(vec![
                         ("message", PayloadValue::Str(format!("navigation to {url} is not granted"))),
+                        ("code", PayloadValue::Str(nsh_core::element::codes::ACCESS_DENIED.into())),
                         ("url", PayloadValue::Str(url)),
                     ]),
                 );

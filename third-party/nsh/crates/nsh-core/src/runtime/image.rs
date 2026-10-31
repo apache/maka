@@ -1,9 +1,15 @@
-//! `nsh/image`: image information and loading ahead, the functions of
-//! `Image` (`nsh-js` makes it the image element's component).
+//! Image information and loading ahead, the functions of `nsh`'s `Image`
+//! (`nsh-js` makes it the image element's component). A URL the
+//! app's `network` capability does not grant rejects with
+//! `ERR_ACCESS_DENIED` (checked here, in the call, as the core checks the
+//! loads of Rust components' calls).
 
 use crate::{
     ImageScales, ImageSource,
-    element::{ImageSize, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes, module},
+    element::{
+        ImageSize, JsError, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, System, TsTypes,
+        module,
+    },
     geometry::DevicePixels,
 };
 
@@ -100,10 +106,15 @@ impl Image {
     /// show it next. An imported image with variants loads the variant the
     /// views load and resolves with the imported file's size. Without
     /// dimensions, it falls back to the variant's pixels over its scale.
-    pub(crate) async fn get_size(src: ImageUrl) -> Result<ImageSize, String> {
+    /// Rejects when the image cannot load, with `ERR_ACCESS_DENIED` when
+    /// the `network` capability does not grant its URL.
+    pub(crate) async fn get_size(src: ImageUrl, sys: System) -> Result<ImageSize, JsError> {
         let imported_size = src.size;
         let (url, scale) = src.pick();
-        let size = crate::prelude::image_size(url).await?;
+        granted(&sys, &url)?;
+        let size = crate::prelude::image_size(url)
+            .await
+            .map_err(JsError::Error)?;
         if let Some(size) = imported_size {
             return Ok(size);
         }
@@ -115,10 +126,30 @@ impl Image {
     }
 
     /// Loads the image ahead of showing it: resolves once its bytes are in
-    /// memory, rejects with the error when it cannot load. An imported
-    /// image with variants loads the variant the views load at the
-    /// screen's pixel ratio.
-    pub(crate) async fn prefetch(src: ImageUrl) -> Result<(), String> {
-        crate::prelude::prefetch_image(src.pick().0).await
+    /// memory, rejects with the error when it cannot load
+    /// (`ERR_ACCESS_DENIED` when the `network` capability does not grant
+    /// its URL). An imported image with variants loads the variant the
+    /// views load at the screen's pixel ratio.
+    pub(crate) async fn prefetch(src: ImageUrl, sys: System) -> Result<(), JsError> {
+        let url = src.pick().0;
+        granted(&sys, &url)?;
+        crate::prelude::prefetch_image(url)
+            .await
+            .map_err(JsError::Error)
     }
+}
+
+/// Whether the app may load the image at `url`: why not when it may not.
+fn granted(sys: &System, url: &str) -> Result<(), JsError> {
+    if sys.access.allows_media(url) {
+        return Ok(());
+    }
+    let host = crate::access::parse_url(url).map_or_else(|| url.to_owned(), |u| u.host);
+    Err(JsError::access_denied(
+        format!(
+            "Image.getSize / prefetch of {url} is not granted: add `{host}` to capabilities.network in nsh.json"
+        ),
+        "network",
+        url,
+    ))
 }

@@ -80,7 +80,7 @@
 
   try {
     let host;
-    const [loaded, code, harden, hostModule, preloadedChunks] = await Promise.all([
+    const [loaded, hostModule] = await Promise.all([
       createPlayer(document.getElementById("app"), {
         wasm: take(app.wasm),
         glue: app.glue,
@@ -95,18 +95,10 @@
           if (!player || player.views.size <= 1) fail("This app could not start.", message);
         },
       }),
-      app.rust || app.browser ? null : get(app.code).then((r) => r.arrayBuffer()),
-      app.rust || app.browser ? null : get(app.harden).then((r) => r.arrayBuffer()),
       app.host ? import(`./${app.host}`) : null,
-      Promise.all((app.browser ? [] : app.entryChunks ?? []).map(async (id) => {
-        const [bytes] = await Promise.all([
-          get(app.chunks[id]).then((r) => r.arrayBuffer()),
-          Promise.all((app.chunkFonts[id] ?? []).map(loadFont)),
-        ]);
-        return [id, bytes];
-      })).then(Object.fromEntries),
       ...app.fonts.map(loadFont),
-      ...(app.browser ? (app.entryChunks ?? []).flatMap(id => (app.chunkFonts[id] ?? []).map(loadFont)) : []),
+      // The fonts of the chunks the entry imports statically.
+      ...(app.entryChunks ?? []).flatMap(id => (app.chunkFonts[id] ?? []).map(loadFont)),
     ]);
     player = loaded;
     if (hostModule) {
@@ -115,8 +107,7 @@
     }
     status.hidden = true;
     if (app.rust) player.runRust();
-    else if (app.browser) await player.runModule(app.code, { capabilities: app.capabilities ?? "", appId: app.id ?? "", chunks: app.chunks });
-    else player.run(code, { release: true, harden, capabilities: app.capabilities ?? "", appId: app.id ?? "", chunks: app.chunks, preloadedChunks });
+    else await player.runModule(app.code, { capabilities: app.capabilities ?? "", appId: app.id ?? "", chunks: app.chunks });
   } catch (err) {
     fail("This app could not be loaded.", String(err?.message ?? err));
   }

@@ -2,7 +2,9 @@
 //! URL, capabilities and quotas before asking the platform to connect.
 //! Each task belongs to its calling engine; dropping it cancels the socket
 //! and prevents further events. Browser implementations use the page's
-//! WebSocket API without changing the app's JavaScript classes.
+//! WebSocket API without changing the app's JavaScript classes. The
+//! `websocket` module pauses a task while the app's unread messages fill
+//! their queue ([`WebSocketTask::pause`]) and resumes it as the app reads.
 
 /// A text or binary WebSocket message.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,6 +76,12 @@ pub trait WebSocketTask: 'static {
     fn close(&mut self, code: u16, reason: &str) -> Result<(), String>;
     /// Bytes the host still has queued for sending.
     fn buffered_amount(&self) -> usize;
+    /// Stops (`true`) or resumes (`false`) delivering messages: the app's
+    /// unread messages fill their queue (back pressure). A transport that
+    /// can stop reading from the network does, so the peer is held back;
+    /// one that cannot keeps the messages until it resumes. Messages already
+    /// on their way may still arrive; the caller bounds what it keeps.
+    fn pause(&mut self, paused: bool);
 }
 
 /// A platform's WebSocket stack. The factory is shareable, while each

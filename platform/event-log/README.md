@@ -21,6 +21,32 @@
 
 [简体中文](README.zh-CN.md)
 
+History-only checkpoints use `RootStore::history_checkpoints` and the types in
+[`checkpoints`](src/checkpoints.rs). A native Bundle and versioned manifest are
+verified and durably stored under the private Root before a separate checkpoint
+Head is created or conditionally advanced. Head and publication receipt commit
+in the Session's partition transaction; the Host operation journal can be in a
+different partition and must resolve that receipt before settling an unknown
+response. Live Session revisions and daily persistence are unchanged.
+
+The original operation binds its inputs and prepared bytes. Startup interrupts
+unfinished capture and resumes prepared publication without recapturing newer
+history. Rejected prepare transactions interrupt capture without a restart;
+uncertain commits preserve any already prepared material. Invalid prepared
+objects become an explicit unavailable receipt;
+temporary-file cleanup remains separate from business success. Physical workers
+retain Root custody after observer cancellation. Only the current retained
+checkpoint revision is readable: exact lookup never substitutes the latest.
+Historical success receipts do not grant access to superseded revisions.
+
+This internal facility currently requires Unix file/directory durability;
+unsupported platforms reject publication before claiming an operation. It has no
+automatic trigger, wire endpoint, workspace file snapshot, execution grant or
+restore/activation path. The format is native history, not the legacy TS
+compatibility bundle. Immutable objects are conservatively retained; only owned
+temporary files are cleaned. Storage usage is therefore not automatically bounded,
+and object retention/GC remains separate work.
+
 Stores initialize through the current SQL migrations. Unsupported internal layouts and record formats are rejected. Canonical facts and their acceptance, ownership, recovery and budget indexes share the original transaction. Transcript and Recall read models belong to the disposable observation cache.
 
 Owns the SQLite event store and State Root lease. It persists application sources and packages, operation receipts, sessions, turns and recovery records. Start with `root` for exclusive ownership, `applications` for committed compositions, and `recovery` for interrupted work. Opening a Root establishes the durable owner before services activate; plugins keep their own policy while this crate records canonical facts.

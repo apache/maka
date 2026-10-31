@@ -19,6 +19,7 @@
 
 import {
   createText,
+  createTransientText,
   UiError,
   errorText,
   type UiText,
@@ -64,6 +65,7 @@ import {
   Header,
   captionTextStyle,
   controlStyle,
+  toolbarControlStyle,
   type BrowserHeader,
 } from '../../../../products/maka/workbench/app/ui';
 import {
@@ -99,6 +101,7 @@ import { MessageEdit, TurnRetry } from '../../../../products/maka/workbench/app/
 import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
+import { createSessionPlan } from '../../../../products/maka/workbench/app/sessionPlan';
 import {
   TurnPanel,
   TurnSummary,
@@ -223,6 +226,7 @@ type ConversationProps = {
     available: boolean,
   ): { text: string; send: boolean; files?: StagedFile[]; first?: boolean } | null;
   commands(): void;
+  connectionLost(): boolean;
   visible(): boolean;
   foreground(): boolean;
   browser(): BrowserHeader;
@@ -271,14 +275,14 @@ function receiptMessage(reply: any): UiText {
   );
 }
 
-// Rows share the composer's column: at most 800 wide, centered, with room for
-// the scroll bar on the right.
+// Rows share the composer's column: at most 800 wide, centered. The terminal's
+// scroll bar takes a cell of the right margin.
 const readingColumn = {
   width: '100%',
   maxWidth: 800,
   alignSelf: 'center',
   paddingLeft: 16,
-  paddingRight: 24,
+  paddingRight: platform.isTerminal ? 24 : 16,
 } as const;
 
 export function Conversation(props: ConversationProps) {
@@ -321,6 +325,7 @@ export function Conversation(props: ConversationProps) {
   const stopping = () => invocation() !== null && stoppingRun() === invocation();
   const workspace = signal('');
   const permissions = createSessionPermissions(host, sessionId, props.control);
+  const plan = createSessionPlan(host, sessionId, props.control, permissions, () => selection());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
   const runTurn = signal<string | null>(null);
   const backend = signal<any>(null);
@@ -364,7 +369,7 @@ export function Conversation(props: ConversationProps) {
   const unresolved = signal<any[]>([]);
   const receiptsKnown = signal(false);
   const recovering = signal(false);
-  const notice = createText();
+  const notice = createTransientText();
   const reading = signal<'chat' | 'trajectory'>('chat');
   // In the Bot Session, Chat shows what the Bot told the user (SendUser); its own
   // replies and steps stay in Trajectory.
@@ -2024,10 +2029,11 @@ export function Conversation(props: ConversationProps) {
       return;
     void send(text, expectedBackend);
   };
+  const connected = () => transcriptStatus() === 'live' && !props.connectionLost();
   const queueSession: ComposerQueue = {
     sessionId,
     snapshot: queued,
-    running: () => invocation() !== null && !stopping(),
+    running: () => connected() && invocation() !== null && !stopping(),
     async read(messageId, expectedRevision) {
       if (!alive) throw new UiError('This conversation is closed.');
       return host.query('agent', 'queueMessage', { sessionId, messageId, expectedRevision });
@@ -2057,6 +2063,7 @@ export function Conversation(props: ConversationProps) {
     modelDetails,
     refreshModel,
     permissions,
+    plan,
     projectMcp,
     workspace,
     empty: () =>
@@ -2067,9 +2074,10 @@ export function Conversation(props: ConversationProps) {
       pendingMessages().length === 0 &&
       (queued()?.entries.length ?? 0) === 0 &&
       toolActivity().length === 0,
-    error,
-    notice,
-    recoverable: () => !sending() && draftReady() && (!receiptsKnown() || unresolved().length > 0),
+    connected,
+    error: () => (connected() ? error() : ''),
+    notice: () => (connected() ? notice() : ''),
+    recoverable: () => connected() && !sending() && draftReady() && unresolved().length > 0,
     recovering: () => recovering() || sending(),
     unconfirmed: () =>
       unresolved()
@@ -2080,6 +2088,15 @@ export function Conversation(props: ConversationProps) {
     resuming: confirmingContinuation,
     resume,
     metrics: () => metricText(metrics()),
+    contextUsage: () => {
+      const value = metrics();
+      if (!value?.contextTokens || !value.contextWindow) return null;
+      return {
+        tokens: value.contextTokens,
+        window: value.contextWindow,
+        approximate: value.approximate || value.contextLastKnown,
+      };
+    },
     changeDraft,
     submit(event) {
       const value = resumable();
@@ -2482,22 +2499,29 @@ export function Conversation(props: ConversationProps) {
         files={props.files}
         filesOpener={props.filesOpener}
       />
-      <If when={transcriptStatus() === 'failed'}>
-        <Button
-          accessibilityLabel={ready() ? tr('Reconnect updates') : tr('Retry loading conversation')}
-          onPress={inputAction(retryTranscript, sessionId)}
+      <If when={transcriptStatus() === 'failed' && !props.connectionLost()}>
+        <View
           style={{
-            ...controlStyle,
-            alignSelf: 'flex-start',
-            backgroundColor: C.raised,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            paddingHorizontal: 16,
+            paddingVertical: 8,
+            borderBottomWidth: 1,
+            borderBottomColor: C.line,
           }}
-          hoverStyle={{ backgroundColor: C.surface }}
-          focusStyle={{ backgroundColor: C.line }}
         >
-          <Text style={{ ...captionTextStyle, color: C.accent }}>
-            {ready() ? tr('Reconnect updates') : tr('Retry loading conversation')}
+          <Text style={{ ...captionTextStyle, color: C.muted, flex: 1 }}>
+            {tr('Reconnecting updates… Your draft is kept.')}
           </Text>
-        </Button>
+          <Button
+            accessibilityLabel={tr('Reconnect updates')}
+            onPress={inputAction(retryTranscript, sessionId)}
+            style={controlStyle}
+          >
+            <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+          </Button>
+        </View>
       </If>
       <View
         style={{
@@ -2515,7 +2539,7 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Chat')}
           selected={reading() === 'chat'}
-          style={controlStyle}
+          style={toolbarControlStyle}
           onPress={inputAction(chooseReading, { owner: sessionId, mode: 'chat' })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
@@ -2534,7 +2558,7 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Trajectory')}
           selected={reading() === 'trajectory'}
-          style={controlStyle}
+          style={toolbarControlStyle}
           onPress={inputAction(chooseReading, { owner: sessionId, mode: 'trajectory' })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}

@@ -1,10 +1,11 @@
 // The Toast demo on a phone (headless runs are touch screens):
 // the gallery's `toast()` (`toast.tsx`, on `nsh/base`'s `ToastManager`,
 // `ToastStack` and `Toast`) from a button, shown by its `Toaster`; they
-// close by themselves, by their action, by back (the stack's `onCancel`),
-// and by `dismissToast`; a swipe takes one away (the toast's
-// `onDismissRequest`). Then on a desktop: the pointer on the stack expands
-// it and stops the time.
+// close by themselves, by their action, by their close button, by back
+// (the stack's `onCancel`) and by `dismissToast`; a swipe takes one away
+// (the toast's `onDismissRequest`); `updateToast` turns a loading toast
+// into its result in place. Then on a desktop: the pointer on the stack
+// expands it and stops the time.
 import { beforeEach, expect, open, test } from "nsh/test";
 import type { App } from "nsh/test";
 
@@ -26,22 +27,24 @@ test("a toast shows, then closes when its time runs out", async () => {
   expect(app.texts()).not.toContain("Copied");
 });
 
-test("its action closes it and answers its show", async () => {
-  await app.press("Delete the draft");
-  await app.waitFor("Draft deleted");
+test("an undo restores what was archived, and answers its show", async () => {
+  await app.press("label:Archive Lunch on Friday?");
+  await app.waitFor("Conversation archived");
+  await app.waitFor("label:Archive Lunch on Friday?", { state: "gone" });
   await app.press("Undo");
   // Its exit's time (the gallery's 200 ms) on the test's clock.
   await app.wait(300);
-  await app.waitFor("toast: undone");
-  expect(app.texts()).not.toContain("Draft deleted");
+  await app.waitFor("archive Lunch on Friday?: undone");
+  await app.waitFor("label:Archive Lunch on Friday?");
+  expect(app.texts()).not.toContain("Conversation archived");
 });
 
 test("its close button, back and dismissToast close toasts", async () => {
-  await app.press("Delete the draft");
-  await app.waitFor("Draft deleted");
-  await app.press("×");
+  await app.press("label:Archive Invoice for October");
+  await app.waitFor("Conversation archived");
+  await app.press("label:Dismiss");
   await app.wait(300);
-  await app.waitFor("toast: gone");
+  await app.waitFor("archive Invoice for October: kept");
   await app.press("Copy the link");
   await app.waitFor("Copied");
   await app.back();
@@ -71,6 +74,43 @@ test("a swipe takes a toast away", async () => {
   await app.drag("Copied", { x: 120, y: 0 });
   await app.wait(300);
   expect(app.texts()).not.toContain("Copied");
+});
+
+test("an error's retry becomes a loading toast, then its result", async () => {
+  await app.press("Send a message");
+  await app.waitFor("Couldn't send the message");
+  await app.press("role:button[Retry]");
+  // The error leaves (its exit transition on the test's clock), then the
+  // loading toast takes its place.
+  await app.wait(600);
+  await app.waitFor("error toast: Retry");
+  await app.waitFor("Sending…");
+  await app.wait(1300);
+  await app.waitFor("Message sent");
+});
+
+test("a loading toast counts its progress, then becomes its result in place", async () => {
+  await app.press("Upload 3 photos");
+  await app.waitFor("0 of 3");
+  await app.wait(750);
+  await app.waitFor("1 of 3");
+  await app.wait(1700);
+  await app.waitFor("3 photos uploaded");
+  // Its new time: 4 s, then gone.
+  await app.wait(4500);
+  expect(app.texts()).not.toContain("3 photos uploaded");
+});
+
+test("a failed upload offers a retry, which starts it again", async () => {
+  await app.press("role:switch[Fail the last one]");
+  await app.press("Upload 3 photos");
+  await app.wait(2200);
+  await app.waitFor("Upload failed");
+  await app.waitFor("2 of 3 uploaded");
+  await app.press("Retry");
+  await app.wait(300);
+  await app.waitFor("upload toast: Retry");
+  await app.waitFor("0 of 3");
 });
 
 test("on a desktop, the pointer on a toast stops its time", async () => {

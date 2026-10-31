@@ -34,7 +34,7 @@ import {
   List,
   platform,
 } from 'nsh';
-import type { ListRef, ViewRef } from 'nsh';
+import type { ListRef, Signal, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import logo from './assets/maka.png';
 import { keymap } from 'nsh';
@@ -50,6 +50,7 @@ import {
 import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
+import { groupConversations, type ConversationGroup } from './conversationGroups';
 import {
   hasForkPrefix,
   sessionActionTarget,
@@ -61,6 +62,7 @@ import { controlsLeft, ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrom
 
 export type WorkspaceBrowserProps = {
   docked(): boolean;
+  connectionLost(): boolean;
   browsing: Browsing;
   selected(): string | null;
   switching(): boolean;
@@ -84,17 +86,17 @@ export type WorkspaceBrowserProps = {
   changeSession(action: SessionAction, expectedSessionId: string | null): Promise<void>;
   /** Whether a conversation can open in a pane beside the current one. */
   canOpenBeside?(): boolean;
-  /** The conversation open beside the selected one, marked like a selected row. */
-  beside?(): string | null;
+  /** The conversations open beside the selected one, marked like a selected row. */
+  beside?(): readonly string[];
   openBeside?(sessionId: string): void;
+  /**
+   * The keys of the collapsed workspace groups, kept by the owner, whose
+   * next and previous conversation skip them.
+   */
+  collapsedGroups?: Signal<ReadonlySet<string>>;
 };
 
-type WorkspaceGroup = {
-  key: string;
-  name: string;
-  project: BrowserProject | null;
-  sessions: string[];
-};
+type WorkspaceGroup = ConversationGroup<BrowserProject> & { name: string };
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const titleBarRow = () => ownTitleBar && props.docked();
@@ -162,42 +164,18 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   // The desktop lists conversations under their workspaces instead of
   // choosing a scope: pinned ones first, then each workspace in the order of
   // its latest loaded conversation, then active projects with none loaded.
-  const collapsed = signal<ReadonlySet<string>>(new Set());
-  const groups = computed(() => {
-    const projects = new Map(browser.projects().map((project) => [project.reference.id, project]));
-    const byKey = new Map<string, WorkspaceGroup>();
-    const add = (key: string, name: string, project: BrowserProject | null) => {
-      const group = { key, name, project, sessions: [] };
-      byKey.set(key, group);
-      return group;
-    };
-    for (const session of visibleSessions()) {
-      const projectId = session.workspace.projectId;
-      const key = session.pinned
-        ? 'pinned'
-        : projectId
-          ? `project:${projectId}`
-          : `path:${session.workspace.path}`;
-      const project = (projectId && projects.get(projectId)) || null;
-      const group =
-        byKey.get(key) ??
-        add(
-          key,
-          session.pinned
-            ? tr('Pinned')
-            : (project?.name ??
-                (session.workspace.path.split('/').filter(Boolean).at(-1) ||
-                  session.workspace.path)),
-          session.pinned ? null : project,
-        );
-      group.sessions.push(session.id);
-    }
-    if (browser.filter() === 'all')
-      for (const project of projects.values())
-        if (!project.archived && !byKey.has(`project:${project.reference.id}`))
-          add(`project:${project.reference.id}`, project.name, project);
-    return [...byKey.values()];
-  });
+  const collapsed = props.collapsedGroups ?? signal<ReadonlySet<string>>(new Set());
+  const groups = computed(() =>
+    groupConversations(visibleSessions(), browser.projects(), browser.filter() === 'all').map(
+      (group): WorkspaceGroup => ({
+        ...group,
+        name: group.pinned
+          ? tr('Pinned')
+          : (group.project?.name ?? (group.path!.split('/').filter(Boolean).at(-1) || group.path!)),
+      }),
+    ),
+  );
+  const nestedRows = computed(() => new Set(groups().flatMap((group) => [...group.nested])));
   const groupsById = computed(
     () => new Map(groups().map((group) => [`group:${group.key}`, group])),
   );
@@ -356,11 +334,16 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         desktop={titleBarRow() ? windowDrag : undefined}
         style={{
           height: titleBarRow() ? TITLE_BAR_HEIGHT : compact() ? 32 : 40,
-          // 8 points past the window controls, inside the browser's 12.
-          paddingLeft: titleBarRow() ? Math.max(0, controlsLeft(true) - 4) : 0,
+          // 8 points past the window controls, inside the browser's 12. Away from
+          // them the logo centers on the rows' icons and Maka starts at their labels.
+          paddingLeft: platform.isTerminal
+            ? 0
+            : titleBarRow()
+              ? Math.max(4, controlsLeft(true) - 4)
+              : 4,
           flexDirection: 'row',
           alignItems: 'center',
-          gap: 8,
+          gap: platform.isTerminal ? 8 : 4,
         }}
       >
         <Image src={logo} style={[{ width: 24, height: 24 }, { objectFit: 'contain' }]} />
@@ -638,7 +621,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         minWidth: 0,
                         flexDirection: 'row',
                         alignItems: 'center',
-                        gap: 4,
+                        gap: platform.isTerminal ? 4 : 8,
                         paddingHorizontal: 8,
                         borderRadius: 8,
                       }}
@@ -710,14 +693,22 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               // the selected row, while the pointer is on the row, or while its
               // menu is open.
               const hovered = signal(false);
+              // The conversation that created this one, when the list shows it
+              // elsewhere rather than just above (the row has no room to say).
+              const creator = () => {
+                const parent = session()?.parentSessionId;
+                return parent && !nestedRows().has(key()) ? sessionsById().get(parent) : undefined;
+              };
               // The desktop names the workspace only where the group does not.
               const desktopCaption = () => {
                 const current = session();
                 if (!current) return '';
                 return [
-                  current.activity === 'working' || current.activity === 'waiting'
-                    ? sessionStatusCaption[current.activity]
-                    : '',
+                  props.connectionLost() || browser.error()
+                    ? ''
+                    : current.activity === 'working' || current.activity === 'waiting'
+                      ? sessionStatusCaption[current.activity]
+                      : '',
                   current.branch && !hasForkPrefix(current.title) ? tr('Fork') : '',
                   current.pinned
                     ? current.workspace.path.split('/').filter(Boolean).at(-1) ||
@@ -766,6 +757,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       flexDirection: 'row',
                       height: rowHeight(),
                       paddingVertical: compact() ? 0 : 2,
+                      // Under the conversation that created it.
+                      paddingLeft: !platform.isTerminal && nestedRows().has(key()) ? 16 : 0,
                     }}
                   >
                     <View
@@ -781,7 +774,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                           : {
                               backgroundColor:
                                 props.selected() === key() ||
-                                props.beside?.() === key() ||
+                                props.beside?.().includes(key()) ||
                                 hovered()
                                   ? C.line
                                   : C.surface,
@@ -794,13 +787,24 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         })}
                         disabled={props.switching() || !session()}
                         selected={props.selected() === key()}
+                        tooltip={
+                          platform.isTerminal
+                            ? undefined
+                            : textTooltip(() =>
+                                creator()
+                                  ? tr('From {title}', {
+                                      title: creator()!.title || tr('Untitled conversation'),
+                                    })
+                                  : undefined,
+                              )
+                        }
                         onPress={inputAction(select, { id: key(), origin: props.selected() })}
                         style={{
                           flex: 1,
                           minWidth: 0,
                           paddingHorizontal: 8,
                           // Under its workspace, past the workspace's disclosure icon.
-                          paddingLeft: platform.isTerminal ? 8 : 28,
+                          paddingLeft: platform.isTerminal ? 8 : 32,
                           justifyContent: 'center',
                           borderRadius: 8,
                           backgroundColor: platform.isTerminal
@@ -853,11 +857,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                               { numberOfLines: 1 },
                             ]}
                           >
-                            {session()?.activity === 'working'
-                              ? `${sessionStatusCaption.working} · `
-                              : session()?.activity === 'waiting'
-                                ? `${sessionStatusCaption.waiting} · `
-                                : ''}
+                            {props.connectionLost() || browser.error()
+                              ? ''
+                              : session()?.activity === 'working'
+                                ? `${sessionStatusCaption.working} · `
+                                : session()?.activity === 'waiting'
+                                  ? `${sessionStatusCaption.waiting} · `
+                                  : ''}
                             {/* Forks renamed or titled before the prefix still read as forks. */}
                             {session()?.branch && !hasForkPrefix(session()!.title)
                               ? `${tr('Fork')} · `
@@ -928,7 +934,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           </Button>
         </If>
       </If>
-      <If when={browser.error() || browser.projectError()}>
+      <If when={!props.connectionLost() && (browser.error() || browser.projectError())}>
         <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
           {browser.error() || browser.projectError()}
         </Text>
@@ -1008,7 +1014,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               notice={(message) => navigationNotice.set({ kind: 'action', message })}
               change={(action) => props.changeSession(action, target.origin)}
               openBeside={
-                props.canOpenBeside?.() && target.session.id !== props.selected()
+                props.canOpenBeside?.() &&
+                target.session.id !== props.selected() &&
+                !props.beside?.().includes(target.session.id)
                   ? () => props.openBeside?.(target.session.id)
                   : undefined
               }

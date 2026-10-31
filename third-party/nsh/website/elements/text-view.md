@@ -1,7 +1,6 @@
 ---
 title: TextView
 description: "The TextView component: Markdown, HTML or a document of blocks shown with native text and views, styled part by part, for AI chat replies, articles and help pages."
-order: 26
 group: base
 demo: text-view
 ---

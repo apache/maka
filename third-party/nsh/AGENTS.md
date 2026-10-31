@@ -4,8 +4,9 @@ Native Shell (NSH for short in prose; crates, the CLI, the JS module and Java pa
 AI-generated, dynamically delivered native UI: native apps embed it (`NshAppView` on iOS, `NshView` on Android,
 `AppView` on macOS, Windows and Linux) and load TSX modules at run time — signed, sandboxed by the host, rendered with
 each platform's own UI. Embedding comes first; plugins for native apps and standalone apps use the same machinery.
-Module code runs in QuickJS on a native runtime (the reactive graph, the renderer and every module apps import are
-Rust); layout uses Taffy; embedding native components such as maps or web views has no layering problems. The
+Module code runs in QuickJS (on the web, the browser's own JavaScript engine) on a native runtime (the reactive graph,
+the renderer and every module apps import are Rust); layout uses Taffy; embedding native components such as maps or
+web views has no layering problems. The
 toolchain is pure Rust and does not need Node.js; app developers get a prebuilt distribution (`cargo xtask dist`) and
 never need Rust either. Every platform has a native backend: iOS with UIKit views (`nsh-platform-ios`), Android with
 Android views (`nsh-platform-android`), macOS with AppKit views (`nsh-platform-macos`), Windows in Win32 windows drawn
@@ -49,7 +50,7 @@ crates/
                        the standard modules among them (`runtime/fs.rs`: `fs/promises`, `runtime/process.rs`, `runtime/net.rs`,
                        `runtime/websocket.rs`, `runtime/os.rs`) on the `System` their calls get (capabilities, data directory, quotas, per-VM state)
   nsh-base/            `nsh/base`, NSH's `gpui-base`: unstyled base components (behavior, state, focus, accessibility; the look is the
-                       app's): navigation (`NavStack`, `NavPage`), `Dialog`, `AlertDialog`, `Button`, `Checkbox`, `Radio` / `RadioGroup`, `Switch`, `Tab` / `Tabs`, `Select` and `Combobox` (`select.rs`, `combobox.rs` on `listbox.rs`, the list's state machine they share), `Collapsible`, `Progress`, `Slider` (a value or a range along a track: `slider.rs`, numbers' rules in `numeric.rs`, a focused control's keys in `keys.rs`), `Scrollbar` (a bar of the app's own over a scroll view or list it names: `scrollbar.rs`, on the core's `watch_scroll`), `NumberInput` (a number typed or stepped: `number_input.rs`), `OtpInput`, `Table` and its parts (`table.rs`: a table's roles, the look the app's), the charts' parts in the submodule `nsh/base/plot` (`Plot`, `Line`, `Area`, `Grid`, `Pie`, `Arc`), `Input` (a native text input, made by `nsh-js`), the status
+                       app's): navigation (`NavStack`, `NavPage`), `Dialog`, `AlertDialog`, `Avatar` / `AvatarGroup` (a picture or its fallback, the state from the image's own load events; a row that places its first `limit`: `avatar.rs`), `Button`, `Link`, `Checkbox`, `Radio` / `RadioGroup`, `Switch`, `Tab` / `Tabs`, `Toggle` / `ToggleGroup` (a toggle button and a toolbar of them: `toggle.rs`), `Toolbar` / `ToolbarGroup` / `ToolbarSeparator` (a bar of buttons, toggles and links: `toolbar.rs`; `roving.rs` the roving focus `Tabs`, `RadioGroup`, `ToggleGroup` and `Toolbar` share, its items in tree order through the core's `watch_order`), `Select` and `Combobox` (`select.rs`, `combobox.rs` on `listbox.rs`, the list's state machine they share), `Calendar` (`calendar.rs`: views, disabled dates, the days' keys), `TimeField` (`time_field.rs`: segments over one native text field), `DatePicker` (`date_picker.rs`: a calendar and time field in a popup; `popup.rs`'s `dropdown` is the popup `Select`, `Combobox` and `DatePicker` share), `Collapsible`, `Accordion` and its parts (`accordion.rs`: items open by the app's `value`, one at a time or several, panels revealed as `Collapsible`'s), `Progress`, `Slider` (a value or a range along a track: `slider.rs`, numbers' rules in `numeric.rs`, a focused control's keys in `keys.rs`), `Scrollbar` (a bar of the app's own over a scroll view or list it names: `scrollbar.rs`, on the core's `watch_scroll`), `NumberInput` (a number typed or stepped: `number_input.rs`), `ColorPicker` and its parts `ColorArea`, `ColorSlider`, `ColorField`, `ColorSwatch`, `ColorEyeDropper` (a color in RGB, HSL, HSB or OKLCH: `color_picker/`), `OtpInput`, `Table` and its parts (`table.rs`: a table's roles, the look the app's), the charts' parts in the submodule `nsh/base/plot` (`Plot`, `Line`, `Area`, `Grid`, `Pie`, `Arc`), `Input` (a native text input, made by `nsh-js`), the status
                        bar, `TextView` (Markdown / HTML documents: `text_view/`, docs/dev/text-view.md), `ResizablePanelGroup` / `ResizablePanel` (`resizable/`), `DockArea` (a dockable workspace: splits, tab groups and edge docks whose layout is
                        data, `dock/`, docs/dev/dock.md), `Editor` (a code editor: highlighting, several carets, folds, search, diagnostics;
                        `editor/`, docs/dev/editor.md), `DiffView` (the changes between two texts or of a patch, split or unified: `diff/`,
@@ -106,9 +107,10 @@ crates/
   nsh-platform-web/    WebAssembly backend (published web apps, `nsh run --target web`, the website's live demos): the engine on
                        the page's main thread (`LocalEngine`), text laid out with browser font metrics, batches as JSON + CSS
                        for the DOM runtime in `web/nsh.js`, the animator on requestAnimationFrame, fetch over the browser's
-                       (`net.rs`); feature `bytecode-only`: published apps' runtime (`nsh.wasm`, no QuickJS parser), feature
-                       `dev`: the development host's (`nsh-dev.wasm`, source and hot updates, the model `nsh test --target web`
-                       asks about); `web/index.html` is the demo
+                       (`net.rs`); app code runs on the browser's own JavaScript engine (feature `browser`: `src/browser/`
+                       and `web/browser/`, no QuickJS in WebAssembly), feature `dev`: the development host's (`nsh-dev.wasm`,
+                       development bundles with hot updates, `web/browser/hot.js`, the model `nsh test --target web` asks
+                       about); `web/index.html` is the demo
                        player (`cargo xtask web`); feature `compiler`: the playground's TSX compiler (`nsh-playground.wasm`)
                        (docs/dev/web.md)
   nsh-platform-linux/  GTK 4 backend (Linux): one `NshView` widget per node drawn with GSK, Pango text engine (typeset on the engine
@@ -348,7 +350,13 @@ when changing text measurement, clipping, pointer input or scripts (`docs/dev/tu
   app's slot), or `docs/dev/api-naming.md` says why it does not. `gpui-component` ↔ nothing: a styled component library is never part of NSH; apps and
   the community build theirs on `nsh-base`, or style the UI in the app itself. Each export has one home (two
   registries exporting one name panic, `Registry::merged`). Mobile-only APIs (iOS, Android or both) go to `nsh/mobile`, desktop-only ones to `nsh/desktop`,
-  platform-only props into `ios={{…}}` / `android={{…}}` / `desktop={{…}}`. `nsh` has no catch-all re-exports. Beside
+  platform-only props into `ios={{…}}` / `android={{…}}` / `desktop={{…}}` (typed objects: a system feature
+  several platforms have goes in each of theirs under one name; what an element means everywhere is a top-level
+  prop, ignored where it does not apply). Desktop has one definition: a desktop OS (macOS, Windows, Linux) or the
+  web in the desktop idiom (`Environment::desktop()`), which `desktop={{…}}`, `platform.select({ desktop })`,
+  `platform.desktop` and `platform.idiom === "desktop"` all follow; Mac Catalyst is mobile (the iOS backend);
+  `nsh/desktop`'s `isAvailable` alone is narrower, the OSes with its windows and menus (`api-naming.md`). `nsh` has
+  no catch-all re-exports. Beside
   them sits a fixed catalog of eleven standard modules with bare specifiers (`nsh_core::js::STANDARD_MODULES`:
   `buffer`, `console`, `crypto`, `fs/promises`, `net`, `os`, `path`, `process`, `url`, `websocket`, `zlib`):
   Node-shaped subsets compatible with gpui-shell's, built on the same native machinery (typed registries, capability
@@ -360,8 +368,10 @@ when changing text measurement, clipping, pointer input or scripts (`docs/dev/tu
   in [`longbridge/nsh-compat`](https://github.com/longbridge/nsh-compat) shipped is never removed or renamed: modules,
   exports and their members, `nsh:rt` (what compiled JSX calls: append-only, signatures and semantics kept), globals,
   props, events and payload keys, style keys and values, Tailwind utilities. A rename or move keeps the old name as a
-  `@deprecated` alias of the same implementation, for good. Types only widen; inputs gain optional members only;
-  behavior and defaults stay (new behavior is opt-in); formats (`.nshpkg`, certificates) are read forever. The record
+  `@deprecated` alias of the same implementation, for good. Types only widen, a union gaining members whichever way it
+  goes (what apps read too: `platform.os`, a state, a reason; apps handle a value they do not know); inputs gain
+  optional members only; behavior and defaults stay (new behavior is opt-in); formats (`.nshpkg`, certificates) are
+  read forever. The record
   and its checks live in that repository, never here: a change to NSH cannot rewrite them, and the only removals are
   security closures in its `closed.txt`. No release is recorded yet, so nothing is frozen: what is on `main` may still
   change until the first release recorded, which is not chosen yet (0.3.0 is not recorded). A new API lands with its test, a case in
@@ -387,6 +397,10 @@ when changing text measurement, clipping, pointer input or scripts (`docs/dev/tu
   `active:`), no built-in strings (every label comes from the app); system UI keeps the platform's look (iOS / Android
   headers; `AlertDialog`, drawn in the platform's dialog style where the system has no dialog to show). React Native and
   UIKit are references for which capabilities exist, not APIs to be compatible with.
+- **Pointer-driven motion follows the pointer in the same frame; transitions and springs are for discrete
+  changes.** A hover's cross line, a dragged thumb, a scroll bar, a resizer, a swipe track the pointer 1:1 and are
+  set, never eased toward it; keyboard steps, snaps on enter / leave, releases, fades and data changes animate
+  (`docs/dev/animation.md` "Pointer-driven motion follows the pointer"), in components and demos alike.
 - **Styles: native first, in the forms people write.** One set of properties written three ways (Rust `Styled`,
   `style` keys, Tailwind classes) means the same in each; the names are CSS's but for a few common forms. Each key takes the form most used and
   easiest to write, CSS's by default: where common use and CSS differ, the common form wins (a `lineHeight` number is
@@ -415,8 +429,16 @@ when changing text measurement, clipping, pointer input or scripts (`docs/dev/tu
     `MouseEvent { position, pagePosition, modifiers, pressedButton }`; `onMouseMove` fires with or without a button
     down. State styles keep CSS's names (`hover:`, `hoverStyle`).
   - Returns: an object, never a bare value that may need a second field (`AlertDialog.show` → `{ action }`,
-    animations → `{ finished }`). Failure rejects (or throws) with the error, never resolves `false` (`Image.prefetch`,
-    `getSize`, `fetch`); yes / no questions (`hasText()`, `canUndo()`) return booleans.
+    animations → `{ finished }`); yes / no questions (`hasText()`, `canUndo()`) return booleans.
+  - Failures (of what JS calls): a function returning a promise never throws, every failure rejects (arguments,
+    grants, quotas, I/O, as Node's `fs/promises`); a synchronous one throws a `TypeError` / `RangeError` for a wrong
+    use. A failure the app can handle carries a stable `code` (`nsh_core::element::codes`: `ERR_ACCESS_DENIED` with
+    `permission` and `resource` for what the capabilities do not grant, an `Error` (`fetch`'s keeps the web's
+    `TypeError`), `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, `ERR_NSH_QUOTA_EXCEEDED`, `ETIMEDOUT`, `ERR_NSH_HOST_ERROR`,
+    Node's errno codes for I/O; `nsh/test`'s own `ERR_NSH_TEST_*`); messages are not API. Never a sentinel
+    (`false`, `-1`, `""`, `[]`) or silence for a failure; `null` stays an answer ("nothing there"), a cancel resolves
+    empty. A command that runs at the commit (a component's or ref's method) cannot throw: given an unknown id or
+    index it does nothing and logs a warning.
   - Methods whose parameters may grow take their options as one object (`net.connect({ host, port })`,
     `Window.setTitleBar({ style, height })`); parameters the user judged will not grow stay positional
     (`setSelection(start, end?)`, `seek(seconds)`, `DockArea.addPanel(panel, placement?, size?)`,
@@ -425,8 +447,12 @@ when changing text measurement, clipping, pointer input or scripts (`docs/dev/tu
   - Identifiers an app matches on are the app's and required, never derived from a label (`AlertDialogAction.id`).
   - Refs: each element has a ref type of its own (`InputRef`, `ScrollRef`, `VideoRef`, ... over a common `ViewRef`),
     never one type carrying every element's methods.
-  - Listening: a function that starts listening returns a function that stops it, and what is registered while a
-    component renders goes with the component.
+  - Listening: the function that registers a listener is `on(event, listener)` in everything TSX calls
+    (`BackHandler.on("press", l)`, `host.on(name, l)`; Rust's own API keeps GPUI's `on_<event>`), never an
+    `on<Event>(l)`, `subscribe` or `addListener`; it returns a function that stops it (`() => void`, a Rust
+    function's `Stop`), never `{ remove() }` or an id for an `off`, and what is registered while a component renders
+    goes with the component. `keymap.bind` keeps `bind` (a shortcut is not an event); the standard modules keep
+    Node's `on`, which returns its object.
 - **Components are Rust.** Rust components live in `crates/nsh-base` or in an app's own crate (its UI set,
   `#[native_module("…")]`), run in the core and render primitives with typed styles (GPUI-style `Styled` methods,
   never class strings); props and events are derived types, their JS face is made from the specs (`nsh-js`
@@ -517,7 +543,8 @@ Details and examples: "Commits and pull requests" in `CONTRIBUTING.md`.
   workflow. A request to release or push changes does not authorize a direct push to `main`.
 
 - Subjects and PR titles are `<area>: <What the change does>`: the area in lower case (a crate without `nsh-`:
-  `core`, `js`, `engine`, `bundler`, `cli`, `base`, ...; one platform: `ios`, `android`, `macos`, `windows`,
+  `core`, `js`, `engine`, `bundler`, `cli`, ...; never `base`: a change to `nsh-base` names its component in snake
+  case, `rich_editor`, `editor`, `input`, `data_table`, ...; one platform: `ios`, `android`, `macos`, `windows`,
   `linux`; `desktop` for macOS, Windows and Linux together, `mobile` for iOS and Android together; `runtime`, a module;
   `tailwind`, `text`, `docs`, `examples`, `gallery`). One area only, never several separated by commas: for a change
   that spans parts, judge it as a whole and name the part it is mostly about (a feature the core adds and the platforms

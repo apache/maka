@@ -93,8 +93,18 @@ fn with_node(mut op: AnimationOp, id: crate::animation::NodeId) -> AnimationOp {
 /// handles of each that owners keep: deriving a node again under an owner
 /// that has a handle of it returns that handle, so doing it over and over
 /// (in a listener, a binding run again) adds nothing.
+///
+/// Kept by a hash of their keys, so a derive looks at the few of the same
+/// hash, not at every derived node: deriving a graph's nodes one by one
+/// costs time that grows with their number, not with its square.
 #[derive(Default)]
-pub(crate) struct Derived(Vec<DerivedNode>);
+pub(crate) struct Derived {
+    by_hash: rustc_hash::FxHashMap<u64, Vec<DerivedNode>>,
+    /// Nodes added since dead ones were last swept out.
+    added: usize,
+    /// How many were live then.
+    live: usize,
+}
 
 /// What makes a derived node: its operation (node id 0) and, for colors
 /// that follow the appearance, the dark ones (the operation has the light
@@ -114,11 +124,75 @@ struct DerivedNode {
     handles: Vec<(Owner, AnimatedNode)>,
 }
 
+impl DerivedKey {
+    /// A hash of the key, alike for equal keys: the operation's kind, its
+    /// inputs and its numbers (by their bits, both zeros as one).
+    fn hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        fn number(h: &mut rustc_hash::FxHasher, v: f32) {
+            (if v == 0.0 { 0 } else { v.to_bits() }).hash(h);
+        }
+        fn operand(h: &mut rustc_hash::FxHasher, o: &Operand) {
+            match *o {
+                Operand::Node(n) => n.hash(h),
+                Operand::Const(c) => number(h, c),
+            }
+        }
+        let mut h = rustc_hash::FxHasher::default();
+        std::mem::discriminant(&self.op).hash(&mut h);
+        match &self.op {
+            AnimationOp::CreateInterpolate {
+                input,
+                input_range,
+                output,
+                ..
+            } => {
+                input.hash(&mut h);
+                input_range.iter().for_each(|&v| number(&mut h, v));
+                match output {
+                    Output::Numbers(v) => v.iter().for_each(|&v| number(&mut h, v)),
+                    Output::Colors(v) => v.hash(&mut h),
+                }
+            }
+            AnimationOp::CreateMath { a, b, .. } => {
+                operand(&mut h, a);
+                operand(&mut h, b);
+            }
+            AnimationOp::CreateDiffClamp {
+                input, min, max, ..
+            } => {
+                input.hash(&mut h);
+                number(&mut h, *min);
+                number(&mut h, *max);
+            }
+            _ => {}
+        }
+        h.finish()
+    }
+}
+
 impl Derived {
     /// The live node `key` made.
     fn entry(&mut self, key: &DerivedKey) -> Option<&mut DerivedNode> {
-        self.0.retain(|d| d.node.strong_count() > 0);
-        self.0.iter_mut().find(|d| d.key == *key)
+        let same = self.by_hash.get_mut(&key.hash())?;
+        same.retain(|d| d.node.strong_count() > 0);
+        same.iter_mut().find(|d| d.key == *key)
+    }
+
+    /// Adds `node`, newly made. Dead nodes are swept out once as many were
+    /// added as lived at the last sweep, so sweeping costs each addition a
+    /// share of one pass.
+    fn add(&mut self, node: DerivedNode) {
+        self.added += 1;
+        if self.added > self.live.max(64) {
+            self.by_hash.retain(|_, same| {
+                same.retain(|d| d.node.strong_count() > 0);
+                !same.is_empty()
+            });
+            self.live = self.by_hash.values().map(Vec::len).sum();
+            self.added = 0;
+        }
+        self.by_hash.entry(node.key.hash()).or_default().push(node);
     }
 }
 
@@ -261,7 +335,7 @@ impl AnimatedNode {
         let node = Node::new(&executor, |id| with_node(op, id), inputs);
         let weak = Rc::downgrade(&node);
         let handle = Self::keep(node);
-        executor.derived().0.push(DerivedNode {
+        executor.derived().add(DerivedNode {
             key,
             node: weak,
             handles: vec![(owner, handle)],
@@ -1208,7 +1282,7 @@ impl fmt::Debug for Animation {
 /// (TS: `createMotion`), and motions to play on them: presets
 /// ([`crate::animation::MotionPreset`]: entrances, exits, attention seekers,
 /// loops) or keyframes of the app's own ([`MotionSpec`]). Bind it with
-/// [`super::Styled::bind_motion`]. A `Copy` handle, kept by the owner
+/// [`super::Element::bind_motion`]. A `Copy` handle, kept by the owner
 /// current when it is made, as an [`AnimatedValue`] is.
 ///
 /// ```ignore
@@ -1372,11 +1446,12 @@ impl super::JsValue for Spring {
     }
 }
 
-/// A JSON value as the core's decoders read JS values (an easing).
-struct JsonInput<'a>(Option<&'a crate::JsonValue>);
+/// A JSON value as the core's decoders read JS values (an easing, an
+/// image source).
+pub(crate) struct JsonInput<'a>(pub(crate) Option<&'a crate::JsonValue>);
 
 /// A JSON array, read by index.
-struct JsonList<'a>(&'a [crate::JsonValue]);
+pub(crate) struct JsonList<'a>(&'a [crate::JsonValue]);
 
 impl<'a> crate::js::host::HostList for JsonList<'a> {
     type Item = JsonInput<'a>;
@@ -1552,6 +1627,83 @@ mod tests {
         let copy = half;
         assert_eq!(copy, half);
         assert_eq!(format!("{half:?}"), format!("AnimatedNode({})", half.id()));
+    }
+
+    #[test]
+    fn deriving_again_finds_the_node_among_many() {
+        let runtime = Runtime::default();
+        let _entered = runtime.enter();
+        let executor = Rc::new(Executor::default());
+        let (_owner, (v, first, again, zeros)) = create_root(|| {
+            let v = AnimatedValue::new(&executor, 0.0);
+            let derive = || -> Vec<AnimatedNode> {
+                (0..2_000)
+                    .map(|i| v.interpolate(&[0.0, 1.0], &[0.0, i as f32]))
+                    .collect()
+            };
+            let first = derive();
+            let again = derive();
+            // Zeros of either sign are one number: one node.
+            let zeros = [
+                v.interpolate(&[0.0, 1.0], &[0.0, 1.0]),
+                v.interpolate(&[-0.0, 1.0], &[-0.0, 1.0]),
+            ];
+            (v, first, again, zeros)
+        });
+        assert!(first.iter().zip(&again).all(|(a, b)| a == b));
+        let mut ids: Vec<_> = first.iter().map(AnimatedNode::id).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), 2_000, "distinct keys, distinct nodes");
+        assert_eq!(zeros[0], zeros[1]);
+        assert_eq!(zeros[0], first[1]);
+        let _ = v;
+    }
+
+    #[test]
+    fn dead_derived_nodes_are_neither_found_nor_kept() {
+        let runtime = Runtime::default();
+        let _entered = runtime.enter();
+        let executor = Rc::new(Executor::default());
+        let (_value_owner, v) = create_root(|| AnimatedValue::new(&executor, 0.0));
+        let (owner, gone) = create_root(|| v.interpolate(&[0.0, 1.0], &[2.0, 3.0]));
+        let id = gone.id();
+        owner.dispose();
+        let (_owner, made) = create_root(|| v.interpolate(&[0.0, 1.0], &[2.0, 3.0]));
+        assert_ne!(made.id(), id, "a dead node is made again");
+        // Nodes made and dropped over and over are swept out as they go.
+        for round in 0..50 {
+            let (owner, _) = create_root(|| {
+                (0..200)
+                    .map(|i| v.interpolate(&[0.0, 1.0], &[round as f32, i as f32]))
+                    .collect::<Vec<_>>()
+            });
+            owner.dispose();
+        }
+        let kept: usize = executor.derived().by_hash.values().map(Vec::len).sum();
+        assert!(kept <= 2 * 200 + 64, "{kept} kept");
+    }
+
+    /// Deriving many distinct nodes, one by one, as a player's scene does:
+    /// `cargo test --release -p nsh-core bench_derive -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore = "benchmark"]
+    fn bench_derive_many_nodes() {
+        let runtime = Runtime::default();
+        let _entered = runtime.enter();
+        let executor = Rc::new(Executor::default());
+        for n in [5_000, 20_000] {
+            let start = std::time::Instant::now();
+            let (owner, _nodes) = create_root(|| {
+                let v = AnimatedValue::new(&executor, 0.0);
+                (0..n)
+                    .map(|i| v.interpolate(&[0.0, 0.5, 1.0], &[0.0, i as f32, 1.0]))
+                    .collect::<Vec<_>>()
+            });
+            println!("{n} derived nodes: {:?}", start.elapsed());
+            owner.dispose();
+            let _ = executor.take_actions();
+        }
     }
 
     /// The graph operations `executor` was asked for (animations' ends

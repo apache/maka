@@ -1,0 +1,12 @@
+---
+// shadcn/ui's Badge: a <span>, or an <a> with `href`.
+import type { HTMLAttributes } from 'astro/types';
+type Props = HTMLAttributes<'span'> & HTMLAttributes<'a'> & {
+  variant?: 'default' | 'secondary' | 'outline' | 'destructive';
+  href?: string;
+};
+const { variant = 'default', href, ...rest } = Astro.props;
+---
+{href
+  ? <a data-slot="badge" data-variant={variant} href={href} {...rest}><slot /></a>
+  : <span data-slot="badge" data-variant={variant} {...rest}><slot /></span>}

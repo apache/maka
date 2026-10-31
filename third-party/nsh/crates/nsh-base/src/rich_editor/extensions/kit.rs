@@ -75,7 +75,7 @@ fn levels(options: &Value) -> Vec<u64> {
 
 fn args_attrs(args: &Value) -> Attrs {
     args.as_object()
-        .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .map(crate::rich_editor::model::object_attrs)
         .unwrap_or_default()
 }
 
@@ -884,7 +884,7 @@ pub fn text_align() -> Extension {
         .add_keyboard_shortcuts(|cx| {
             // Paragraphs first, as the starter's keymap always had them.
             let mut types = opt_strings(cx.options, "types", &["heading", "paragraph"]);
-            types.sort_by_key(|t| t != "paragraph");
+            crate::sort::sort_by_key(&mut types, |t| t != "paragraph");
             text_align_keys(cx.schema, &types)
         })
         .add_commands(|options| {

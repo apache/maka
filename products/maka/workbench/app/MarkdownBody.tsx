@@ -129,9 +129,16 @@ export function MarkdownBody(props: {
             codeBlockLanguage: platform.isTerminal
               ? secondaryTextStyle
               : { ...secondaryTextStyle, paddingLeft: 4 },
-            tableCell: { ...readingStyle, color: color(), borderColor: C.line },
+            // The desktop starts a table's text where a code block's starts.
+            tableCell: {
+              ...readingStyle,
+              ...(platform.isTerminal ? {} : { paddingHorizontal: 16 }),
+              color: color(),
+              borderColor: C.line,
+            },
             tableHeaderCell: {
               ...readingStyle,
+              ...(platform.isTerminal ? {} : { paddingHorizontal: 16 }),
               color: color(),
               fontWeight: '600',
               borderColor: C.line,

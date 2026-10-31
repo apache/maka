@@ -20,7 +20,7 @@
 use super::ownership::{Creator, Disposition, Lease, MarkFailure, Origin, Retention, TabMark};
 use super::*;
 use cua_driver_core::browser::{
-    CleanupProof, ExtensionAttachmentPreparation, ExtensionBrowserProvider,
+    CleanupProof, ExtensionAdapterMode, ExtensionAttachmentPreparation, ExtensionBrowserProvider,
     ExtensionClaimCdpDrainProof, ExtensionClaimPreparationProof, ExtensionCreatedTab,
     ExtensionCreationReceipt, ExtensionEffectOwner, ExtensionFixedSessionReceipt,
     ExtensionGroupColor, ExtensionGroupPresentation, ExtensionHeader, ExtensionHeaderPolicyScope,
@@ -1848,8 +1848,8 @@ impl Host {
                     attempt.matches(scope.owner, &scope.provider, &scope.context, scope.epoch)
                         && attempt.unknown.is_none()
                 });
-            if (!prospective_transfer && lease.creator.owner != scope.owner)
-                || lease.creator.provider != scope.provider
+            if (!prospective_transfer
+                && (lease.creator.owner != scope.owner || lease.creator.provider != scope.provider))
                 || lease.creator.generation != request.generation
                 || (!configuration
                     && !prospective_fixed
@@ -2602,7 +2602,7 @@ impl Host {
         if !matches!(lease.retention, Retention::Handoff) && !same_parked {
             return Ok(false);
         }
-        if lease.creator.provider != *provider
+        if (!same_parked && lease.creator.provider != *provider)
             || lease.creator.generation != extension.identity().generation
         {
             return Err(failed(
@@ -2659,14 +2659,21 @@ impl Host {
             .map(|attempt| attempt.preparation_phase.clone())
     }
 
-    fn rollback_owner_unentered_handoffs(&mut self, owner: uuid::Uuid) {
+    fn rollback_owner_unentered_handoffs(
+        &mut self,
+        owner: uuid::Uuid,
+        adapter: Option<ExtensionAdapterMode>,
+    ) {
         let calls: Vec<_> = self
             .tabs
             .values()
             .filter_map(|lease| {
                 let attempt = lease.handoff_transfer.as_ref()?;
-                (attempt.requested.owner == owner || lease.creator.owner == owner)
-                    .then(|| (attempt.requested.owner, attempt.requested.provider.clone()))
+                ((attempt.requested.owner == owner || lease.creator.owner == owner)
+                    && adapter.is_none_or(|adapter| {
+                        lease.creator.provider.extension_adapter() == Some(adapter)
+                    }))
+                .then(|| (attempt.requested.owner, attempt.requested.provider.clone()))
             })
             .collect();
         for (requested, provider) in calls {
@@ -2874,6 +2881,7 @@ impl Host {
                 retention: Retention::Unmarked,
                 handoff_transfer: None,
                 logical_lease: None,
+                provider_tab_id: None,
                 extension: Some(ClaimState::default()),
             },
         );
@@ -3273,6 +3281,7 @@ impl Host {
         let persistent = extension
             .capabilities()
             .is_ok_and(|caps| caps.logical_lease_persistence);
+        let provider_tab_id = tab.provider_tab_id.filter(|id| !id.is_empty());
         let logical_lease = if persistent { tab.logical_lease } else { None };
         let identity = browser.tab(&target);
         let acquired = match &receipt {
@@ -3303,8 +3312,7 @@ impl Host {
                 attempt.matches(owner, provider, operation, epoch)
             }) && attempt.unknown.is_none()
         });
-        if (!prospective && lease.creator.owner != owner)
-            || lease.creator.provider != *provider
+        if (!prospective && (lease.creator.owner != owner || lease.creator.provider != *provider))
             || &lease.creator.generation != generation
             || lease.extension.is_none()
         {
@@ -3340,32 +3348,42 @@ impl Host {
         if let Some((operation, epoch)) = acquired {
             self.commit_handoff_transfer(&identity, owner, provider, operation, epoch)?;
         }
-        let previous_logical = acquired.and(logical_lease.as_ref()).and_then(|logical| {
-            self.tabs
-                .iter()
-                .find(|(old, lease)| {
-                    **old != identity
-                        && lease.creator.owner == owner
-                        && lease.logical_lease.as_ref().is_some_and(|previous| {
-                            previous.chrome_session_id == logical.chrome_session_id
-                                && previous.logical_lease_id == logical.logical_lease_id
-                                && previous.host_session_id == logical.host_session_id
-                                && previous.tab_id == logical.tab_id
-                        })
-                })
-                .map(|(old, lease)| ((*old).clone(), lease.extension_sequence))
+        let chatgpt = provider.extension_adapter() == Some(ExtensionAdapterMode::Chatgpt);
+        let previous_logical = acquired.and_then(|_| {
+            self.tabs.iter().find_map(|(old, lease)| {
+                if *old == identity || lease.creator.owner != owner {
+                    return None;
+                }
+                let projected = logical_lease.as_ref().is_some_and(|logical| {
+                    lease.logical_lease.as_ref().is_some_and(|previous| {
+                        previous.chrome_session_id == logical.chrome_session_id
+                            && previous.logical_lease_id == logical.logical_lease_id
+                            && previous.host_session_id == logical.host_session_id
+                            && previous.tab_id == logical.tab_id
+                    })
+                });
+                let retained_page = chatgpt
+                    && matches!(lease.disposition, Disposition::Parked)
+                    && old.browser.same_extension_instance(&identity.browser)
+                    && provider_tab_id
+                        .as_ref()
+                        .is_some_and(|id| lease.provider_tab_id.as_ref() == Some(id));
+                (projected || retained_page)
+                    .then(|| (old.clone(), lease.extension_sequence, lease.origin))
+            })
         });
         let prior_sequence = self.tabs[&identity].extension_sequence.or_else(|| {
             previous_logical
                 .as_ref()
-                .and_then(|(_, sequence)| *sequence)
+                .and_then(|(_, sequence, _)| *sequence)
         });
         let sequence = match (&receipt, prior_sequence) {
             (_, Some(sequence)) => Some(sequence),
             (PreparedOperation::Acquired { .. }, None) => Some(self.allocate_extension_sequence()?),
             (PreparedOperation::Observed, None) => None,
         };
-        if let Some((previous, _)) = previous_logical {
+        let previous_origin = previous_logical.as_ref().map(|(_, _, origin)| *origin);
+        if let Some((previous, _, _)) = previous_logical {
             let settled = self.tabs[&previous].extension.as_ref().is_none_or(|state| {
                 state.claim.is_none()
                     && state.unknown.is_none()
@@ -3386,6 +3404,12 @@ impl Host {
             .get_mut(&identity)
             .expect("validated reserved lease");
         lease.extension_sequence = sequence;
+        if let Some(origin) = previous_origin {
+            lease.origin = origin;
+        }
+        if provider_tab_id.is_some() {
+            lease.provider_tab_id = provider_tab_id;
+        }
         if let Some(logical) = logical_lease {
             lease.origin = match logical.origin {
                 cua_driver_core::browser::ExtensionLogicalLeaseOrigin::AgentCreated => {
@@ -3839,6 +3863,11 @@ impl Host {
                         retention: Retention::Unmarked,
                         handoff_transfer: None,
                         logical_lease: None,
+                        provider_tab_id: created
+                            .tab
+                            .provider_tab_id
+                            .clone()
+                            .filter(|id| !id.is_empty()),
                         extension: Some(ClaimState {
                             creation: Some(created.creation_receipt().clone()),
                             creation_operation: context.cloned().map(|operation| {
@@ -4219,6 +4248,11 @@ impl Host {
                         retention: Retention::Unmarked,
                         handoff_transfer: None,
                         logical_lease: None,
+                        provider_tab_id: created
+                            .tab
+                            .provider_tab_id
+                            .clone()
+                            .filter(|id| !id.is_empty()),
                         extension: Some(ClaimState {
                             creation: Some(created.creation_receipt().clone()),
                             unknown: Some(reason.clone()),
@@ -4362,12 +4396,17 @@ impl Host {
         owner: uuid::Uuid,
         turn: Option<&str>,
         epoch: Option<crate::desktop::NativeEpochId>,
+        adapter: Option<ExtensionAdapterMode>,
     ) -> ControlDrain {
         let mut gates = Vec::new();
         let tabs = &self.tabs;
         let creations = &self.uncertain_creations;
         for ((current, browser), state) in &mut self.extension {
-            if *current != owner {
+            if *current != owner
+                || state.owner_parked
+                || adapter
+                    .is_some_and(|adapter| state.provider.extension_adapter() != Some(adapter))
+            {
                 continue;
             }
             for call in state.calls.values().filter(|call| {
@@ -4481,17 +4520,28 @@ impl Host {
         Ok(())
     }
 
+    pub(super) fn forget_parked_handoff(&mut self, owner: uuid::Uuid) {
+        self.extension.retain(|(current, _), state| {
+            *current != owner
+                || !state.owner_parked
+                || state.provider.extension_adapter() != Some(ExtensionAdapterMode::Chatgpt)
+        });
+    }
+
     /// Permanent transport-owner teardown is not turnEnded/finalizeTabs.
     /// Retire physical resources while retaining logical origin/marks in Lease.
-    async fn park_extension_owner(
+    pub(super) async fn park_extension_owner(
         &mut self,
         owner: uuid::Uuid,
+        adapter: Option<ExtensionAdapterMode>,
     ) -> Result<Vec<TabIdentity>, ToolError> {
-        self.rollback_owner_unentered_handoffs(owner);
+        self.rollback_owner_unentered_handoffs(owner, adapter);
         if self.tabs.values().any(|lease| {
-            lease.handoff_transfer.as_ref().is_some_and(|attempt| {
-                attempt.requested.owner == owner || lease.creator.owner == owner
-            })
+            adapter
+                .is_none_or(|adapter| lease.creator.provider.extension_adapter() == Some(adapter))
+                && lease.handoff_transfer.as_ref().is_some_and(|attempt| {
+                    attempt.requested.owner == owner || lease.creator.owner == owner
+                })
         }) {
             return Err(unknown(
                 "explicit handoff replacement still holds cleanup custody",
@@ -4500,7 +4550,11 @@ impl Host {
         let providers: Vec<_> = self
             .extension
             .iter()
-            .filter(|((id, _), _)| *id == owner)
+            .filter(|((id, _), state)| {
+                *id == owner
+                    && adapter
+                        .is_none_or(|adapter| state.provider.extension_adapter() == Some(adapter))
+            })
             .map(|(_, state)| state.provider.clone())
             .collect();
         for provider in providers {
@@ -4662,9 +4716,12 @@ impl Host {
                 {
                     return Err(unknown("owner physical retirement remains unconfirmed"));
                 }
-                // No old creation/group token, prepared grant or CDP route remains.
-                // Keep only logical origin, mark, provider metadata and sequence.
+                // Source cleanup provenance stays with this connection; no
+                // physical claim, prepared grant or CDP route survives parking.
                 lease.extension = Some(ClaimState {
+                    creation: state.creation.clone(),
+                    creation_operation: state.creation_operation.clone(),
+                    group: state.group.clone(),
                     revoked: true,
                     released: true,
                     ..Default::default()
@@ -4688,15 +4745,18 @@ impl Host {
         &mut self,
         owner: uuid::Uuid,
         turn: Option<&str>,
+        adapter: Option<ExtensionAdapterMode>,
     ) -> Result<Vec<TabIdentity>, ToolError> {
         if turn.is_none() {
-            return self.park_extension_owner(owner).await;
+            return self.park_extension_owner(owner, adapter).await;
         }
-        self.rollback_owner_unentered_handoffs(owner);
+        self.rollback_owner_unentered_handoffs(owner, adapter);
         if self.tabs.values().any(|lease| {
-            lease.handoff_transfer.as_ref().is_some_and(|attempt| {
-                attempt.requested.owner == owner || lease.creator.owner == owner
-            })
+            adapter
+                .is_none_or(|adapter| lease.creator.provider.extension_adapter() == Some(adapter))
+                && lease.handoff_transfer.as_ref().is_some_and(|attempt| {
+                    attempt.requested.owner == owner || lease.creator.owner == owner
+                })
         }) {
             return Err(unknown(
                 "normal turn cleanup retains pending explicit handoff replacement",
@@ -4705,7 +4765,12 @@ impl Host {
         let providers: Vec<_> = self
             .extension
             .iter()
-            .filter(|((current, _), _)| *current == owner)
+            .filter(|((current, _), state)| {
+                *current == owner
+                    && !state.owner_parked
+                    && adapter
+                        .is_none_or(|adapter| state.provider.extension_adapter() == Some(adapter))
+            })
             .map(|(_, state)| state.provider.clone())
             .collect();
         let mut closed = Vec::new();
@@ -5467,7 +5532,15 @@ async fn register(
     let browser = BrowserIdentity::of(provider, &connection.identity().generation)?;
     let key = (owner, browser.clone());
     let mut ledger = host.lock().await;
-    if ledger.extension.contains_key(&key) {
+    if let Some(state) = ledger.extension.get_mut(&key) {
+        if state.owner_parked && state.provider == *provider {
+            state.owner_parked = false;
+            state.current_turn = None;
+            state.retiring_turn = None;
+            state.calls.clear();
+            state.finish_phases.clear();
+            state.applied.clear();
+        }
         return Ok(());
     }
     ledger.extension.insert(
@@ -5527,7 +5600,11 @@ async fn register(
                     dispatch_extension_popups(&host, owner, &provider).await
                 }));
             }
-            if !ledger.extension.contains_key(&(owner, browser.clone())) {
+            if !ledger
+                .extension
+                .get(&(owner, browser.clone()))
+                .is_some_and(|state| state.provider == provider)
+            {
                 break;
             }
             match event {
@@ -5554,7 +5631,9 @@ async fn register(
                         })
                     });
                     for lease in ledger.tabs.values_mut().filter(|lease| {
-                        lease.creator.owner == owner && lease.creator.provider == provider
+                        lease.creator.owner == owner
+                            && lease.creator.provider == provider
+                            && !matches!(lease.disposition, Disposition::Parked)
                     }) {
                         if let Some(state) = &mut lease.extension
                             && state
@@ -5593,8 +5672,18 @@ async fn register(
                     }
                 }
                 Ok(ExtensionProviderEvent::GenerationClosed { reason }) => {
+                    if ledger
+                        .extension
+                        .get(&(owner, browser.clone()))
+                        .is_some_and(|state| state.owner_parked)
+                    {
+                        ledger.extension.remove(&(owner, browser.clone()));
+                        break;
+                    }
                     for lease in ledger.tabs.values_mut().filter(|lease| {
-                        lease.creator.owner == owner && lease.creator.provider == provider
+                        lease.creator.owner == owner
+                            && lease.creator.provider == provider
+                            && !matches!(lease.disposition, Disposition::Parked)
                     }) {
                         if let Some(state) = &mut lease.extension {
                             state.unknown = Some(reason.clone());
@@ -5664,6 +5753,16 @@ async fn register(
 }
 
 impl Browsers {
+    pub(super) async fn drain_handoff_controls(&self) -> Result<(), ToolError> {
+        let drain = self.host().await.lock().await.seal_extension_controls(
+            self.owner,
+            None,
+            None,
+            Some(ExtensionAdapterMode::Chatgpt),
+        );
+        drain.wait().await
+    }
+
     pub(super) async fn drain_extension_controls(
         &self,
         turn: Option<&str>,
@@ -5673,7 +5772,7 @@ impl Browsers {
         let drain = host
             .lock()
             .await
-            .seal_extension_controls(self.owner, turn, epoch);
+            .seal_extension_controls(self.owner, turn, epoch, None);
         // A control future may need a Host callback before it becomes ready.
         // Keep its original permit/resource and wait only after releasing Host.
         drain.wait().await
@@ -6008,11 +6107,8 @@ impl Browsers {
                 .collect::<Vec<_>>()
         ))
     }
-    pub(super) async fn reconcile_extension_command(
-        &mut self,
-        command: &Command,
-    ) -> Result<(), ToolError> {
-        let selected = match command {
+    pub(super) fn command_browser_id<'a>(&'a self, command: &'a Command) -> Option<&'a str> {
+        match command {
             Command::BrowserTab { browser_id, .. }
             | Command::BrowserManagedTabs { browser_id }
             | Command::BrowserSelectedTab { browser_id }
@@ -6023,14 +6119,9 @@ impl Browsers {
             | Command::BrowserUserOpenTabs { browser_id }
             | Command::BrowserUserGetTabContext { browser_id, .. }
             | Command::BrowserUserClaimTab { browser_id, .. }
-            | Command::CreateBrowserTab { browser_id, .. } => {
-                self.providers(Some(browser_id))?.pop()
-            }
+            | Command::CreateBrowserTab { browser_id, .. } => Some(browser_id.as_str()),
             Command::GetTab { options, .. } | Command::ListTabs { options } => {
-                match options.browser.as_deref() {
-                    Some(id) => self.providers(Some(id))?.pop(),
-                    None => None,
-                }
+                options.browser.as_deref()
             }
             Command::Observe { handle, .. }
             | Command::Action { handle, .. }
@@ -6050,11 +6141,25 @@ impl Browsers {
             | Command::BrowserCua { handle, .. }
             | Command::BrowserWait { handle, .. }
             | Command::BrowserMutation { handle, .. } => match handle {
-                Handle::Tab(id) => self.targets.get(id).map(|tab| tab.provider.clone()),
+                Handle::Tab(id) => self.targets.get(id).map(|tab| tab.provider.id()),
                 Handle::App(_) => None,
             },
             _ => None,
-        };
+        }
+    }
+
+    pub(super) async fn reconcile_extension_command(
+        &mut self,
+        command: &Command,
+    ) -> Result<(), ToolError> {
+        let selected = self
+            .command_browser_id(command)
+            .map(|id| {
+                self.providers(Some(id))
+                    .map(|mut providers| providers.pop())
+            })
+            .transpose()?
+            .flatten();
         let Some(provider) = selected.filter(|provider| provider.extension().is_some()) else {
             return Ok(());
         };
@@ -6144,6 +6249,36 @@ impl Browsers {
             crate::protocol::BrowserTabMark::Handoff => TabMark::Handoff,
             crate::protocol::BrowserTabMark::Deliverable => TabMark::Deliverable,
         };
+        if requested == TabMark::Handoff
+            && tab.provider.extension_adapter() == Some(ExtensionAdapterMode::Chatgpt)
+            && host
+                .lock()
+                .await
+                .tabs
+                .get(&identity)
+                .is_some_and(|lease| lease.provider_tab_id.is_none())
+        {
+            let observed = scope
+                .dispatch(scope.control.resolve_session_tab(&tab.info.id))
+                .await;
+            let mut ledger = host.lock().await;
+            ledger.reconcile_provider(self.owner, &tab.provider).await?;
+            let observed = observed.map_err(provider::extension_error)?;
+            if observed.id.to_string() != identity.target {
+                return Err(unknown("retained page metadata changed its issued tab"));
+            }
+            let page_id = observed
+                .provider_tab_id
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    failed("ChatGPT did not provide a stable identity for the retained page")
+                })?;
+            ledger
+                .tabs
+                .get_mut(&identity)
+                .ok_or_else(|| unknown("retained page lost its current custody"))?
+                .provider_tab_id = Some(page_id);
+        }
         check_input(cancellation)?;
         let attempt = host
             .lock()
@@ -6688,7 +6823,8 @@ impl Browsers {
         }
         // This exact captured page request uses the service's dedicated current
         // global/network authorization. Ordinary model Navigate is unchanged.
-        self.use_tab(&identity, invocation.turn()).await?;
+        self.use_tab(&identity, invocation.turn(), cancellation)
+            .await?;
         let child = self
             .targets
             .get_mut(&handle)
@@ -9220,7 +9356,7 @@ mod control_lifetime_tests {
         let drain = host
             .lock()
             .await
-            .seal_extension_controls(owner, Some("old-turn"), None);
+            .seal_extension_controls(owner, Some("old-turn"), None, None);
         let mut drained = Box::pin(drain.wait());
         assert!(
             std::future::poll_fn(|cx| Poll::Ready(drained.as_mut().poll(cx).is_pending())).await
@@ -9330,7 +9466,7 @@ mod control_lifetime_tests {
         state.calls.insert("new".into(), new);
         let mut host = Host::default();
         host.extension.insert((owner, browser.clone()), state);
-        host.seal_extension_controls(owner, None, Some(old_epoch))
+        host.seal_extension_controls(owner, None, Some(old_epoch), None)
             .wait()
             .await
             .unwrap();
@@ -9352,7 +9488,7 @@ mod control_lifetime_tests {
         state.logical_active = Some("current-target".into());
         let mut host = Host::default();
         host.extension.insert((owner, browser.clone()), state);
-        host.seal_extension_controls(owner, Some("old-turn"), None)
+        host.seal_extension_controls(owner, Some("old-turn"), None, None)
             .wait()
             .await
             .unwrap();

@@ -18,11 +18,15 @@ export { focusRing } from "./theme";
 
 /** A pointer and a keyboard: desktop density and copy ("Click", "Tab to it
  * and press Space"); touch density and copy ("Tap") otherwise. */
-export const desktop = __platform.idiom === "desktop";
+export const desktop = __platform.desktop;
 
 /** A window wide enough for the desktop layout (the site's Desktop frame is
- * 1024 points): the subject on a stage, its state and options beside it. */
+ * the documentation column's width, about 720 points). */
 export const wide = () => __windowSize().width >= 700;
+
+/** Wide enough to put a `Split`'s inspector beside its stage rather than
+ * under it: in the site's Desktop frame the subject keeps the whole width. */
+const sideBySide = () => __windowSize().width >= 900;
 
 /** Heights and type of the idiom (Design Guides, "Density tiers"): compact
  * with a pointer, 44-point targets on a touch screen. */
@@ -197,10 +201,10 @@ export function Inspector(props: { children?: __JSX.Element }) {
 export function Split(props: { children?: __JSX.Element; inspector?: __JSX.Element; gap?: number; width?: number; grow?: boolean }) {
   return __View({
     get style() {
-      return wide() ? { flex: 1, flexDirection: "row" as const, gap: 16 } : { flex: props.grow ? 1 : undefined, gap: props.gap ?? 14 };
+      return sideBySide() ? { flex: 1, flexDirection: "row" as const, gap: 16 } : { flex: props.grow ? 1 : undefined, gap: props.gap ?? 14 };
     },
     get children() {
-      if (!wide()) return [props.children, props.inspector];
+      if (!sideBySide()) return [props.children, props.inspector];
       return [
         Stage({
           get width() {
@@ -245,7 +249,7 @@ export function Panel(props: { title: string; children?: __JSX.Element; minHeigh
 }
 
 /** An event log, newest first: the newest line in the text color, older
- * ones faint. In a wide window it takes the inspector's free height. */
+ * ones faint. Beside a stage it takes the inspector's free height. */
 export function Log(props: { title: string; lines: string[]; minHeight?: number; grow?: boolean }) {
   return Panel({
     get title() {
@@ -255,7 +259,7 @@ export function Log(props: { title: string; lines: string[]; minHeight?: number;
       return props.minHeight;
     },
     get grow() {
-      return props.grow ?? wide();
+      return props.grow ?? sideBySide();
     },
     get children() {
       return props.lines.map((line, i) =>
@@ -290,3 +294,4 @@ export function Segmented<T extends string | number>(props: { label?: string; op
 
 export { dataTableClasses, dataTableFitPadding } from "./data-table";
 export { sliderFill, sliderLook, sliderValueClass, sliderValueStyle, type SliderLookOptions } from "./slider";
+export { avatarHue, avatarIdentity, avatarPortrait, AVATAR_BROKEN } from "./avatar";

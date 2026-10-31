@@ -13,9 +13,6 @@ workspace = true
 
 [features]
 default = ["zlib", "crypto"]
-# A VM without QuickJS' parser and compiler (they are left out of the
-# binary): it runs bytecode only. The web runtime of published apps.
-bytecode-only = []
 # The standard module `zlib`: deflate, gzip, brotli and zstd.
 zlib = ["quickjs-jit-stdlib/zlib", "quickjs-jit-stdlib/zlib-zstd"]
 # The standard module `crypto` and its globals (`crypto`, `Crypto`,

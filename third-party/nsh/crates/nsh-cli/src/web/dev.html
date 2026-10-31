@@ -27,7 +27,8 @@
 <script type="module">
   // The web development host, served by `nsh dev` / `nsh run --target web`:
   // connects to the dev server's WebSocket as the other hosts do, runs
-  // each bundle (JS source), applies hot updates in place, forwards the
+  // each bundle (an ES module) on the browser's JavaScript engine, applies
+  // hot updates in place, forwards the
   // app's logs to the terminal and shows build errors over the app.
   import { createPlayer } from "./nsh.js";
 
@@ -118,11 +119,29 @@
     return `Web (${browser})`;
   }
 
-  function received(message, frames) {
+  // Bundles, hot updates and what depends on the app that runs are
+  // handled one at a time, in the order they came: a bundle and a hot
+  // update take a while to load, and what follows (the patch of the next
+  // version, a test step) waits for them. A test session's fetch replies
+  // and the build's status go through at once: an app's top-level code may
+  // be waiting for a reply as its bundle loads.
+  const ORDERED = new Set(["root", "step"]);
+  let queue = Promise.resolve();
+  function handle(message, frames) {
+    if (!frames && !ORDERED.has(message.type)) {
+      control(message);
+      return;
+    }
+    queue = queue.then(() => (frames ? received(message, frames) : control(message))).catch((err) => {
+      console.error("[nsh]", err);
+    });
+  }
+
+  async function received(message, frames) {
     switch (message.type) {
       case "patch": {
         if (running?.session !== session || running.version !== message.base) return;
-        const applied = player.hotUpdate(text(frames[0]), `hot-${message.version}.js`, text(frames[1]));
+        const applied = await player.hotUpdate(text(frames[0]), `hot-${message.version}.js`, text(frames[1]));
         if (applied) {
           running = { session, version: message.version };
           problem.hidden = true;
@@ -137,7 +156,18 @@
         if (running?.session === session && running.version === message.version) return;
         running = { session, version: message.version };
         problem.hidden = true;
-        player.run(text(frames[0]), { capabilities: message.capabilities ?? "", sourceMap: text(frames[1]), appId: message.app_id ?? "", limits: message.limits ?? null });
+        try {
+          await player.runSource(text(frames[0]), {
+            capabilities: message.capabilities ?? "",
+            sourceMap: text(frames[1]),
+            appId: message.app_id ?? "",
+            name: `bundle-${message.version}.js`,
+          });
+        } catch {
+          // The player shows the error; a patch cannot apply to a bundle
+          // that did not start, the next bundle runs from scratch.
+          if (running?.session === session && running.version === message.version) running = null;
+        }
         return;
       }
     }
@@ -171,63 +201,67 @@
         if (pending.frames.length === pending.count) {
           const { message, frames } = pending;
           pending = null;
-          received(message, frames);
+          handle(message, frames);
         }
         return;
       }
       const message = JSON.parse(event.data);
-      switch (message.type) {
-        case "hello":
-          session = message.session ?? 0;
-          // A test session (`nsh test --target web`): the model of the app
-          // starts before its first bundle.
-          if (message.test) player.testStart();
-          showStatus("");
-          // A test session's Rust app starts when the server says so,
-          // after what the test sets it up with.
-          if (RUST && !running && !message.test) {
-            running = { session, version: 0 };
-            player.runRust();
-          }
-          break;
-        case "test_setup":
-          player.onTestSend = send;
-          player.testSetup(message.storage, message.trace, message.environment);
-          break;
-        case "fetch":
-          player.testFetchReply(message.id, message.reply);
-          break;
-        case "step":
-          send({ type: "step_done", id: message.id, outcome: player.testStep(message.step) });
-          break;
-        case "root":
-          // The app is this runtime's own Rust root (a test session's).
-          running = { session, version: 0 };
-          showStatus("");
-          player.runRust();
-          break;
-        case "building":
-          showStatus("Building…");
-          break;
-        case "build_failed":
-          showStatus("");
-          showProblem("Build failed", message.message);
-          break;
-        case "cannot_run":
-          showStatus("");
-          showProblem("This host cannot run the app", message.message);
-          break;
-        case "patch":
-        case "bundle":
-          pending = { message, frames: [], count: message.source_map ? 2 : 1 };
-          break;
+      if (message.type === "patch" || message.type === "bundle") {
+        pending = { message, frames: [], count: message.source_map ? 2 : 1 };
+        return;
       }
+      handle(message);
     };
     socket.onclose = () => {
       showStatus("Dev server disconnected — reconnecting…");
       setTimeout(connect, retry);
       retry = Math.min(retry * 2, 2000);
     };
+  }
+
+  function control(message) {
+    switch (message.type) {
+      case "hello":
+        session = message.session ?? 0;
+        // A test session (`nsh test --target web`): the model of the app
+        // starts before its first bundle.
+        if (message.test) player.testStart();
+        showStatus("");
+        // A test session's Rust app starts when the server says so,
+        // after what the test sets it up with.
+        if (RUST && !running && !message.test) {
+          running = { session, version: 0 };
+          player.runRust();
+        }
+        break;
+      case "test_setup":
+        player.onTestSend = send;
+        player.testSetup(message.storage, message.trace, message.environment);
+        break;
+      case "fetch":
+        player.testFetchReply(message.id, message.reply);
+        break;
+      case "step":
+        send({ type: "step_done", id: message.id, outcome: player.testStep(message.step) });
+        break;
+      case "root":
+        // The app is this runtime's own Rust root (a test session's).
+        running = { session, version: 0 };
+        showStatus("");
+        player.runRust();
+        break;
+      case "building":
+        showStatus("Building…");
+        break;
+      case "build_failed":
+        showStatus("");
+        showProblem("Build failed", message.message);
+        break;
+      case "cannot_run":
+        showStatus("");
+        showProblem("This host cannot run the app", message.message);
+        break;
+    }
   }
 
   connect();

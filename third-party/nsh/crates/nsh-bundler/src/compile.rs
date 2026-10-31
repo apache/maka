@@ -73,6 +73,17 @@ impl NativeModules {
     pub(crate) fn contains(&self, spec: &str) -> bool {
         self.specifiers.contains(spec)
     }
+
+    /// nsh's modules apps import (`nsh`, `nsh/base`, ...), sorted: the
+    /// native modules named `nsh` or `nsh/…` (`nsh:rt`, compiled JSX's, is
+    /// not one).
+    #[cfg(feature = "bundle")]
+    pub(crate) fn nsh(&self) -> impl Iterator<Item = &str> {
+        self.specifiers
+            .iter()
+            .map(String::as_str)
+            .filter(|s| *s == "nsh" || s.starts_with("nsh/"))
+    }
 }
 
 /// A module compiled by [`compile_native`].

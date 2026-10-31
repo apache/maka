@@ -32,5 +32,5 @@ test("clearing the storage asks first", async () => {
   expect(app.storage()).toEqual({});
   // With nothing left to clear, the button takes no press.
   expect(app.enabled("role:button[Clear all]")).toBe(false);
-  await expect(() => app.press("role:button[Clear all]")).rejects.toThrow("is disabled");
+  await expect(() => app.press("role:button[Clear all]")).rejects.toMatchObject({ code: "ERR_NSH_TEST_DISABLED" });
 });

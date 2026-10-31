@@ -271,6 +271,22 @@ export default {
           hint: { fallback: 'Esc' },
           trigger: 'stop',
         },
+        plan: {
+          kind: 'command',
+          title: {
+            fallback: 'Planning mode',
+            translations: { 'zh-CN': '规划模式', 'zh-TW': '規劃模式' },
+          },
+          description: {
+            fallback: 'Plan before changing anything, or stop planning',
+            translations: {
+              'zh-CN': '先规划再改动，或退出规划',
+              'zh-TW': '先規劃再變更，或結束規劃',
+            },
+          },
+          order: 120,
+          trigger: 'plan',
+        },
       },
     },
   },

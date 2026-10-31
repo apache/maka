@@ -80,6 +80,10 @@ impl Fixture {
     }
 
     async fn open_with_lifecycle(lifecycle: &str) -> Self {
+        Self::open_adapter("org.apache.maka.inventory_fixture", lifecycle).await
+    }
+
+    async fn open_adapter(adapter: &str, lifecycle: &str) -> Self {
         // Canonical /tmp remains short on supported Unix hosts and avoids a
         // symlink component (notably /tmp -> /private/tmp on macOS).
         let directory = tempfile::Builder::new()
@@ -92,7 +96,6 @@ impl Fixture {
         let socket = private.join(format!("{generation}.sock"));
         let listener = UnixListener::bind(&socket).unwrap();
         std::fs::set_permissions(&socket, Permissions::from_mode(0o600)).unwrap();
-        let adapter = "org.apache.maka.inventory_fixture";
         let identity = json!({
             "adapter":adapter,
             "extensionId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -234,10 +237,10 @@ async fn same_unpolled_scope_survives_real_reconcile_then_seal_rejects_without_i
                 .is_empty()
         );
     }
-    let drain = host
-        .lock()
-        .await
-        .seal_extension_controls(owner, Some("inventory-turn"), None);
+    let drain =
+        host.lock()
+            .await
+            .seal_extension_controls(owner, Some("inventory-turn"), None, None);
     bounded(drain.wait()).await.unwrap();
     assert!(matches!(bounded(unpolled).await.map_err(|error| *error),
         Err(ExtensionProviderError::Refused { kind, .. }) if kind == "retiring_scope"));
@@ -303,10 +306,10 @@ async fn empty_inventory_ack_creates_finish_obligation_until_actual_finish_ack()
             "inventory ACK must not become Acquired"
         );
     }
-    let drain = host
-        .lock()
-        .await
-        .seal_extension_controls(owner, Some("inventory-turn"), None);
+    let drain =
+        host.lock()
+            .await
+            .seal_extension_controls(owner, Some("inventory-turn"), None, None);
     bounded(drain.wait()).await.unwrap();
     let finish = async {
         host.lock()
@@ -505,4 +508,217 @@ async fn closed_transport_registers_before_zero_byte_failure_and_keeps_finish_de
     );
     assert!(ledger.tabs.is_empty());
     // No cleanup ACK exists. Neither EOF nor Required settles this obligation.
+}
+
+#[tokio::test]
+async fn parked_page_rebinds_through_a_fresh_connection_without_changing_its_origin() {
+    let mut fixture = Fixture::open().await;
+    let previous = fixture.provider();
+    let current = fixture.provider();
+    assert!(
+        previous != current,
+        "separate connection wrappers must differ"
+    );
+    assert_eq!(browser(&previous), browser(&current));
+    let owner = uuid::Uuid::new_v4();
+    let identity = browser(&current).tab("17");
+    let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
+    register(&host, owner, &current).await.unwrap();
+    {
+        let mut ledger = host.lock().await;
+        ledger
+            .extension_reserve(
+                owner,
+                &previous,
+                "previous-turn",
+                "17",
+                Origin::AgentCreated,
+            )
+            .unwrap();
+        let lease = ledger.tabs.get_mut(&identity).unwrap();
+        lease.disposition = Disposition::Parked;
+        lease.retention = Retention::Handoff;
+        lease.extension = Some(ClaimState {
+            revoked: true,
+            released: true,
+            ..Default::default()
+        });
+        let operation = context_operation("resume-turn");
+        let epoch = crate::desktop::NativeEpochId::new();
+        let call = ledger
+            .extension_context(
+                owner,
+                &current,
+                operation.clone(),
+                epoch,
+                CallTarget::Tab {
+                    origin: Origin::UserClaimed,
+                    tab: Some("17".into()),
+                },
+                true,
+            )
+            .unwrap();
+        assert!(
+            ledger
+                .begin_handoff_transfer(owner, &current, &operation, epoch, "17")
+                .unwrap()
+        );
+        assert!(
+            ledger.tabs[&identity].creator.provider == previous,
+            "reservation alone must not transfer custody"
+        );
+        let request = crate::BrowserSessionPreparation {
+            native_owner: owner,
+            native_epoch: epoch.to_string(),
+            browser_id: current.id().into(),
+            generation: current.extension().unwrap().identity().generation.clone(),
+            turn_id: operation.turn_id.clone(),
+            operation_id: operation.operation_id.clone(),
+            target: crate::BrowserPreparationTarget::ReservedTab {
+                tab_id: "17".into(),
+            },
+        };
+        ledger
+            .extension_preparation_current(&call, &request)
+            .unwrap();
+        // Exercise Main's literal provider result boundary, without claiming
+        // that this peer performed Chrome effects or granted page authority.
+        ledger
+            .apply_user_preparation(
+                owner,
+                &current,
+                &identity.browser,
+                Some("17".into()),
+                PreparedOperation::Acquired { operation, epoch },
+                serde_json::from_value(json!({"id":17})).unwrap(),
+            )
+            .unwrap();
+        let lease = &ledger.tabs[&identity];
+        assert!(lease.creator.provider == current);
+        assert!(matches!(lease.origin, Origin::AgentCreated));
+        assert!(matches!(lease.retention, Retention::Unmarked));
+        assert!(matches!(lease.disposition, Disposition::Live));
+        assert!(lease.handoff_transfer.is_none());
+        ledger.extension.clear();
+    }
+    fixture.assert_no_frame_and_close().await;
+}
+
+#[tokio::test]
+async fn retained_chatgpt_page_keeps_origin_when_a_new_native_generation_claims_it() {
+    for same_page in [true, false] {
+        let mut previous = Fixture::open_adapter("com.openai.codexextension", "provider").await;
+        let mut current = Fixture::open_adapter("com.openai.codexextension", "provider").await;
+        let old_provider = previous.provider();
+        let provider = current.provider();
+        let owner = uuid::Uuid::new_v4();
+        let old_identity = browser(&old_provider).tab("17");
+        let identity = browser(&provider).tab("17");
+        assert_ne!(old_identity.browser, identity.browser);
+        let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
+        register(&host, owner, &old_provider).await.unwrap();
+        let call = host
+            .lock()
+            .await
+            .extension_context(
+                owner,
+                &old_provider,
+                context_operation("create-turn"),
+                crate::desktop::NativeEpochId::new(),
+                CallTarget::Tab {
+                    origin: Origin::AgentCreated,
+                    tab: None,
+                },
+                true,
+            )
+            .unwrap();
+        let source = async {
+            let frame = read_frame(&mut previous.server).await;
+            assert_eq!(frame["request"]["method"], "createTab");
+            result(&mut previous.server, frame["request"]["id"].as_u64().unwrap(),
+            json!({"creation":"actual-peer-creation","tab":{"id":17,"providerTabId":"[\"chrome-session\",\"17\"]"}})).await;
+        };
+        let (created, ()) =
+            bounded(async { tokio::join!(call.dispatch(call.control.create_tab(None)), source) })
+                .await;
+        assert_eq!(created.unwrap().tab.id, 17);
+        {
+            let mut ledger = host.lock().await;
+            ledger
+                .reconcile_provider(owner, &old_provider)
+                .await
+                .unwrap();
+            let lease = ledger.tabs.get_mut(&old_identity).unwrap();
+            assert_eq!(
+                lease.provider_tab_id.as_deref(),
+                Some("[\"chrome-session\",\"17\"]"),
+                "actual Created ACK must capture the source page identity"
+            );
+            lease.disposition = Disposition::Parked;
+            lease.retention = Retention::Handoff;
+            lease.extension = Some(ClaimState {
+                revoked: true,
+                released: true,
+                ..Default::default()
+            });
+            ledger.extension.clear();
+        }
+        register(&host, owner, &provider).await.unwrap();
+        {
+            let mut ledger = host.lock().await;
+            ledger
+                .extension_reserve(owner, &provider, "resume-turn", "17", Origin::UserClaimed)
+                .unwrap();
+            let operation = context_operation("resume-turn");
+            let epoch = crate::desktop::NativeEpochId::new();
+            ledger
+                .extension_context(
+                    owner,
+                    &provider,
+                    operation.clone(),
+                    epoch,
+                    CallTarget::Tab {
+                        origin: Origin::UserClaimed,
+                        tab: Some("17".into()),
+                    },
+                    true,
+                )
+                .unwrap();
+            ledger
+            .apply_user_preparation(
+                owner,
+                &provider,
+                &identity.browser,
+                Some("17".into()),
+                PreparedOperation::Acquired { operation, epoch },
+                serde_json::from_value(
+                    json!({"id":17,"providerTabId": if same_page { "[\"chrome-session\",\"17\"]" } else { "[\"different-browser-session\",\"17\"]" }}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            if same_page {
+                assert!(
+                    matches!(ledger.tabs[&identity].origin, Origin::AgentCreated),
+                    "actual stable page identity preserves the original creator"
+                );
+                assert!(!ledger.tabs.contains_key(&old_identity));
+                assert_eq!(ledger.tabs.len(), 1);
+            } else {
+                assert!(
+                    matches!(ledger.tabs[&identity].origin, Origin::UserClaimed),
+                    "reused raw tab ID from another browser session must not inherit origin"
+                );
+                assert!(ledger.tabs.contains_key(&old_identity));
+                assert_eq!(ledger.tabs.len(), 2);
+            }
+            assert!(matches!(
+                ledger.tabs[&identity].retention,
+                Retention::Unmarked
+            ));
+            ledger.extension.clear();
+        }
+        previous.assert_no_frame_and_close().await;
+        current.assert_no_frame_and_close().await;
+    }
 }

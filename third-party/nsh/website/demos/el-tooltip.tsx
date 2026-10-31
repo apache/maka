@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { type OpenChangeReason, Tooltip } from "nsh/base";
-import { button, buttonText, desktop, Inspector, Log, Panel, Stage, ui, wide } from "./palette";
+import { button, buttonText, createPresence, desktop, Inspector, Log, Panel, Stage, ui, wide } from "./palette";
 
 /** An icon button with a hint of the app's look, above or below it. */
 function Tool(props: {
@@ -13,6 +13,8 @@ function Tool(props: {
   onOpenChange: (e: { open: boolean; reason: OpenChangeReason }) => void;
 }) {
   const hovered = signal(false);
+  // The bubble stays made between showings: it comes in from its side as it shows.
+  const presence = createPresence(props.placement);
   return (
     <View style={{ alignItems: "center", gap: 6 }}>
       <View
@@ -30,9 +32,12 @@ function Tool(props: {
               hovered.set(e.open);
               props.onOpenChange(e);
             }}
-            style={{ backgroundColor: ui().text, borderRadius: 7, paddingHorizontal: 10, paddingVertical: 6 }}
+            onOpen={presence.show}
+            onClose={presence.hide}
           >
-            <Text style={{ fontSize: 13, color: ui().page }}>{props.hint}</Text>
+            <View style={{ backgroundColor: ui().text, borderRadius: 7, paddingHorizontal: 10, paddingVertical: 6, ...presence.style }}>
+              <Text style={{ fontSize: 13, color: ui().page }}>{props.hint}</Text>
+            </View>
           </Tooltip>
         }
       >

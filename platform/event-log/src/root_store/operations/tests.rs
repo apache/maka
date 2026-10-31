@@ -254,10 +254,14 @@ async fn failed_cleanup_receipt_never_releases_root_authority() {
         )
         .await
         .unwrap();
-    assert!(matches!(
-        store.operation_observation().await,
-        Err(StoreError::ConnectionClosed)
-    ));
+    let receipt = store.operation_observation().await.unwrap().unwrap();
+    assert!(matches!(receipt.outcome, OperationOutcome::Unknown { .. }));
+    assert!(matches!(receipt.cleanup, OperationCleanup::Failed { .. }));
+    assert!(
+        root.create_session("healthy", "healthy", &serde_json::json!({}), 1)
+            .await
+            .is_ok()
+    );
     drop(claim);
     assert!(root.close().await.is_err());
     let namespaces = root::RootNamespaces {

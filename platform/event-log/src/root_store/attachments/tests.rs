@@ -249,12 +249,14 @@ async fn cancelled_accepted_copy_keeps_both_session_pins_until_target_cleanup() 
         .unwrap();
     assert_eq!(count(&target).await, 1);
     for id in [source.id(), target.id()] {
-        assert!(
-            root.gates
-                .try_write([gates::Key::Session(id.into())])
-                .unwrap()
-                .is_some()
-        );
+        let released = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            root.gates.write([gates::Key::Session(id.into())]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(released);
     }
     root.close().await.unwrap();
 }

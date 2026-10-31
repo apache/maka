@@ -1,21 +1,23 @@
-//! The web runtime and the website's demos: `nsh.wasm` (`nsh-platform-web`)
-//! plus its JS runtime and player page, each demo of `website/demos/*.tsx`
-//! compiled by `nsh build`, and the gallery (`examples/gallery`) published
-//! with `nsh package --target web`, the website's showcase.
+//! The web runtime and the website's demos: `nsh.wasm` (`nsh-platform-web`
+//! with feature `browser`, the runtime `nsh package --target web` ships as
+//! `nsh-browser.wasm`) plus its JS runtime and player page, each demo of
+//! `website/demos/*.tsx` compiled by `nsh build` to an ES module the
+//! browser's JavaScript engine runs, and the gallery (`examples/gallery`)
+//! published with `nsh package --target web`, the website's showcase.
 //!
 //! ```text
-//! <out>/index.html    the player: runs demos/<name>.nshc for `#<name>`
-//! <out>/nsh-playground.wasm   the engine plus the TSX compiler (the playground)
-//! <out>/demos/<name>.nshc     a demo compiled to bytecode
-//! <out>/gallery/      the gallery as `nsh package --target web` writes it,
-//!                     with its browser-host runtime:
+//! <out>/index.html    the player: runs demos/<name>.js for `#<name>`
+//! <out>/nsh.js        the DOM runtime, with the browser host it imports:
+//! <out>/browser/      the browser host's modules (`web/browser/*.js`)
+//! <out>/nsh.wasm      the engine and core
+//! <out>/nsh-playground.wasm   the same plus the TSX compiler (the playground)
+//! <out>/demos/<name>.js       a demo as an ES module
+//! <out>/gallery/      the gallery as `nsh package --target web` writes it:
 //! <out>/gallery/nsh.<digest>.js     the DOM runtime (minified)
-//! <out>/gallery/nsh.<digest>.wasm   the engine and core (no QuickJS)
+//! <out>/gallery/nsh.<digest>.wasm   the engine and core
 //! ```
 //!
-//! The embedded demo player retains the bytecode-only QuickJS runtime.
-//! The standalone gallery uses browser JavaScript and a separate Wasm.
-//! `astro dev` serves the embedded player from its sources instead.
+//! `astro dev` serves the player from its sources instead.
 
 use std::{fs, path::Path};
 
@@ -33,8 +35,8 @@ pub(crate) fn build(out: &Path) -> anyhow::Result<()> {
     let root = android::root();
     // Relative to the workspace, wherever `cargo xtask` runs from.
     let out = root.join(out);
-    // The playground retains its compiler and QuickJS host.
-    // Its own target directory: switching the feature would rebuild the
+    // The playground: the browser runtime plus the TSX compiler, in its own
+    // target directory: switching the feature would rebuild the
     // other one every time.
     cargo(
         &[
@@ -43,6 +45,7 @@ pub(crate) fn build(out: &Path) -> anyhow::Result<()> {
             "web",
             "-p",
             "nsh-platform-web",
+            "--no-default-features",
             "--features",
             "compiler",
             "--target",
@@ -62,8 +65,9 @@ pub(crate) fn build(out: &Path) -> anyhow::Result<()> {
         &out.join("nsh-playground.wasm"),
     )?;
     let web = root.join("crates/nsh-platform-web/web");
-    // Embedded demos still load bytecode with the existing player API.
-    // Do not substitute the standalone gallery's browser host here.
+    // The runtime `nsh package --target web` ships (`WebKind::Browser`), in
+    // the same target directory and profile: packaging the gallery below
+    // reuses it.
     cargo(
         &[
             "build",
@@ -71,8 +75,9 @@ pub(crate) fn build(out: &Path) -> anyhow::Result<()> {
             "web",
             "-p",
             "nsh-platform-web",
+            "--no-default-features",
             "--features",
-            "bytecode-only",
+            "browser",
             "--target",
             WASM,
         ],
@@ -85,6 +90,15 @@ pub(crate) fn build(out: &Path) -> anyhow::Result<()> {
     )?;
     copy(&embedded.join("nsh.wasm"), &out.join("nsh.wasm"))?;
     copy(&web.join("nsh.js"), &out.join("nsh.js"))?;
+    // `nsh.js` imports the browser host from `./browser/`; its tests and
+    // checks stay in the source tree.
+    for entry in fs::read_dir(web.join("browser")).context("web/browser")? {
+        let path = entry?.path();
+        let name = path.file_name().context("name")?;
+        if path.extension().is_some_and(|e| e == "js" || e == "txt") {
+            copy(&path, &out.join("browser").join(name))?;
+        }
+    }
 
     let nsh = root.join(format!(
         "target/release/nsh{}",
@@ -111,10 +125,11 @@ pub(crate) fn build(out: &Path) -> anyhow::Result<()> {
             .arg(&path))
         .with_context(|| format!("bundling {name}"))?;
         copy(
-            &dir.join("bundle.nshc"),
-            &out.join("demos").join(format!("{name}.nshc")),
+            &dir.join("bundle.js"),
+            &out.join("demos").join(format!("{name}.js")),
         )?;
-        let _ = fs::remove_file(out.join("demos").join(format!("{name}.js")));
+        // Bytecode an earlier player ran.
+        let _ = fs::remove_file(out.join("demos").join(format!("{name}.nshc")));
         demos_built += 1;
     }
     if demos.join("assets").is_dir() {

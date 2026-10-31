@@ -6,7 +6,8 @@
 use std::sync::Arc;
 
 use nsh_core::{
-    element::{RowAccessor, Rows, Style},
+    SvgPaint,
+    element::{RowAccessor, RowText, Rows, Style},
     prelude::*,
 };
 
@@ -94,6 +95,64 @@ pub(super) fn values(
         }
     });
     out
+}
+
+/// The texts `text` reads of `rows`, once known (as [`values`]).
+pub(super) fn texts(
+    rows: impl Fn() -> Rows + 'static,
+    text: impl Fn() -> Option<RowText> + 'static,
+) -> Signal<Option<Arc<[SharedString]>>> {
+    let out = signal(None::<Arc<[SharedString]>>);
+    // A newer run wins over the answers of an older one.
+    let generation = stored(0u64);
+    effect(move || {
+        let (rows, text) = (rows(), text());
+        let run = generation.get() + 1;
+        generation.replace(run);
+        let Some(text) = text else {
+            out.set(None);
+            return;
+        };
+        match text.texts_now(&rows) {
+            Some(texts) => out.set(Some(texts)),
+            None => {
+                spawn(async move {
+                    let texts = text.texts(&rows).await;
+                    if generation.get() == run {
+                        out.set(Some(texts));
+                    }
+                });
+            }
+        }
+    });
+    out
+}
+
+/// The color of each of `rows` (`None`: none of the plot's) that the
+/// plot's `colorScale` gives the category `color` reads of it, once known
+/// (as [`values`]); `None` without a `color` or a scale.
+pub(super) fn colors(
+    plot: PlotContext,
+    rows: impl Fn() -> Rows + 'static,
+    color: Prop<Option<RowText>>,
+) -> Memo<Option<Arc<[Option<Hsla>]>>> {
+    let categories = texts(rows, move || color.get());
+    computed(move || categories.with(|c| plot.colors(c.as_deref()?)))
+}
+
+/// The color of a series of rows' [`colors`]: its first row's that has
+/// one.
+pub(super) fn first_color(colors: Memo<Option<Arc<[Option<Hsla>]>>>) -> Option<Hsla> {
+    colors.with(|c| c.as_ref()?.iter().find_map(|c| *c))
+}
+
+/// The paint of a mark's shape where nothing sets one: `color`, the one
+/// its category takes, in place of `currentColor`; `initial` otherwise.
+pub(super) fn paint_of(color: Option<Hsla>, initial: SvgPaint) -> SvgPaint {
+    match color {
+        Some(color) if matches!(initial, SvgPaint::CurrentColor) => SvgPaint::Color(color.into()),
+        _ => initial,
+    }
 }
 
 /// What a mark of `plot` draws: its points, in the plot's space, the rows

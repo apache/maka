@@ -38,13 +38,13 @@ test("shows its cards", () => {
 test("a composition runs to its end and reports it", async () => {
   await app.press("Stagger");
   await app.waitFor("stagger running");
-  await app.clock.runFor(3000);
+  await app.clock!.runFor(3000);
   await app.waitFor("stagger finished");
 });
 
 test("a loop goes on until stopped, and a reset stops a run", async () => {
   await app.press("Loop");
-  await app.clock.runFor(1000);
+  await app.clock!.runFor(1000);
   await app.waitFor("loop running");
   await app.press("Stop");
   await app.waitFor("loop stopped");

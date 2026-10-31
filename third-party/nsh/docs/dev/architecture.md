@@ -46,7 +46,7 @@ Input                        native gestures -> EngineControl::dispatch_event ->
   drawn with GSK nodes in `snapshot`; each commit wakes the GTK main loop once (`MainContext::invoke`); native
   animations run on the frame clock.
 - **macOS** (AppKit, `macos.md`): one flipped, layer-backed `NSView` per node at the core's frames, decorated by Core
-  Animation (the iOS backend's), text and canvases drawn in `drawRect:`, desktop input and scroll views as on Linux; each
+  Animation (the iOS backend's), text and canvases drawn into content layers, desktop input and scroll views as on Linux; each
   commit is one main-queue hop; native animations run on the root's display link.
 - **Windows** (Win32, `windows.md`): one retained `NshView` per node, the whole tree drawn by the surface's window
   with Direct2D into a flip-model swap chain (no child windows but web views and components' own windows); each

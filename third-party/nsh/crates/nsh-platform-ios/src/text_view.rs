@@ -1,6 +1,9 @@
 use std::{cell::RefCell, sync::Arc};
 
-use nsh_core::{AttributedText, Bounds, Points, TextLayout, TextLink};
+use nsh_core::{
+    AttributedText, Bounds, Points, TextLayout, TextLink,
+    transition::{Recolor, TextColor},
+};
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::Retained,
@@ -177,6 +180,9 @@ pub(crate) struct TextViewIvars {
     pub(crate) selection: Selection,
     /// An animated `color` (`0xRRGGBBAA`): the whole text is drawn in it.
     color: std::cell::Cell<Option<u32>>,
+    /// A transition of the text's color (`transition-colors`): while it
+    /// runs, the whole text is drawn in its color (under an animated one).
+    transition: RefCell<TextColor>,
     /// The part a selectable view selected (UTF-16 offsets) and its
     /// highlight (`selectable_view.rs`).
     area_highlight: std::cell::Cell<Option<((usize, usize), nsh_core::Color)>>,
@@ -318,10 +324,15 @@ define_class!(
                     Some(&*unsafe { color.CGColor() }),
                 );
             }
-            // An animated color: the text (decorations too) drawn as is into
-            // a layer, then painted over in the color where it drew, so
-            // its antialiasing stays; the layer casts the shadow.
-            let color = self.ivars().color.get();
+            // An animated color, or a transition of the text's color: the
+            // text (decorations too) drawn as is into a layer, then painted
+            // over in the color where it drew, so its antialiasing stays;
+            // the layer casts the shadow.
+            let color = self
+                .ivars()
+                .color
+                .get()
+                .or_else(|| Some(self.ivars().transition.borrow().value()?.0));
             if color.is_some() {
                 // SAFETY: no auxiliary info.
                 unsafe { CGContext::begin_transparency_layer(c, None) };
@@ -546,6 +557,35 @@ impl TextView {
         if self.ivars().color.replace(color) != color {
             self.setNeedsDisplay();
         }
+    }
+
+    /// The content shown.
+    pub(crate) fn text(&self) -> Option<Arc<AttributedText>> {
+        self.ivars().text.borrow().clone()
+    }
+
+    /// Starts, keeps or stops the transition of the text's color, as
+    /// `transition::recolor` found for its new content. True while it
+    /// runs: something steps it ([`TextView::step_color`]).
+    pub(crate) fn recolor(&self, recolor: Recolor) -> bool {
+        let mut transition = self.ivars().transition.borrow_mut();
+        let shown = transition.value();
+        transition.recolor(recolor);
+        if transition.value() != shown {
+            self.setNeedsDisplay();
+        }
+        transition.running()
+    }
+
+    /// One frame of the text's color transition at `now` (ms): draws the
+    /// text again in its next color, from the lines already laid out.
+    /// True while it runs.
+    pub(crate) fn step_color(&self, now: f64) -> bool {
+        let mut transition = self.ivars().transition.borrow_mut();
+        if transition.step(now) {
+            self.setNeedsDisplay();
+        }
+        transition.running()
     }
 
     pub(crate) fn set_layout(

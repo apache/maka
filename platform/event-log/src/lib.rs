@@ -27,6 +27,7 @@ pub mod artifacts;
 pub mod bundle;
 mod canonical_insert;
 mod catalog_changes;
+pub mod checkpoints;
 mod commits;
 pub use commits::SessionSubscription;
 pub mod connection;

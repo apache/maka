@@ -91,8 +91,8 @@ impl Pins {
     }
     fn retain_unconfirmed(&self) {
         if let Some(guards) = self.guards.lock().unwrap().take() {
-            // This is the same original pin and Root authority. Quarantine
-            // closes admission and prevents shutdown from claiming success.
+            // Keep the original pin and Root authority until physical cleanup
+            // is confirmed; uncertainty must not make shutdown claim success.
             let registry = guards.registry.clone();
             registry.retain_unconfirmed(guards);
         }

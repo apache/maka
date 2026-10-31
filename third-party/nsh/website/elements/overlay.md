@@ -1,7 +1,7 @@
 ---
 title: Overlay
 description: "The Overlay element: content shown on top of the screen whatever clips its parent, laid out as a fixed box or placed against an anchor that it follows, with presses outside and Escape reported."
-order: 10.5
+order: 100
 group: primitives
 demo: el-overlay
 ---

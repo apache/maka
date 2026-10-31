@@ -9,8 +9,8 @@ const isZh = lang === 'zh-CN';
 const hrefs = await sectionHrefs(lang);
 
 const copy = isZh
-  ? { tagline: '一次构建，全平台 Native', license: '以 Apache-2.0 许可发布，由', by: '开发。', nav: '页脚导航', issues: '报告问题', source: '源代码' }
-  : { tagline: 'Build once, native everywhere.', license: 'Licensed under Apache-2.0. Developed by', by: '.', nav: 'Footer', issues: 'Report an issue', source: 'Source code' };
+  ? { tagline: '一次构建，全平台 Native', license: '代码以 Apache-2.0 许可发布，由', by: '开发。', docs: '文档以', docsAfter: ' 许可发布。', nav: '页脚导航', issues: '报告问题', source: '源代码' }
+  : { tagline: 'Build once, native everywhere.', license: 'Code licensed under Apache-2.0. Developed by', by: '.', docs: 'Documentation licensed under', docsAfter: '.', nav: 'Footer', issues: 'Report an issue', source: 'Source code' };
 ---
 
 <footer class="site-footer">
@@ -18,9 +18,11 @@ const copy = isZh
     <a href={url(isZh ? 'zh-CN' : '')} class="site-footer__name"><Logo class="site-footer__logo" /> Native Shell</a>
     <p>{copy.tagline}</p>
     <p>{copy.license} <a href="https://longbridge.com" target="_blank" rel="noopener noreferrer">Longbridge</a>{copy.by}</p>
+    <p>{copy.docs} <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="license noopener noreferrer">CC BY 4.0</a>{copy.docsAfter}</p>
   </div>
   <nav aria-label={copy.nav}>
     {SECTIONS.map((section) => <a href={hrefs[section.id]}>{section.label[lang]}</a>)}
+    <a href={url(isZh ? 'zh-CN/apps' : 'apps')}>{isZh ? '应用案例' : 'App Stories'}</a>
     <a href={REPO_URL} target="_blank" rel="noopener noreferrer">{copy.source}</a>
     <a href={`${REPO_URL}/issues`} target="_blank" rel="noopener noreferrer">{copy.issues}</a>
     <a href={url('llms.txt')}>llms.txt</a>

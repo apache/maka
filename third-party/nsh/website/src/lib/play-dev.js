@@ -1,7 +1,8 @@
 // `astro dev` only: serves the player from its sources, so edits show on
-// reload without `cargo xtask web` again. A demo (`play/demos/<name>.nshc`) is
-// compiled from `demos/<name>.tsx` on request by the nsh CLI the player build
-// made; `nsh.js` and `index.html` come from `crates/nsh-platform-web/web`.
+// reload without `cargo xtask web` again. A demo (`play/demos/<name>.js`, an
+// ES module) is compiled from `demos/<name>.tsx` on request by the nsh CLI the
+// player build made; `nsh.js`, the browser host it imports (`browser/*.js`)
+// and `index.html` come from `crates/nsh-platform-web/web`.
 // `nsh.wasm` is the one built by `bun run dev` (rebuilt on the next start:
 // the runtime of published apps, `nsh.wasm` next to the build's output),
 // read from the target directory (the built site's player loads the
@@ -27,7 +28,7 @@ export function playDev(base) {
     configureServer(server) {
       server.watcher.add(join(website, 'demos'));
       server.watcher.add(galleryUi);
-      // Demo bytecode is compiled on request, outside Vite's module graph.
+      // Demos are compiled on request, outside Vite's module graph.
       // Reload its frames when the shared component layer or theme changes.
       server.watcher.on('change', (path) => {
         if (path.startsWith(`${galleryUi}/`)) server.ws.send({ type: 'full-reload' });
@@ -41,7 +42,7 @@ export function playDev(base) {
           res.setHeader('Cache-Control', 'no-store');
           res.end(body);
         };
-        if (rest === 'index.html' || rest === 'nsh.js') {
+        if (rest === 'index.html' || rest === 'nsh.js' || /^browser\/[\w-]+\.js$/.test(rest)) {
           const file = join(web, rest);
           if (!existsSync(file)) return next();
           return send(rest.endsWith('.js') ? 'text/javascript; charset=utf-8' : 'text/html; charset=utf-8', readFileSync(file));
@@ -51,7 +52,7 @@ export function playDev(base) {
           if (!existsSync(file)) return next();
           return send(rest === 'nsh.wasm' ? 'application/wasm' : 'application/octet-stream', readFileSync(file));
         }
-        const demo = /^demos\/([\w-]+)\.nshc$/.exec(rest);
+        const demo = /^demos\/([\w-]+)\.js$/.exec(rest);
         if (!demo || !existsSync(nsh)) return next();
         const entry = join(website, 'demos', `${demo[1]}.tsx`);
         if (!existsSync(entry)) return next();
@@ -62,7 +63,7 @@ export function playDev(base) {
             res.statusCode = 500;
             return send('text/plain; charset=utf-8', built.stderr || built.stdout || 'nsh build failed');
           }
-          return send('application/octet-stream', readFileSync(join(out, 'bundle.nshc')));
+          return send('text/javascript; charset=utf-8', readFileSync(join(out, 'bundle.js')));
         } finally {
           rmSync(out, { recursive: true, force: true });
         }

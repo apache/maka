@@ -20,12 +20,11 @@
 // The window around the workbench on a graphical desktop: the headers along
 // the top edge are its title bar, and the application menu holds the
 // workbench's commands. Terminals keep their own title and menus.
-import { effect } from 'nsh';
-import { platform } from 'nsh';
+import { effect, platform } from 'nsh';
 import { isAvailable, Menu, titleBar, Window } from 'nsh/desktop';
 import { tr } from './locale';
 
-export const ownTitleBar = isAvailable && platform.idiom === 'desktop' && !platform.isTerminal;
+export const ownTitleBar = isAvailable && platform.desktop;
 /** The headers' height, which the system's window controls are centered in. */
 export const TITLE_BAR_HEIGHT = 48;
 
