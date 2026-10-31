@@ -150,6 +150,7 @@ impl Owner {
                     .await?,
                 &snapshot,
                 language,
+                session.configuration.tools.as_deref(),
             ),
         };
         self.prepare_plan_behavior(&source.session_id, &mut basis)
