@@ -42,8 +42,10 @@ pub use execution::{
 pub(crate) use lifecycle::{StageOwner, StageRegistration};
 mod applications;
 mod attachments;
+mod checkpoints;
 mod computer_apps;
 mod control;
+pub use checkpoints::{Checkout, HistoryCheckpoints};
 pub(crate) use computer_apps::activity::{
     record_computer_app_activity, require_computer_app_running,
 };
@@ -220,6 +222,7 @@ impl RootStore {
             // Recovery also owns real workers. Install their independent close
             // observer before recovery can retain a failed SQL job or stage.
             store.recover_creations().await?;
+            store.recover_checkpoints().await?;
             // No admission or retirement can observe abandoned cross-partition
             // auxiliary work as live after a process restart.
             store.recover_host_effects().await?;
