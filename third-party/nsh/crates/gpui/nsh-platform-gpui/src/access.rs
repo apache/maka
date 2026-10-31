@@ -296,6 +296,20 @@ pub(crate) fn exposed(view: &NshView) -> Result<Option<NshView>, ()> {
     Ok(found)
 }
 
+/// The views of `surface` labelled `label` (`accessibilityLabel`) that take
+/// presses and are in the tree, as an assistive technology finds them.
+pub(crate) fn pressable_labelled(surface: &Surface, label: &str) -> Vec<NshView> {
+    let views = surface.mounter.borrow().views.all();
+    views
+        .into_iter()
+        .filter(|view| {
+            view.try_state().is_some_and(|s| {
+                is_pressable(s.events) && s.props.accessibility.label.as_deref() == Some(label)
+            }) && exposed(view).is_ok()
+        })
+        .collect()
+}
+
 /// [`own_name`] of a view.
 #[cfg(test)]
 pub(crate) fn name_of(view: &NshView) -> Option<String> {

@@ -383,3 +383,8 @@ across rebinds and theme replacement. Select integration observers account for
 `ProjectRoot` as well as `Insert` while preserving backdrop, focus and geometry
 assertions. These local integration corrections do not change the recorded
 `ded545337d66eee244f0b0426198ea4c2d472a9d` import bytes or source progress.
+
+`AppView::pressable_bounds` is a local addition for Maka's real-Host desktop
+tests: it returns where the views with a given `accessibilityLabel` that take
+presses are in the window, from the same tree an assistive technology reads,
+so a test clicks them through the window's platform input.
