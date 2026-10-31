@@ -26,10 +26,11 @@ use std::sync::{
 async fn append_noise(log: &EventLog, first: i64, last: i64) {
     log.connection.run(move |db| Box::pin(async move {
         let mut tx=db.begin().await?;
+        sqlx::query("INSERT INTO artifact_contents(content_sha256,payload) VALUES ('test',X'') ON CONFLICT DO NOTHING").execute(&mut *tx).await?;
         for number in first..=last {
             let id=format!("noise-{number:08}");
-            sqlx::query("INSERT INTO artifacts(session_id,id,created_at,record_json,content_sha256,payload,lookup_digest)
-                VALUES('session',?,0,json_object('sessionId','session','id',?,'createdAt',0,'sizeBytes',0,'source','user_upload'),'test',X'',?)")
+            sqlx::query("INSERT INTO artifacts(session_id,id,created_at,record_json,content_sha256,lookup_digest)
+                VALUES('session',?,0,json_object('sessionId','session','id',?,'createdAt',0,'sizeBytes',0,'source','user_upload'),'test',?)")
                 .bind(&id).bind(&id).bind(crate::artifacts::identity::artifact_lookup_digest("session",&id).as_slice()).execute(&mut *tx).await?;
         }
         tx.commit().await?;
@@ -83,10 +84,10 @@ async fn literal_prefix_lookup_keeps_index_range_with_fixed_plans() {
         .unwrap();
     append_noise(&log, 1, 128).await;
     log.connection.run(|db| Box::pin(async move {
-        sqlx::query("INSERT INTO artifacts(session_id,id,created_at,record_json,content_sha256,payload,lookup_digest)
+        sqlx::query("INSERT INTO artifacts(session_id,id,created_at,record_json,content_sha256,lookup_digest)
             VALUES('session','wanted-resource-literal',0,
                 '{\"sessionId\":\"session\",\"id\":\"wanted-resource-literal\",\"createdAt\":0,\"sizeBytes\":0,\"source\":\"user_upload\"}',
-                'test',X'',?)").bind(crate::artifacts::identity::artifact_lookup_digest("session","wanted-resource-literal").as_slice()).execute(db).await?;
+                'test',?)").bind(crate::artifacts::identity::artifact_lookup_digest("session","wanted-resource-literal").as_slice()).execute(db).await?;
         Ok(())
     })).await.unwrap();
     let (small, small_steps) = resolve_steps(&log, "wanted-resource-").await;

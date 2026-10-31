@@ -65,6 +65,8 @@ maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_
 
 These are alternative registration selections for an executable. Host installation refuses conflicting registrations. Re-export refuses to overwrite modified extension source. Setup does not install extensions, change browser policies or grant site access. Remove the matching extension-host registration with `maka browser uninstall --provider maka` for Maka or `maka browser uninstall --provider chatgpt` for ChatGPT; removal does not uninstall the extension or delete exported source.
 
+An installed ChatGPT extension connected to OpenAI's native host does not connect to Maka automatically. To keep that connection, use the separate Maka connector above. With no configured CDP endpoint or registered Maka connection, `cua.listBrowsers()` returns an empty list.
+
 Extension providers expose `browser.user` for user-tab discovery and claiming. The [API reference](src/api.md) covers its permission rules, the `tab.ax` facade, Playwright, clipboard and downloads. Host `browserPreparation` defaults to `popup: false` and `requestHeaders: []`; nonempty headers also enable effective popup adoption/relay. These controls grant no site access and do not prove ChatGPT page hooks are off. See the [typed configuration](../../plugins/workspace/api/src/computer.rs).
 
 Customize the Maka connector through [facade.js](src/facade.js), typed commands in [protocol.rs](src/protocol.rs) and dispatch in [browser.rs](src/browser.rs). ChatGPT and stock OpenCLI integration is best effort. OpenCLI selection can fall back to one available provider before creating or claiming a tab; exact IDs and existing handles remain bound to their provider.
@@ -74,6 +76,8 @@ Computer output recording requires the explicit Host configuration `audio: true`
 ## Native and WSL development builds
 
 The CLI enables the `native-desktop` Cargo feature by default. It includes the local driver and cursor renderer for Linux, macOS or Windows. Native dependencies require Xcode Command Line Tools on macOS and X11 development libraries on Linux.
+
+Numeric wire tests enable `serde_json/arbitrary_precision` to match the full product's dependency graph. Decimal payloads buffered by tagged enums must pass through `protocol::deserialize_numbers` before typed decoding; this applies to nested commands and native helper replies as well as requests.
 
 `just run` automatically omits this feature in WSL, keeping the Windows bridge without compiling the Linux desktop driver. Set `MAKA_CUA_BUILD_MODE` to `auto` (the default), `native` or `bridge` to select the development build explicitly. For example, `MAKA_CUA_BUILD_MODE=native just run` includes the Linux driver in WSL. The runtime `desktop` setting still selects the destination; a bridge build rejects `local`, and `auto` requires WSL to select Windows.
 

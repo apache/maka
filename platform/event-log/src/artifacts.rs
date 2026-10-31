@@ -95,6 +95,7 @@ impl EventLog {
         self.validate_root()?;
         records::ids(session_id, Some(artifact_id))?;
         let (session_id, artifact_id) = (session_id.to_owned(), artifact_id.to_owned());
+        let commits = self.commits.notice();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -121,6 +122,7 @@ impl EventLog {
                         .await?;
                     advance(&mut tx, &session_id).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    commits.material_released();
                     Ok(ArtifactDeletion::Deleted)
                 })
             })
@@ -152,21 +154,44 @@ pub(crate) async fn commit_in_transaction(
         verify_payload(connection, &artifact, bytes).await?;
         return Ok(existing);
     }
+    store_content(connection, &digest, bytes).await?;
     sqlx::query(
-        "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, payload, lookup_digest)
-        VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, lookup_digest)
+        VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&artifact.session_id)
     .bind(&artifact.id)
     .bind(artifact.created_at as i64)
     .bind(encoded)
     .bind(digest)
-    .bind(bytes)
     .bind(identity::artifact_lookup_digest(&artifact.session_id, &artifact.id).as_slice())
     .execute(&mut *connection)
     .await?;
     advance(connection, &artifact.session_id).await?;
     Ok(artifact)
+}
+
+// The caller's transaction publishes content and its Session reference together.
+// Hash equality selects a candidate; exact bytes still decide whether it is reusable.
+async fn store_content(
+    connection: &mut sqlx::SqliteConnection,
+    digest: &str,
+    bytes: &[u8],
+) -> Result<(), StoreError> {
+    let inserted = sqlx::query("INSERT INTO artifact_contents(content_sha256,payload) VALUES (?,?) ON CONFLICT(content_sha256) DO NOTHING")
+        .bind(digest).bind(bytes).execute(&mut *connection).await?.rows_affected();
+    if inserted == 0
+        && !sqlx::query_scalar::<_, bool>(
+            "SELECT payload=? FROM artifact_contents WHERE content_sha256=?",
+        )
+        .bind(bytes)
+        .bind(digest)
+        .fetch_one(connection)
+        .await?
+    {
+        return Err(StoreError::ArtifactConflict);
+    }
+    Ok(())
 }
 
 /// Validate immutable metadata against already checked payload length and digest.
@@ -209,7 +234,7 @@ async fn verify_payload(
     bytes: &[u8],
 ) -> Result<(), StoreError> {
     let matches: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM artifacts WHERE session_id = ? AND id = ? AND payload = ?)",
+        "SELECT EXISTS(SELECT 1 FROM artifacts JOIN artifact_contents USING(content_sha256) WHERE session_id = ? AND id = ? AND payload = ?)",
     )
     .bind(&artifact.session_id)
     .bind(&artifact.id)
@@ -313,7 +338,7 @@ async fn image_chunk(
         return Err(StoreError::ArtifactOffset);
     }
     let (total, bytes): (i64, Vec<u8>) = sqlx::query_as(
-        "SELECT length(payload), substr(payload, ?, ?) FROM artifacts WHERE session_id = ? AND id = ?"
+        "SELECT length(payload), substr(payload, ?, ?) FROM artifacts JOIN artifact_contents USING(content_sha256) WHERE session_id = ? AND id = ?"
     ).bind(offset as i64 + 1).bind(limit as i64).bind(&artifact.session_id).bind(&artifact.id).fetch_one(&mut *connection).await?;
     if total as u64 != artifact.size_bytes
         || bytes.len() as u64 != (artifact.size_bytes - offset).min(limit as u64)

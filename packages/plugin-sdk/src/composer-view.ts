@@ -20,6 +20,7 @@
 import type {
   AgentAttachmentImageRead,
   AgentChecklist,
+  AgentComputerApps,
   AgentFileCandidates,
   AgentQueue,
   AgentExecution,
@@ -178,6 +179,11 @@ export interface ComposerProjectMcp {
   dismiss(): void;
 }
 
+export interface ComposerComputerAccess {
+  snapshot(): AgentComputerApps;
+  stop(operationId: string): Promise<void>;
+}
+
 export interface ComposerChecklistSource {
   read(offset: number): Promise<AgentChecklist>;
   watch(offset: number): Promise<UiSubscription<AgentChecklist>>;
@@ -204,6 +210,7 @@ export interface ComposerSession<Element = unknown> {
   readonly permissions: ComposerPermissions;
   readonly projectMcp: ComposerProjectMcp;
   readonly checklist: ComposerChecklistSource;
+  readonly computerAccess: ComposerComputerAccess;
   readonly completion: ComposerCompletionSource;
   draft(): string;
   previewImage(image: ComposerImagePreview): void;

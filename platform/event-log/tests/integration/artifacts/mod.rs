@@ -205,7 +205,7 @@ async fn immutable_uploads_are_scoped_bounded_and_reopen_with_atomic_catalog_cha
         .await
         .unwrap();
     let stored: (String, Vec<u8>) =
-        sqlx::query_as("SELECT record_json, payload FROM artifacts WHERE id = 'first'")
+        sqlx::query_as("SELECT record_json, payload FROM artifacts JOIN artifact_contents USING(content_sha256) WHERE id = 'first'")
             .fetch_one(&mut observer)
             .await
             .unwrap();
@@ -343,3 +343,133 @@ async fn catalog_fault_rolls_back_payload_metadata_and_delete_as_one_commit() {
 }
 
 mod reads;
+
+#[tokio::test]
+async fn identical_uploads_share_content_but_keep_independent_ownership_and_reclaim_last_reference()
+{
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("shared.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    let bytes = vec![37; 1024 * 1024 + 17];
+    for session in ["session", "other"] {
+        log.create_session(session, session, &json!({}), 1)
+            .await
+            .unwrap();
+        let mut record = artifact("shared", &bytes);
+        record.session_id = session.into();
+        log.commit_artifact(record, bytes.clone()).await.unwrap();
+    }
+    let inspect = rusqlite::Connection::open(&path).unwrap();
+    let physical: (i64, i64) = inspect
+        .query_row(
+            "SELECT COUNT(*), SUM(length(payload)) FROM artifact_contents",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(physical, (1, 1024 * 1024 + 17));
+    assert_eq!(
+        log.delete_user_artifact("session", "shared").await.unwrap(),
+        ArtifactDeletion::Deleted
+    );
+    assert!(
+        log.read_artifact_chunk("session", "shared", 0, 32)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    log.close().await.unwrap();
+    let log = EventLog::open(&path).await.unwrap();
+    let read = log
+        .with_artifact(
+            ArtifactReadScope::Session("other"),
+            "shared",
+            |record, reader| {
+                let mut bytes = Vec::new();
+                reader.read_to_end(&mut bytes).unwrap();
+                (record.session_id.clone(), bytes)
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read, ("other".into(), bytes));
+    assert_eq!(
+        log.delete_user_artifact("other", "shared").await.unwrap(),
+        ArtifactDeletion::Deleted
+    );
+    assert_eq!(
+        inspect
+            .query_row("SELECT COUNT(*) FROM artifact_contents", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn bundle_roundtrip_preserves_owned_artifacts_while_deduplicating_their_bytes() {
+    use maka_event_log::bundle::StagedBundle;
+    let directory = tempfile::tempdir().unwrap();
+    let source_path = directory.path().join("source.sqlite");
+    let source = EventLog::open(&source_path).await.unwrap();
+    source
+        .create_session("session", "session", &json!({}), 1)
+        .await
+        .unwrap();
+    let bytes: Vec<u8> = (0..131_089).map(|i| (i % 251) as u8).collect();
+    for id in ["first", "second"] {
+        let mut record = artifact(id, &bytes);
+        record.name = format!("{id}.bin");
+        source.commit_artifact(record, bytes.clone()).await.unwrap();
+    }
+    let inventory = source.preview_bundle("session").await.unwrap();
+    let (bundle, _) = source
+        .export_bundle("session", &inventory.subtree_digest, Vec::new())
+        .await
+        .unwrap();
+    source.close().await.unwrap();
+    let destination_path = directory.path().join("destination.sqlite");
+    let target = EventLog::open(&destination_path).await.unwrap();
+    let fingerprint = content_digest(b"destination binding");
+    let bindings: std::collections::BTreeMap<_, _> =
+        [("session".to_owned(), json!({}))].into_iter().collect();
+    for _ in 0..2 {
+        target
+            .import_bundle(
+                StagedBundle::read(bundle.as_slice()).await.unwrap(),
+                &fingerprint,
+                bindings.clone(),
+            )
+            .await
+            .unwrap();
+    }
+    let inspect = rusqlite::Connection::open(&destination_path).unwrap();
+    assert_eq!(inspect.query_row("SELECT COUNT(*),SUM(length(payload)),(SELECT COUNT(*) FROM artifacts) FROM artifact_contents", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap(), (1, 131_089, 2));
+    for id in ["first", "second"] {
+        let observed = target
+            .with_artifact(
+                ArtifactReadScope::Session("session"),
+                id,
+                |record, reader| {
+                    let mut bytes = Vec::new();
+                    reader.read_to_end(&mut bytes).unwrap();
+                    (record.name.clone(), bytes)
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(observed, (format!("{id}.bin"), bytes.clone()));
+    }
+    let inventory = target.preview_bundle("session").await.unwrap();
+    let (exported, _) = target
+        .export_bundle("session", &inventory.subtree_digest, Vec::new())
+        .await
+        .unwrap();
+    let mut staged = StagedBundle::read(exported.as_slice()).await.unwrap();
+    staged.validate_history().await.unwrap();
+    staged.close().await.unwrap();
+    target.close().await.unwrap();
+}

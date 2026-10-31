@@ -26,6 +26,7 @@ use std::panic::AssertUnwindSafe;
 /// It survives destruction of the caller's runtime and never blocks a SQL actor.
 pub(super) struct Lifecycle {
     closed: Shared<BoxFuture<'static, Result<(), String>>>,
+    maintenance: Option<tokio::sync::oneshot::Sender<()>>,
 }
 impl Lifecycle {
     pub(super) async fn start(
@@ -34,6 +35,7 @@ impl Lifecycle {
     ) -> Result<Self, StoreError> {
         let (ready, started) = tokio::sync::oneshot::channel();
         let (done, closed) = tokio::sync::oneshot::channel();
+        let (maintenance, recovered) = tokio::sync::oneshot::channel();
         std::thread::Builder::new()
             .name("runtime-root-owner".into())
             .spawn(move || {
@@ -60,7 +62,8 @@ impl Lifecycle {
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let (unconfirmed, premature_close) = runtime.block_on(async {
                         let receipts = logs.iter().map(|log| log.close_receipt()).collect::<Vec<_>>();
-                        tokio::select! {
+                        let shutdown = async {
+                            tokio::select! {
                             failed = gates.wait_for_shutdown() => (failed, None),
                             (closed, _, _) = futures_util::future::select_all(receipts) => {
                                 let ready = gates.shutdown_ready();
@@ -70,7 +73,13 @@ impl Lifecycle {
                                     (closed, _) => (false, Some(closed.err().unwrap_or_else(|| "SQL owner closed before Root work drained".into()))),
                                 }
                             }
-                        }
+                            }
+                        };
+                        let (_, result) = futures_util::future::join(
+                            material::maintain(&logs[1..], recovered, gates.cancellation()),
+                            shutdown,
+                        ).await;
+                        result
                     });
                     if unconfirmed {
                         // Quarantine seals admission, but is not evidence that the
@@ -108,6 +117,7 @@ impl Lifecycle {
             })?;
         match started.await {
             Ok(Ok(())) => Ok(Self {
+                maintenance: Some(maintenance),
                 closed: async move {
                     closed
                         .await
@@ -119,6 +129,13 @@ impl Lifecycle {
             Ok(Err(error)) => Err(StoreError::CloseFailed(error)),
             Err(_) => Err(StoreError::Initialization),
         }
+    }
+    pub(super) fn start_maintenance(&mut self) -> Result<(), StoreError> {
+        self.maintenance
+            .take()
+            .expect("Root enables maintenance once, after startup recovery")
+            .send(())
+            .map_err(|_| StoreError::ConnectionClosed)
     }
     #[cfg(test)]
     pub(super) fn receipt(&self) -> Shared<BoxFuture<'static, Result<(), String>>> {

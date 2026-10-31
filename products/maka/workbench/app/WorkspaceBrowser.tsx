@@ -78,7 +78,7 @@ export type WorkspaceBrowserProps = {
   /** Open the persistent Bot; absent when the Bot mode is not offered. */
   openBot?(expectedSessionId: string | null): void;
   /** The Bot Session, listed only through its own entry. */
-  botSession?(): string | null;
+  botSession?(): string | null | undefined;
   settings(expectedSessionId: string | null): void;
   search(expectedSessionId: string | null): void;
   changeSession(action: SessionAction, expectedSessionId: string | null): Promise<void>;

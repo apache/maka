@@ -202,8 +202,8 @@ async fn retain_one(
     artifact.validate().map_err(invalid)?;
     let metadata = serde_json::to_string(&artifact)?;
     let copied = sqlx::query(
-        "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, payload, canonical_at, lookup_digest)
-         SELECT ?3, ?4, ?5, ?6, content_sha256, payload, canonical_at, ?8 FROM artifacts
+        "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, canonical_at, lookup_digest)
+         SELECT ?3, ?4, ?5, ?6, content_sha256, canonical_at, ?8 FROM artifacts JOIN artifact_contents USING(content_sha256)
          WHERE session_id = ?1 AND id = ?2 AND length(payload) = ?7",
     )
     .bind(source)

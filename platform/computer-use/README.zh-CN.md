@@ -65,6 +65,8 @@ maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_
 
 这些命令为同一个可执行文件选择不同的注册方式。扩展宿主安装拒绝覆盖冲突注册，重新导出扩展时也拒绝覆盖修改过的源码。安装命令不安装扩展、不修改浏览器策略，也不授予站点访问权限。Maka 使用 `maka browser uninstall --provider maka`，ChatGPT 使用 `maka browser uninstall --provider chatgpt`，移除匹配的 扩展宿主注册；此操作不卸载扩展或删除导出源码。
 
+已连接 OpenAI 原生宿主的 ChatGPT 扩展不会自动连接 Maka。要保留原有连接，可使用上面独立的 Maka 连接扩展。没有配置 CDP 端点或注册 Maka 连接时，`cua.listBrowsers()` 返回空列表。
+
 Extension 提供方通过 `browser.user` 提供用户标签页发现和取得入口。[API 说明](src/api.zh-CN.md)涵盖其权限规则、`tab.ax` 门面、Playwright、剪贴板和下载。Host 的 `browserPreparation` 默认为 `popup: false`、`requestHeaders: []`；非空 headers 也会启用有效的 popup 采用与 relay。这些设置不授予站点访问权限，也不证明 ChatGPT 页面 hooks 已关闭，详见[类型化配置](../../plugins/workspace/api/src/computer.rs)。
 
 定制 Maka 连接扩展可从 [facade.js](src/facade.js)、[protocol.rs](src/protocol.rs) 中的类型化命令及 [browser.rs](src/browser.rs) 派发入手。ChatGPT 和原版 OpenCLI 按实际能力尽力兼容。OpenCLI 可在创建或认领标签页前回退到唯一可用的提供方；精确 ID 和已有句柄仍绑定原提供方。
@@ -74,6 +76,8 @@ Extension 提供方通过 `browser.user` 提供用户标签页发现和取得入
 ## 原生与 WSL 开发构建
 
 CLI 默认启用 Cargo feature `native-desktop`，包含 Linux、macOS 或 Windows 的本地驱动及游标渲染器。原生依赖在 macOS 上需要 Xcode Command Line Tools，在 Linux 上需要 X11 开发库。
+
+数字传输测试启用 `serde_json/arbitrary_precision`，与完整产品的依赖图保持一致。小数经过带标签枚举的缓冲后，需要通过 `protocol::deserialize_numbers` 恢复数字，再解析为具体类型；嵌套命令、原生辅助进程的请求与回包都适用。
 
 `just run` 在 WSL 中自动关闭该 feature，保留 Windows 桥接且无需编译 Linux 桌面驱动。可将 `MAKA_CUA_BUILD_MODE` 设置为 `auto`（默认）、`native` 或 `bridge`，显式选择开发构建。例如 `MAKA_CUA_BUILD_MODE=native just run` 会在 WSL 中编入 Linux 驱动。运行时仍由 `desktop` 配置选择目标；桥接构建拒绝 `local`，`auto` 需要在 WSL 中才能选择 Windows。
 

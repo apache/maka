@@ -69,6 +69,99 @@ fn migration_checksums(connection: &Connection) -> Vec<(i64, Vec<u8>)> {
 }
 
 #[tokio::test]
+async fn catalog_migration_preserves_existing_history_and_backfills_cached_activity() {
+    use sqlx::Connection as _;
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("before-catalog-activity.sqlite");
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&path)
+        .create_if_missing(true);
+    let mut database = sqlx::SqliteConnection::connect_with(&options)
+        .await
+        .unwrap();
+    sqlx::query("PRAGMA application_id = 1296124754")
+        .execute(&mut database)
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations")
+        .run_direct(Some(10), &mut database, false)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration) VALUES
+        ('a-empty','empty',1,100,9999,0,'{"title":"empty"}'),
+        ('z-active','active',1,10,10,0,'{"title":"active"}'),
+        ('pinned','pinned',1,1,1,0,'{"title":"pinned","pinned":true}'),
+        ('b-tie','b',1,50,50,0,'{"title":"b"}'),
+        ('c-tie','c',1,50,50,0,'{"title":"c"}');"#,
+    ).execute(&mut database).await.unwrap();
+    let mut event = RuntimeEvent::new(
+        Invocation {
+            session_id: "z-active".into(),
+            turn_id: "turn".into(),
+            run_id: "run".into(),
+            invocation_id: "invocation".into(),
+        },
+        Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::Message {
+                source_messages: Vec::new(),
+                content: "existing message".into(),
+                request_fingerprint: None,
+            },
+        },
+    );
+    event.recorded_at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(500);
+    sqlx::query(
+        "INSERT INTO event_log(event_id,invocation_id,kind,event_json,event_session)
+        VALUES(?,'invocation','invocation_opened',?,'z-active')",
+    )
+    .bind(&event.id)
+    .bind(serde_json::to_string(&event).unwrap())
+    .execute(&mut database)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO catalog_messages VALUES(1,0,'z-active',500,'existing message',?)")
+        .bind(&event.id)
+        .execute(&mut database)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO catalog_message_watermark VALUES(1,1)")
+        .execute(&mut database)
+        .await
+        .unwrap();
+    database.close().await.unwrap();
+    let old_checksums = migration_checksums(&Connection::open(&path).unwrap());
+
+    for _ in 0..2 {
+        let log = EventLog::open(&path).await.unwrap();
+        let page = log.list_sessions::<Value>(None, None, 10).await.unwrap();
+        assert_eq!(
+            page.sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            ["pinned", "z-active", "a-empty", "b-tie", "c-tie"]
+        );
+        assert_eq!(
+            page.sessions[1]
+                .last_message
+                .as_ref()
+                .unwrap()
+                .preview
+                .as_deref(),
+            Some("existing message")
+        );
+        assert_eq!(log.prefix(10, 16384).await.unwrap().events[0].event, event);
+        log.close().await.unwrap();
+    }
+    let checksums = migration_checksums(&Connection::open(&path).unwrap());
+    assert_eq!(&checksums[..old_checksums.len()], old_checksums);
+    assert_eq!(checksums.last().unwrap().0, 11);
+}
+
+#[tokio::test]
 async fn initialization_and_reopen_preserve_facts_payloads_and_schema_identity() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.sqlite");
