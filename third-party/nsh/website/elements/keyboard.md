@@ -1,7 +1,7 @@
 ---
 title: Keyboard
 description: "The keyboard-inset-height environment variable, Keyboard.dismiss and the keyboard's height: content kept above the software keyboard, moving with it."
-order: 10.7
+order: 120
 group: primitives
 demo: el-keyboard
 ---

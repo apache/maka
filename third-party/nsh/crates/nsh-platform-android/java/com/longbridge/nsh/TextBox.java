@@ -528,13 +528,14 @@ final class TextBox extends android.view.ViewGroup implements Node {
         if (selStart >= 0) highlight(canvas, selStart, selEnd);
         else if (areaStart >= 0) highlight(canvas, Math.min(areaStart, layout.getText().length()),
                 Math.min(areaEnd, layout.getText().length()));
-        if (colored) {
-            // An animated `color`: the text drawn as is into a layer, then
-            // painted over in the color where it drew (antialiasing kept).
+        if (colored || transitioning) {
+            // An animated `color`, or a transition of the text's color: the
+            // text drawn as is into a layer, then painted over in the color
+            // where it drew (antialiasing kept).
             int saved = canvas.saveLayer(null, null);
             layout.draw(canvas);
             drawDecorations(canvas);
-            canvas.drawColor(color, android.graphics.PorterDuff.Mode.SRC_IN);
+            canvas.drawColor(colored ? color : transitionColor, android.graphics.PorterDuff.Mode.SRC_IN);
             canvas.restoreToCount(saved);
         } else {
             layout.draw(canvas);
@@ -573,6 +574,84 @@ final class TextBox extends android.view.ViewGroup implements Node {
         colored = on;
         this.color = color;
         invalidate();
+    }
+
+    /** The runs draw all of the text in one color ({@link #uniformColor}); not for several (or none yet). */
+    private boolean uniform;
+    private int uniformColor;
+    /** A transition of the text's color (`transition-colors`), and the color it draws the whole text in now. */
+    private android.animation.ValueAnimator colorTransition;
+    private int transitionTo;
+    private boolean transitioning;
+    private int transitionColor;
+
+    /**
+     * The text changed to one drawn in {@code to} (unless {@code one} is false: several colors),
+     * the view's effects being {@code fx}: its color moves to the new one over the view's
+     * transition when that covers colors and the text is one color before and after, as
+     * `nsh_core::transition::recolor` decides on the other backends. The new layout is drawn in the
+     * color on screen, so no frame lays it out again; a change mid-way starts from where the color
+     * is. Unboxed: a text updating live allocates nothing for its color.
+     */
+    void recolor(boolean one, int to, Effects fx) {
+        boolean wasOne = uniform;
+        int from = uniformColor;
+        uniform = one;
+        uniformColor = to;
+        boolean covered = fx != null && (fx.transitionProps & 1) != 0
+                && fx.transitionDuration + fx.transitionDelay > 0
+                // Reduced motion (no animator duration scale): at once.
+                && android.animation.ValueAnimator.areAnimatorsEnabled()
+                && isAttachedToWindow();
+        if (!covered || !one || !wasOne) {
+            stopColorTransition();
+            return;
+        }
+        if (from == to) {
+            // The same color: a transition running to it goes on.
+            if (colorTransition != null && transitionTo != to) stopColorTransition();
+            return;
+        }
+        final int start = transitioning ? transitionColor : from;
+        final int end = to;
+        android.animation.ValueAnimator running = colorTransition;
+        android.animation.ValueAnimator a = android.animation.ValueAnimator.ofFloat(0, 1);
+        a.setDuration((long) fx.transitionDuration);
+        a.setStartDelay((long) fx.transitionDelay);
+        a.setInterpolator(Effects.interpolator(fx.transitionEasing));
+        a.addUpdateListener(animation -> {
+            if (colorTransition != animation) return;
+            transitionColor = Mounter.lerpColor(start, end, (float) animation.getAnimatedValue());
+            invalidate();
+        });
+        a.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                if (colorTransition != animation) return;
+                // Done: the runs' own color (the new one) draws again.
+                colorTransition = null;
+                transitioning = false;
+                invalidate();
+            }
+        });
+        colorTransition = a;
+        transitionTo = end;
+        if (running != null) running.cancel();
+        // The new runs draw in the old color until the first frame.
+        transitioning = true;
+        transitionColor = start;
+        invalidate();
+        a.start();
+    }
+
+    private void stopColorTransition() {
+        android.animation.ValueAnimator running = colorTransition;
+        colorTransition = null;
+        if (running != null) running.cancel();
+        if (transitioning) {
+            transitioning = false;
+            invalidate();
+        }
     }
 
     private final android.graphics.Paint decorationPaint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);

@@ -171,7 +171,9 @@ pub(crate) fn read_config(entry: &Path) -> anyhow::Result<AppConfig> {
 /// file must be inside the app's directory, symbolic links resolved, as the
 /// page ships it as it is.
 pub(crate) fn web_host_module(entry: &Path, host: &Path) -> anyhow::Result<PathBuf> {
-    let dir = dunce::canonicalize(entry.parent().unwrap_or(Path::new(".")))
+    // `App.tsx`'s parent is the empty path, which does not canonicalize.
+    let dir = entry.parent().filter(|d| !d.as_os_str().is_empty());
+    let dir = dunce::canonicalize(dir.unwrap_or(Path::new(".")))
         .with_context(|| format!("the app's directory of {}", entry.display()))?;
     let module = dunce::canonicalize(host)
         .with_context(|| format!("nsh.json web.host {}", host.display()))?;
@@ -1175,6 +1177,9 @@ mod tests {
             assert!(error.contains("inside the app's directory"), "{error}");
         }
         fs::remove_dir_all(&root).unwrap();
+        // An entry named without its directory is in the working directory
+        // (the crate's, under `cargo test`).
+        assert!(web_host_module(Path::new("App.tsx"), Path::new("Cargo.toml")).is_ok());
     }
 
     /// App icons are drawn at 1024 pixels, which `sips` alone cannot

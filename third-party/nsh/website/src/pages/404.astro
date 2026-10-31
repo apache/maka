@@ -2,6 +2,7 @@
 import BaseLayout from '../layouts/BaseLayout.astro';
 import Nav from '../components/Nav.astro';
 import SiteFooter from '../components/SiteFooter.astro';
+import Button from '../components/ui/Button.astro';
 import { url } from '../lib/site';
 ---
 
@@ -12,8 +13,8 @@ import { url } from '../lib/site';
     <h1>This page does not exist.</h1>
     <p class="not-found__zh" lang="zh-CN">页面不存在。</p>
     <div class="not-found__actions">
-      <a class="not-found__btn not-found__btn--primary" href={url('')}>Go home</a>
-      <a class="not-found__btn" href={url('docs')}>Read the guide</a>
+      <Button size="lg" href={url('')}>Go home</Button>
+      <Button size="lg" variant="secondary" href={url('docs')}>Read the guide</Button>
     </div>
   </main>
   <SiteFooter lang="en" />
@@ -46,8 +47,4 @@ import { url } from '../lib/site';
   h1 { margin: 0; font-size: clamp(1.8rem, 4vw, 2.6rem); font-weight: 680; letter-spacing: -0.04em; }
   .not-found__zh { margin: 0; color: var(--muted-foreground); }
   .not-found__actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.6rem; margin-top: 1rem; }
-  .not-found__btn { display: inline-flex; align-items: center; min-height: 2.5rem; padding: 0 1rem; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--finish-raised-bg); box-shadow: var(--finish-raised); color: var(--foreground); font-size: 0.875rem; font-weight: 600; text-decoration: none; }
-  .not-found__btn:hover { border-color: var(--border-hover); }
-  .not-found__btn--primary { border-color: transparent; background: var(--finish-primary-bg); box-shadow: var(--finish-primary); color: var(--brand-contrast); }
-  .not-found__btn--primary:hover { border-color: transparent; background: var(--finish-primary-hover-bg); }
 </style>

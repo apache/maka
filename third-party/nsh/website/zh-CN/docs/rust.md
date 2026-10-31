@@ -14,7 +14,7 @@ JavaScript 虚拟机。
 | | Rust | TSX | Rust + TSX |
 |---|---|---|---|
 | 你的 UI、状态和事件处理 | Rust | TSX，运行在 QuickJS 上 | Rust 组件和模块，TSX 页面使用它们 |
-| 应用运行的内容 | 只有引擎和你的 crate，所有平台和浏览器都一样 | QuickJS 和引擎 | QuickJS 和引擎，加上你的 crate |
+| 应用运行的内容 | 只有引擎和你的 crate，所有平台和浏览器都一样 | QuickJS 和引擎（浏览器里是它的 JavaScript 引擎） | QuickJS 和引擎，加上你的 crate（浏览器里是它的 JavaScript 引擎） |
 | 适合 | 业务复杂度高的中大型应用 | 运行时下发的应用和模块、快速迭代 | Rust 核心加上经常变化的部分 |
 | 修改代码 | 重新构建并重启 | 热更新 | TSX 热更新，Rust 重新构建并重启 |
 | 创建 | `nsh init my-app --template rust` | `nsh init my-app --template ts` | `nsh init my-app --template mixed` |
@@ -158,6 +158,47 @@ fn window_bar() -> impl IntoElement {
 
 `set_title_bar(TitleBarStyle::Default, None)` 恢复系统标题栏。
 `close_window()` 遵循宿主的正常窗口关闭行为。
+这个模块还有窗口的其他函数（`set_title`、`minimize`、`toggle_full_screen`……）
+和菜单（`set_application_menu`、`popup_menu`）：见 [nsh/desktop](../modules/nsh-desktop.md)。
+
+## 文件和文件夹
+
+在桌面平台上，Rust 代码可以显示系统的文件对话框，并把本地路径交给系统处理，
+每个结果都在任务中等待：`pick_paths` 接受 `OpenDialog`
+（`OpenDialog::files()`、`::folders()` 或 `::files_and_folders()`），`pick_save_path`
+接受 `SaveDialog`，`open_path`（用文件的默认应用打开）、`reveal_path`
+（在访达、文件资源管理器或文件管理器中选中该项）和 `move_to_trash`
+（macOS 告知时返回该项移到的位置）。用户取消时对话框返回 `Ok(None)`，
+无法显示时返回错误（Linux 上没有文件选择 portal 时，以及 iOS、Android 和 Web 上；
+在这些平台上 `open_path`、`reveal_path` 和 `move_to_trash` 也返回错误）。
+请求失败时一律返回错误，不返回 `false`。
+
+```rust
+use nsh_core::{
+    file_dialog::{FileFilter, OpenDialog},
+    prelude::*,
+};
+
+fn open_notes() {
+    let picked = pick_paths(
+        OpenDialog::files()
+            .multiple(true)
+            .filter(FileFilter::new("Markdown", ["md", "markdown"]))
+            .button_label("打开"),
+    );
+    spawn(async move {
+        match picked.await {
+            Ok(Some(paths)) => {
+                for path in paths {
+                    let _ = reveal_path(path).await;
+                }
+            }
+            Ok(None) => {} // 用户取消。
+            Err(error) => log::warn!("no file dialog: {error}"),
+        }
+    });
+}
+```
 
 ## 用 TSX 扩展 Rust 应用
 
@@ -296,7 +337,9 @@ Rust 中；TSX 传入 props、接收事件。类型不对的 prop（`u32` 类型
 [未处理的 rejection](./dev-server-and-debugging.md#日志)）；返回值的得到 `Promise<T>`。参数和返回值的类型来自签名：数字、
 字符串、`Option`、`Vec`、你的 `#[derive(JsObject)]` 结构体和 `#[derive(PropEnum)]` 枚举、你的类的实例，以及 TSX 函数
 （`Callback<A, R>`：Rust 在调用中立即调用它，或之后用 `post` 和 `call_async` 调用；`Callback<f64>` 在 TS 中是
-`(value: number) => void`，`#[args(balance)] listener: Callback<f64>` 给参数命名，得到 `(balance: number) => void`）。事件处理函数
+`(value: number) => void`，`#[args(balance)] listener: Callback<f64>` 给参数命名，得到 `(balance: number) => void`）。开始监听的函数命名为
+`on(event, listener)`，返回 `Stop`（`Stop::new(|| …)`），TSX 得到的是停止监听的函数（`() => void`）；它只运行一次，在 TSX 调用它时，
+或在调用 `on` 的一方（组件，或热重载下模块的这次运行）消失时。事件处理函数
 接收一个对象：变体的值是它的字段 `value`，在变体上写 `#[args(price)]` 可以给它命名（`onSelect({ price })`），
 有多个值的变体用 `#[args(open, reason)]` 给各个字段命名。类型不对的参数在调用中抛出 `TypeError`，
 返回 Promise 的调用则以它 reject；`Err` 以其消息抛出（或 reject）。类的对象拥有它的

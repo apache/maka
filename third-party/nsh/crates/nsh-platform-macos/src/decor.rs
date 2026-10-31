@@ -14,10 +14,10 @@
 //! A shader view's frames are the contents of a sublayer
 //! ([`crate::shader`]) shaped here as an image view's image layer is.
 //!
-//! Text and canvas views draw into their layer's contents (`drawRect:`),
-//! which Core Animation shows below every sublayer: their background is the
-//! layer's own, never a fill layer, and nothing inside the box is drawn over
-//! them but borders.
+//! Text and canvas views draw into a content sublayer
+//! ([`NshView::redraw`]: `drawLayer:inContext:`) at `BEHIND / 2`, above the
+//! decoration behind them and below their children and the borders in
+//! front. Their background is the layer's own, never a fill layer.
 //!
 //! A `drop-shadow()` filter is the layer's own shadow: it follows the
 //! content.
@@ -42,7 +42,7 @@ use objc2_quartz_core::{
 };
 
 use crate::{
-    image::Decoded,
+    image::Picture,
     surface::quiet,
     view::{NshView, ViewState},
 };
@@ -123,7 +123,7 @@ pub(crate) struct Decor {
     /// mode and the position put it.
     picture: Option<Retained<CALayer>>,
     /// The image shown, and its natural size in points.
-    contents: Option<(Decoded, (f32, f32))>,
+    contents: Option<(Picture, (f32, f32))>,
     /// How the image fits.
     mode: ResizeMode,
     /// Where the fitted image sits.
@@ -161,7 +161,7 @@ impl Decor {
 
     /// Shows `image` (natural size `natural` in points), fading in over
     /// `fade` seconds; an animated image plays its frames, forever.
-    pub(crate) fn set_image(&mut self, image: Option<(&Decoded, (f32, f32))>, fade: f64) {
+    pub(crate) fn set_image(&mut self, image: Option<(&Picture, (f32, f32))>, fade: f64) {
         self.contents = image.map(|(d, n)| (d.clone(), n));
         self.image_layer();
         let Some(layer) = self.picture.clone() else {

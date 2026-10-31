@@ -13,7 +13,11 @@
 //! URI in an [`InlineImages`].
 //!
 //! Downloaded images are kept on disk by a [`DiskCache`] (native backends:
-//! `cache.rs` has the policy and the format).
+//! `cache.rs` has the policy and the format). The native backends load
+//! through one [`loader`] (reads, downloads, decodes, the encoded bytes in
+//! memory) and keep what they decode in [`Images`] at display size, in one
+//! [`budget`] per process with leases on what views show ([`MemoryCache`]):
+//! `docs/dev/images.md`.
 
 use std::{
     fmt,
@@ -27,6 +31,14 @@ use rustc_hash::FxHashMap;
 mod cache;
 #[cfg(not(target_arch = "wasm32"))]
 pub use cache::{CacheHeaders, DEFAULT_DISK_CACHE_SIZE, DiskCache, Fetched, Lookup, Validators};
+#[cfg(not(target_arch = "wasm32"))]
+mod decoded;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod loader;
+mod memory;
+#[cfg(not(target_arch = "wasm32"))]
+pub use decoded::{Decoded, Decoder, Done, Frames, Images, Key, Natural, Request, Target, Want};
+pub use memory::{Budget, Lease, MemoryCache, bucket, budget, default_budget, wanted};
 
 type Bytes = dyn AsRef<[u8]> + Send + Sync;
 

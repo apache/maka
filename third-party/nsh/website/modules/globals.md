@@ -514,7 +514,7 @@ await fetch("https://api.example.com/upload", {
 - **`redirect: "manual"` delivers the 3xx response itself**, with its status and `Location` header, instead of an opaque filtered response. `"follow"` follows redirects (each hop is checked against the capabilities); `"error"` rejects when the response is a redirect.
 - **A `FormData` body always gets `Content-Type: multipart/form-data; boundary=…`**, even when a `Content-Type` header was set. HTTP libraries often set a default content type and clear it only where they detect a browser; without the boundary the server cannot parse the body.
 - **`credentials`, `cache`, `referrer`, `referrerPolicy`, `integrity`, `keepalive` and `priority`** are validated and kept on the `Request` object, but are not passed to the network stack: caching and cookie handling are those of the platform's stack.
-- **Capabilities.** When the app declares `network` capabilities in `nsh.json` (or the embedding app grants fewer), a request to a host that is not allowed never reaches the network and `fetch` rejects with a `TypeError`. See [Sandbox and capabilities](../docs/sandbox-and-capabilities.md).
+- **Capabilities.** When the app declares `network` capabilities in `nsh.json` (or the embedding app grants fewer), a request to a host that is not allowed never reaches the network and `fetch` rejects with a `TypeError` whose `code` is `"ERR_ACCESS_DENIED"`, `permission` `"network"` and `resource` the URL refused. See [Sandbox and capabilities](../docs/sandbox-and-capabilities.md).
 - **Errors.** Network failures reject with a `TypeError` whose message starts with `Network request failed:`; aborts reject with the signal's `reason`.
 
 See [Networking](../docs/networking.md) for a guide to loading data in components.

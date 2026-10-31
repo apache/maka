@@ -1,7 +1,7 @@
 ---
 title: View
 description: 最基础的容器元素：布局、背景、边框、阴影、按压处理和手势。
-order: 2
+order: 10
 group: primitives
 demo: el-view
 ---

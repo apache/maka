@@ -1,18 +1,30 @@
 //! What class styles animate and how the pointer looks: transitions of
 //! style changes, built-in keyframe animations (`animate-spin`, ...),
 //! blend modes and pointer styles.
+//!
+//! A text's color is not a layer property but the color its lines are
+//! drawn in: its transition ([`TextColors`]) draws the laid-out lines
+//! again in the in-between color on every frame of a display link that
+//! runs only while one moves, as an animated `color` does.
 
-use nsh_core::{BlendMode, Cursor, KeyframeAnimation, Keyframes, Transition, TransitionProps};
-use objc2::{MainThreadMarker, MainThreadOnly, msg_send, rc::Retained, runtime::AnyObject};
+use nsh_core::{
+    AttributedText, BlendMode, Cursor, KeyframeAnimation, Keyframes, Transition, TransitionProps,
+    ViewStyle, transition,
+};
+use objc2::{
+    MainThreadMarker, MainThreadOnly, Message, msg_send, rc::Retained, runtime::AnyObject, sel,
+};
 use objc2_core_foundation::CGFloat;
-use objc2_foundation::{NSArray, NSNumber, NSString, ns_string};
+use objc2_foundation::{NSArray, NSNumber, NSRunLoop, NSRunLoopCommonModes, NSString, ns_string};
 use objc2_quartz_core::{
-    CABasicAnimation, CAKeyframeAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction,
-    CATransaction, kCAFillModeBackwards,
+    CABasicAnimation, CADisplayLink, CAKeyframeAnimation, CALayer, CAMediaTiming,
+    CAMediaTimingFunction, CATransaction, kCAFillModeBackwards,
 };
 use objc2_ui_kit::{
     UIAxis, UIPointerEffect, UIPointerShape, UIPointerStyle, UITargetedPreview, UIView,
 };
+
+use crate::{target::EventTarget, text_view::TextView};
 
 /// An `NSArray` of numbers, as the untyped arrays keyframe values are.
 fn numbers(values: &[f64]) -> Retained<NSArray> {
@@ -100,6 +112,71 @@ pub(crate) fn transition(view: &UIView, t: &Transition, apply: impl FnOnce()) {
             a.setFillMode(unsafe { kCAFillModeBackwards });
         }
         layer.addAnimation_forKey(&a, Some(key));
+    }
+}
+
+/// The texts whose color transitions (`transition-colors`), stepped on a
+/// display link that runs only while one does.
+pub(crate) struct TextColors {
+    link: Retained<CADisplayLink>,
+    texts: Vec<Retained<TextView>>,
+}
+
+impl TextColors {
+    pub(crate) fn new(target: &EventTarget) -> Self {
+        // SAFETY: `textColorFrame:` is implemented by `EventTarget`, which
+        // outlives the link (it is invalidated in `Drop`).
+        let link =
+            unsafe { CADisplayLink::displayLinkWithTarget_selector(target, sel!(textColorFrame:)) };
+        crate::animation::full_rate(&link);
+        link.setPaused(true);
+        // SAFETY: the main run loop and standard modes. Common modes keep
+        // the colors moving while a scroll view is tracking.
+        unsafe { link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes) };
+        Self {
+            link,
+            texts: Vec::new(),
+        }
+    }
+
+    /// `view`'s text changed from `old` to `text`, its style being
+    /// `style`: its color transitions as `transition::recolor` says, drawn
+    /// over the new lines rather than laid out on every frame. As style
+    /// transitions, only on a view on screen.
+    pub(crate) fn text_changed(
+        &mut self,
+        view: &TextView,
+        old: &AttributedText,
+        text: &AttributedText,
+        style: &ViewStyle,
+    ) {
+        let recolor = if style.transition.is_some() && view.window().is_some() {
+            let reduce_motion = objc2_ui_kit::UIAccessibilityIsReduceMotionEnabled();
+            transition::recolor(old, text, style, reduce_motion)
+        } else {
+            transition::Recolor::default()
+        };
+        if view.recolor(recolor) && !self.texts.iter().any(|t| std::ptr::eq(&**t, view)) {
+            self.texts.push(view.retain());
+            self.link.setPaused(false);
+        }
+    }
+
+    /// A tick of the display link: the next color of every text that
+    /// transitions; the link pauses once none does.
+    pub(crate) fn frame(&mut self) {
+        let now = self.link.targetTimestamp() * 1000.0;
+        self.texts.retain(|t| t.step_color(now));
+        if self.texts.is_empty() {
+            self.link.setPaused(true);
+        }
+    }
+}
+
+impl Drop for TextColors {
+    fn drop(&mut self) {
+        // The link retains its target; invalidating breaks the cycle.
+        self.link.invalidate();
     }
 }
 

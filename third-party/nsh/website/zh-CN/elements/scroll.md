@@ -1,7 +1,7 @@
 ---
 title: Scroll
 description: 原生滚动视图：纵向和横向滚动、分页与吸附、下拉刷新、缩放以及滚动事件。
-order: 5
+order: 40
 group: primitives
 demo: el-scroll
 ---

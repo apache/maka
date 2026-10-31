@@ -41,15 +41,18 @@ pub enum MenuBarMode {
 }
 
 /// A window's frame (`Window.setFrame`): the part of it to move, in
-/// points, in screen coordinates; a field left out keeps its value. TS
-/// gives `origin` (`x`, `y`) and `size` (`width`, `height`) as
-/// `Partial<Point>` and `Partial<Size>`.
+/// points, in screen coordinates; a field left out keeps its value. The
+/// origin is the window's top left corner, measured from the top left of
+/// the primary screen (the one with the menu bar on macOS) with `y`
+/// growing down, on every platform. TS gives `origin` (`x`, `y`) and
+/// `size` (`width`, `height`) as `Partial<Point>` and `Partial<Size>`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct WindowFrame {
-    /// Its left edge (macOS's screen coordinates go up: `x` and `y` are the
-    /// window's bottom left corner there).
+    /// Its left edge.
     pub x: Option<Points>,
-    /// Its bottom edge on macOS, its top edge elsewhere.
+    /// Its top edge, growing down; changing the height without a `y`
+    /// keeps the top edge where it is (the window grows and shrinks at its
+    /// bottom edge).
     pub y: Option<Points>,
     /// Its outer width on macOS / Windows, GTK default width on Linux.
     pub width: Option<Points>,
@@ -57,27 +60,20 @@ pub struct WindowFrame {
     pub height: Option<Points>,
     /// Animates the change on macOS (false by default).
     pub animated: Option<bool>,
-    /// The top edge keeps its place when `height` changes without a `y`:
-    /// the window grows and shrinks at its bottom edge (a content-sized
-    /// window's title area stays put). Elsewhere, where `y` already is the
-    /// top edge, this is the default.
-    pub anchor_top: Option<bool>,
 }
 
-/// TS: `{ origin?: Partial<Point>; size?: Partial<Size>; animated?; anchorTop? }`.
+/// TS: `{ origin?: Partial<Point>; size?: Partial<Size>; animated? }`.
 impl JsValue for WindowFrame {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("WindowFrame", |_| {
             "/** A window's frame (`Window.setFrame`): the part of it to move, in points, in screen coordinates; a field left out keeps its value. */\n\
              export interface WindowFrame {\n  \
-             /** Its left edge and its bottom edge on macOS (whose screen coordinates go up: the window's bottom left corner), its top edge elsewhere. */\n  \
+             /** Its top left corner, from the primary screen's top left corner, `y` growing down. A height changed without a `y` keeps the top edge where it is: the window grows and shrinks at its bottom edge. */\n  \
              origin?: Partial<Point>;\n  \
              /** Its outer size on macOS / Windows, GTK's default size on Linux. */\n  \
              size?: Partial<Size>;\n  \
              /** Animates the change on macOS (false by default). */\n  \
-             animated?: boolean;\n  \
-             /** The top edge keeps its place when the height changes without a `y`: the window grows and shrinks at its bottom edge (a content-sized window's title area stays put). Elsewhere, where `y` already is the top edge, this is the default. */\n  \
-             anchorTop?: boolean;\n}"
+             animated?: boolean;\n}"
                 .into()
         })
     }
@@ -99,7 +95,6 @@ impl JsValue for WindowFrame {
         }
         let mut frame = WindowFrame {
             animated: get(value, "animated")?,
-            anchor_top: get(value, "anchorTop")?,
             ..WindowFrame::default()
         };
         let origin = value.field("origin")?;
@@ -138,9 +133,6 @@ impl JsValue for WindowFrame {
         }
         if let Some(v) = self.animated {
             host.set_field(object, "animated", v.to_js(host)?.into_raw())?;
-        }
-        if let Some(v) = self.anchor_top {
-            host.set_field(object, "anchorTop", v.to_js(host)?.into_raw())?;
         }
         Ok(owned)
     }

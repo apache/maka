@@ -128,7 +128,10 @@ fn start(
         std::thread::sleep(Duration::from_millis(20));
     }
     let asked = server.clone();
-    let scene = Arc::new(RemoteScene::new(move |step| asked.step(step, ASK)));
+    let scene = Arc::new(
+        RemoteScene::new(move |step| asked.step(step, ASK))
+            .with_manual_clock(options.environment.clock.is_some()),
+    );
     let native = WebNative {
         page: page.clone(),
         server: server.clone(),

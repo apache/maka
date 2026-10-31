@@ -1,4 +1,4 @@
-//! `nsh/canvas`: `Canvas` (a view drawn with an HTML Canvas 2D context,
+//! `nsh`'s `Canvas` (a view drawn with an HTML Canvas 2D context,
 //! replayed natively), `Path2D` and the classes of the context and
 //! gradients.
 //!
@@ -173,7 +173,7 @@ fn literal(text: &str) -> Rec {
     }
 }
 
-/// The classes and prototypes of `nsh/canvas` (per context).
+/// The classes and prototypes of the canvas (per context).
 pub(crate) struct Canvases {
     classes: Cell<Option<Classes>>,
     /// Prototypes (owned): context, path, gradient.
@@ -1430,7 +1430,7 @@ fn send(cx: *mut JsContext, node: JsValue, out: Rc<Vec<Rec>>, mut used: Vec<JsVa
     }
 }
 
-/// `nsh/canvas`.
+/// `nsh`'s `Canvas`, `Path2D` and the classes of the context and gradients.
 pub(crate) const EXPORTS: &[Item] = &[
     (
         "Canvas",
@@ -1525,7 +1525,7 @@ export interface CanvasRenderingContext2D extends CanvasPath, CanvasContextMetho
     ),
 ];
 
-/// `nsh/canvas`'s types (with the recording methods' and properties' of
+/// The canvas's types (with the recording methods' and properties' of
 /// `nsh_core::js::canvas::declarations`).
 pub(crate) const TYPES: &str = r#"/** A color, a gradient, or an animated value interpolating colors. */
 export type CanvasPaint = string | CanvasGradient | AnimatedNode;

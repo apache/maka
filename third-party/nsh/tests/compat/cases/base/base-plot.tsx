@@ -29,14 +29,32 @@
 // (`labelLineClass`, `labelLineStyle`).
 // `PlotAxis`es (`placement`, `labelPlacement`, `ticks`, `tickValues`,
 // `format`, the `label`, `tick` and `line` parts) lay their labels out
-// along a plot's edges.
+// along a plot's edges. A `PlotLabel` writes its `texts` at values of a
+// plot's scales, each starting at, centered on or ending at its point.
 // A sparkline's y domain, the extent of its rows, moves to a new one with
 // `motion.update` as rows come.
+// Bars take their colors from their rows' regions through the plot's
+// `colorScale` (`color` on the mark, an ordinal scale on the plot).
 // Reversed scales (`reverse`): bars hanging from the top of a reversed
 // linear y scale in bands from the right edge, and bars across from the
 // right edge of a reversed x; the axis's labels and the hover follow.
+// A radar: `RadialLine`s (`radius` as a field and as a function, `angle`,
+// `startAngle`, `endAngle`, `outerRadius`) report the row nearest the
+// pointer by angle, none outside their outer radius, and step through the
+// rows with a screen reader's increment; `RadialGrid`s draw circular
+// `rings` and `spokes` between their radii.
+// A `Sankey` (`links`, `nodeWidth`, `nodePadding`, `nodeAlign`,
+// `iterations`, `valueScale`, `minLinkWidth`, `nodeCornerRadius`,
+// `hoverDim`, its `node`, `link` and `linkBackground` parts, and its
+// labels: `nodeLabel`, `valueLabel` and their parts) fills its plot with
+// flows between the plot's rows, reports the node under the pointer and
+// steps through its nodes with a screen reader's increment, and moves to
+// new flows with `motion.update`; links that make a cycle draw nothing.
+// A `PlotAppearScope` (`id`) remembers the appears that finished in it: a
+// plot made again there shows whole at once, a new `appearGeneration` (a
+// string) and a new `id` draw it in again.
 import { Text, View, signal } from "nsh";
-import { Arc, Area, Bar, Grid, Line, Pie, Plot, PlotAxis } from "nsh/base/plot";
+import { Arc, Area, Bar, Grid, Line, Pie, Plot, PlotAppearScope, PlotAxis, PlotLabel, RadialGrid, RadialLine, Sankey } from "nsh/base/plot";
 
 type Row = { t: number; price: number; avg: number };
 type Sale = { v: number; w: number };
@@ -145,7 +163,12 @@ function App() {
       <PieCase />
       <PieLabelCase />
       <AxisCase />
+      <ColorCase />
       <ReverseCase />
+      <RadarCase />
+      <LabelCase />
+      <SankeyCase />
+      <ScopeCase />
     </View>
   );
 }
@@ -239,6 +262,28 @@ function AxisCase() {
   );
 }
 
+type Region = { region: string; v: number };
+
+/** Bars colored by region through the plot's ordinal `colorScale`: EU
+ * and US in the domain, APAC past it. */
+function ColorCase() {
+  return (
+    <Plot
+      data={[
+        { region: "EU", v: 10 },
+        { region: "US", v: 20 },
+        { region: "APAC", v: 30 },
+      ]}
+      y="v"
+      xScale={{ type: "band" }}
+      colorScale={{ type: "ordinal", domain: ["US", "EU"], range: ["#ff0000", "#00ff00"] }}
+      style={{ width: 150, height: 50 }}
+    >
+      <Bar color="region" label={(d: Region) => `r${d.v}`} labelStyle={{ width: 20, height: 10 }} />
+    </Plot>
+  );
+}
+
 /** Bars of 20, 10 and 5 hanging from the top of a reversed y scale of 0
  * to 40, in three bands from the right edge; under it, the bands' texts.
  * Bars across from the right edge of a reversed x scale of 0 to 20, the
@@ -262,6 +307,161 @@ function ReverseCase() {
       <Plot data={SALES} xScale={{ type: "linear", domain: [0, 20], reverse: true }} yScale={{ type: "band", reverse: true }} style={{ width: 100, height: 60 }}>
         <Bar value="w" label={(d: Sale) => `l${d.w}`} labelClass="h-[14px] w-[30px]" />
       </Plot>
+    </View>
+  );
+}
+
+type Spoke = { a: number; b: number };
+
+/** A radar of four rows on 0 to 10 in a 100 by 100 plot (center 50, 50):
+ * a closed line over the half turn from 9 o'clock to 3 (its rows 60°
+ * apart) out to 40, and a smooth one at angles of its own (an eighth of a
+ * turn apart from 12 o'clock) from 6 out to 30, which the pointer finds
+ * first; a circular ring at 5 (20 out) from 3 o'clock, and a spoke per row
+ * from 6 out. */
+function RadarCase() {
+  const axis = signal<number | null>(null);
+  return (
+    <View>
+      <Plot
+        testID="radar"
+        data={[{ a: 10, b: 5 }, { a: 5, b: 10 }, { a: 10, b: 5 }, { a: 0, b: 10 }] as Spoke[]}
+        yScale={{ type: "linear", domain: [0, 10] }}
+        accessibilityLabel="Radar"
+        onHoverChange={({ index }) => axis.set(index)}
+        style={{ width: 100, height: 100 }}
+      >
+        <RadialGrid testID="rings" rings={[5]} circular startAngle={Math.PI / 2} outerRadius="80%" class="stroke-[#dddddd]" />
+        <RadialGrid testID="spokes" spokes innerRadius={6} outerRadius="80%" />
+        <RadialLine radius="a" startAngle={-Math.PI / 2} endAngle={Math.PI / 2} outerRadius="80%" closed class="fill-[#3366ff]/20 stroke-[#3366ff]" />
+        <RadialLine
+          radius={(d: Spoke) => d.b}
+          angle={(_, i) => (i * Math.PI) / 4}
+          innerRadius={6}
+          outerRadius="60%"
+          curve="natural"
+          hoverDotClass="size-2"
+        />
+      </Plot>
+      <Text>{`axis ${axis()}`}</Text>
+    </View>
+  );
+}
+
+/** Texts at values of a plot of three rows by 0 to 100: each 20 by 10,
+ * its top on the middle row's point at 50, starting at it, centered on it
+ * and ending at it (a class or a style sizing it); one half a row from
+ * the first, at 100. */
+function LabelCase() {
+  const size = "h-[10px] w-[20px]";
+  return (
+    <Plot testID="labels" data={[{ v: 0 }, { v: 50 }, { v: 100 }]} y="v" style={{ width: 200, height: 100 }}>
+      <Line />
+      <PlotLabel
+        class="text-xs"
+        texts={[
+          { text: "lab-left", x: 1, y: 50, class: size },
+          { text: "lab-center", x: 1, y: 50, align: "center", class: size },
+          { text: "lab-right", x: 1, y: 50, align: "right", style: { width: 20, height: 10 } },
+          { text: "lab-top", x: 0.5, y: 100, class: size },
+        ]}
+      />
+    </Plot>
+  );
+}
+
+type Stage = { name: string };
+const STAGES: Stage[] = [{ name: "visits" }, { name: "trials" }, { name: "gone" }, { name: "paid" }];
+const FLOWS = [
+  { source: 0, target: 1, value: 60 },
+  { source: 0, target: 2, value: 40 },
+  { source: 1, target: 3, value: 25 },
+];
+const MORE_FLOWS = [
+  { source: 0, target: 2, value: 30 },
+  { source: 0, target: 1, value: 70 },
+  { source: 1, target: 3, value: 35 },
+];
+const FILLS = ["fill-[#3366ff]", "fill-[#33aa66]", "fill-[#999999]", "fill-[#ffaa00]"];
+
+/** Flows from visits to trials and away, trials to paid: four nodes in
+ * three columns, a ribbon per link, each node its row's fill, each ribbon
+ * a gradient from its source's color; and a plot whose links make a
+ * cycle. */
+function SankeyCase() {
+  const flow = signal<number | null>(null);
+  const more = signal(false);
+  return (
+    <View>
+      <Plot
+        testID="flows"
+        data={STAGES}
+        accessibilityLabel="Flows"
+        motion={{ update: { duration: 200 } }}
+        onHoverChange={({ index }) => flow.set(index)}
+        style={{ width: 200, height: 100, marginHorizontal: 40 }}
+      >
+        <Sankey
+          testID="sankey"
+          links={more() ? MORE_FLOWS : FLOWS}
+          nodeWidth={8}
+          nodePadding={10}
+          nodeAlign="left"
+          iterations={4}
+          valueScale="sqrt"
+          minLinkWidth={2}
+          nodeCornerRadius={2}
+          nodeClass={(_: Stage, i: number) => FILLS[i]}
+          nodeStyle={{ stroke: "#ffffff", strokeWidth: 1 }}
+          linkClass="fill-none"
+          linkStyle={{ opacity: 0.8 }}
+          linkBackgroundClass={(link) => `bg-linear-to-r ${FILLS[link.source].replace("fill-", "from-")}/40 to-transparent`}
+          linkBackgroundStyle={{ opacity: 0.9 }}
+          hoverDim={0.6}
+          nodeLabel={(d: Stage) => d.name}
+          valueLabel={(_: Stage, value: number) => `v${Math.round(value)}`}
+          nodeLabelClass="px-1"
+          nodeLabelStyle={{ fontSize: 10 }}
+          valueLabelClass="font-semibold"
+          valueLabelStyle={{ color: "#333333" }}
+        />
+      </Plot>
+      <Text>{`flow ${flow()}`}</Text>
+      <View testID="more-flows" onPress={() => more.set(true)} style={{ height: 20 }} />
+      <Plot testID="cycle" data={STAGES} accessibilityLabel="Cycle" style={{ width: 100, height: 50 }}>
+        <Sankey links={[{ source: 0, target: 1, value: 1 }, { source: 1, target: 0, value: 1 }]} />
+      </Plot>
+    </View>
+  );
+}
+
+/** A sparkline a row of a list would make again: shown and taken away,
+ * its period changed, and the scope's `id` changed, over an appear of
+ * 100 ms. */
+function ScopeCase() {
+  const shown = signal(false);
+  const period = signal("1D");
+  const list = signal("watch");
+  return (
+    <View>
+      <PlotAppearScope id={list()}>
+        <If when={shown()}>
+          <Plot
+            data={[{ v: 1 }, { v: 3 }, { v: 2 }]}
+            y="v"
+            interactive={false}
+            appearGeneration={`AAPL ${period()}`}
+            motion={{ appear: { duration: 100 } }}
+            style={{ width: 100, height: 20 }}
+          >
+            <Line testID="scoped-line" />
+          </Plot>
+        </If>
+      </PlotAppearScope>
+      <Text>{`scoped ${shown()} ${period()} ${list()}`}</Text>
+      <View testID="scope-toggle" onPress={() => shown.set(!shown())} style={{ height: 20 }} />
+      <View testID="scope-period" onPress={() => period.set("1W")} style={{ height: 20 }} />
+      <View testID="scope-rename" onPress={() => list.set("hot")} style={{ height: 20 }} />
     </View>
   );
 }

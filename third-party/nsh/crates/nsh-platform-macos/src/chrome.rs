@@ -56,7 +56,7 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSApplication, NSEvent, NSEventModifierFlags, NSFloatingWindowLevel, NSMenu, NSMenuItem,
-    NSNormalWindowLevel, NSRunningApplication, NSToolbar, NSWindow, NSWindowButton,
+    NSNormalWindowLevel, NSRunningApplication, NSScreen, NSToolbar, NSWindow, NSWindowButton,
     NSWindowCollectionBehavior, NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_graphics::kCGDesktopIconWindowLevel;
@@ -355,34 +355,41 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
     }
 }
 
-/// Moves and sizes the window: a field left out keeps its value
-/// (`setFrame`'s screen coordinates are the bottom left corner's).
+/// Moves and sizes the window: a field left out keeps its value.
 fn set_frame(window: &NSWindow, frame: &WindowFrame) {
-    let current = window.frame();
-    let points = |v: nsh_core::Points| f64::from(v.0);
+    let primary_height = NSScreen::screens(MainThreadMarker::from(window))
+        .firstObject()
+        .map_or(0.0, |s| s.frame().size.height);
+    window.setFrame_display_animate(
+        appkit_frame(window.frame(), frame, primary_height),
+        true,
+        frame.animated.unwrap_or(false),
+    );
+}
+
+/// The AppKit frame of `frame`'s fields merged with the window's `current`
+/// one. NSH's origin is the top left corner, measured down from the primary
+/// screen's top; Cocoa's screen coordinates go up from the primary
+/// screen's bottom (`NSScreen.screens[0]`, `primary_height` tall, on every
+/// display arrangement), its origin the bottom left corner. A height
+/// changed without a `y` keeps the top edge where it is.
+fn appkit_frame(current: NSRect, frame: &WindowFrame, primary_height: f64) -> NSRect {
+    let points = |v: Points| f64::from(v.0);
     let size = NSSize::new(
         frame.width.map_or(current.size.width, points),
         frame.height.map_or(current.size.height, points),
     );
-    // `anchorTop` keeps the top edge where it is: the bottom left origin
-    // would otherwise pin the bottom edge, and a content-height window
-    // resized around its middle.
-    let y = frame.y.map_or_else(
-        || {
-            if frame.anchor_top == Some(true) {
-                current.origin.y + current.size.height - size.height
-            } else {
-                current.origin.y
-            }
-        },
-        points,
-    );
-    let point = NSPoint::new(frame.x.map_or(current.origin.x, points), y);
-    window.setFrame_display_animate(
-        NSRect::new(point, size),
-        true,
-        frame.animated.unwrap_or(false),
-    );
+    let top = frame.y.map_or(current.origin.y + current.size.height, |y| {
+        flip_y(points(y), primary_height)
+    });
+    let x = frame.x.map_or(current.origin.x, points);
+    NSRect::new(NSPoint::new(x, top - size.height), size)
+}
+
+/// A screen `y` between NSH's coordinates (down from the primary screen's
+/// top) and Cocoa's (up from its bottom); the same in both directions.
+fn flip_y(y: f64, primary_height: f64) -> f64 {
+    primary_height - y
 }
 
 /// The window's style for the title bar's.
@@ -840,6 +847,59 @@ mod tests {
             let layout = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1200.0, height));
             assert_eq!(toolbar_height(800.0, layout, 22.0), 22.0);
         }
+    }
+
+    #[test]
+    fn screen_ys_flip_at_the_primary_screens_height() {
+        assert_eq!(flip_y(0.0, 1080.0), 1080.0);
+        assert_eq!(flip_y(1080.0, 1080.0), 0.0);
+        assert_eq!(flip_y(flip_y(250.0, 1080.0), 1080.0), 250.0);
+        // A display above the primary one: NSH's y is negative there.
+        assert_eq!(flip_y(-400.0, 1080.0), 1480.0);
+    }
+
+    #[test]
+    fn frames_are_placed_by_their_top_left_corner() {
+        let rect = |x, y, w, h| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
+        // AppKit's frame: bottom left at (100, 380), 800×600, so its top
+        // edge is 980 up, 100 down from the top of a 1080-point screen.
+        let current = rect(100.0, 380.0, 800.0, 600.0);
+        let frame = |x: Option<f32>, y: Option<f32>, w: Option<f32>, h: Option<f32>| WindowFrame {
+            x: x.map(Points),
+            y: y.map(Points),
+            width: w.map(Points),
+            height: h.map(Points),
+            ..WindowFrame::default()
+        };
+        // Nothing given: the frame stays.
+        assert_eq!(
+            appkit_frame(current, &frame(None, None, None, None), 1080.0),
+            current
+        );
+        // The top left corner at (20, 40): the top edge 1040 up.
+        assert_eq!(
+            appkit_frame(current, &frame(Some(20.0), Some(40.0), None, None), 1080.0),
+            rect(20.0, 440.0, 800.0, 600.0)
+        );
+        // A height without a y keeps the top edge where it is.
+        assert_eq!(
+            appkit_frame(current, &frame(None, None, None, Some(400.0)), 1080.0),
+            rect(100.0, 580.0, 800.0, 400.0)
+        );
+        // An origin and a size together.
+        assert_eq!(
+            appkit_frame(
+                current,
+                &frame(Some(0.0), Some(0.0), Some(640.0), Some(480.0)),
+                1080.0
+            ),
+            rect(0.0, 600.0, 640.0, 480.0)
+        );
+        // On a display below the primary one, y goes past its height.
+        assert_eq!(
+            appkit_frame(current, &frame(None, Some(1200.0), None, None), 1080.0),
+            rect(100.0, -720.0, 800.0, 600.0)
+        );
     }
 
     #[test]

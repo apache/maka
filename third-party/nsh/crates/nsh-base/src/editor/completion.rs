@@ -378,7 +378,9 @@ pub(crate) fn filter(items: &[EditorCompletionItem], query: &str) -> Vec<Hit> {
             ))
         })
         .collect();
-    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    crate::sort::sort_by(&mut ranked, |a, b| {
+        a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1))
+    });
     ranked.into_iter().map(|(_, _, hit)| hit).collect()
 }
 
@@ -1040,7 +1042,7 @@ impl Ed {
                     (a.min(b)..a.max(b), e.text.to_string())
                 })
                 .collect();
-            ranges.sort_by_key(|(r, _)| (r.start, r.end));
+            crate::sort::sort_by_key(&mut ranges, |(r, _)| (r.start, r.end));
             let mut kept: Vec<(Range<usize>, String)> = Vec::with_capacity(ranges.len());
             for (range, text) in ranges {
                 let overlaps = kept.last().is_some_and(|(last, _)| {

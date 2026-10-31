@@ -1,7 +1,7 @@
 ---
 title: Canvas
 description: "The Canvas element: custom drawing with a 2D context, replayed natively."
-order: 8
+order: 60
 group: primitives
 demo: el-canvas
 ---

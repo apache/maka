@@ -14,6 +14,15 @@ absent Translucent dialog
 expect Opaque dialog
 covers [nsh/base] Dialog
 covers [props] android.statusBarTranslucent
+# mod-clipboard-android
+tap id:case-mod-clipboard-android
+# the clipboard carries text: image writes and reads reject, hasImage is no.
+expect Write: not called
+tap id:paste
+expect Write: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+expect Read: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+expect Has: ok false
+covers [nsh] Clipboard
 # props-platform-android
 tap id:case-props-platform-android
 expect Card

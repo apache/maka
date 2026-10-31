@@ -411,38 +411,64 @@ impl DockAreaApi {
 
     /// Removes panel `panel`, whatever its options say.
     pub fn remove_panel(&self, panel: PanelId) {
-        self.a.edit(|area| area.remove_panel(panel.as_str()));
+        if self.a.has_panel("removePanel", &panel) {
+            self.a.edit(|area| area.remove_panel(panel.as_str()));
+        }
     }
 
     /// Closes panel `panel` as its tab would: unless the area is locked,
     /// the panel is not closable, or it is the last panel of a group with
     /// nothing beside it.
     pub fn close_panel(&self, panel: PanelId) {
-        self.a.close(&panel);
+        if self.a.has_panel("closePanel", &panel) {
+            self.a.close(&panel);
+        }
     }
 
     /// Moves panel `panel` to `target` (a panel the area does not hold yet
     /// is added there).
     pub fn move_panel(&self, panel: PanelId, target: DockTarget) {
         let target = target.insert_target();
-        self.a.edit(|area| area.move_panel(panel, target));
+        let known = match target {
+            InsertTarget::Tabs { node, .. } => self.a.has_group("movePanel", node),
+            InsertTarget::Split { node, .. } => self.a.has_node("movePanel", node),
+        };
+        if known {
+            self.a.edit(|area| area.move_panel(panel, target));
+        }
     }
 
     /// Puts panel `panel` in a new tab group on the `side` of container
     /// `group`.
     pub fn split_at(&self, group: u64, panel: PanelId, side: Placement) {
         let node = NodeId::from_u64(group);
-        self.a.edit(|area| area.split_at(node, panel, side, None));
+        if self.a.has_node("splitAt", node) {
+            self.a.edit(|area| area.split_at(node, panel, side, None));
+        }
     }
 
     /// Displays panel `panel` in its group.
     pub fn select_panel(&self, panel: PanelId) {
-        self.a.select(&panel);
+        if self.a.has_panel("selectPanel", &panel) {
+            self.a.select(&panel);
+        }
     }
 
     /// Displays tab `index` of tab group `group`.
     pub fn select_tab(&self, group: u64, index: usize) {
         let node = NodeId::from_u64(group);
+        if !self.a.has_group("selectTab", node) {
+            return;
+        }
+        let count = self
+            .a
+            .latest(|area| area.group(node).map_or(0, |group| group.panels.len()));
+        if index >= count {
+            log::warn!(
+                "DockArea.selectTab: tab {index} out of range (group {group} has {count} tabs)"
+            );
+            return;
+        }
         self.a.edit(|area| area.set_active(node, index));
     }
 
@@ -451,27 +477,38 @@ impl DockAreaApi {
     /// presents the dock as a drawer (a sheet at the bottom), dismissing
     /// the one presented, or dismisses it; the layout stays as it is.
     pub fn toggle_dock(&self, placement: DockPlacement) {
-        let open = self.a.is_dock_open_untracked(placement);
-        self.a.set_dock_open(placement, !open);
+        if self.a.has_dock("toggleDock", placement) {
+            let open = self.a.is_dock_open_untracked(placement);
+            self.a.set_dock_open(placement, !open);
+        }
     }
 
     /// Opens (`true`) or closes the dock at `placement` (at compact width:
     /// presents or dismisses it, as `toggleDock`).
     pub fn set_dock_open(&self, placement: DockPlacement, open: bool) {
-        self.a.set_dock_open(placement, open);
+        if self.a.has_dock("setDockOpen", placement) {
+            self.a.set_dock_open(placement, open);
+        }
     }
 
     /// Sets the size of the dock at `placement` across its edge (never
     /// below 100 points).
     pub fn set_dock_size(&self, placement: DockPlacement, size: Points) {
-        self.a.edit(|area| area.set_dock_size(placement, size));
+        if self.a.has_dock("setDockSize", placement) {
+            self.a.edit(|area| area.set_dock_size(placement, size));
+        }
     }
 
     /// Zooms tab group `group` in (it fills the area) or, when it is
     /// zoomed, out; without `group`, the zoomed group out.
     pub fn toggle_zoom(&self, group: Option<u64>) {
         match group {
-            Some(group) => self.a.toggle_zoom(NodeId::from_u64(group)),
+            Some(group) => {
+                let node = NodeId::from_u64(group);
+                if self.a.has_group("toggleZoom", node) {
+                    self.a.toggle_zoom(node);
+                }
+            }
             None => self.a.set_zoom(None),
         }
     }
@@ -645,6 +682,56 @@ impl AreaCx {
             dock_drag: signal(None),
             pending: stored(None),
         }
+    }
+
+    /// Reads the layout the next edit builds on: the one waiting for the
+    /// app to pass it back, else the one shown.
+    pub(crate) fn latest<R>(self, f: impl FnOnce(&Area) -> R) -> R {
+        match self.pending.with(|p| p.clone()) {
+            Some(area) => f(&area),
+            None => self.area.with_untracked(f),
+        }
+    }
+
+    // A ref's command runs when called and cannot throw: an id the layout
+    // does not hold does nothing and is logged, never a silent no-op.
+
+    fn has_panel(self, method: &str, panel: &PanelId) -> bool {
+        let has = self.latest(|area| area.placement_of_panel(panel.as_str()).is_some());
+        if !has {
+            log::warn!("DockArea.{method}: no panel `{panel}` in the layout");
+        }
+        has
+    }
+
+    fn has_node(self, method: &str, node: NodeId) -> bool {
+        let has = self.latest(|area| area.placement_of_node(node).is_some());
+        if !has {
+            log::warn!(
+                "DockArea.{method}: no group {} in the layout",
+                node.as_u64()
+            );
+        }
+        has
+    }
+
+    fn has_group(self, method: &str, node: NodeId) -> bool {
+        let has = self.latest(|area| area.group(node).is_some());
+        if !has {
+            log::warn!(
+                "DockArea.{method}: no tab group {} in the layout",
+                node.as_u64()
+            );
+        }
+        has
+    }
+
+    fn has_dock(self, method: &str, placement: DockPlacement) -> bool {
+        let has = self.latest(|area| area.dock(placement).is_some());
+        if !has {
+            log::warn!("DockArea.{method}: the layout has no dock at {placement:?}");
+        }
+        has
     }
 
     /// Applies `f` to the layout; when it changed something, reports the
@@ -847,7 +934,7 @@ impl AreaCx {
                 let mut on = Vec::new();
                 told.with(|told| {
                     let mut ids: Vec<&PanelId> = now.keys().collect();
-                    ids.sort();
+                    crate::sort::sort_by(&mut ids, |a, b| a.cmp(b));
                     for panel in ids {
                         let active = now[panel];
                         match told.get(panel) {

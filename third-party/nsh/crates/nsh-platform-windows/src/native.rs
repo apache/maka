@@ -847,7 +847,9 @@ fn locate(source: &str, base: Option<&AssetBase>) -> Option<Location> {
     if let Some(path) = source.strip_prefix("asset:/") {
         let path = path.trim_start_matches('/');
         return match base {
-            Some(AssetBase::Directory(dir)) => Some(Location::Path(dir.join(path))),
+            Some(dirs @ (AssetBase::Directory(_) | AssetBase::Directories(_))) => {
+                dirs.file(path).map(Location::Path)
+            }
             Some(AssetBase::Http(url)) => Some(Location::Url(format!(
                 "{}/{path}",
                 url.trim_end_matches('/')

@@ -238,6 +238,7 @@ pub fn runner(ui_sets: Vec<Registry>, root: Option<fn() -> Root>) -> ExitCode {
         // On a real platform, `nsh` runs the test files itself: the apps run
         // in hosts built with the app's crates.
         host: None,
+        target: None,
         page_host: request.page_host,
     };
     for file in &request.files {

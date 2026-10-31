@@ -1,7 +1,6 @@
 ---
 title: Combobox
 description: "The Combobox component: one value or several chosen from a searchable list of items, a popup at its trigger on desktops and a sheet on phones, styled by the app."
-order: 20.66
 group: base
 demo: el-combobox
 ---

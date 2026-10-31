@@ -1,0 +1,6 @@
+---
+// shadcn/ui's ButtonGroup: buttons joined into one control.
+import type { HTMLAttributes } from 'astro/types';
+type Props = HTMLAttributes<'div'>;
+---
+<div data-slot="button-group" role="group" {...Astro.props}><slot /></div>

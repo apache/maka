@@ -45,12 +45,19 @@ type ReplyFn = Box<dyn for<'a> FnOnce(Result<JsIn<'a>, Exception>)>;
 /// What a JS function threw ([`Callback::call_async_traced`]): its message
 /// and, for an `Error`, the stack where it was made (`    at f
 /// (bundle.js:12:5)` lines, the bundle's positions).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Exception {
     /// The message (an `Error`'s `message`, else the value as a string).
     pub message: String,
     /// The stack, for an `Error`.
     pub stack: Option<String>,
+    /// What was thrown, as JSON, for checks of it (`nsh/test`'s `toThrow`,
+    /// `toMatchObject`): an object's own enumerable properties (an
+    /// `Error`'s `code`, ...) with its `name` and `message`, any other
+    /// value as itself; `None` when Rust made the error (a conversion's),
+    /// and for a call that is not traced ([`JsCall::traced`]).
+    pub thrown: Option<crate::JsonValue>,
 }
 
 impl From<String> for Exception {
@@ -58,6 +65,7 @@ impl From<String> for Exception {
         Self {
             message,
             stack: None,
+            thrown: None,
         }
     }
 }
@@ -77,6 +85,8 @@ pub struct JsCall {
     reply: Option<ReplyFn>,
     /// The reply waits for a promise the function returns.
     settles: bool,
+    /// The reply wants what was thrown whole ([`Exception::thrown`]).
+    traced: bool,
 }
 
 impl JsCall {
@@ -85,12 +95,14 @@ impl JsCall {
         args: A,
         reply: Option<ReplyFn>,
         settles: bool,
+        traced: bool,
     ) -> Self {
         Self {
             callback,
             args: Some(Box::new(move |host| args.into_js_args(host))),
             reply,
             settles,
+            traced,
         }
     }
 
@@ -116,6 +128,14 @@ impl JsCall {
     /// (`call_async`).
     pub fn settles(&self) -> bool {
         self.settles
+    }
+
+    /// Whether the reply wants the value thrown as JSON
+    /// ([`Exception::thrown`]: `call_traced`, `call_async_traced`); other
+    /// calls' exceptions carry their message and stack only, so an
+    /// exception costs no conversion where nothing checks it.
+    pub fn traced(&self) -> bool {
+        self.traced
     }
 
     /// Delivers the result (or what the function threw).
@@ -182,6 +202,20 @@ impl<A, R> Callback<A, R> {
     }
 }
 
+impl<R: CallbackRet + 'static> Callback<(), R> {
+    /// A stand-in for a function that returns `value`: called with
+    /// [`Callback::call_async`] (or `call_async_traced`), it answers
+    /// `value`, a promise what it settles to (`nsh/test`'s
+    /// `expect(promise).rejects`). Called on the spot ([`Callback::call`])
+    /// it throws, as calling what is no function does. A promise is
+    /// handled from then on: its rejection comes here, not reported as
+    /// unhandled. `None` where the host keeps no values
+    /// ([`JsHost::retain`]).
+    pub fn settling(value: JsIn<'_>) -> Option<Self> {
+        value.host().retain(value.raw()).map(Callback::of)
+    }
+}
+
 impl<A: CallbackArgs + 'static, R: CallbackRet + 'static> Callback<A, R> {
     fn of(handle: Rc<dyn CallbackHandle>) -> Self {
         Self {
@@ -201,23 +235,35 @@ impl<A: CallbackArgs + 'static, R: CallbackRet + 'static> Callback<A, R> {
     /// Outside a synchronous call from JS (in a task): use
     /// [`Callback::post`] or [`Callback::call_async`] there.
     pub fn call(&self, args: A) -> Result<R, String> {
-        let out: Rc<RefCell<Option<Result<R, String>>>> = Rc::default();
+        self.call_now(args, false).map_err(|e| e.message)
+    }
+
+    /// [`Callback::call`], with what the function threw whole: the
+    /// message, the stack and the value thrown ([`Exception::thrown`]).
+    ///
+    /// # Panics
+    ///
+    /// As [`Callback::call`].
+    pub fn call_traced(&self, args: A) -> Result<R, Exception> {
+        self.call_now(args, true)
+    }
+
+    fn call_now(&self, args: A, traced: bool) -> Result<R, Exception> {
+        let out: Rc<RefCell<Option<Result<R, Exception>>>> = Rc::default();
         let slot = out.clone();
         let call = JsCall::new(
             self.handle.clone(),
             args,
             Some(Box::new(move |result| {
-                *slot.borrow_mut() = Some(
-                    result
-                        .map_err(|e| e.message)
-                        .and_then(|v| R::from_js(v).map_err(|e| e.0)),
-                );
+                *slot.borrow_mut() =
+                    Some(result.and_then(|v| R::from_js(v).map_err(|e| e.0.into())));
             })),
             false,
+            traced,
         );
         self.handle.call_now(call);
         let result = out.borrow_mut().take();
-        result.unwrap_or_else(|| Err("the JS function was not called".to_owned()))
+        result.unwrap_or_else(|| Err("the JS function was not called".to_owned().into()))
     }
 
     /// Calls the function in the next JS turn, in order with the other
@@ -225,7 +271,7 @@ impl<A: CallbackArgs + 'static, R: CallbackRet + 'static> Callback<A, R> {
     /// uncaught). From anywhere on the engine thread.
     pub fn post(&self, args: A) {
         self.handle
-            .post(JsCall::new(self.handle.clone(), args, None, false));
+            .post(JsCall::new(self.handle.clone(), args, None, false, false));
     }
 
     /// Calls the function in the next JS turn: its result (a promise it
@@ -242,6 +288,7 @@ impl<A: CallbackArgs + 'static, R: CallbackRet + 'static> Callback<A, R> {
                 slot.borrow_mut().deliver(value);
             })),
             true,
+            false,
         ));
         answer
     }
@@ -258,6 +305,7 @@ impl<A: CallbackArgs + 'static, R: CallbackRet + 'static> Callback<A, R> {
                 let value = result.and_then(|v| R::from_js(v).map_err(|e| e.0.into()));
                 slot.borrow_mut().deliver(value);
             })),
+            true,
             true,
         ));
         answer

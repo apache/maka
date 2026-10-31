@@ -93,7 +93,7 @@ pub struct Bundle {
     /// Source and configuration files read by the build, as absolute paths.
     /// Development servers watch these even outside the entry directory.
     pub watch_files: Vec<PathBuf>,
-    /// The native modules the app imports (`nsh`, `nsh/list`,
+    /// The native modules the app imports (`nsh`, `nsh/mobile`,
     /// `nsh/base`, an app's own UI set), sorted: what a host must
     /// serve to run it.
     pub natives: Vec<String>,

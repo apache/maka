@@ -65,6 +65,7 @@ canvas::CanvasOp::MiterLimit.0                                   # a ratio of th
 canvas::Num::Const.0                                             # a generic number (a JS value, a recorded slot)
 canvas::Num::get ->                                              # a generic number (a JS value, a recorded slot)
 canvas::Num::get(slot)                                           # a generic number (a JS value, a recorded slot)
+canvas::ViewBoxFit::transform ->                                 # a transform matrix (scales, and offsets in points)
 canvas::damage::DamageScan::damage(value)                        # a generic number (a JS value, a recorded slot)
 canvas::hit::point_in_path(slot)                                 # a generic number (a JS value, a recorded slot)
 canvas::hit::point_in_stroke(slot)                               # a generic number (a JS value, a recorded slot)
@@ -94,6 +95,12 @@ effects::compose_color_matrices ->                               # color compone
 filesystem::FileMetadata.atime_ms                                # time (milliseconds since the epoch)
 filesystem::FileMetadata.birthtime_ms                            # time (milliseconds since the epoch)
 filesystem::FileMetadata.mtime_ms                                # time (milliseconds since the epoch)
+image::decoded::Natural::points(density)                         # a pixel density (device pixels per point)
+image::decoded::Want.scale                                       # a pixel density (device pixels per point)
+image::decoded::Want::longest(density)                           # a pixel density (device pixels per point)
+image::decoded::Want::natural(scale)                             # a pixel density (device pixels per point)
+image::loader::Location::density ->                              # a pixel density (a file name's @2x)
+image::loader::density ->                                        # a pixel density (a file name's @2x)
 input::LONG_PRESS                                                # time (milliseconds)
 input::Pinch::at ->                                              # a scale factor (the rotation is typed)
 input::Press.long_delay                                          # time (milliseconds)
@@ -224,6 +231,7 @@ transform::TransformOp.value                                     # a transform o
 transition::Extra.scale                                          # a scale factor
 transition::Live::opacity ->                                     # an opacity factor
 transition::Live::step(now)                                      # time
+transition::TextColor::step(now)                                 # time
 element::ambient::animated_value(value)                               # an animated value (any quantity)
 element::ambient::font_scale ->                                       # a font scale factor
 element::ambient::keyboard_duration ->                                # time
@@ -327,6 +335,8 @@ element::js::JsHost::new_number(n)                                    # a generi
 element::js::JsHost::number ->                                        # a generic number (a JS value, a recorded slot)
 element::js::JsIn::as_date ->                                         # time (a JS Date's milliseconds since the epoch)
 element::js::JsIn::as_number ->                                       # a generic number (a JS value, a recorded slot)
+element::js::JsPrimitive::Date.0                                      # time (a JS Date's milliseconds since the epoch)
+element::js::JsPrimitive::Number.0                                    # a generic number (a JS value, a recorded slot)
 element::module::ConstantValue::Number.0                              # a generic number (a module constant's JS value)
 element::responder::PanGesture.vx                                     # a velocity, points per second
 element::responder::PanGesture.vy                                     # a velocity, points per second

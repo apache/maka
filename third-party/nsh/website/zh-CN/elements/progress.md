@@ -1,7 +1,6 @@
 ---
 title: Progress
 description: Progress 组件：线性进度条，负责屏幕阅读器读到的角色、范围和数值，以及指示条随数值变化的宽度，轨道和指示条由应用设置样式。
-order: 20.8
 group: base
 demo: el-progress
 ---

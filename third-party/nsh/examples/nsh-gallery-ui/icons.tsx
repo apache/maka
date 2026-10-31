@@ -1,4 +1,4 @@
-import { Canvas, type CanvasRenderingContext2D } from "nsh";
+import { Canvas, Image, type CanvasRenderingContext2D } from "nsh";
 
 /** Line glyphs drawn in a 20 × 20 box with the tint as stroke. */
 export type IconName =
@@ -24,6 +24,7 @@ export type IconName =
   | "stocks"
   | "chat"
   | "chevron"
+  | "pipette"
   | "chevron-up"
   | "chevron-down"
   | "back"
@@ -41,6 +42,8 @@ export type IconName =
   | "sidebar"
   | "sun"
   | "moon"
+  | "volume-low"
+  | "volume-high"
   | "code"
   | "sliders"
   | "stepper"
@@ -50,6 +53,16 @@ export type IconName =
   | "replace-all"
   | "diagnostics"
   | "close"
+  | "copy"
+  | "trash"
+  | "share"
+  | "download"
+  | "link"
+  | "eye"
+  | "eye-off"
+  | "mail"
+  | "lock"
+  | "merge"
   | "checkbox"
   | "radio"
   | "switch"
@@ -70,7 +83,8 @@ export type IconName =
   | "popover"
   | "tooltip"
   | "sheet"
-  | "button";
+  | "button"
+  | "external";
 
 type Draw = (cx: CanvasRenderingContext2D) => void;
 
@@ -92,6 +106,15 @@ const circle = (cx: CanvasRenderingContext2D, x: number, y: number, r: number, f
   else cx.stroke();
 };
 
+/** A speaker's cone, facing right, its waves from (9.5, 10). */
+const speaker = (cx: CanvasRenderingContext2D) => line(cx, [3, 8, 6, 8, 9.5, 4.5, 9.5, 15.5, 6, 12, 3, 12, 3, 8]);
+/** A sound wave of radius `r` out of the speaker. */
+const wave = (cx: CanvasRenderingContext2D, r: number) => {
+  cx.beginPath();
+  cx.arc(9.5, 10, r, -0.9, 0.9);
+  cx.stroke();
+};
+
 const glyphs: Record<IconName, Draw> = {
   popover: (c) => {
     rect(c, 3, 3, 14, 9, 2.5);
@@ -111,6 +134,12 @@ const glyphs: Record<IconName, Draw> = {
   button: (c) => {
     rect(c, 2.5, 6, 15, 8, 3);
     line(c, [7, 10, 13, 10]);
+  },
+  external: (c) => {
+    // An arrow out of the top right corner of a box.
+    line(c, [9, 4, 4, 4, 4, 16, 16, 16, 16, 11]);
+    line(c, [11.5, 3.5, 16.5, 3.5, 16.5, 8.5]);
+    line(c, [16.5, 3.5, 9.5, 10.5]);
   },
   checkbox: (c) => {
     rect(c, 3.5, 3.5, 13, 13, 3);
@@ -442,9 +471,94 @@ const glyphs: Record<IconName, Draw> = {
     line(c, [10, 8, 10, 11.5]);
     circle(c, 10, 13.8, 0.7, true);
   },
+  // An eyedropper: the bulb up right, the glass down to its tip.
+  pipette: (c) => {
+    line(c, [11.5, 5.5, 14.5, 8.5]);
+    line(c, [13, 7, 5, 15, 4, 16, 4.5, 15.5]);
+    line(c, [13.2, 4.3, 14.6, 2.9, 17.1, 5.4, 15.7, 6.8]);
+  },
   close: (c) => {
     line(c, [5.5, 5.5, 14.5, 14.5]);
     line(c, [14.5, 5.5, 5.5, 14.5]);
+  },
+  copy: (c) => {
+    rect(c, 7, 7, 10, 10, 2);
+    line(c, [13, 4.5, 13, 4, 12, 3, 4, 3, 3, 4, 3, 12, 4, 13, 4.5, 13]);
+  },
+  trash: (c) => {
+    line(c, [3.5, 5.5, 16.5, 5.5]);
+    line(c, [8, 5.5, 8, 3.5, 12, 3.5, 12, 5.5]);
+    line(c, [5, 5.5, 6, 16.5, 14, 16.5, 15, 5.5]);
+    line(c, [8.5, 8.5, 8.5, 13.5]);
+    line(c, [11.5, 8.5, 11.5, 13.5]);
+  },
+  share: (c) => {
+    line(c, [10, 12, 10, 3]);
+    line(c, [6.5, 6.5, 10, 3, 13.5, 6.5]);
+    line(c, [7, 9, 4.5, 9, 4.5, 17, 15.5, 17, 15.5, 9, 13, 9]);
+  },
+  download: (c) => {
+    line(c, [10, 3, 10, 12.5]);
+    line(c, [6, 8.5, 10, 12.5, 14, 8.5]);
+    line(c, [3.5, 13, 3.5, 16.5, 16.5, 16.5, 16.5, 13]);
+  },
+  link: (c) => {
+    // Two links of a chain, across the box.
+    c.save();
+    c.translate(10, 10);
+    c.rotate(-Math.PI / 4);
+    rect(c, -8, -3, 9, 6, 3);
+    rect(c, -1, -3, 9, 6, 3);
+    c.restore();
+  },
+  eye: (c) => {
+    c.beginPath();
+    c.moveTo(2.5, 10);
+    c.quadraticCurveTo(10, 2, 17.5, 10);
+    c.quadraticCurveTo(10, 18, 2.5, 10);
+    c.stroke();
+    circle(c, 10, 10, 2.5);
+  },
+  "eye-off": (c) => {
+    c.beginPath();
+    c.moveTo(2.5, 10);
+    c.quadraticCurveTo(10, 2, 17.5, 10);
+    c.quadraticCurveTo(10, 18, 2.5, 10);
+    c.stroke();
+    circle(c, 10, 10, 2.5);
+    line(c, [4, 16, 16, 4]);
+  },
+  mail: (c) => {
+    rect(c, 2.5, 4.5, 15, 11, 2.5);
+    line(c, [3.5, 6, 10, 11, 16.5, 6]);
+  },
+  lock: (c) => {
+    rect(c, 4, 9, 12, 8.5, 2);
+    line(c, [6.5, 9, 6.5, 6.5]);
+    c.beginPath();
+    c.arc(10, 6.5, 3.5, Math.PI, 0);
+    c.stroke();
+    line(c, [13.5, 6.5, 13.5, 9]);
+  },
+  merge: (c) => {
+    // Two branches joining into one.
+    circle(c, 5.5, 4.5, 1.8);
+    circle(c, 5.5, 15.5, 1.8);
+    circle(c, 14.5, 10, 1.8);
+    line(c, [5.5, 6.3, 5.5, 13.7]);
+    c.beginPath();
+    c.moveTo(5.5, 6.3);
+    c.quadraticCurveTo(5.5, 10, 12.7, 10);
+    c.stroke();
+  },
+  "volume-low": (c) => {
+    speaker(c);
+    wave(c, 3.2);
+  },
+  "volume-high": (c) => {
+    speaker(c);
+    wave(c, 3.2);
+    wave(c, 6.2);
   },
   moon: (c) => {
     // A disc less the one up and to its right: the arcs meet where the circles cross.
@@ -473,4 +587,16 @@ export function Icon(props: { name: IconName; size?: number; tint: string; weigh
       }}
     />
   );
+}
+
+/** The check mark as an SVG in one color, recolored by `tintColor`: the same stroke as the `check` glyph. */
+const checkSvg = (weight: number) =>
+  `data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M4.5 10.5 8.5 14 15.5 6" fill="none" stroke="#000" stroke-width="${weight}" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  )}`;
+
+/** A check mark drawn as SVG, in `tint`; `weight` is the stroke in its 20-unit box (2 by default). */
+export function CheckMark(props: { size?: number; tint: string; weight?: number }) {
+  const size = props.size ?? 20;
+  return <Image src={checkSvg(props.weight ?? 2)} style={{ pointerEvents: "none", width: size, height: size, tintColor: props.tint }} />;
 }

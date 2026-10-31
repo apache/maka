@@ -17,6 +17,7 @@ import StateStyles from "./state-styles";
 import StateChecked from "./state-checked";
 import StateIndeterminate from "./state-indeterminate";
 import StateExpanded from "./state-expanded";
+import StatePressed from "./state-pressed";
 
 const cases: Record<string, () => JSX.Element> = {
   "paint-borders": PaintBorders,
@@ -32,6 +33,7 @@ const cases: Record<string, () => JSX.Element> = {
   "state-checked": StateChecked,
   "state-indeterminate": StateIndeterminate,
   "state-expanded": StateExpanded,
+  "state-pressed": StatePressed,
   "paint-inline-align": PaintInlineAlign,
 };
 const shown = signal("");

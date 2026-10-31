@@ -350,6 +350,14 @@ prop id:option role option
 prop id:option accessibilityState selected=true
 prop id:other-option role option
 prop id:other-option accessibilityState {}
+# The structural roles.
+prop id:role-group role group
+prop id:role-region role region
+prop id:role-navigation role navigation
+prop id:role-tree role tree
+prop id:role-treeitem role treeitem
+prop id:role-menuitemcheckbox role menuitemcheckbox
+prop id:role-menuitemradio role menuitemradio
 covers [props] accessible
 covers [props] accessibilityHint
 covers [props] accessibilityState

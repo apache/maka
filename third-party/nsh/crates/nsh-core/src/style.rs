@@ -1303,6 +1303,14 @@ pub(crate) fn resolve_normal_alignment(layout: &mut taffy::Style) {
     }
 }
 
+/// The layout style of a view that nothing styles: React Native's defaults
+/// ([`Style::default`]'s) with `alignContent` resolved.
+pub(crate) fn unstyled_layout() -> taffy::Style {
+    let mut layout = Style::default().layout;
+    resolve_normal_alignment(&mut layout);
+    layout
+}
+
 /// Lays a node out in direction `rtl`: its left and right properties keep
 /// their sides, as in CSS, and its start / end ones take the sides the
 /// direction gives them.
@@ -1469,8 +1477,8 @@ style_keys! {
     FlexShrink = "flexShrink": Layout "number",
     FlexBasis = "flexBasis": Layout "DimensionValue | \"min-content\" | \"max-content\" | \"fit-content\"",
     JustifyContent = "justifyContent": Layout "Exclude<Distribute, \"stretch\"> | \"stretch\"",
-    AlignItems = "alignItems": Layout "LayoutAlign",
-    AlignSelf = "alignSelf": Layout "LayoutAlign | \"auto\"",
+    AlignItems = "alignItems": Layout "ItemAlign",
+    AlignSelf = "alignSelf": Layout "ItemAlign | \"auto\"",
     AlignContent = "alignContent": Layout "Distribute",
     Width = "width": Layout "DimensionValue | \"min-content\" | \"max-content\" | \"fit-content\"",
     Height = "height": Layout "DimensionValue | \"min-content\" | \"max-content\" | \"fit-content\"",
@@ -1542,8 +1550,8 @@ style_keys! {
     GridRow = "gridRow": Layout "number | string",
     GridRowStart = "gridRowStart": Layout "number | string",
     GridRowEnd = "gridRowEnd": Layout "number | string",
-    JustifyItems = "justifyItems": Layout "LayoutAlign" "How grid items sit in their areas along the row.",
-    JustifySelf = "justifySelf": Layout "LayoutAlign | \"auto\"",
+    JustifyItems = "justifyItems": Layout "ItemAlign" "How grid items sit in their areas along the row.",
+    JustifySelf = "justifySelf": Layout "ItemAlign | \"auto\"",
     Direction = "direction": Layout "\"inherit\" | \"ltr\" | \"rtl\"" "Layout direction; inherited by default. As in CSS, `left` and `right` properties keep their sides right to left, while the `inlineStart` / `inlineEnd` ones (`marginStart`, `end`, ...) take the sides the direction gives them.",
     MarginStart = "marginStart": Layout "DimensionValue",
     MarginEnd = "marginEnd": Layout "DimensionValue",

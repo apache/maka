@@ -6,12 +6,15 @@ order: 12.5
 
 # nsh/desktop
 
-`nsh/desktop` provides graphical desktop windows and title bars, the application menu and context menus on macOS, Windows and Linux. Terminal surfaces expose titles and menus through the same module. The module can be imported on every platform, so one bundle runs everywhere. `isAvailable` identifies surfaces with these title and menu APIs. Rust code draws a title bar of its own and closes the window with `nsh_core::element::desktop` (`set_title_bar`, `title_bar`, `close_window`) and marks draggable views with `.window_drag(true)`; TSX imports `nsh/desktop`, which holds the window's other functions and the menus too.
+`nsh/desktop` provides graphical desktop windows, title bars, application menus and context menus. Terminal surfaces expose titles and menus through the same module. It works on macOS, Windows and Linux. Rust code finds the same in `nsh_core::element::desktop`: the window's functions (`set_title`, `set_title_bar`, `title_bar`, `minimize`, … `close_window`), the application menu and context menus (`set_application_menu`, `popup_menu`, made of `MenuItem`s), and marks draggable views with `.window_drag(true)`; TSX imports `nsh/desktop`. The module can be imported on every platform, so one bundle runs everywhere: on iOS and Android its functions do nothing, and `isAvailable` tells you whether its window and menus are there.
 
 ```rust tabs
 use nsh_core::{
-    desktop::TitleBarStyle,
-    element::{desktop::{close_window, set_title_bar, title_bar}}, prelude::*,
+    desktop::{MenuRole, TitleBarStyle},
+    element::desktop::{
+        MenuItem, close_window, popup_menu, set_application_menu, set_title, set_title_bar, title_bar,
+    },
+    prelude::*,
 };
 ```
 
@@ -25,8 +28,9 @@ import { isAvailable, Menu, titleBar, Window } from "nsh/desktop";
 const isAvailable: boolean;
 ```
 
-`true` on graphical macOS, Windows and Linux backends and on terminal surfaces. `platform.idiom === "desktop" && !platform.isTerminal` identifies a
-graphical desktop; `platform.isTerminal` identifies the terminal renderer. See [Terminal](../docs/tui.md).
+`true` on graphical macOS, Windows and Linux backends and on terminal surfaces. `platform.isTerminal` identifies the terminal renderer. See [Terminal](../docs/tui.md).
+
+[`platform.desktop`](./nsh.md#platform) checks graphical desktop behavior (`desktop={{…}}` props, `platform.select({ desktop })`), including browsers in the desktop idiom and excluding terminals. Gate graphical desktop layout, density and input on `platform.desktop`, and title and menu API calls on `isAvailable`.
 
 ## Window
 
@@ -42,7 +46,6 @@ const Window: {
     origin?: Partial<Point>;
     size?: Partial<Size>;
     animated?: boolean;
-    anchorTop?: boolean;
   }): void;
   setLevel(level: "normal" | "floating" | "desktopIcon"): void;
   orderFront(): void;
@@ -54,15 +57,15 @@ The Rust column names the functions of `nsh_core::element::desktop`.
 
 | Member | Rust | Description |
 |---|---|---|
-| `setTitle(title)` | | The window's title: the title bar, the taskbar or Dock, the window switcher. |
+| `setTitle(title)` | `set_title(title)` | The window's title: the title bar, the taskbar or Dock, the window switcher. |
 | `setTitleBar({ style, height? })` | `set_title_bar(TitleBarStyle::Hidden, Some(px(height)))` | `style: "hidden"` removes the system's title bar: the app fills the window up to its top edge and draws a title bar of its own. The system's window controls stay (macOS's traffic lights, Windows' minimize / maximize / close buttons, GTK's window buttons). `height` is your bar's height in points: the controls are centered in it (Windows' caption buttons fill it; on macOS `height` selects compact chrome up to 44 points and regular chrome above; size your bar using the actual height from `titleBar().height`, and AppKit places the traffic lights during live resizing. An embedding app's existing toolbar keeps its own style and height); without it they take the platform's height. `style: "default"` brings the system's title bar back (Rust: `set_title_bar(TitleBarStyle::Default, None)`). |
-| `setMenuBar(mode)` | `set_menu_bar(mode)` | On Windows and Linux in GPUI apps, where the window draws the application menu as a bar above the app: `"shown"` (the default) shows it always; `"autoHide"` shows it after Alt is pressed and released alone, until Alt alone hides it again, as in Windows and GNOME apps. F10 and Alt with a menu's initial open a menu either way, and the bar shows while it is open. macOS's menu bar is the system's. |
-| `minimize()` | | Minimizes the window. |
-| `toggleMaximize()` | | Maximizes the window, or restores it when it is maximized. |
-| `toggleFullScreen()` | | Enters or leaves full screen. |
-| `setFrame(frame)` | | Moves and sizes the window in points; omitted fields keep their values. On macOS and Windows, `size` (`width`, `height`) includes window decorations; on Linux it sets GTK's default window size. `origin` (`x`, `y`) is the bottom left corner in macOS screen coordinates and the top left on Windows. `animated: true` enables macOS's resize animation (default: false). `anchorTop: true` keeps the top edge where it is when `height` changes without a `y`: the window grows and shrinks at its bottom edge. |
-| `setLevel(level)` | | On macOS and Windows, `"floating"` keeps the window above normal windows and `"normal"` restores the normal level. `"desktopIcon"` selects macOS's desktop icon level (the window also sits on every space, out of Mission Control and Cmd+`); on Windows it moves the window to the bottom of the current z-order, where later activation can raise it. |
-| `orderFront()` | | Brings the window to the front of its level and focuses it (the app activates; macOS deminiaturizes, Windows restores minimized windows and sets foreground, GTK presents). The window keeps its level. On macOS, desktop-level surfaces stay behind other windows. GPUI activates its window; the window manager controls foreground requests on Linux. |
+| `setMenuBar(mode)` | `set_menu_bar_visibility(mode)` | On Windows and Linux in GPUI apps, where the window draws the application menu as a bar above the app: `"shown"` (the default) shows it always; `"autoHide"` shows it after Alt is pressed and released alone, until Alt alone hides it again, as in Windows and GNOME apps. F10 and Alt with a menu's initial open a menu either way, and the bar shows while it is open. macOS's menu bar is the system's. |
+| `minimize()` | `minimize()` | Minimizes the window. |
+| `toggleMaximize()` | `toggle_maximize()` | Maximizes the window, or restores it when it is maximized. |
+| `toggleFullScreen()` | `toggle_full_screen()` | Enters or leaves full screen. |
+| `setFrame(frame)` | `set_frame(WindowFrame { .. })` | Moves and sizes the window in points; omitted fields keep their values. On macOS and Windows, `size` (`width`, `height`) includes window decorations; on Linux it sets GTK's default window size. `origin` (`x`, `y`) is the window's top left corner, measured from the top left of the primary screen (on macOS the one with the menu bar) with `y` growing down, the same on every platform; a `height` without a `y` keeps the top edge where it is, so the window grows and shrinks at its bottom edge. `animated: true` enables macOS's resize animation (default: false). |
+| `setLevel(level)` | `set_level(level)` | On macOS and Windows, `"floating"` keeps the window above normal windows and `"normal"` restores the normal level. `"desktopIcon"` selects macOS's desktop icon level (the window also sits on every space, out of Mission Control and Cmd+`); on Windows it moves the window to the bottom of the current z-order, where later activation can raise it. |
+| `orderFront()` | `order_front()` | Brings the window to the front of its level and focuses it (the app activates; macOS deminiaturizes, Windows restores minimized windows and sets foreground, GTK presents). The window keeps its level. On macOS, desktop-level surfaces stay behind other windows. GPUI activates its window; the window manager controls foreground requests on Linux. |
 | `close()` | `close_window()` | Closes the window; the app ends with it. |
 
 Window sizing is supported on macOS, Windows and Linux; positioning and levels on macOS and Windows. Linux's window manager controls placement and stacking. GPUI's host configures window bounds and level when opening the window.
@@ -164,6 +167,8 @@ const Menu: {
 | `setApplicationMenu(items)` | Sets the application menu: one submenu per top-level item (`File`, `Edit`, ...). On macOS it is the menu bar, whose first menu is the app menu (AppKit titles it with the app's name). On Windows and Linux it is the window's menu bar, which is not shown while the title bar is hidden; its shortcuts still work, and a title bar of the app's own can open its menus with `Menu.popup`. `null` restores the platform's default menu. |
 | `popup(items, at?)` | Shows a context menu with its top left corner at `at` (the window's coordinates, in points: an `onContextMenu`'s `e.pagePosition`), or at the pointer. The promise resolves once the menu closes, whether an item was chosen or not: a button that opened it can stay pressed until then. |
 
+In Rust, `set_application_menu(items)` takes a `Vec<MenuItem>` (`None` restores the platform's default menu), and `popup_menu(items)` (at the pointer) and `popup_menu_at(items, at)` return an `Answer<()>` that comes once the menu closes (awaiting it is optional). An item's handler runs under the owner that set the menu, while that owner lives.
+
 Call `setApplicationMenu` again to change the menu. Inside an `effect` it follows the signals it reads: a check mark or a disabled state that depends on app state stays current.
 
 ### Menu items
@@ -196,6 +201,8 @@ type MenuItem =
 
 `null`, `undefined` and `false` items are left out, so `cond && { … }` works in a list.
 
+In Rust, an item is `MenuItem::new(label)`, `MenuItem::role(role)`, `MenuItem::separator()` or `MenuItem::submenu(label, items)`, with the fields as methods: `.shortcut("mod+n")` (it panics on an invalid shortcut, with the right spelling), `.shortcut_when(When::Auto)`, `.disabled(true)`, `.checked(on)`, `.on_select(f)`, and `.label(..)` for a role's item.
+
 Modifiers:
 
 | Modifier | macOS | Windows | Linux |
@@ -223,7 +230,60 @@ Menu shortcuts come first, as in native apps: a key an item takes never reaches 
 
 On the GPUI backend, a native component with the keyboard focus sees each key first. A key it handles itself never reaches the keymap or the menu. A key it lets through reaches the keymap as if a text field were focused, then the menu.
 
-```tsx
+```rust tabs
+use nsh_core::{
+    desktop::MenuRole,
+    element::desktop::{MenuItem, set_application_menu},
+    platform::Os,
+    prelude::*,
+};
+
+#[component]
+fn AppMenu() -> impl IntoElement {
+    let mac = os() == Os::MacOs;
+    let wrap = signal(true);
+    effect(move || {
+        let mut menus = Vec::new();
+        if mac {
+            menus.push(MenuItem::submenu("My App", [
+                MenuItem::role(MenuRole::About),
+                MenuItem::separator(),
+                MenuItem::role(MenuRole::Hide),
+                MenuItem::role(MenuRole::HideOthers),
+                MenuItem::separator(),
+                MenuItem::role(MenuRole::Quit),
+            ]));
+        }
+        let mut file = vec![
+            MenuItem::new("New").shortcut("mod+n").on_select(create_document),
+            MenuItem::new("Open…").shortcut("mod+o").on_select(open_document),
+        ];
+        if !mac {
+            file.push(MenuItem::separator());
+            file.push(MenuItem::role(MenuRole::Quit).label("Exit"));
+        }
+        menus.push(MenuItem::submenu("File", file));
+        menus.push(MenuItem::submenu("Edit", [
+            MenuItem::role(MenuRole::Undo),
+            MenuItem::role(MenuRole::Redo),
+            MenuItem::separator(),
+            MenuItem::role(MenuRole::Cut),
+            MenuItem::role(MenuRole::Copy),
+            MenuItem::role(MenuRole::Paste),
+        ]));
+        menus.push(MenuItem::submenu("View", [
+            MenuItem::new("Word Wrap")
+                .checked(wrap.get())
+                .on_select(move || wrap.update(|w| *w = !*w)),
+            MenuItem::role(MenuRole::ToggleFullScreen),
+        ]));
+        set_application_menu(menus);
+    });
+    view()
+}
+```
+
+```tsx tabs
 import { effect, signal } from "nsh";
 import { platform } from "nsh";
 import { Menu } from "nsh/desktop";
@@ -263,7 +323,18 @@ effect(() => {
 
 A context menu, from a button's press:
 
-```tsx
+```rust tabs
+text("More").on_press(|| {
+    let _ = popup_menu(vec![
+        MenuItem::new("Rename").on_select(rename),
+        MenuItem::new("Duplicate").on_select(duplicate),
+        MenuItem::separator(),
+        MenuItem::new("Delete").on_select(remove),
+    ]);
+})
+```
+
+```tsx tabs
 <View
   onPress={() =>
     Menu.popup([

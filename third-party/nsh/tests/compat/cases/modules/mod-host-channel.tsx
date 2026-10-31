@@ -1,7 +1,8 @@
 // A case of the API's test suite (docs/dev/compatibility.md): `nsh`
 // on the headless runtime, which runs the app without an embedding app: the
 // launch parameters are empty, a listener is added and removed, a post goes
-// nowhere and a call fails at once with the reason. Its script checks each.
+// nowhere and a call rejects at once, with the `code`
+// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. Its script checks each.
 import { Text, View, signal } from "nsh";
 import { host } from "nsh";
 
@@ -21,7 +22,7 @@ function App() {
           host.post("analytics", { screen: "home" });
           host.call<{ name: string }>("profile", { id: 7 }).then(
             (profile) => failed.set(`answered ${profile.name}`),
-            (e: Error) => failed.set(e.message),
+            (e: Error & { code?: string }) => failed.set(`${e.name} ${e.code}`),
           );
           calls.set(`${typeof off}, post done`);
         }}

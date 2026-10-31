@@ -1,6 +1,7 @@
 //! `net`'s sockets through an engine: the module is the runtime's Rust
-//! registry (its JS face and declarations come from its spec); its limits
-//! throw in the call, its connections and reads and writes are core tasks.
+//! registry (its JS face and declarations come from its spec); its grant
+//! and limits are checked in the call, which rejects at once; its
+//! connections and reads and writes are core tasks.
 
 use std::{
     io::{Read, Write},
@@ -56,6 +57,7 @@ mount(() => <Text>{{shown()}}</Text>);
         trace: false,
         network: None,
         websocket: None,
+        refuse_connections: None,
         filesystem: None,
         assets: None,
         chunk_loader: None,
@@ -85,7 +87,7 @@ fn sockets(port: u16) -> String {
 }
 
 #[test]
-fn a_socket_round_trips_bytes_and_checks_its_limits_in_the_call() {
+fn a_socket_round_trips_bytes_and_rejects_past_its_limits() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let peer = std::thread::spawn(move || {
@@ -104,12 +106,9 @@ fn a_socket_round_trips_bytes_and_checks_its_limits_in_the_call() {
   const socket = await net.connect({{ host: "127.0.0.1", port: {port} }});
   if (net.connect !== connect) throw Error("default and named exports differ");
   if (await socket.read(0) !== null) throw Error("a zero read is null");
-  let range = false;
-  try {{ socket.read(1048577); }} catch (e) {{ range = e instanceof RangeError && e.message === "socket read exceeded the 1048576 byte limit"; }}
-  if (!range) throw Error("the read limit throws in the call");
-  range = false;
-  try {{ socket.write("x".repeat(1048577)); }} catch (e) {{ range = e instanceof RangeError && e.message === "socket write exceeded the 1048576 byte limit"; }}
-  if (!range) throw Error("the write limit throws in the call");
+  const refused = (p) => p.then(() => "done", (e) => `${{e.constructor.name}}:${{e.code}}`);
+  if (await refused(socket.read(1048577)) !== "RangeError:ERR_OUT_OF_RANGE") throw Error("the read limit rejects");
+  if (await refused(socket.write("x".repeat(1048577))) !== "RangeError:ERR_OUT_OF_RANGE") throw Error("the write limit rejects");
   await socket.write("ping");
   const data = await socket.read();
   if (!(data instanceof Uint8Array) || String.fromCharCode(...data) !== "pong") throw Error("bad reply");
@@ -125,22 +124,22 @@ fn a_socket_round_trips_bytes_and_checks_its_limits_in_the_call() {
 }
 
 #[test]
-fn a_socket_not_granted_throws_in_the_call() {
+fn a_socket_not_granted_rejects_with_access_denied() {
     for capabilities in [
         "{}".to_owned(),
         r#"{"network":{"hosts":["*"]}}"#.to_owned(),
         sockets(10),
     ] {
         let (_engine, rx) = start(
-            r#"try { connect({ host: "127.0.0.1", port: 9 }); report("connected"); } catch (e) {
-  report(`${e instanceof TypeError} ${e.message}`);
-}"#,
+            r#"try {
+  connect({ host: "127.0.0.1", port: 9 }).then(() => report("connected"), (e) =>
+    report(`${e.constructor.name} ${e.code} ${e.permission} ${e.resource}`));
+} catch { report("threw"); }"#,
             &capabilities,
         );
         assert_eq!(
             shown(&rx, "done"),
-            "done true a socket to `127.0.0.1:9` is not granted; add \"127.0.0.1:9\" to \
-             capabilities.network.sockets",
+            "done Error ERR_ACCESS_DENIED network 127.0.0.1:9",
             "{capabilities}"
         );
     }
@@ -161,17 +160,14 @@ fn closing_a_socket_ends_a_pending_read_and_write() {
             r#"(async () => {{
   const s = await connect({{ host: "127.0.0.1", port: {port} }});
   const chunk = "x".repeat(1048576);
-  let limited = false;
   const writes = [];
-  for (let i = 0; i < 5; i++) {{
-    try {{ writes.push(s.write(chunk).then(() => "sent", (e) => String(e))); }}
-    catch (e) {{ limited = e instanceof RangeError && e.message.includes("4194304 byte limit"); }}
-  }}
+  for (let i = 0; i < 5; i++) writes.push(s.write(chunk).then(() => "sent", (e) => e.code));
   const read = s.read();
   await new Promise((r) => setTimeout(r, 50));
   s.close();
   const results = await Promise.all(writes);
-  report(`${{limited}} ${{await read}} ${{results.some((r) => r.includes("socket is closed"))}}`);
+  // The fifth is past the 4 MiB that may wait; close ends the others.
+  report(`${{results[4] === "ERR_NSH_QUOTA_EXCEEDED"}} ${{await read}} ${{results.includes("ERR_SOCKET_CLOSED")}}`);
 }})().catch((e) => report(String(e)));"#
         ),
         &sockets(port),
@@ -192,8 +188,8 @@ fn sockets_are_capped_per_vm_and_a_closed_one_frees_its_place() {
             r#"(async () => {{
   const pending = [];
   for (let i = 0; i < 32; i++) pending.push(connect({{ host: "127.0.0.1", port: {port} }}));
-  let capped = false;
-  try {{ connect({{ host: "127.0.0.1", port: {port} }}); }} catch (e) {{ capped = e instanceof RangeError; }}
+  const capped = await connect({{ host: "127.0.0.1", port: {port} }})
+    .then(() => false, (e) => e.code === "ERR_NSH_QUOTA_EXCEEDED");
   const all = await Promise.all(pending);
   all[0].close();
   const again = await connect({{ host: "127.0.0.1", port: {port} }});

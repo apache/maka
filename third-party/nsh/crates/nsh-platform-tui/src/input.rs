@@ -6271,8 +6271,7 @@ mod tests {
                     (0..20)
                         .map(|row| row.to_string())
                         .collect::<Vec<_>>()
-                        .join("\n")
-                        .into(),
+                        .join("\n"),
                 ),
             },
             Op::SetProp {
@@ -6398,9 +6397,7 @@ mod tests {
     #[test]
     fn replaced_input_reports_the_real_viewport_and_scroll_commands_leave_selection_alone() {
         use nsh_core::{Command, InputConfig, MountBatch, MountItem};
-        fn reports(
-            surface: &mut Surface,
-        ) -> Vec<(NodeId, Point<Points>, Size<Points>, Size<Points>)> {
+        let reports = |surface: &mut Surface| {
             surface
                 .drain_events()
                 .filter_map(|event| match event {
@@ -6409,8 +6406,8 @@ mod tests {
                     }
                     _ => None,
                 })
-                .collect()
-        }
+                .collect::<Vec<_>>()
+        };
         let config = || InputConfig {
             multiline: true,
             replaced: true,

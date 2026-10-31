@@ -30,7 +30,9 @@ use std::cell::{Cell, RefCell};
 use nsh_core::{
     AttributedText, Bounds, Color, Point, Points,
     geometry::{bounds, point, px, size},
-    selection::{Handle, SelectionModel, SelectionTexts, TextPosition},
+    selection::{
+        Handle, KeptRows, SelectionModel, SelectionTexts, TextPosition, reading_order, reorder,
+    },
 };
 use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
@@ -45,6 +47,8 @@ use objc2_ui_kit::{
     UILongPressGestureRecognizer, UIPanGestureRecognizer, UIResponder, UIScrollView,
     UITapGestureRecognizer, UITouch, UITraitEnvironment, UIView,
 };
+
+use nsh_engine::EngineControl;
 
 use crate::{native_view::NshView, text_view::TextView};
 
@@ -120,10 +124,20 @@ impl AreaTexts {
     /// The texts of `area`'s subtree, in document order.
     fn list(area: &UIView) -> Self {
         fn walk(view: &UIView, area: &UIView, out: &mut Vec<Entry>) {
+            // In reading order: a virtual list's recycled cells are mounted
+            // in no particular order.
+            let start = out.len();
+            let mut runs = Vec::new();
             for child in view.subviews().iter() {
                 if child.isHidden() {
                     continue;
                 }
+                let from = out.len();
+                let f = child.frame();
+                let frame = bounds(
+                    pt(f.origin),
+                    size(px(f.size.width as f32), px(f.size.height as f32)),
+                );
                 if let Some(text) = child.downcast_ref::<TextView>() {
                     // Explicitly selectable texts drop their own selection.
                     text.update_own_selection();
@@ -148,6 +162,10 @@ impl AreaTexts {
                 } else {
                     walk(&child, area, out);
                 }
+                runs.push((frame, from..out.len()));
+            }
+            if let Some(order) = reading_order(&runs) {
+                reorder(out, start, &order);
             }
         }
         let mut entries = Vec::new();
@@ -233,6 +251,10 @@ pub(crate) struct AreaIvars {
     touch: Cell<bool>,
     /// The end a handle drag moves, and from the finger to the caret.
     dragging: Cell<Option<(Handle, CGPoint)>>,
+    /// The engine, told which virtual list rows the ends are in.
+    control: RefCell<Option<EngineControl>>,
+    /// Those rows, kept rendered.
+    kept: RefCell<KeptRows>,
     /// The last pointer press: when, where, its click count.
     last_click: Cell<(f64, CGPoint, u32)>,
     /// `UIEditMenuInteraction` (iOS 16), made on first use.
@@ -524,8 +546,15 @@ define_class!(
 
 impl AreaResponder {
     /// Makes `area` a selectable view.
-    pub(crate) fn attach(area: &UIView, mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(AreaIvars::default());
+    pub(crate) fn attach(
+        area: &UIView,
+        mtm: MainThreadMarker,
+        control: EngineControl,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(AreaIvars {
+            control: RefCell::new(Some(control)),
+            ..AreaIvars::default()
+        });
         // SAFETY: UIView's designated initializer.
         let this: Retained<Self> = unsafe {
             msg_send![super(this), initWithFrame: CGRect::new(CGPoint::ZERO, CGSize::ZERO)]
@@ -754,6 +783,21 @@ impl AreaResponder {
     /// Draws what is selected: each text's part of the highlight, the
     /// handles.
     fn redraw(&self) {
+        let kept = self
+            .ivars()
+            .kept
+            .borrow_mut()
+            .changed(&self.ivars().model.borrow());
+        if let Some(nodes) = kept
+            && let Some(control) = &*self.ivars().control.borrow()
+        {
+            control.keep_rendered(
+                nodes
+                    .into_iter()
+                    .filter_map(|k| k.try_into().ok())
+                    .collect(),
+            );
+        }
         let tint = self.tint();
         let mut now = Vec::new();
         {

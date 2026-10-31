@@ -1,7 +1,7 @@
 ---
 title: Image
 description: The element that shows a bundled or remote image, with placeholders, blur, fades, tinting and load events.
-order: 4
+order: 30
 group: primitives
 demo: el-image
 ---
@@ -90,7 +90,7 @@ crate ships its `assets/` directory with `registry.assets(assets!())`). See
 
 > [!NOTE]
 > When the app declares [capabilities](../docs/sandbox-and-capabilities.md), remote images load from the hosts it
-> lists; an image from any other host fails with `onError`. `asset:` URIs, `data:` URIs and `blob:` URLs always load.
+> lists; an image from any other host is not requested and fails with `onError`, whose `code` is `"ERR_ACCESS_DENIED"`. `asset:` URIs, `data:` URIs and `blob:` URLs always load.
 
 ## Props
 
@@ -108,7 +108,7 @@ Besides the [common props](./index.md#common-props) (with `style` typed as `Imag
 | `onLoadStart` | `.on_load_start(..)` | `() => void` | | Loading began. |
 | `onProgress` | `.on_progress(..)` | `(e: { loaded: number; total: number }) => void` | | Download progress in bytes (`total` is 0 when unknown), at most every 100 ms. |
 | `onLoad` | `.on_load(..)` | `(e: { size: PixelSize }) => void` | | Loaded; the source image's size in pixels (not the decoded, downsampled one; an SVG's size in points, [on the web as the browser measures it](../docs/images-and-assets.md#svg-images)); for an image with variants, the loaded variant's. |
-| `onError` | `.on_error(..)` | `(e: { message: string }) => void` | | Loading failed. |
+| `onError` | `.on_error(..)` | `(e: { message: string; code?: string }) => void` | | Loading failed; `code` is `"ERR_ACCESS_DENIED"` for a URL the app's capabilities do not grant. |
 | `onLoadEnd` | `.on_load_end(..)` | `() => void` | | After `onLoad` or `onError`. |
 
 `ImageStyle` adds `tintColor` to the view styles, which recolors a template image (an icon drawn in one color), and `objectPosition`, which places the image in its box ([Image position](../docs/images-and-assets.md#image-position)).
@@ -128,7 +128,7 @@ image(ICON).size(px(24.0)).tint_color(rgb(0x0969da))
 | `onLoadStart` | `.on_load_start` | none | Loading began. |
 | `onProgress` | `.on_progress` | `{ loaded, total }` (`ImageProgress`) | Bytes arrived (at most every 100 ms). |
 | `onLoad` | `.on_load` | `{ size }` (`Size<DevicePixels>`) | The image is shown; its source size in pixels (an SVG's in points, [on the web as the browser measures it](../docs/images-and-assets.md#svg-images)). |
-| `onError` | `.on_error` | `{ message }` (`&str`) | Loading or decoding failed, or the host is outside the app's capabilities. |
+| `onError` | `.on_error` | `{ message, code? }` (`&str`, the message) | Loading or decoding failed, or the host is outside the app's capabilities (`code` `"ERR_ACCESS_DENIED"`). |
 | `onLoadEnd` | `.on_load_end` | none | After `onLoad` or `onError`. |
 
 ```rust tabs

@@ -319,7 +319,7 @@ view().backdrop_blur(px(30.0)).backdrop_material(BackdropMaterial::Regular)
 
 - `outlineWidth`、`outlineColor`、`outlineStyle`、`outlineOffset`（`.outline(..)`、`.outline_color(..)`、`.outline_dashed()`、`.outline_offset(..)`）：边框之外、不占空间的一条线（负偏移会画在内侧）。与 CSS 一样，`outlineStyle: "none"`（或 `"hidden"`，`.outline_none()`）会隐藏轮廓，无论宽度是多少。
 - `opacity`（`.opacity(n)`）：0 到 1，作用于视图及其子视图。
-- `visibility: "hidden"`：视图不绘制，但保留所占空间；与浏览器中一样，屏幕阅读器也会跳过它及其子树。`display: "none"`（`.hidden()`）则将它移出布局。
+- `visibility: "hidden"`（Rust 中为 `.invisible()`）：视图不绘制，但保留所占空间；与浏览器中一样，屏幕阅读器也会跳过它及其子树。`display: "none"`（`.hidden()`）则将它移出布局。
 - `zIndex`（`.z_index(n)`）：在兄弟视图中的顺序，也是原生的层叠顺序（值相同时保持稳定）。
 - `cursor`（`.cursor(..)`、`.cursor_pointer()`）：鼠标指针在视图上的形状，用于指针设备和桌面平台。
 

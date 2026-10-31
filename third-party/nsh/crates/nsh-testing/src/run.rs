@@ -36,7 +36,7 @@ use crate::{
     headless::{
         DirectoryAssets, Headless, RecordingNetwork, StubNetwork, UreqNetwork, WAIT, print_batch,
     },
-    module::{Case, Hook, Item, Launch, Mode, NetworkSetup, Platform, SafeArea, Suite},
+    module::{Case, Hook, Item, Launch, Mode, NetworkSetup, Platform, Suite},
     page_host::PageHost,
 };
 
@@ -86,6 +86,10 @@ pub struct TestRun {
     /// Opens the apps on a real platform's host instead of a headless
     /// engine (`nsh test --target`).
     pub host: Option<StartHost>,
+    /// What [`TestRun::host`] runs the apps on: `open` fails
+    /// (`ERR_NSH_TEST_UNSUPPORTED`) on an option it cannot honor there,
+    /// rather than leaving it out. `None`: `open`'s options are not checked.
+    pub target: Option<HostTarget>,
     /// The web page's host module (`nsh.json` `web.host`, exporting
     /// `createHost(player)`): each app opened headless gets one of its own,
     /// which answers its `nsh/host` calls and sends its events, and
@@ -98,6 +102,23 @@ pub struct TestRun {
 /// the test's steps.
 pub type StartHost =
     Arc<dyn Fn(&Path, &HostOptions) -> Result<Box<dyn Host>, String> + Send + Sync>;
+
+/// The platform of `nsh test --target` ([`TestRun::target`]), which `open`
+/// checks its options against.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HostTarget {
+    /// The target as `--target` names it (`"ios"`, `"macos"`, ...), which
+    /// failures name.
+    pub name: String,
+    /// The platform the apps run on there: `open`'s `platform` names it, a
+    /// desktop's on a desktop or the web, or is left out.
+    pub platform: Platform,
+    /// The host opens the app at `open`'s `width` and `height` (a desktop's
+    /// window, a browser's page); false where the app fills a device's
+    /// screen.
+    pub sized: bool,
+}
 
 /// How [`StartHost`] starts an app.
 #[derive(Clone, Default)]
@@ -459,6 +480,9 @@ impl Session {
         let clock = launch
             .clock
             .map_or_else(nsh_engine::Clock::system, nsh_engine::Clock::manual);
+        // Off the network unless the test asks: requests no route answers
+        // fail, and so do sockets and WebSockets.
+        let live = matches!(launch.network, NetworkSetup::Live);
         let inner: Arc<dyn nsh_engine::Network> = match launch.network {
             NetworkSetup::Live => Arc::new(UreqNetwork::new()),
             NetworkSetup::Stub(routes) => {
@@ -477,7 +501,8 @@ impl Session {
         let storage = MemoryStorage::new(launch.storage.0);
         let files = set_files(&self.run.ui_sets);
         let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-        let safe_area = launch.safe_area;
+        let safe_area = launch.safe_area.unwrap_or_default();
+        let platform = launch.platform.unwrap_or_default();
         // Loaded before the app starts, as the page's host is: what it
         // sends meanwhile waits for the app.
         let page_host = match &self.run.page_host {
@@ -495,6 +520,7 @@ impl Session {
             ),
             trace: self.run.trace.is_some(),
             network: Some(requests.clone()),
+            refuse_connections: (!live).then(crate::failure::refuse_connections),
             assets: Some(Arc::new(DirectoryAssets::new(dir, files))),
             storage: Some(storage.clone()),
             environment: Environment {
@@ -504,10 +530,10 @@ impl Session {
                     bottom: safe_area.bottom,
                     left: safe_area.left,
                 },
-                color_scheme: launch.color_scheme.into(),
+                color_scheme: launch.color_scheme.unwrap_or_default().into(),
                 locale: locale.unwrap_or(Locale::EN_US),
-                reduce_motion: launch.reduced_motion,
-                os: match launch.platform {
+                reduce_motion: launch.reduced_motion.unwrap_or(false),
+                os: match platform {
                     Platform::Ios => Os::Ios,
                     Platform::Android => Os::Android,
                     Platform::Macos => Os::MacOs,
@@ -515,7 +541,7 @@ impl Session {
                     Platform::Linux => Os::Linux,
                     Platform::Web => Os::Web,
                 },
-                idiom: match launch.platform {
+                idiom: match platform {
                     Platform::Ios | Platform::Android => Idiom::default(),
                     _ => Idiom::Desktop,
                 },
@@ -576,27 +602,23 @@ impl Session {
         {
             return Err(format!("open({entry:?}): {tag:?} is not a locale"));
         }
-        // The host's dev host plays no handlers of the test's: they run
-        // headless only. The launch parameters reach its engine.
-        if launch.host_handlers {
-            return Err(format!(
-                "open({entry:?}): {}",
-                crate::driver::headless_only("`host.handlers`")
-            ));
-        }
-        let safe_area = launch.safe_area;
+        check_launch(entry, &launch, self.run.target.as_ref())?;
+        // What the test gives is pinned, its defaults included; what it
+        // leaves out is the platform's.
         let mut environment = nsh_dev::protocol::TestEnvironment::default();
         let params = launch.host.params();
         environment.host_params = (!params.is_empty()).then_some(params);
         environment.clipboard = launch.clipboard.clone();
         environment.locale = launch.locale.clone();
-        environment.reduced_motion = launch.reduced_motion.then_some(true);
-        environment.safe_area = (safe_area != SafeArea::default()).then_some([
-            safe_area.top.0,
-            safe_area.right.0,
-            safe_area.bottom.0,
-            safe_area.left.0,
-        ]);
+        environment.reduced_motion = launch.reduced_motion;
+        environment.safe_area = launch.safe_area.map(|safe_area| {
+            [
+                safe_area.top.0,
+                safe_area.right.0,
+                safe_area.bottom.0,
+                safe_area.left.0,
+            ]
+        });
         // A manual clock: the host's engine runs on one, which the test
         // moves (and the display's frames, as headless).
         environment.clock =
@@ -614,6 +636,8 @@ impl Session {
             NetworkSetup::Stub(routes) => (Arc::new(StubNetwork::new(routes)), false),
             NetworkSetup::None => (Arc::new(StubNetwork::default()), false),
         };
+        // Its sockets and WebSockets reach the host's network only so too.
+        environment.live_network = live.then_some(true);
         let requests = RecordingNetwork::new(inner);
         let storage: Vec<(String, String)> = launch.storage.0.into_iter().collect();
         let size = match (launch.width, launch.height) {
@@ -653,8 +677,12 @@ impl Session {
         remote.take(nsh_dev::protocol::TestStep::Ready {
             timeout_ms: WAIT.as_millis() as u64 * 2,
         })?;
-        if launch.color_scheme == crate::module::ColorScheme::Dark {
-            remote.take(nsh_dev::protocol::TestStep::SetColorScheme { dark: true })?;
+        // The appearance the test gives, light included; without one, the
+        // platform's.
+        if let Some(scheme) = launch.color_scheme {
+            remote.take(nsh_dev::protocol::TestStep::SetColorScheme {
+                dark: scheme == crate::module::ColorScheme::Dark,
+            })?;
         }
         let app: OpenApp = Arc::new(Mutex::new(Some(Box::new(remote))));
         self.apps
@@ -715,6 +743,66 @@ impl Session {
 
     fn wants(&self, name: &str) -> bool {
         self.run.filter.as_deref().is_none_or(|f| name.contains(f))
+    }
+}
+
+/// Fails on what `launch` asks of an app on a real platform's host that
+/// `target` cannot honor, naming the option (`ERR_NSH_TEST_UNSUPPORTED`):
+/// a test runs as it says or not at all. Every other option reaches the
+/// host (storage, network, the environment, the clipboard, a manual clock,
+/// `host.params`).
+fn check_launch(entry: &str, launch: &Launch, target: Option<&HostTarget>) -> Result<(), String> {
+    let name = target.map_or("<target>", |t| t.name.as_str());
+    let unsupported =
+        |option: &str, why: &str| Err(crate::failure::unsupported(entry, option, name, why));
+    // The host's dev host plays no handlers of the test's: the launch
+    // parameters reach its engine, the handlers run headless.
+    if launch.host_handlers {
+        return unsupported(
+            "host.handlers",
+            "the test plays the embedding app's handlers in headless runs: run the test without --target",
+        );
+    }
+    let Some(target) = target else {
+        return Ok(());
+    };
+    if !target.sized {
+        let given = [("width", launch.width), ("height", launch.height)];
+        if let Some((option, _)) = given.iter().find(|(_, v)| v.is_some()) {
+            return unsupported(
+                option,
+                "the app fills the device's screen, at the size the device has",
+            );
+        }
+    }
+    // A desktop's platform asks for a desktop (a mouse, hover, shortcuts),
+    // which every desktop target and the web are; a phone's names its own.
+    let desktop = |p: Platform| !matches!(p, Platform::Ios | Platform::Android);
+    if let Some(platform) = launch.platform
+        && platform != target.platform
+        && !(desktop(platform) && desktop(target.platform))
+    {
+        return unsupported(
+            "platform",
+            &format!(
+                "the app runs on {} there: a desktop's platform runs on the desktops and the web, \
+                 `ios` and `android` on their own; headless runs take any",
+                platform_name(target.platform)
+            ),
+        );
+    }
+    Ok(())
+}
+
+/// `platform` as `open`'s `platform` names it.
+fn platform_name(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Ios => "ios",
+        Platform::Android => "android",
+        Platform::Macos => "macos",
+        Platform::Windows => "windows",
+        Platform::Linux => "linux",
+        Platform::Web => "web",
     }
 }
 
@@ -1012,4 +1100,94 @@ async fn within<T>(time: Duration, future: impl Future<Output = T>) -> Option<T>
         Poll::Pending
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        failure::{UNSUPPORTED, code_of},
+        module::Entries,
+    };
+
+    fn launch() -> Launch {
+        Launch {
+            storage: Entries::default(),
+            network: NetworkSetup::None,
+            width: None,
+            height: None,
+            safe_area: None,
+            clipboard: None,
+            color_scheme: None,
+            locale: None,
+            reduced_motion: None,
+            platform: None,
+            clock: None,
+            host: nsh_engine::HostChannel::new(),
+            host_handlers: false,
+        }
+    }
+
+    fn target(name: &str, platform: Platform, sized: bool) -> HostTarget {
+        HostTarget {
+            name: name.into(),
+            platform,
+            sized,
+        }
+    }
+
+    #[test]
+    fn open_rejects_the_options_a_target_cannot_honor() {
+        let ios = target("ios", Platform::Ios, false);
+        let macos = target("macos", Platform::Macos, true);
+        let web = target("web", Platform::Web, true);
+        let check =
+            |launch: &Launch, target: &HostTarget| check_launch("./App.tsx", launch, Some(target));
+
+        // What every target honors.
+        let mut plain = launch();
+        plain.clock = Some(std::time::SystemTime::UNIX_EPOCH);
+        plain.locale = Some("fr-FR".into());
+        plain.reduced_motion = Some(true);
+        assert_eq!(check(&plain, &ios), Ok(()));
+        assert_eq!(check(&plain, &macos), Ok(()));
+
+        // A size: a desktop's window takes it, a device's screen does not.
+        let mut sized = launch();
+        sized.height = Some(Points(600.0));
+        assert_eq!(check(&sized, &macos), Ok(()));
+        let error = check(&sized, &ios).unwrap_err();
+        assert!(
+            error.starts_with("open(\"./App.tsx\"): `height` is unsupported on --target ios"),
+            "{error}"
+        );
+        assert_eq!(code_of(&error), Some(UNSUPPORTED));
+
+        // The platform: the target's own, a desktop's on a desktop or the
+        // web, or none.
+        let mut android = launch();
+        android.platform = Some(Platform::Android);
+        let error = check(&android, &ios).unwrap_err();
+        assert!(
+            error.contains("`platform` is unsupported on --target ios"),
+            "{error}"
+        );
+        assert!(error.contains("the app runs on ios there"), "{error}");
+        assert_eq!(code_of(&error), Some(UNSUPPORTED));
+        assert!(check(&android, &macos).is_err());
+        let mut own = launch();
+        own.platform = Some(Platform::Ios);
+        assert_eq!(check(&own, &ios), Ok(()));
+        let mut desktop = launch();
+        desktop.platform = Some(Platform::Macos);
+        assert_eq!(check(&desktop, &macos), Ok(()));
+        assert_eq!(check(&desktop, &web), Ok(()));
+        assert!(check(&desktop, &ios).is_err());
+
+        // The embedding app's handlers run headless, whatever the target.
+        let mut handlers = launch();
+        handlers.host_handlers = true;
+        let error = check_launch("./App.tsx", &handlers, None).unwrap_err();
+        assert_eq!(code_of(&error), Some(UNSUPPORTED), "{error}");
+    }
 }

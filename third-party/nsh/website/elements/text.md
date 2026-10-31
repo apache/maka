@@ -1,7 +1,7 @@
 ---
 title: Text
 description: "The element that draws text: nested spans, links, line limits, font scaling, inline views and text layout events."
-order: 3
+order: 20
 group: primitives
 demo: el-text
 ---

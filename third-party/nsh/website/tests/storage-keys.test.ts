@@ -5,7 +5,13 @@ import { readFileSync } from 'node:fs';
 // WebAssembly runtime: strings stand in for the pointers passed by Rust.
 const source = readFileSync(new URL('../../crates/nsh-platform-web/web/nsh.js', import.meta.url), 'utf8');
 const imports = source.slice(source.indexOf('    const imports = {'), source.indexOf('    const response ='));
-const makeImports = new Function('localStorage', `${imports} return imports.nsh;`);
+// The module's own functions the imports name, as the module declares them.
+const helper = (name: string) => {
+  const start = source.indexOf(`\nfunction ${name}(`);
+  return source.slice(start, source.indexOf('\n}\n', start) + 3);
+};
+const helpers = ['localOffset', 'timeZoneName'].map(helper).join('');
+const makeImports = new Function('localStorage', `${helpers}${imports} return imports.nsh;`);
 
 test('storage round-trips arbitrary string keys and clears only its namespace', () => {
   const kept = new Map<string, string>([['other', 'kept'], ['nsh:/other/:draft', 'kept']]);

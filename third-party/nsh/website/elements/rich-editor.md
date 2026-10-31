@@ -1,7 +1,6 @@
 ---
 title: RichEditor
 description: "The rich text editor of nsh/base: documents defined by the app's schema, commands, plugins, history, keymaps, input rules and Markdown, after ProseMirror's architecture, with its state in Rust."
-order: 26.25
 group: base
 demo: el-rich-editor
 ---
@@ -82,6 +81,8 @@ or bottom of the editor scrolls the document along, faster the further the point
 overlay that follows the text as it scrolls. The app passes it while it wants it shown, from the session's state:
 
 ```tsx
+const revision = signal(editor.revision);
+editor.on("revision", ({ revision: r }) => revision.set(r));
 const inLink = () => (revision(), editor.isActive("link"));
 
 <RichEditor
@@ -163,11 +164,15 @@ const canIndent = editor.can(sinkListItem("listItem"));
 | `insertContent(content, format?)` | Inserts content over the selection |
 | `getJSON()`, `getMarkdown()`, `getText()`, `textBetween(from?, to?, separator?)` | The document in a format |
 | `dispatch(tr)` | Applies a transaction given as JSON (its steps against the current document) |
-| `subscribe(listener)` / `unsubscribe(id)` | Hears every change, from any source, with the new revision |
+| `on(event, listener)` | Calls `listener` with the payload of every `event`, in JS's next turn: `revision` (`{ revision }`, after every change, from any source), `update`, `selectionUpdate`, `transaction`, `focus`, `blur`, `delete`. Returns a function that stops it; a listener added while a component renders stops with the component |
 | `focus()`, `blur()` | Moves the keyboard focus to or from the views showing the editor |
 
 Positions count as ProseMirror's do: a text counts its UTF-16 code units, a leaf node one, a node with content its
-two boundaries. Anything that must outlive edits keeps an id in a node's attributes or a mark.
+two boundaries. Anything that must outlive edits keeps an id in a node's attributes or a mark. A position query
+(`resolve(pos)`, `nodeAt(pos)`, `coordsAtPos(pos)`, `findParentNode(name, pos)`, ...) throws a `RangeError` for a
+position outside the document (`0` to `doc.content.size`), as ProseMirror's `resolve` does, and answers `null` where
+nothing is there (`nodeAt` at the end of a node, `coordsAtPos` with no view showing the editor). `run` and `can` throw
+a `TypeError` for a command, node or mark type the editor does not know.
 
 ### Taking over transactions
 
@@ -197,7 +202,7 @@ editor.run(command("toggleBold"));
 
 `StarterKit` brings `Document`, `Paragraph`, the text node, `Heading`, `Blockquote`, `BulletList`, `OrderedList`,
 `ListItem`, `TaskList`, `TaskItem`, `CodeBlock`, `HardBreak`, `HorizontalRule`, `RichImage` (Tiptap's `Image`),
-`Bold`, `Italic`, `Strike`, `Code`, `Underline`, `Link`, `Highlight`, `Subscript`, `Superscript`, `RichTextStyle` (Tiptap's `TextStyle`),
+`Bold`, `Italic`, `Strike`, `Code`, `Underline`, `RichLink` (Tiptap's `Link`), `Highlight`, `Subscript`, `Superscript`, `RichTextStyle` (Tiptap's `TextStyle`),
 `TextAlign`, `History`, `TrailingNode`, `Typography` and `ListKeymap`. An option named as one set to `false` leaves
 it out, an object configures it (`heading: { levels }`, `history: { depth }`, `textAlign: { types }`,
 `codeBlock: { enableTabIndentation }`). Each class's `configure(options)` and `extend({...})` make a
@@ -303,7 +308,7 @@ editor.setDecorations("suggestions", [{ from: 5, to: 9, kind: "inline", attrs: {
   document without changing it. They follow every change until set again.
 - `filterTransaction(hook)` and `appendTransaction(hook)` see the transactions the app's own calls make (`run`,
   `dispatch`, `setContent`, …) in that call: `filterTransaction` may drop one, `appendTransaction` may return one
-  more to apply with it. `subscribe` hears every change, typing included.
+  more to apply with it. `on("revision", …)` hears every change, typing included.
 
 ## Links, character counts and suggestions
 

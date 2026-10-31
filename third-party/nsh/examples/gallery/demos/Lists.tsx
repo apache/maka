@@ -485,7 +485,7 @@ function More() {
           </View>
           <Segmented options={indicators} value={indicator()} onChange={(v) => indicator.set(v)} />
           {/* The mouse does not pull scroll views down: desktops refresh here. */}
-          <If when={platform.idiom === "desktop"}>
+          <If when={platform.desktop}>
             <Button label="Refresh" variant="secondary" disabled={refreshing()} onPress={refresh} />
           </If>
         </Section>

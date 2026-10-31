@@ -19,6 +19,7 @@ use std::{
     cell::{Cell, RefCell, UnsafeCell},
     fmt,
     marker::PhantomData,
+    mem::ManuallyDrop,
     panic::AssertUnwindSafe,
     rc::Rc,
 };
@@ -27,8 +28,20 @@ use crate::reactive::{self as r, DISPOSED, Equals, Kind, NONE, UNOWNED};
 
 /// A value in the graph (`None`: none yet, an effect's).
 type Value = Option<Rc<dyn Any>>;
-type Func = Rc<dyn Fn(Value) -> Value>;
+type Func = Rc<dyn Compute>;
 type Compare = fn(&dyn Any, &dyn Any) -> bool;
+
+/// A computation of the graph. One method rather than `dyn Fn`, whose
+/// vtables, one per closure, also hold `FnMut` / `FnOnce` shims.
+pub(crate) trait Compute {
+    fn run(&self, prev: Value) -> Value;
+}
+
+impl<F: Fn(Value) -> Value> Compute for F {
+    fn run(&self, prev: Value) -> Value {
+        self(prev)
+    }
+}
 
 /// The graph's host for Rust: values are `Rc<dyn Any>`, computations
 /// closures.
@@ -188,7 +201,7 @@ unsafe impl r::Host for Rust {
     fn free_equals(self, _: Compare) {}
 
     fn call(self, f: &Func, prev: Value) -> Option<Value> {
-        match std::panic::catch_unwind(AssertUnwindSafe(|| f(prev))) {
+        match std::panic::catch_unwind(AssertUnwindSafe(|| f.run(prev))) {
             Ok(value) => Some(value),
             Err(panic) => {
                 let message = super::component::panic_message(panic);
@@ -366,6 +379,11 @@ impl Handle {
 pub(crate) struct Node(Handle);
 
 impl Node {
+    /// Whether its owner is still live (it was not disposed).
+    pub(crate) fn is_live(self) -> bool {
+        self.0.live()
+    }
+
     /// `f` of its value, subscribing the running computation (`what` names
     /// it if it is gone).
     #[track_caller]
@@ -382,19 +400,65 @@ impl Node {
 }
 
 fn read_value<T: 'static, R>(id: u32, tracked: bool, f: impl FnOnce(&T) -> R) -> R {
+    let value = read_any(id, tracked, TypeId::of::<T>());
+    // SAFETY: `read_any` checked that the value is a `T`; `value` keeps it
+    // alive while `f` borrows it.
+    f(unsafe { &*value.as_ptr().cast::<T>() })
+}
+
+/// Node `id`'s value, checked to be of type `ty`. The non-generic part of
+/// every read, out of line: hundreds of types and closures read signals.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn read_any(id: u32, tracked: bool, ty: TypeId) -> ReadValue {
     let value = if tracked {
         r::read(Rust, id)
     } else {
         graph().value(id).clone()
     };
     let value = value.expect("a signal always holds a value");
-    f(value
-        .downcast_ref::<T>()
-        .expect("a handle reads the type it was made with"))
+    assert!(
+        (*value).type_id() == ty,
+        "a handle reads the type it was made with"
+    );
+    ReadValue(ManuallyDrop::new(value))
+}
+
+/// A value read out of the graph ([`read_any`]), released out of line.
+struct ReadValue(ManuallyDrop<Rc<dyn Any>>);
+
+impl ReadValue {
+    fn as_ptr(&self) -> *const dyn Any {
+        Rc::as_ptr(&self.0)
+    }
+}
+
+impl Drop for ReadValue {
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
+    fn drop(&mut self) {
+        // SAFETY: dropped once, here.
+        unsafe { ManuallyDrop::drop(&mut self.0) }
+    }
 }
 
 fn compare<T: PartialEq + 'static>(a: &dyn Any, b: &dyn Any) -> bool {
-    a.downcast_ref::<T>() == b.downcast_ref::<T>()
+    match both_of(a, b, TypeId::of::<T>()) {
+        // SAFETY: `both_of` checked that both are `T`s.
+        Ok((a, b)) => unsafe { *a.cast::<T>() == *b.cast::<T>() },
+        Err(equal) => equal,
+    }
+}
+
+/// The data of `a` and `b` when both are of type `ty`; else whether they
+/// count as equal, as two downcasts compared would (both of another type).
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn both_of(a: &dyn Any, b: &dyn Any, ty: TypeId) -> Result<(*const (), *const ()), bool> {
+    match (a.type_id() == ty, b.type_id() == ty) {
+        (true, true) => Ok((
+            (a as *const dyn Any).cast::<()>(),
+            (b as *const dyn Any).cast::<()>(),
+        )),
+        (a, b) => Err(a == b),
+    }
 }
 
 /// How a signal decides that a write changed it.
@@ -620,6 +684,11 @@ impl<T: 'static> Signal<T> {
         read_value(self.handle.expect("a signal"), false, f)
     }
 
+    /// Whether its owner lives: it may be read and written.
+    pub(crate) fn is_live(&self) -> bool {
+        self.handle.live()
+    }
+
     /// The value, or `None` once the signal's owner was disposed.
     pub fn try_get(&self) -> Option<T>
     where
@@ -817,9 +886,15 @@ pub(crate) fn render_effect(f: impl Fn() + 'static) {
 
 /// Runs `f` before the current owner runs again or is disposed (TS:
 /// `cleanup(fn)`). With no owner it never runs; under an owner disposed
-/// while it ran ([`Owner::scope`]) it runs at once.
+/// while it ran (`Owner::scope`) it runs at once.
 pub fn cleanup(f: impl FnOnce() + 'static) {
-    if let Err(f) = graph().on_cleanup(Box::new(f))
+    cleanup_boxed(Box::new(f));
+}
+
+/// [`cleanup`] of a boxed `f` (its non-generic part).
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn cleanup_boxed(f: Box<dyn FnOnce()>) {
+    if let Err(f) = graph().on_cleanup(f)
         && graph().owner() == DISPOSED
     {
         r::Host::run_cleanup(Rust, f);
@@ -979,15 +1054,26 @@ impl Owner {
 /// result.
 pub fn create_root<R>(f: impl FnOnce() -> R) -> (Owner, R) {
     let (id, result) = r::with_root(Rust, shielded(f));
-    let owner = Owner::of(graph(), id);
+    let owner = root_owner(id);
     match result {
         Ok(r) => (owner, r),
-        // What it made so far goes with it.
-        Err(panic) => {
-            owner.dispose();
-            std::panic::resume_unwind(panic)
-        }
+        Err(panic) => dispose_and_resume(owner, panic),
     }
+}
+
+/// The owner of root `id` ([`create_root`]).
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn root_owner(id: u32) -> Owner {
+    Owner::of(graph(), id)
+}
+
+/// Disposes the root `f` of [`create_root`] panicked in (what it made so
+/// far goes with it) and goes on with the panic.
+#[cold]
+#[inline(never)]
+fn dispose_and_resume(owner: Owner, panic: Box<dyn Any + Send>) -> ! {
+    owner.dispose();
+    std::panic::resume_unwind(panic)
 }
 
 /// A value that is set once or bound: what element setters and props take

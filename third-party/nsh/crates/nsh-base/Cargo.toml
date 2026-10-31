@@ -17,6 +17,7 @@ highlight = ["dep:syntect", "dep:two-face"]
 
 [dependencies]
 nsh-core.workspace = true
+chrono.workspace = true
 rustc-hash.workspace = true
 serde_json.workspace = true
 serde.workspace = true
@@ -33,6 +34,8 @@ syntect = { workspace = true, optional = true }
 # The syntaxes' data: the native runtimes keep it in their binaries; the web
 # runtime leaves it out and fetches the page's copy on first use (`syntax.rs`).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The local time zone (`Local`): the web runtime asks the page instead.
+chrono = { workspace = true, features = ["clock"] }
 two-face = { workspace = true, optional = true }
 
 [dev-dependencies]
