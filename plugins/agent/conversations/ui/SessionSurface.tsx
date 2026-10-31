@@ -911,6 +911,7 @@ export function createConversationUi(
                 sendFirst = !history.chunks.some((row) => row.role === 'user');
               }
             }
+            const reusingSession = id !== null;
             if (!id) {
               const result = await control('create', {
                 title: tr('New conversation'),
@@ -925,7 +926,7 @@ export function createConversationUi(
               id = result.session.id as string;
             }
             requireUnchangedDraft();
-            if (access !== null || requests !== null || mode !== 'agent') {
+            if (reusingSession || access !== null || requests !== null || mode !== 'agent') {
               if (
                 !controlsKnown() ||
                 controls().some(
