@@ -46,6 +46,24 @@ This audit adds Astryx and the AI SDK adaptation to the top-level `LICENSE`. `NO
 
 This is bounded evidence, not proof that every line is original. Results depend on the fixed source snapshot, SCANOSS knowledge base, scanner thresholds, supported file types, and human classification.
 
+## Initial-code authorization record
+
+The [0.2.0 RC2 IPMC vote](https://lists.apache.org/thread/743v94gvldqs4pbwwg59l22pojb44v4k) explicitly submitted the individual-contributor ICLA route described in the [Initial Code Import guide](https://incubator.apache.org/guides/transitioning_asf.html). It did not claim that a new SGA had been filed. The following records supersede the outstanding-contributor descriptions in the earlier [#3268 discussion](https://github.com/apache/maka/issues/3268):
+
+| Contributors | Recorded evidence |
+| --- | --- |
+| Initial committers `jackwener` / `jakevin`, `Astro-Han`, `likun666661`, `YayoiNanoka`, `hqhq1025`, `MicroGery`, and `M4n5ter` | Their ASF IDs are `jakevin`, `astrohan`, `kunli`, `yayoinanoka`, `haoqing`, `microg`, and `wyt`. The [public ASF people](https://whimsy.apache.org/public/public_ldap_people.json) and [Maka roster](https://whimsy.apache.org/public/public_ldap_projects.json) records were checked on 2026-10-31. ASF accounts require an ICLA; account membership alone does not establish the ownership or scope of every historical contribution. |
+| `UncertaintyDeterminesYou4ndMe` | The Release Manager [publicly identified the contributor as Jiaxiong Liu and reported Secretary confirmation of the ICLA on 2026-09-24](https://lists.apache.org/thread/47jpk47vykyqr4gxy85szpq25zw0qh9f). |
+| `Mingqwqqaq` | The same public reply reports the filed ICLA, following the Secretary acknowledgment recorded in [#5583](https://github.com/apache/maka/pull/5583). |
+| `zhiiw` | The same reply identifies Zhiyi Wang as a PPMC member with an ICLA. The current public ASF roster also lists `zhiiw`. |
+| `ACMerJuyu` | [#5554](https://github.com/apache/maka/pull/5554) removed the Deep Research implementation before 0.2.0 RC2. The vote disclosed six remaining generic type/JSX lines; it did not claim that every contribution by this author had been removed. |
+
+After that clarification, Justin Mclean [explicitly withdrew his binding -1](https://lists.apache.org/thread/yno6g7kzfc9dgntt0n572zk4vnj4jr2x). The historical objection about the two contributors' ICLAs is resolved. [#3268](https://github.com/apache/maka/issues/3268) is closed, not an open authorization gate.
+
+That conclusion rests on the recorded ICLA route and the subsequent review, not on the earlier argument in #3268 that a software grant is merely an incubation setup item. The [Podling IP Clearance guide](https://incubator.apache.org/guides/ip_clearance.html) requires appropriate rights and paperwork for retained code and assigns Foundation-record checks to an officer or member. It also explains when CLAs or SGAs are appropriate. Neither a release approval nor a blank podling status-page row proves that an SGA has or has not been filed.
+
+The remaining bootstrap-tool confirmation is described below. It is separate from the resolved contributor-ICLA objection. Before replacing the work-in-progress disclaimer, the contributor and mentors should reconcile that confirmation, the accepted authorization route and the relevant Foundation records, then record the conclusion here and update the [podling status page](https://incubator.apache.org/projects/maka.html).
+
 ## Scope and tools
 
 The baseline contains 2,545 tracked files. The historical investigation used:
@@ -230,7 +248,7 @@ Pull request #2695 removed the 29 bundled Skills whose individual origins could 
 
 Pull requests #1255 and #1883 and the contributor's confirmation on pull request #2676 state that a fixed signed `SkyComputerUseService` binary was statically inspected and that specific cursor geometry, motion values, thresholds, path-measurement choices, and core scoring weights were recovered and retained. The repository contains neither OpenAI source nor executable bytes. This is a narrow statement about the listed facts, not a classification of the Computer Use implementation as a whole as binary-derived.
 
-The exact boundary, locally authored divergences, and artifact reproducibility limit are recorded in `docs/computer-use-cursor-provenance.md`. Whether the applicable agreement and law permit retaining those listed facts remains a human legal/ASF question. The provenance review does not answer it.
+The exact historical boundary, locally authored divergences, and artifact reproducibility limit are recorded in `docs/computer-use-cursor-provenance.md`. [#3293](https://github.com/apache/maka/issues/3293) and [#3456](https://github.com/apache/maka/pull/3456) subsequently completed the independent-replacement path recorded in #3268. This paragraph preserves the historical inputs; it does not reopen the resolved replacement work or claim a legal determination about the original static inspection.
 
 ### Generated images
 
@@ -271,7 +289,7 @@ The private `website` workspace uses Astro's optional sharp image processor whil
 
 ## Bootstrap generative tooling
 
-The initial commit is `8fd91a43cc64cdde58cfbd046256effce0cfa6f8` (2026-05-19). The current contributor account is expected to confirm the bootstrap history. The working account is that Raft orchestrated Claude and Codex, but the repository does not establish:
+The initial commit is `8fd91a43cc64cdde58cfbd046256effce0cfa6f8` (2026-05-19), authored by `jackwener`. The [contributor-confirmation request on #2907](https://github.com/apache/maka/pull/2907#issuecomment-5264252641) and its [follow-up](https://github.com/apache/maka/pull/2907#issuecomment-5352056642) have no answer recorded on that PR as of 2026-10-31. The working account is that Raft orchestrated Claude and Codex, but the repository does not establish:
 
 - the exact Raft product or version;
 - the exact Claude and Codex products or model versions;
@@ -279,17 +297,15 @@ The initial commit is `8fd91a43cc64cdde58cfbd046256effce0cfa6f8` (2026-05-19). T
 - the governing terms and dates for those accounts;
 - whether any training-data similarity or provenance protection was enabled.
 
-Until the contributor supplies that information, this item is `pending contributor confirmation`. It does not block publication of this evidence report, but it prevents the stronger conclusion that every bootstrap tool's applicable terms have been verified against ASF generative-tooling guidance.
+Until the contributor supplies that information, this item is `pending contributor confirmation`. The confirmation needs enough information to identify the applicable output-use terms and any third-party inputs, together with the human contributor's review and submission of the work. An unrecorded exact model version or similarity setting is not, by itself, evidence of incompatible terms or unlicensed code. Unknown historical details should remain explicitly unknown. This gap prevents the stronger conclusion that every bootstrap tool's applicable terms have been verified against ASF generative-tooling guidance; it does not undo the recorded resolution of the contributor-ICLA objection.
 
 ## Policy boundary and remaining actions
 
 ASF guidance permits AI-assisted contributions when the tool terms do not restrict output incompatibly with open source and any included third-party material is absent or used under a compatible license. Code scanning can provide reasonable evidence, but the ASF does not prescribe SCANOSS or FOSSA and a scanner result is not an originality certificate.
 
-Before code transfer or release review:
+The historical source-classification review was completed by the non-author committer review and merge of [#2907](https://github.com/apache/maka/pull/2907). The independent cursor replacement and the contributor-ICLA objection were subsequently resolved as recorded above. The remaining work is to obtain the bootstrap contributor confirmation and record the mentors' conclusion on the applicable authorization records and disclaimer. Do not repeat completed source removals or request new agreements merely because an older checklist still lists them.
 
-1. obtain and record the bootstrap contributor confirmation;
-2. obtain an appropriate human legal/ASF determination about retaining the specifically documented facts recovered through static inspection, or replace those facts and dependent code independently;
-3. have the human contributor of record review this report, the 25 classifications, and the final `LICENSE`/`NOTICE` decision;
+When the remaining review establishes that no licensing exception needs disclosure, replace `DISCLAIMER-WIP` with the standard `DISCLAIMER` in the active branches and all source, CLI, npm and Desktop packaging and verification paths. Update existing checks to verify that the standard disclaimer is actually shipped. Preserve already released archives and tags unchanged.
 
 No additional source-removal issue is indicated by the recovered scan. A recurring cloud snippet scan is not recommended until the project chooses a service, data policy, stable thresholds, and an owner for false-positive review. The local dependency-notice check remains the narrower, deterministic CI control for shipped npm dependencies.
 
