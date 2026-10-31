@@ -24,13 +24,7 @@ name: Website
 on:
   pull_request:
     paths:
-      [
-        "website/**",
-        "assets/logo.png",
-        "README*",
-        "DISCLAIMER-WIP",
-        ".github/workflows/website.yml",
-      ]
+      ["website/**", "assets/logo.png", "README*", "DISCLAIMER", ".github/workflows/website.yml"]
   push:
     branches: [main]
     tags: ["v*"]
@@ -38,7 +32,7 @@ on:
       - "website/**"
       - "assets/logo.png"
       - "README*"
-      - "DISCLAIMER-WIP"
+      - "DISCLAIMER"
       - "LICENSE"
       - "NOTICE"
       - ".asf.yaml"

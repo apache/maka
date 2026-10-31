@@ -203,6 +203,33 @@
 
 THIRD-PARTY COMPONENTS
 
+Playwright browser injected script and keyboard data (Apache License 2.0)
+
+third-party/playwright contains the injected script and US keyboard data from
+playwright-core 1.58.2, revision ce480a952553175eae75342aad2c5e86cdf2cbba.
+Source: https://github.com/microsoft/playwright
+Copyright (c) Microsoft Corporation
+Original LICENSE, NOTICE and ThirdPartyNotices.txt are preserved beside the
+source. The published archive, extraction method and file hashes are recorded
+in third-party/playwright/upstream.json.
+
+reqwest HTTP client source (adapted, Apache License 2.0 OR MIT)
+
+third-party/reqwest contains reqwest 0.13.5 from
+https://github.com/seanmonstar/reqwest at revision
+de55373434f07f42926599dbb5a88550d8e55112.
+Copyright (c) 2016-2026 Sean McArthur
+Original license texts, source hashes and local changes are recorded in
+third-party/reqwest/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
+
+image-webp decoder source (adapted, Apache License 2.0 OR MIT)
+
+third-party/image-webp contains image-webp 0.2.4 from
+https://github.com/image-rs/image-webp at revision
+08b57d473c90148dd4b37a075df365afc3dfcc2b.
+Original license texts, source hashes and local changes are recorded in
+third-party/image-webp/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
+
 Zod dependency patch
 
 Source: https://www.npmjs.com/package/zod/v/4.6.7

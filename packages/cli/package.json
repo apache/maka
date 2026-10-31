@@ -13,6 +13,7 @@
   },
   "files": [
     "bin",
+    "DISCLAIMER",
     "LICENSE",
     "NOTICE",
     "README.md",

@@ -18,7 +18,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -57,6 +57,14 @@ export async function verifyRelease(directory) {
       ],
       npmSpawnOptions({ cwd: stage, timeout: 180_000, maxBuffer: 1024 * 1024 }),
     );
+    const installed = join(stage, 'node_modules');
+    const disclaimer = await readFile(join(installed, native.name, 'DISCLAIMER'), 'utf8');
+    if (
+      !disclaimer.includes('Apache Maka') ||
+      !disclaimer.includes('incubation') ||
+      disclaimer !== (await readFile(join(installed, launcher.name, 'DISCLAIMER'), 'utf8'))
+    )
+      throw new Error('Installed native package and launcher disclaimers differ or are invalid');
     const command = join(stage, 'node_modules/@maka-agent/cli/bin/maka.mjs');
     const options = { cwd: stage, timeout: 30_000, maxBuffer: 1024 * 1024, encoding: 'utf8' };
     const { stdout } = await run(process.execPath, [command, '--version'], options);
