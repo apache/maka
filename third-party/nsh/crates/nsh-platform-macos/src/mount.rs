@@ -490,6 +490,11 @@ impl Mounter {
                     crate::text_input::set_selection(view, *start, *end);
                 }
             }
+            Command::ReplaceRange { .. } => {
+                if let Some(view) = view {
+                    crate::text_input::replace_range(view, command);
+                }
+            }
             Command::ScrollTo { y, animated, .. }
                 if view.is_some_and(|v| v.kind() == ViewKind::Input) =>
             {

@@ -55,7 +55,7 @@ use nsh_core::{
     image::{
         CacheHeaders, DiskCache, Fetched, Frames, Images, Key, Lease, MemoryCache, Natural,
         Request, Target, Want,
-        loader::{Context, Get, Priority, Ticket, Transport, loader},
+        loader::{Context, Get, Priority, ReadAsset, Ticket, Transport, loader},
     },
 };
 use objc2::{
@@ -125,6 +125,22 @@ pub(crate) fn set_asset_base(surface: &Rc<Surface>, base: Option<AssetBase>) {
     *surface.asset_base.borrow_mut() = base;
 }
 
+/// Where a surface's image `asset:/` URIs go: the location its asset base
+/// names, or the reader bound to an engine load. `Engine(None)` disables them
+/// rather than falling back to a base.
+#[derive(Default)]
+pub(crate) enum AssetSource {
+    #[default]
+    Base,
+    Engine(Option<ReadAsset>),
+}
+
+impl AssetSource {
+    pub(crate) fn engine(assets: Option<Arc<dyn nsh_engine::Assets>>) -> Self {
+        Self::Engine(assets.map(|assets| ReadAsset::new(move |uri: &str| assets.read(uri))))
+    }
+}
+
 /// What a load of `uri` for `surface` goes through: its asset base and,
 /// for remote images, its disk cache (`asset:/` URIs, served by the dev
 /// server during development, change as the app does: never kept).
@@ -132,9 +148,13 @@ pub(crate) fn set_asset_base(surface: &Rc<Surface>, base: Option<AssetBase>) {
 /// but from `https` down to `http`.
 fn context(surface: &Surface, uri: &str) -> Context {
     let remote = uri.starts_with("http://") || uri.starts_with("https://");
+    let (asset_base, read_asset) = match &*surface.image_assets.borrow() {
+        AssetSource::Base => (surface.asset_base.borrow().clone(), None),
+        AssetSource::Engine(read) => (None, read.clone()),
+    };
     Context {
-        asset_base: surface.asset_base.borrow().clone(),
-        read_asset: None,
+        asset_base,
+        read_asset,
         access: Arc::default(),
         disk: remote
             .then(|| surface.image_cache.borrow().clone())

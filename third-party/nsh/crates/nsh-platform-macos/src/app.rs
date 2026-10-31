@@ -124,6 +124,14 @@ pub struct AppOptions {
     /// Reopening from the Dock shows the same window. Quit still stops the app.
     /// Only used by [`run_app`]; defaults to false.
     pub keep_alive_on_close: bool,
+    /// The smallest size [`run_app`]'s window takes, in points. `None` (the
+    /// default) leaves it to AppKit.
+    pub min_size: Option<(i32, i32)>,
+    /// The name [`run_app`]'s window keeps its frame under in the user's
+    /// defaults: it opens where the window with this name last was (AppKit
+    /// keeps it on a connected display) and keeps it up to date. `None` (the
+    /// default) centers it every time.
+    pub frame_autosave_name: Option<String>,
     /// The native components apps can use (`nsh/native`); shared by the
     /// views made with these options. See [`AppView::register_component`].
     pub components: crate::native::Components,
@@ -171,6 +179,8 @@ impl Default for AppOptions {
             display: None,
             keep_size: false,
             keep_alive_on_close: false,
+            min_size: None,
+            frame_autosave_name: None,
             components: Default::default(),
             appearance: Appearance::System,
             fps: false,
@@ -330,12 +340,31 @@ impl AppView {
             picker: None,
         };
         crate::image::set_asset_base(&self.surface, options.asset_base.clone());
+        *self.surface.image_assets.borrow_mut() = crate::image::AssetSource::Base;
         *self.surface.chunks.borrow_mut() = options.chunks.clone();
         self.surface
             .native
             .set_asset_base(options.asset_base.clone());
         self.surface.native.set_app(&config.app);
         self.surface.start(config);
+    }
+
+    /// Runs an engine the embedding app configured, replacing what ran. The
+    /// surface supplies its viewport and environment; the rest of `config` is
+    /// kept. Its asset reader serves both the engine's resources and image
+    /// `asset:/` URIs (`None` makes those unavailable), bound to this load
+    /// whatever [`Self::set_asset_base`] says.
+    pub fn load_with_config(&self, config: EngineConfig) {
+        *self.surface.image_assets.borrow_mut() =
+            crate::image::AssetSource::engine(config.assets.clone());
+        self.surface.native.set_app(&config.app);
+        self.surface.start(config);
+    }
+
+    /// Asks the user for one folder, in a sheet of the view's window: `done`
+    /// gets its path on the main thread, or `None` when cancelled.
+    pub fn choose_directory(&self, done: impl FnOnce(Option<PathBuf>) + 'static) {
+        crate::file_requests::choose_directory(&self.surface, done);
     }
 
     /// Where `asset:/` URIs resolve from now on.
@@ -434,6 +463,8 @@ fn initial_environment() -> Environment {
         idiom: Idiom::Desktop,
         screen_color: true,
         file_requests: true,
+        native_focus_scopes: true,
+        fallback_key_bindings: true,
         ..Environment::default()
     }
 }
@@ -443,6 +474,7 @@ struct Running {
     window: Retained<NSWindow>,
     view: Rc<AppView>,
     keep_alive_on_close: bool,
+    on_active: Box<dyn Fn(bool)>,
 }
 
 thread_local! {
@@ -514,6 +546,16 @@ define_class!(
     }
 
     unsafe impl NSWindowDelegate for Delegate {
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &NSNotification) {
+            window_active(true);
+        }
+
+        #[unsafe(method(windowDidResignKey:))]
+        fn window_did_resign_key(&self, _notification: &NSNotification) {
+            window_active(false);
+        }
+
         #[unsafe(method(windowShouldClose:))]
         fn should_close(&self, window: &NSWindow) -> bool {
             let keep_alive = RUNNING.with(|running| {
@@ -541,6 +583,26 @@ define_class!(
         }
     }
 );
+
+/// Tells [`run_app_with_config`]'s caller whether the window has the keyboard.
+fn window_active(active: bool) {
+    RUNNING.with(|running| {
+        if let Some(running) = &*running.borrow() {
+            (running.on_active)(active);
+        }
+    });
+}
+
+/// Runs `f` with the standalone runner's view on AppKit's main thread. May be
+/// called from any thread; with no standalone runner `f` does not run.
+pub fn with_running_view(f: impl FnOnce(&AppView) + Send + 'static) {
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        let view = RUNNING.with(|running| running.borrow().as_ref().map(|r| r.view.clone()));
+        if let Some(view) = view {
+            f(&view);
+        }
+    });
+}
 
 /// Quits the standalone runner, including a retained hidden window.
 /// Stops its engine and returns from [`run_app`]. May be called from any thread;
@@ -627,6 +689,35 @@ fn name_app(name: &str) {
 /// `keep_alive_on_close` retains the same engine until Quit or [`quit_app`].
 /// The caller can finish cleanup or relaunch after this function returns.
 pub fn run_app(source: AppSource, options: AppOptions) -> std::process::ExitCode {
+    let load = move |view: &Rc<AppView>| match source {
+        AppSource::Rust(root) => view.load(App::Rust(root)),
+        AppSource::Bundle(bundle) => view.load(App::Js(bundle)),
+        #[cfg(feature = "dev")]
+        AppSource::DevServer(url) => crate::dev::start(view, url),
+    };
+    run_window(options, load, |_| {})
+}
+
+/// [`run_app`] for an engine the embedding app configured
+/// ([`AppView::load_with_config`]). `on_active` hears, on the main thread,
+/// whether the window has the keyboard, from when it opens until it closes.
+pub fn run_app_with_config(
+    config: EngineConfig,
+    options: AppOptions,
+    on_active: impl Fn(bool) + 'static,
+) -> std::process::ExitCode {
+    run_window(
+        options,
+        move |view| view.load_with_config(config),
+        on_active,
+    )
+}
+
+fn run_window(
+    options: AppOptions,
+    load: impl FnOnce(&Rc<AppView>),
+    on_active: impl Fn(bool) + 'static,
+) -> std::process::ExitCode {
     let mtm = MainThreadMarker::new().expect("run_app must be called on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
@@ -680,20 +771,25 @@ pub fn run_app(source: AppSource, options: AppOptions) -> std::process::ExitCode
     if let Some(display) = options.display {
         center_on_display(&window, display);
     }
-    match source {
-        AppSource::Rust(root) => view.load(App::Rust(root)),
-        AppSource::Bundle(bundle) => view.load(App::Js(bundle)),
-        #[cfg(feature = "dev")]
-        AppSource::DevServer(url) => crate::dev::start(&view, url),
+    if let Some((width, height)) = options.min_size {
+        window.setContentMinSize(NSSize::new(width as f64, height as f64));
     }
+    if let Some(name) = &options.frame_autosave_name {
+        let name = NSString::from_str(name);
+        window.setFrameUsingName(&name);
+        window.setFrameAutosaveName(&name);
+    }
+    load(&view);
     window.makeKeyAndOrderFront(None);
     window.makeFirstResponder(Some(view.surface().root.ns()));
     app.activate();
+    on_active(window.isKeyWindow());
     RUNNING.with(|r| {
         *r.borrow_mut() = Some(Running {
             window,
             view,
             keep_alive_on_close: options.keep_alive_on_close,
+            on_active: Box::new(on_active),
         })
     });
     app.run();

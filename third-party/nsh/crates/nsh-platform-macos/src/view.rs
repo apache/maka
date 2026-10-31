@@ -677,7 +677,8 @@ define_class!(
         fn key_down(&self, event: &NSEvent) {
             let handled = self.keyboard_surface().is_some_and(|surface| {
                 surface.measure(false, || {
-                    let handled = crate::input::key(&surface, event, true);
+                    let handled = crate::input::key(&surface, event, true)
+                        || crate::keymap::unhandled(&surface, event);
                     // Keys scroll too.
                     quiet(|| surface.revisit());
                     handled
@@ -724,6 +725,17 @@ define_class!(
                 // SAFETY: NSView's own children.
                 unsafe { msg_send![super(self), accessibilityChildren] }
             }
+        }
+
+        /// VoiceOver's press, as Return presses a focused control.
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> bool {
+            let view = NshView(self.retain());
+            let pressable = crate::input::takes_accessibility_press(&view);
+            if let (true, Some(surface)) = (pressable, self.keyboard_surface()) {
+                crate::input::activate(&surface, &view);
+            }
+            pressable
         }
 
         #[unsafe(method(viewDidMoveToSuperview))]
