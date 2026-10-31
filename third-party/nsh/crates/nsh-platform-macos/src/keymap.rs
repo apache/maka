@@ -13,7 +13,13 @@
 //!
 //! A surface takes the keys of its window while the keyboard focus is in
 //! it (its root, one of its views, a field or hosted view inside it), or
-//! nowhere (the window itself).
+//! nowhere (the window itself). A binding `within` a node fires while the
+//! responder's chain of native views passes through it.
+//!
+//! Fallback bindings run after that dispatch instead ([`unhandled`]): when
+//! the focused view's `keyDown:` leaves the key, or a text view's key
+//! bindings resolve it to `noop:`, which does not say which key it was: the
+//! monitor keeps the last one it saw ([`unhandled_key`]).
 
 use std::{cell::RefCell, ptr::NonNull, rc::Rc, sync::Arc};
 
@@ -34,6 +40,7 @@ use crate::surface::Surface;
 pub(crate) struct KeymapState {
     table: RefCell<Option<Arc<Keymap>>>,
     monitor: RefCell<Option<Retained<AnyObject>>>,
+    key: RefCell<Option<Retained<NSEvent>>>,
 }
 
 impl KeymapState {
@@ -95,9 +102,28 @@ pub(crate) fn fires(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     pressed(surface, event)
 }
 
-/// Whether key-down `event` fired one of the surface's bindings (then it
-/// is reported to JS and consumed).
+/// Whether key-down `event` fired one of the surface's ordinary bindings
+/// (then it is reported to JS and consumed).
 fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
+    *surface.keymap.key.borrow_mut() = Some(event.into());
+    crate::input::control_activation_target(surface, event).is_none()
+        && matched(surface, event, false)
+}
+
+/// Whether key-down `event`, which the focused view, field, selection and
+/// navigation left unhandled, fired one of the surface's fallback bindings.
+pub(crate) fn unhandled(surface: &Rc<Surface>, event: &NSEvent) -> bool {
+    matched(surface, event, true)
+}
+
+/// [`unhandled`] for the key being dispatched, for a text view's `noop:`.
+pub(crate) fn unhandled_key(surface: &Rc<Surface>) -> bool {
+    let key = surface.keymap.key.borrow().clone();
+    key.is_some_and(|key| unhandled(surface, &key))
+}
+
+/// Whether key-down `event` fired a binding of its phase.
+fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
     let Some(table) = surface.keymap.table.borrow().clone() else {
         return false;
     };
@@ -110,9 +136,6 @@ fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     let Some(editing) = editing(surface, &window) else {
         return false;
     };
-    if crate::input::control_activation_target(surface, event).is_some() {
-        return false;
-    }
     let Some(keystroke) = keystroke(event) else {
         return false;
     };
@@ -120,7 +143,14 @@ fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     if cfg!(feature = "dev") && keystroke.reloads(Os::MacOs) {
         return false;
     }
-    let found = table.find(keystroke, editing, event.isARepeat());
+    let path = crate::input::focus_path(surface);
+    let within = |id| path.contains(&id);
+    let repeat = event.isARepeat();
+    let found = if fallback {
+        table.find_fallback_with(keystroke, editing, repeat, within)
+    } else {
+        table.find_with(keystroke, editing, repeat, within)
+    };
     if let KeyMatch::Fire(id) = found {
         surface.event(
             ROOT_ID,

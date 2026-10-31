@@ -69,7 +69,10 @@ pub use objc2_foundation;
 #[cfg(feature = "dev")]
 pub use crate::app::set_root;
 pub use crate::{
-    app::{AppOptions, AppSource, AppView, WindowDisplay, quit_app, run_app, set_ui_sets},
+    app::{
+        AppOptions, AppSource, AppView, WindowDisplay, quit_app, run_app, run_app_with_config,
+        set_ui_sets, with_running_view,
+    },
     image::AssetBase,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent},
     text::CoreTextEngine,

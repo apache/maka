@@ -102,6 +102,7 @@ nsh-js = { path = "third-party/nsh/crates/nsh-js" }
 nsh-platform-tui = { path = "third-party/nsh/crates/nsh-platform-tui" }
 nsh-platform-gpui = { path = "third-party/nsh/crates/gpui/nsh-platform-gpui", default-features = false, features = ["js"] }
 nsh-gpui-terminal = { path = "third-party/nsh/crates/gpui/nsh-gpui-terminal" }
+nsh-platform-macos = { path = "third-party/nsh/crates/nsh-platform-macos" }
 nsh-bundler = { path = "third-party/nsh/crates/nsh-bundler", default-features = false }
 nsh-base = { path = "third-party/nsh/crates/nsh-base" }
 maka-ui-build = { path = "tools/ui-build" }

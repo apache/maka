@@ -398,6 +398,7 @@ pub(crate) fn apply_title_bar(surface: &Surface) {
         return;
     };
     let hidden = surface.chrome.style.get() == TitleBarStyle::Hidden;
+    let frame = window.frame();
     let mut mask = window.styleMask();
     if hidden {
         mask |= NSWindowStyleMask::FullSizeContentView;
@@ -412,6 +413,11 @@ pub(crate) fn apply_title_bar(surface: &Surface) {
     } else {
         NSWindowTitleVisibility::Visible
     });
+    // AppKit keeps the content's size here, which would shrink a saved frame
+    // by the title bar on every launch.
+    if window.frameAutosaveName().length() > 0 && window.frame() != frame {
+        window.setFrame_display(frame, true);
+    }
     update_area(surface);
     // AppKit can restore the old content size after setStyleMask returns.
     // Reconcile it after that pass, using the current window and style so

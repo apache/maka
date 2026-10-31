@@ -689,6 +689,14 @@ impl Ctx {
         if command == sel!(insertNewline:) {
             return self.return_key(&input, text_view, multiline);
         }
+        // The key bindings have no use for this key: an app's fallback may.
+        if command == sel!(noop:) {
+            return !text_view.hasMarkedText()
+                && self
+                    .surface
+                    .upgrade()
+                    .is_some_and(|surface| crate::keymap::unhandled_key(&surface));
+        }
         // Option+Return (`insertNewlineIgnoringFieldEditor:`) and
         // Control+Return (`insertLineBreak:`): a line break in a multiline
         // input whatever return does, a plain `\n` (a text view's
@@ -2102,6 +2110,68 @@ pub(crate) fn set_selection(view: &NshView, start: u32, end: u32) {
     }
 }
 
+/// One undoable application edit of the focused input `view`, dropped unless
+/// the input still is what the app saw when it asked (`Command::ReplaceRange`).
+pub(crate) fn replace_range(view: &NshView, command: &nsh_core::Command) {
+    let nsh_core::Command::ReplaceRange {
+        range,
+        text,
+        expected_text,
+        expected_selection,
+        count,
+    } = command
+    else {
+        return;
+    };
+    let Some(input) = view.state().input.clone() else {
+        return;
+    };
+    let editor = input.editor.borrow().clone();
+    if !input.focused.get()
+        || !input.config.borrow().editable
+        || input.count.get() != *count
+        || editor.marked_text().is_some()
+        || editor.text() != *expected_text
+        || editor.selection() != Some((expected_selection.start, expected_selection.end))
+        || !splits_no_character(expected_text, range)
+    {
+        return;
+    }
+    let Some(editing) = editor.editing() else {
+        return;
+    };
+    let Some(text_view) = editing.downcast_ref::<NSTextView>() else {
+        return;
+    };
+    let target = NSRange::new(range.start as usize, (range.end - range.start) as usize);
+    let replacement = NSString::from_str(text);
+    let allowed = text_view.shouldChangeTextInRange_replacementString(target, Some(&replacement));
+    if allowed {
+        text_view.replaceCharactersInRange_withString(target, &replacement);
+    }
+    // A clipped edit is made by `should_change`, which then refuses this one.
+    let now = text_view.string();
+    if allowed || now.to_string() != *expected_text {
+        let inserted = now.length() + target.length - expected_text.encode_utf16().count();
+        text_view.setSelectedRange(NSRange::new(target.location + inserted, 0));
+    }
+    if allowed {
+        text_view.didChangeText();
+    }
+}
+
+/// Whether `range` (UTF-16) is inside `text` and ends between its characters.
+fn splits_no_character(text: &str, range: &std::ops::Range<u32>) -> bool {
+    let mut offset = 0;
+    let mut ends = 0;
+    for c in text.chars() {
+        ends += usize::from(offset == range.start) + usize::from(offset == range.end);
+        offset += c.len_utf16() as u32;
+    }
+    ends += usize::from(offset == range.start) + usize::from(offset == range.end);
+    ends == 2
+}
+
 /// Sets the `focused` interaction state of `view`, if JS tracks it.
 fn set_focused(surface: &Surface, view: &NshView, on: bool) {
     let (id, next) = {
@@ -2159,6 +2229,16 @@ fn clip_utf16(s: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn application_edits_keep_characters_whole() {
+        assert!(splits_no_character("a😀b", &(0..4)));
+        assert!(splits_no_character("a😀b", &(1..3)));
+        assert!(splits_no_character("a😀b", &(4..4)));
+        assert!(splits_no_character("", &(0..0)));
+        assert!(!splits_no_character("a😀b", &(2..3)));
+        assert!(!splits_no_character("a😀b", &(0..5)));
+    }
 
     #[test]
     fn single_line_placeholder_matches_native_editor_metrics() {

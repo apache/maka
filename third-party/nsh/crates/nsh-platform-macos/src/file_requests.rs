@@ -6,7 +6,7 @@
 //! went). The panels answer as a root `FileRequest` event when they close,
 //! the rest at once.
 
-use std::{path::PathBuf, rc::Rc};
+use std::{cell::Cell, path::PathBuf, rc::Rc};
 
 use block2::RcBlock;
 use nsh_core::{
@@ -145,6 +145,35 @@ unsafe fn begin(surface: &Surface, panel: &AnyObject, handler: impl Fn(isize) + 
                 let _: () = msg_send![panel, beginWithCompletionHandler: &*handler];
             }
         }
+    }
+}
+
+/// Asks the host's question for one folder: `done` gets its path, or `None`
+/// when cancelled.
+pub(crate) fn choose_directory(surface: &Surface, done: impl FnOnce(Option<PathBuf>) + 'static) {
+    let Some(class) = AnyClass::get(c"NSOpenPanel") else {
+        return done(None);
+    };
+    let done = Cell::new(Some(done));
+    // SAFETY: AppKit's documented NSOpenPanel API, on the main thread.
+    unsafe {
+        let panel: Retained<AnyObject> = msg_send![class, openPanel];
+        let _: () = msg_send![&panel, setCanChooseFiles: false];
+        let _: () = msg_send![&panel, setCanChooseDirectories: true];
+        let _: () = msg_send![&panel, setCanCreateDirectories: true];
+        let _: () = msg_send![&panel, setAllowsMultipleSelection: false];
+        let chosen = panel.clone();
+        begin(surface, &panel, move |response| {
+            let path = if response == 1 {
+                let url: Option<Retained<NSURL>> = msg_send![&chosen, URL];
+                url.as_deref().and_then(url_path)
+            } else {
+                None
+            };
+            if let Some(done) = done.take() {
+                done(path);
+            }
+        });
     }
 }
 

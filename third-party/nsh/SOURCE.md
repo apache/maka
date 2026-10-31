@@ -93,13 +93,19 @@ editor and rendering; Maka owns ordered delivery and admission for the
 experimental OSC 777 `nsh-text-input` extension. This does not establish
 stock-terminal IME support.
 
-GPUI and terminal input support `InputRef.replaceRange` for one undoable
+GPUI, terminal and AppKit input support `InputRef.replaceRange` for one undoable
 completion edit after checking the observed source, selection and edit count.
-Generic input `tokens` derive styled and atomic ranges from committed text;
-plain text remains authoritative and IME preedit stays separate. Scoped
-`keymap.bind` fallback bindings run after native editing, selection and
+Generic GPUI and terminal input `tokens` derive styled and atomic ranges from
+committed text; plain text remains authoritative and IME preedit stays separate.
+Scoped `keymap.bind` fallback bindings run after native editing, selection and
 navigation leave a key unhandled. Host keyboard conventions, explicit event
 policy and custom binding precedence remain local contracts.
+
+The AppKit `AppView::load_with_config`, `run_app_with_config`,
+`with_running_view`, `AppView::choose_directory`, `AppOptions::min_size` and
+`AppOptions::frame_autosave_name` let Maka's desktop shell run its own
+`EngineConfig` on an opt-in path. An accessibility press and scoped and fallback
+key bindings complete that path; AppKit input has no `tokens`.
 
 Host-provided GPUI paste and terminal bracketed paste follow the focused
 editor's existing `onPaste` and `pasteBehavior` policy. A complete pasted path

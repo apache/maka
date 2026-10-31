@@ -693,6 +693,7 @@ nsh-js@0.3.0		X
 nsh-macros@0.3.0		X																
 nsh-package@0.3.0		X																
 nsh-platform-gpui@0.3.0		X																
+nsh-platform-macos@0.3.0		X																
 nsh-platform-tui@0.3.0		X																
 ntapi@0.4.3		X										X						
 nu-ansi-term@0.50.3												X						
@@ -723,6 +724,8 @@ objc2-core-video@0.3.2		X										X						X
 objc2-encode@4.1.0												X						
 objc2-foundation@0.2.2												X						
 objc2-foundation@0.3.2												X						
+objc2-image-io@0.3.2		X										X						X
+objc2-io-kit@0.3.2		X										X						X
 objc2-metal@0.3.2		X										X						X
 objc2-quartz-core@0.2.2												X						
 objc2-quartz-core@0.3.2		X										X						X
@@ -1232,7 +1235,6 @@ windows-collections@0.3.2		X										X
 windows-core@0.57.0		X										X						
 windows-core@0.58.0		X										X						
 windows-core@0.59.0		X										X						
-windows-core@0.61.2		X										X						
 windows-core@0.62.2		X										X						
 windows-future@0.3.2		X										X						
 windows-implement@0.57.0		X										X						
@@ -1253,7 +1255,6 @@ windows-result@0.3.4		X										X
 windows-result@0.4.1		X										X						
 windows-strings@0.1.0		X										X						
 windows-strings@0.3.1		X										X						
-windows-strings@0.4.2		X										X						
 windows-strings@0.5.1		X										X						
 windows-sys@0.48.0		X										X						
 windows-sys@0.59.0		X										X						
