@@ -236,7 +236,13 @@ export function createPlanPanel(plan: ComposerPlan) {
                 {execution()!.reason!}
               </Text>
             </If>
-            <If when={showing() === 'proposal' && proposal()?.status === 'revision_requested'}>
+            <If
+              when={
+                showing() === 'proposal' &&
+                proposal()?.status === 'revision_requested' &&
+                plan.mode() === 'plan'
+              }
+            >
               <Text style={{ ...captionTextStyle, color: C.muted }}>
                 {tr('Say what to change in a message, and a revised plan will follow.')}
               </Text>
@@ -272,6 +278,13 @@ export function createPlanPanel(plan: ComposerPlan) {
                 proposalRevision: proposal()?.revision ?? 0,
               })}
             />
+          </If>
+          <If
+            when={
+              showing() === 'proposal' &&
+              (proposal()?.status === 'pending_approval' || plan.mode() !== 'plan')
+            }
+          >
             <InteractionAction
               label={tr('Request revision')}
               disabled={plan.pending()}

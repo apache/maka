@@ -665,3 +665,81 @@ async fn desktop_opens_a_conversation_beside_the_current_one() {
     desktop.close().await;
     fixture.finish().await;
 }
+
+fn tool_names(request: &ModelRequest) -> Vec<String> {
+    request.body["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_plans_first_then_runs_the_approved_plan() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.press("Planning mode").await;
+    let previous = desktop.platform.text_input_target();
+    desktop.press("Focus message composer").await;
+    desktop.target_after(previous).await;
+    desktop.type_text("PLAN_FIRST_MESSAGE").await;
+    desktop.key("enter", false);
+    let planning = desktop.request(&mut fixture).await;
+    let tools = tool_names(&planning);
+    assert!(tools.iter().any(|name| name == "SubmitPlan"), "{tools:?}");
+    planning
+        .tool_call(
+            "SubmitPlan",
+            json!({"title":"PLAN_TITLE","steps":[{"id":"one","title":"PLAN_STEP","description":"PLAN_STEP_DETAIL"}]}),
+        )
+        .await;
+    // The submitted proposal opens for approval without a click.
+    desktop.press("Approve and execute").await;
+    let running = desktop.request(&mut fixture).await;
+    let tools = tool_names(&running);
+    assert!(tools.iter().any(|name| name == "update_plan"), "{tools:?}");
+    assert!(!tools.iter().any(|name| name == "SubmitPlan"), "{tools:?}");
+    assert!(running.body.to_string().contains("PLAN_STEP_DETAIL"));
+    running
+        .tool_call(
+            "update_plan",
+            json!({"steps":[{"id":"one","status":"completed"}]}),
+        )
+        .await;
+    desktop.request(&mut fixture).await.finish().await;
+    let session = desktop
+        .sessions()
+        .await
+        .into_iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    desktop
+        .wait("the approved plan did not complete", async {
+            loop {
+                let plan = desktop
+                    .client
+                    .query("agent", "plan", json!({"sessionId":session}))
+                    .await
+                    .unwrap();
+                if plan["current"]["execution"]["phase"] == "completed" {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+    // Approving runs the Plan without leaving planning mode.
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId":session}))
+        .await
+        .unwrap();
+    assert_eq!(observed["session"]["collaborationMode"], "plan");
+    desktop.close().await;
+    fixture.finish().await;
+}

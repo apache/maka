@@ -954,6 +954,16 @@ export function createConversationUi(
                   ...(permissionsChanged ? { permissions: { settings, revokeGrants: true } } : {}),
                   ...(modeChanged ? { collaborationMode: mode } : {}),
                 });
+                if (
+                  changed.kind === 'rejected' &&
+                  modeChanged &&
+                  changed.reason === 'tools_unavailable'
+                ) {
+                  // This Agent does not plan: say so once and send in agent mode next time.
+                  plansEnabled.set(false);
+                  updatePending({ mode: 'agent' });
+                  throw new UiError('Plans are unavailable in this Agent.');
+                }
                 if (changed.kind !== 'committed')
                   throw new UiError(
                     permissionsChanged
@@ -2129,10 +2139,17 @@ export function createConversationUi(
       if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
         return handle() !== null;
       if (id === 'stop') return handle()?.invocation() != null;
-      if (id === 'plan')
-        return handle()
-          ? !!handle()!.plan.view()?.enabled && handle()!.invocation() === null
-          : pending() !== null && plansEnabled() !== false;
+      if (id === 'plan') {
+        const owner = handle();
+        if (!owner) return pending() !== null && plansEnabled() !== false;
+        const phase = owner.plan.view()?.current.execution?.phase;
+        return (
+          !!owner.plan.view()?.enabled &&
+          owner.invocation() === null &&
+          phase !== 'awaiting_admission' &&
+          phase !== 'active'
+        );
+      }
       return true;
     },
     run(id: string, argument?: string) {

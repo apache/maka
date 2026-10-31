@@ -95,18 +95,11 @@ export function createSessionPlan(
     if (alive) error.set(errorText(reason));
   });
 
-  // The Plan runs as ordinary agent work against the conversation as it is now,
-  // so planning mode ends first and the target is read from that commit.
+  // The Host runs an approved Plan as agent work in the background whatever
+  // mode the conversation is in, so approving leaves the mode as it is.
   const approval = async (): Promise<AgentPlanApproval | null> => {
-    let session = permissions.snapshot();
+    const session = permissions.snapshot();
     if (!session) throw new UiError('Loading sandbox settings…');
-    if (session.collaborationMode === 'plan') {
-      session = await permissions.selectMode({ session, mode: 'agent' });
-      if (!session) {
-        if (alive) error.set(permissions.error());
-        return null;
-      }
-    }
     const chosen = await selection();
     if (!chosen) return null;
     return {
@@ -135,6 +128,12 @@ export function createSessionPlan(
           action.kind === 'approve'
             ? { ...action, approval: granted }
             : { kind: 'resume', executionId: action.executionId, approval: granted };
+      } else if (action.kind === 'revise') {
+        // Only planning mode lets the model submit the revised Plan.
+        const session = permissions.snapshot();
+        if (!session) throw new UiError('Loading sandbox settings…');
+        if (!(await permissions.selectMode({ session, mode: 'plan' })) || !alive) return;
+        planAction = action;
       } else if (action.kind === 'cancel') {
         planAction = { kind: 'cancel', executionId: action.executionId, reason: 'user_cancelled' };
       } else {
@@ -166,8 +165,11 @@ export function createSessionPlan(
     const session = permissions.snapshot();
     if (!alive || pending() || !session) return;
     error.set('');
-    if ((await permissions.selectMode({ session, mode })) === null && alive)
-      error.set(permissions.error());
+    try {
+      await permissions.selectMode({ session, mode });
+    } catch (reason) {
+      if (alive) error.set(errorText(reason));
+    }
   };
   return {
     view,

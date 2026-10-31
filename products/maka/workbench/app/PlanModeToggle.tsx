@@ -45,9 +45,15 @@ export function PlanModeToggle(props: {
     props.plan ? props.plan.mode() : props.pending ? props.pending.mode() : null;
   const shown = () =>
     props.plan ? !!props.plan.view()?.enabled : (props.pending?.mode() ?? null) !== null;
+  // Changing mode changes the conversation's boundary, which would stop an
+  // approved Plan that has not finished.
+  const running = () => {
+    const phase = props.plan?.view()?.current.execution?.phase;
+    return phase === 'awaiting_admission' || phase === 'active';
+  };
+  const busy = () => !!props.plan && (props.busy || running());
   const disabled = () =>
-    mode() === null ||
-    (props.plan ? props.plan.pending() || props.busy : !!props.pending?.pending());
+    mode() === null || (props.plan ? props.plan.pending() || busy() : !!props.pending?.pending());
   const planning = () => mode() === 'plan';
   const select = (next: CollaborationMode) => {
     if (props.plan) void props.plan.selectMode(next);
@@ -60,7 +66,7 @@ export function PlanModeToggle(props: {
         selected={planning()}
         accessibilityLabel={tr('Planning mode')}
         tooltip={textTooltip(() =>
-          props.busy && props.plan
+          busy()
             ? tr(
                 'Wait for the current execution and queued messages to finish before switching mode.',
               )

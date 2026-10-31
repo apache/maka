@@ -537,6 +537,11 @@ impl ModelRequest {
     pub async fn finish(self) {
         self.finish_with_reason("stop").await;
     }
+    /// Ends the reply with one call to `name`.
+    pub async fn tool_call(mut self, name: &str, arguments: Value) {
+        self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"nsh-real-call","type":"function","function":{"name":name,"arguments":arguments.to_string()}}]},"finish_reason":null}]})).await;
+        self.finish_with_reason("tool_calls").await;
+    }
 
     pub async fn http_error(self, body: Value) {
         self.response
