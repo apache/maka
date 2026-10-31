@@ -33,7 +33,8 @@ impl Browsers {
             .get(handle)
             .ok_or_else(|| failed("stale_tab: bind it again"))?
             .identity()?;
-        self.use_tab(&identity, call.invocation.turn(), call.cancellation).await?;
+        self.use_tab(&identity, call.invocation.turn(), call.cancellation)
+            .await?;
         let tab = self.targets.get_mut(handle).expect("verified tab handle");
         tab.last_turn = call.invocation.turn().to_owned();
         tab.authorize(None, call.invocation, call.cancellation, call.language)

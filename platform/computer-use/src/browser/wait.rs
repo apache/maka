@@ -305,7 +305,8 @@ impl Browsers {
                 }
             }),
             plan => {
-                self.use_tab(&identity, invocation.turn(), cancellation).await?;
+                self.use_tab(&identity, invocation.turn(), cancellation)
+                    .await?;
                 let tab = self
                     .targets
                     .get_mut(&handle)
