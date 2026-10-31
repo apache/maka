@@ -215,7 +215,10 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
           disabledStyle={controlDisabledStyle}
         >
           <Text
-            style={[{ ...captionTextStyle, color: C.muted, flexShrink: 1 }, { numberOfLines: 1 }]}
+            style={[
+              { ...captionTextStyle, color: C.secondary, flexShrink: 1 },
+              { numberOfLines: 1 },
+            ]}
           >
             {label()}
           </Text>
