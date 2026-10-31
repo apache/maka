@@ -283,6 +283,27 @@ async fn desktop_launcher_succeeds_when_its_host_stopped_under_the_shell() {
 }
 
 #[tokio::test]
+async fn desktop_launched_through_a_symlink_runs_the_shell_beside_its_target() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let directory = tempfile::tempdir().unwrap();
+        let install = directory.path().join("install");
+        std::fs::create_dir(&install).unwrap();
+        let executable = launcher(&install);
+        shell(&install);
+        let bin = directory.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let link = bin.join("maka");
+        std::os::unix::fs::symlink(&executable, &link).unwrap();
+        let fixture = CandidateFixture::new(directory.path().join("root"));
+        let (mut child, ..) = started(&link, &fixture.root).await;
+        child.stdin.take().unwrap().write_all(b"0\n").await.unwrap();
+        assert!(child.wait().await.unwrap().success());
+    })
+    .await
+    .expect("desktop launcher started through a symlink did not settle");
+}
+
+#[tokio::test]
 async fn desktop_shell_spawn_failure_ignores_path_and_releases_its_host() {
     let started_at = Instant::now();
     let stage = |phase: &str| {
