@@ -165,7 +165,7 @@ impl CommitNotice {
     pub(crate) fn activations(&self) {
         self.hub.0.activations.send_replace(());
     }
-    /// A committed loss of history ownership may release an earlier ancestor.
+    /// Committed history or Artifact release may free ancestor material or pages.
     /// Ordinary facts and collection itself must not wake another full pass.
     pub(crate) fn material_released(&self) {
         self.hub.0.material_releases.send_replace(());

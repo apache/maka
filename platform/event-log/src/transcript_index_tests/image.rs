@@ -323,7 +323,7 @@ async fn actual_tool_images_are_immutable_scoped_and_reconstructed_without_paths
         .unwrap();
     // Simulate corrupted on-disk material, bypassing normal write constraints
     // only on this isolated fixture connection. Reads still must be bounded.
-    db.execute_batch("PRAGMA ignore_check_constraints=ON")
+    db.execute_batch("PRAGMA ignore_check_constraints=ON; PRAGMA foreign_keys=OFF")
         .unwrap();
     db.execute("UPDATE artifacts SET record_json=json_set(record_json,'$.name',?) WHERE session_id='images' AND id=?",rusqlite::params!["x".repeat(20000),&artifact.id]).unwrap();
     assert!(

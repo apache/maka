@@ -110,6 +110,7 @@ async fn cross_partition_copy_streams_complete_bytes_and_retries_same_receipt() 
     let (_directory, root, source, target) = fixture().await;
     let bytes: Vec<u8> = (0..(3 * 64 * 1024 + 17)).map(|i| (i % 251) as u8).collect();
     let request = upload(&source, &target, &bytes).await;
+    upload(&target, &source, &bytes).await;
     let copied = root
         .copy_plugin_attachment(&namespace(), request.clone())
         .await
@@ -143,7 +144,8 @@ async fn cross_partition_copy_streams_complete_bytes_and_retries_same_receipt() 
         .unwrap();
     assert_eq!(before.revision, after.revision);
     assert_eq!(before.record, after.record);
-    assert_eq!(count(&target).await, 1);
+    assert_eq!(count(&target).await, 2);
+    assert_eq!(physical_content(&target).await, (1, bytes.len() as i64, 2));
     root.close().await.unwrap();
 }
 
@@ -158,7 +160,7 @@ async fn corrupted_source_rolls_back_target_payload_and_catalog() {
         .run(|connection| {
             Box::pin(async move {
                 sqlx::query(
-                    "UPDATE artifacts SET payload=zeroblob(length(payload)) WHERE id='upload'",
+                    "UPDATE artifact_contents SET payload=zeroblob(length(payload)) WHERE content_sha256 IN (SELECT content_sha256 FROM artifacts WHERE id='upload')",
                 )
                 .execute(connection)
                 .await?;
@@ -552,4 +554,234 @@ fn owned_parts(
             })
         })
         .collect()
+}
+
+async fn physical_content(session: &SessionStore) -> (i64, i64, i64) {
+    session.owner().unwrap().connection.read(|db| Box::pin(async move {
+        Ok(sqlx::query_as("SELECT COUNT(*),COALESCE(SUM(length(payload)),0),(SELECT COUNT(*) FROM artifacts) FROM artifact_contents")
+            .fetch_one(db).await?)
+    })).await.unwrap()
+}
+
+#[tokio::test]
+async fn large_attachment_forks_share_one_body_until_the_last_session_retires() {
+    use crate::sessions::{SessionCopy, SessionCopyResult, SessionRetirement};
+    use maka_agent_facts::event::{
+        EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
+    };
+    use maka_agent_facts::session::{CopyPurpose, ForkPosition};
+    let (_directory, root, source, target) = fixture().await;
+    let bytes = vec![43; 1024 * 1024 + 17];
+    let attachment = upload(&source, &target, &bytes).await.attachment;
+    let mut input: maka_agent_facts::input::MessageInput = "shared attachment".into();
+    input.attachments = Some(vec![attachment]);
+    let invocation = Invocation {
+        session_id: "source".into(),
+        turn_id: "upload".into(),
+        run_id: "run".into(),
+        invocation_id: "invocation".into(),
+    };
+    for fact in [
+        Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::Message {
+                content: input,
+                source_messages: vec![],
+                request_fingerprint: None,
+            },
+        },
+        Fact::InvocationEnded {
+            outcome: InvocationOutcome::Completed,
+        },
+    ] {
+        source
+            .append(&EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap())
+            .await
+            .unwrap();
+    }
+    for index in 0..10 {
+        let revision = source
+            .get::<serde_json::Value>()
+            .await
+            .unwrap()
+            .unwrap()
+            .revision;
+        assert!(matches!(
+            root.copy_session(
+                SessionCopy {
+                    source_session_id: "source".into(),
+                    target_session_id: format!("fork-{index}"),
+                    expected_source_revision: revision,
+                    purpose: CopyPurpose::Branch {
+                        position: ForkPosition::End,
+                        side_conversation: false
+                    }
+                },
+                &json!({}),
+                2
+            )
+            .await
+            .unwrap(),
+            SessionCopyResult::Committed(_)
+        ));
+    }
+    assert_eq!(physical_content(&source).await, (1, 1024 * 1024 + 17, 11));
+    for id in std::iter::once("source".to_owned()).chain((0..9).map(|i| format!("fork-{i}"))) {
+        let session = root.session(&id).await.unwrap();
+        let revision = session
+            .get::<serde_json::Value>()
+            .await
+            .unwrap()
+            .unwrap()
+            .revision;
+        root.begin_session_removal(&id, revision).await.unwrap();
+        assert_eq!(
+            root.finish_session_retirement(&id).await.unwrap(),
+            SessionRetirement::Removed
+        );
+    }
+    let survivor = root.session("fork-9").await.unwrap();
+    assert_eq!(physical_content(&survivor).await, (1, 1024 * 1024 + 17, 1));
+    let original_owner = root.control.owned_root().unwrap();
+    root.close().await.unwrap();
+    let root = RootStore::open(original_owner).await.unwrap();
+    let survivor = root.session("fork-9").await.unwrap();
+    let artifact = survivor
+        .list_artifacts("fork-9", 0, 128)
+        .await
+        .unwrap()
+        .records
+        .pop()
+        .unwrap();
+    assert_eq!(
+        survivor
+            .read_artifact_chunk("fork-9", &artifact.id, 0, bytes.len())
+            .await
+            .unwrap()
+            .unwrap()
+            .bytes,
+        bytes
+    );
+    let revision = survivor
+        .get::<serde_json::Value>()
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    root.begin_session_removal("fork-9", revision)
+        .await
+        .unwrap();
+    assert_eq!(
+        root.finish_session_retirement("fork-9").await.unwrap(),
+        SessionRetirement::Removed
+    );
+    assert_eq!(physical_content(&survivor).await, (0, 0, 0));
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn existing_content_digest_never_bypasses_incoming_byte_comparison() {
+    let (_directory, root, source, target) = fixture().await;
+    let bytes = vec![17; 64 * 1024 + 17];
+    let request = upload(&source, &target, &bytes).await;
+    upload(&target, &source, &bytes).await;
+    let before = target.get_artifact(target.id(), "upload").await.unwrap();
+    target
+        .owner()
+        .unwrap()
+        .connection
+        .run(|db| {
+            Box::pin(async move {
+                sqlx::query("UPDATE artifact_contents SET payload=zeroblob(length(payload))")
+                    .execute(db)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        root.copy_plugin_attachment(&namespace(), request).await,
+        Err(StoreError::ArtifactConflict)
+    ));
+    let mut another = before.record.clone().unwrap();
+    another.id = "new-upload".into();
+    assert!(matches!(
+        target.commit_artifact(another, bytes.clone()).await,
+        Err(StoreError::ArtifactConflict)
+    ));
+    assert_eq!(
+        target
+            .get_artifact(target.id(), "upload")
+            .await
+            .unwrap()
+            .revision,
+        before.revision
+    );
+    assert_eq!(physical_content(&target).await, (1, bytes.len() as i64, 1));
+    assert_eq!(
+        target
+            .read_artifact_chunk(target.id(), "upload", 0, 17)
+            .await
+            .unwrap()
+            .unwrap()
+            .bytes,
+        vec![0; 17]
+    );
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn deleting_the_last_upload_reference_automatically_returns_database_pages() {
+    let (_directory, root, source, target) = fixture().await;
+    let bytes = vec![91; 1024 * 1024 + 17];
+    upload(&source, &target, &bytes).await;
+    let owner = source.owner().unwrap();
+    let pages_before: i64 = owner
+        .connection
+        .read(|db| {
+            Box::pin(async move {
+                Ok(sqlx::query_scalar("PRAGMA page_count")
+                    .fetch_one(db)
+                    .await?)
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        source
+            .delete_user_artifact(source.id(), "upload")
+            .await
+            .unwrap(),
+        crate::artifacts::ArtifactDeletion::Deleted
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let (pages, free): (i64, i64) = owner
+                .connection
+                .read(|db| {
+                    Box::pin(async move {
+                        let pages = sqlx::query_scalar("PRAGMA page_count")
+                            .fetch_one(&mut *db)
+                            .await?;
+                        let free = sqlx::query_scalar("PRAGMA freelist_count")
+                            .fetch_one(db)
+                            .await?;
+                        Ok((pages, free))
+                    })
+                })
+                .await
+                .unwrap();
+            if pages < pages_before && free == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect(
+        "Root maintenance must return pages after upload deletion without a Session retirement",
+    );
+    assert_eq!(physical_content(&source).await, (0, 0, 0));
+    root.close().await.unwrap();
 }

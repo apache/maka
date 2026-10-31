@@ -98,7 +98,7 @@ async fn stream(
             return Err(StoreError::ArtifactConflict);
         }
         let (rowid, length): (i64, i64) = sqlx::query_as(
-            "SELECT rowid,length(payload) FROM artifacts WHERE session_id=? AND id=?",
+            "SELECT c.rowid,length(c.payload) FROM artifacts JOIN artifact_contents c USING(content_sha256) WHERE session_id=? AND id=?",
         )
         .bind(session_id)
         .bind(relative_path)
@@ -165,26 +165,24 @@ async fn receive(
         .validate_attachment(&destination)
         .map_err(invalid)?;
     let retry = existing.is_some();
-    if let Some((record, recorded_digest)) = existing {
-        if record != artifact || recorded_digest != digest {
-            return Err(StoreError::ArtifactConflict);
-        }
-    } else {
-        // A source canonical_at belongs to another partition's sequence domain.
-        // The first target consumption freezes these bytes at its own sequence;
-        // retries above preserve any existing target freeze unchanged.
-        sqlx::query("INSERT INTO artifacts (session_id,id,created_at,record_json,content_sha256,payload,canonical_at,lookup_digest) VALUES (?,?,?,?,?,zeroblob(?),NULL,?)")
-            .bind(session_id).bind(&id).bind(artifact.created_at as i64)
-            .bind(serde_json::to_string(&artifact)?).bind(&digest).bind(artifact.size_bytes as i64)
-            .bind(crate::artifacts::identity::artifact_lookup_digest(session_id, &id).as_slice())
-            .execute(&mut *tx).await?;
+    if let Some((record, recorded_digest)) = existing
+        && (record != artifact || recorded_digest != digest)
+    {
+        return Err(StoreError::ArtifactConflict);
     }
-    let (rowid, length): (i64, i64) =
-        sqlx::query_as("SELECT rowid,length(payload) FROM artifacts WHERE session_id=? AND id=?")
-            .bind(session_id)
-            .bind(&id)
-            .fetch_one(&mut *tx)
-            .await?;
+    // Existing local bytes are compared throughout the stream even when the
+    // destination reference is new. Only a newly allocated body is writable.
+    let shared = sqlx::query("INSERT INTO artifact_contents(content_sha256,payload) VALUES (?,zeroblob(?)) ON CONFLICT(content_sha256) DO NOTHING")
+        .bind(&digest).bind(artifact.size_bytes as i64).execute(&mut *tx).await?.rows_affected() == 0;
+    if retry && !shared {
+        return Err(StoreError::ArtifactConflict);
+    }
+    let (rowid, length): (i64, i64) = sqlx::query_as(
+        "SELECT rowid,length(payload) FROM artifact_contents WHERE content_sha256=?",
+    )
+    .bind(&digest)
+    .fetch_one(&mut *tx)
+    .await?;
     if u64::try_from(length).ok() != Some(artifact.size_bytes) {
         return Err(StoreError::ArtifactConflict);
     }
@@ -196,7 +194,7 @@ async fn receive(
                 if bytes.is_empty() || offset + bytes.len() as u64 > artifact.size_bytes {
                     return Err(StoreError::ArtifactConflict);
                 }
-                transfer(&mut tx, rowid, artifact.size_bytes, offset, &bytes, retry).await?;
+                transfer(&mut tx, rowid, artifact.size_bytes, offset, &bytes, shared).await?;
                 hash.update(&bytes);
                 offset += bytes.len() as u64;
             }
@@ -209,6 +207,13 @@ async fn receive(
         return Err(StoreError::ArtifactConflict);
     }
     if !retry {
+        // Canonical positions belong to each partition's sequence domain. A new
+        // reference freezes only when first consumed in this target partition.
+        sqlx::query("INSERT INTO artifacts (session_id,id,created_at,record_json,content_sha256,canonical_at,lookup_digest) VALUES (?,?,?,?,?,NULL,?)")
+            .bind(session_id).bind(&id).bind(artifact.created_at as i64)
+            .bind(serde_json::to_string(&artifact)?).bind(&digest)
+            .bind(crate::artifacts::identity::artifact_lookup_digest(session_id, &id).as_slice())
+            .execute(&mut *tx).await?;
         advance(&mut tx, session_id).await?;
     }
     tx.commit().await.map_err(StoreError::CommitUnknown)?;
@@ -266,7 +271,7 @@ async fn with_blob<T: Send>(
     // SAFETY: the original SQLx guard excludes its worker FFI; neither the
     // non-owning wrapper nor the incremental blob escapes this no-await block.
     let borrowed = unsafe { rusqlite::Connection::from_handle(locked.as_raw_handle().as_ptr()) }?;
-    let mut blob = borrowed.blob_open("main", "artifacts", "payload", rowid, readonly)?;
+    let mut blob = borrowed.blob_open("main", "artifact_contents", "payload", rowid, readonly)?;
     let result = if blob.len() as u64 == size {
         action(&mut blob)
     } else {
