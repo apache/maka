@@ -83,7 +83,7 @@ fn page_ids<T>(page: &SessionPage<T>) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn eight_partition_keyset_merge_preserves_forward_reverse_and_tail_anchor() {
+async fn eight_partition_keyset_merge_preserves_forward_reverse_and_resets_missing_anchor() {
     let (_dir, root) = fixture().await;
     let mut ids = ids_for_partitions();
     ids.extend((0..31).map(|n| format!("owner-extra-{n:03}")));
@@ -148,19 +148,19 @@ async fn eight_partition_keyset_merge_preserves_forward_reverse_and_tail_anchor(
         .await
         .unwrap();
     assert_eq!(page_ids(&anchor), ids[13..18]);
-    let tail = root
+    let missing = root
         .root_session_page::<Value>(
             CatalogScope::Profile,
             None,
-            SessionPosition::At("zz-tail"),
+            SessionPosition::At("missing"),
             5,
             filter(),
         )
         .await
         .unwrap();
-    assert_eq!(page_ids(&tail), ids[ids.len() - 5..]);
-    assert!(tail.next_cursor.is_none());
-    assert_eq!(tail.pending_session_count, 2);
+    assert_eq!(page_ids(&missing), ids[..5]);
+    assert!(missing.previous_cursor.is_none());
+    assert_eq!(missing.pending_session_count, 2);
     root.close().await.unwrap();
 }
 
@@ -323,15 +323,16 @@ async fn pinned_sessions_lead_cross_partition_pages_and_unpin_invalidates_cursor
     let mut ids = ids_for_partitions();
     ids.extend((0..65).map(|n| format!("owner-extra-{n:03}")));
     ids.sort();
-    for id in &ids {
-        root.create_session(id, id, &json!({"title":id}), 1)
+    for (n, id) in ids.iter().enumerate() {
+        root.create_session(id, id, &json!({"title":id}), (n / 2 + 1) as u64)
             .await
             .unwrap();
     }
-    let last = ids.last().unwrap();
+    let mut recent = ids.chunks(2).rev().flatten().cloned().collect::<Vec<_>>();
+    let pinned = ids.first().unwrap();
     let old = root.list_sessions::<Value>(None, None, 5).await.unwrap();
-    let record = root.get_session::<Value>(last).await.unwrap().unwrap();
-    root.update_session_metadata(last, record.revision, |value: &mut Value| {
+    let record = root.get_session::<Value>(pinned).await.unwrap().unwrap();
+    root.update_session_metadata(pinned, record.revision, |value: &mut Value| {
         value["pinned"] = json!(true);
         Ok(())
     })
@@ -341,8 +342,8 @@ async fn pinned_sessions_lead_cross_partition_pages_and_unpin_invalidates_cursor
         .list_sessions::<Value>(Some(&old.revision), old.next_cursor.as_deref(), 5)
         .await;
     assert!(matches!(stale, Err(StoreError::RevisionConflict { .. })));
-    let mut expected = vec![last.clone()];
-    expected.extend(ids[..ids.len() - 1].iter().cloned());
+    let mut expected = vec![pinned.clone()];
+    expected.extend(recent.iter().filter(|id| *id != pinned).cloned());
     let first = root.list_sessions::<Value>(None, None, 5).await.unwrap();
     assert_eq!(page_ids(&first), expected[..5]);
     let second = root
@@ -375,15 +376,15 @@ async fn pinned_sessions_lead_cross_partition_pages_and_unpin_invalidates_cursor
         .root_session_page::<Value>(
             CatalogScope::Profile,
             None,
-            SessionPosition::At(last),
+            SessionPosition::At(pinned),
             5,
             filter(),
         )
         .await
         .unwrap();
     assert_eq!(page_ids(&anchor), expected[..5]);
-    let record = root.get_session::<Value>(last).await.unwrap().unwrap();
-    root.update_session_metadata(last, record.revision, |value: &mut Value| {
+    let record = root.get_session::<Value>(pinned).await.unwrap().unwrap();
+    root.update_session_metadata(pinned, record.revision, |value: &mut Value| {
         value["pinned"] = json!(false);
         Ok(())
     })
@@ -391,7 +392,36 @@ async fn pinned_sessions_lead_cross_partition_pages_and_unpin_invalidates_cursor
     .unwrap();
     assert_eq!(
         page_ids(&root.list_sessions::<Value>(None, None, 5).await.unwrap()),
-        ids[..5]
+        recent[..5]
+    );
+    let active = ids[1].clone();
+    let session = root.session(&active).await.unwrap();
+    let mut event = maka_agent_facts::event::RuntimeEvent::new(
+        maka_agent_facts::event::Invocation {
+            session_id: active.clone(),
+            turn_id: "activity-turn".into(),
+            run_id: "activity-run".into(),
+            invocation_id: "activity-invocation".into(),
+        },
+        maka_agent_facts::event::Fact::InvocationOpened {
+            configuration: None,
+            input: maka_agent_facts::input::InvocationInput::Message {
+                content: "new activity".into(),
+                request_fingerprint: None,
+                source_messages: Vec::new(),
+            },
+        },
+    );
+    event.recorded_at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1000);
+    session
+        .append(&maka_agent_facts::event::EventWrite::plain(event).unwrap())
+        .await
+        .unwrap();
+    recent.retain(|id| id != &active);
+    recent.insert(0, active);
+    assert_eq!(
+        page_ids(&root.list_sessions::<Value>(None, None, 5).await.unwrap()),
+        recent[..5]
     );
     root.close().await.unwrap();
 }

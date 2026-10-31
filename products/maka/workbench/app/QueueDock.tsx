@@ -25,23 +25,15 @@ import { Input } from 'nsh/base';
 import { Button } from 'nsh/base';
 import { keymap } from 'nsh';
 import { Clipboard } from 'nsh';
-import { platform, windowSize } from 'nsh';
+import { platform } from 'nsh';
 import type {
-  AgentQueue,
   AgentQueueAction,
   AgentQueueMessageResult,
-  AgentQueueMutationResult,
 } from '../../../../packages/plugin-sdk/src/index.js';
+import type { ComposerQueue } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { C, bodyTextStyle, captionTextStyle, controlStyle } from './ui';
 import { Icon } from './Icon';
 
-export type QueueSession = {
-  sessionId: string;
-  snapshot(): AgentQueue | null;
-  running(): boolean;
-  read(messageId: string, expectedRevision: number): Promise<AgentQueueMessageResult>;
-  change(expectedRevision: number, edit: AgentQueueAction): Promise<AgentQueueMutationResult>;
-};
 type RowAction = {
   sessionId: string;
   revision: number;
@@ -67,12 +59,10 @@ const actionStyle = {
 
 // Queue content belongs to the existing Host watch. Only an uncommitted inline
 // edit and the current action's receipt/observation fence are local to this view.
-export function QueueDock(props: { session: QueueSession }) {
-  const session = props.session;
+export function createQueueDock(session: ComposerQueue, height: () => number) {
   const items = computed(
     () => session.snapshot()?.entries.filter((row) => row.kind !== 'in_flight') ?? [],
   );
-  const collapsed = signal(true);
   const editing = signal<Editing | null>(null);
   const review = signal<Review | null>(null);
   const busy = signal<{ through: number | null } | null>(null);
@@ -86,10 +76,7 @@ export function QueueDock(props: { session: QueueSession }) {
     const pending = busy();
     if (pending?.through != null && (session.snapshot()?.revision ?? -1) >= pending.through)
       busy.set(null);
-    if (items().length === 0) collapsed.set(true);
   });
-  const expanded = () =>
-    items().length === 1 || !collapsed() || editing() !== null || busy() !== null;
   const entry = (messageId: string) => items().find((row) => row.messageId === messageId);
   const revision = () => session.snapshot()?.revision ?? -1;
   const report = (reason: unknown) => {
@@ -237,42 +224,49 @@ export function QueueDock(props: { session: QueueSession }) {
     }
   };
   const rowHeight = platform.isTerminal ? 32 : 40;
-  const readerHeight = () => Math.max(rowHeight, windowSize().height / 4);
-  return (
-    <If when={items().length > 0 || editing() !== null || error()}>
-      <View
-        style={{
-          backgroundColor: C.surface,
-          borderRadius: platform.isTerminal ? 0 : 12,
-          marginTop: 8,
-          overflow: 'hidden',
-        }}
-      >
-        <If when={items().length > 1}>
-          <Button
-            accessibilityLabel={tr('Queued messages')}
-            tooltip={textTooltip(() => tr('Messages waiting for a turn'))}
-            selected={expanded()}
-            disabled={editing() !== null || busy() !== null}
-            onPress={inputAction(() => collapsed.set(!collapsed()), null)}
-            style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-            hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.line }}
-          >
-            <Icon name="queue" color={C.muted} />
-            <Text style={{ ...captionTextStyle, color: C.secondary, flex: 1 }}>
-              {tr('{count} queued messages', { count: items().length })}
-            </Text>
-            <Icon name={expanded() ? 'down' : 'right'} color={C.muted} />
-          </Button>
-        </If>
-        <If when={expanded() && editing() === null}>
+  const readerHeight = height;
+  const feedback = () => (
+    <>
+      <If when={busy()}>
+        <Text style={{ ...captionTextStyle, paddingHorizontal: 12, color: C.muted }}>
+          {tr('Updating queue…')}
+        </Text>
+      </If>
+      <If when={error()}>
+        <Text
+          style={[{ ...captionTextStyle, padding: 12, color: C.warning }, { userSelect: 'text' }]}
+        >
+          {error()}
+        </Text>
+      </If>
+    </>
+  );
+  return {
+    shown: () => items().length > 0 || editing() !== null || busy() !== null || !!error(),
+    summary: () => String(items().length),
+    preview: () =>
+      error() ||
+      (editing()
+        ? tr('Edit queued message')
+        : busy()
+          ? tr('Updating queue…')
+          : (items()[0]?.preview ?? '')),
+    problem: () => !!error(),
+    content: () => (
+      <View style={{ minHeight: 0, flexShrink: 1 }}>
+        <If when={editing() === null}>
           <List
             accessibilityLabel={tr('Message queue')}
             each={items()}
             keyExtractor={(row) => row.messageId}
+            footer={feedback}
             estimatedItemSize={rowHeight}
-            style={{ height: Math.min(items().length * rowHeight, readerHeight()), flexGrow: 0 }}
+            style={{
+              height: error() || busy() ? height() : Math.min(items().length * rowHeight, height()),
+              minHeight: 0,
+              flexShrink: 1,
+              flexGrow: 0,
+            }}
           >
             {(row) => {
               const number = () =>
@@ -363,7 +357,7 @@ export function QueueDock(props: { session: QueueSession }) {
                   unbind();
                   unbind = keymap.bind('escape', cancel, { when: 'always', within: node });
                 }}
-                style={{ maxHeight: Math.max(rowHeight * 3, windowSize().height / 3), flexGrow: 0 }}
+                style={{ maxHeight: height(), minHeight: 0, flexShrink: 1, flexGrow: 0 }}
               >
                 <View style={{ padding: 12, gap: 8 }}>
                   <Text style={{ ...captionTextStyle, color: C.muted }}>
@@ -467,24 +461,13 @@ export function QueueDock(props: { session: QueueSession }) {
                       <Text style={{ color: C.muted }}>{tr('Cancel')}</Text>
                     </Button>
                   </View>
+                  {feedback()}
                 </View>
               </Scroll>
             );
           }}
         </Each>
-        <If when={busy()}>
-          <Text style={{ ...captionTextStyle, paddingHorizontal: 12, color: C.muted }}>
-            {tr('Updating queue…')}
-          </Text>
-        </If>
-        <If when={error()}>
-          <Text
-            style={[{ ...captionTextStyle, padding: 12, color: C.warning }, { userSelect: 'text' }]}
-          >
-            {error()}
-          </Text>
-        </If>
       </View>
-    </If>
-  );
+    ),
+  };
 }

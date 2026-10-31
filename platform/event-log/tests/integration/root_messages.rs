@@ -367,6 +367,14 @@ async fn root_sources_are_atomic_exclusive_delivery_proofs_and_rebuild_exact_vis
     end(&log, &combined).await;
     let rows = support::transcript(&log, "a").await;
     let canonical = serde_json::to_vec(&log.prefix(100, 1024 * 1024).await.unwrap()).unwrap();
+    let catalog = log
+        .list_sessions::<serde_json::Value>(None, None, 10)
+        .await
+        .unwrap()
+        .sessions
+        .into_iter()
+        .map(|session| session.id)
+        .collect::<Vec<_>>();
     log.close().await.unwrap();
     db.execute_batch("DELETE FROM message_sources; DELETE FROM catalog_messages;")
         .unwrap();
@@ -377,6 +385,17 @@ async fn root_sources_are_atomic_exclusive_delivery_proofs_and_rebuild_exact_vis
         canonical
     );
     assert_eq!(support::transcript(&log, "a").await, rows);
+    assert_eq!(
+        log.list_sessions::<serde_json::Value>(None, None, 10)
+            .await
+            .unwrap()
+            .sessions
+            .into_iter()
+            .map(|session| session.id)
+            .collect::<Vec<_>>(),
+        catalog
+    );
+
     for message in editable {
         assert_eq!(
             log.editable_message("a", "successor", &message.message_id)

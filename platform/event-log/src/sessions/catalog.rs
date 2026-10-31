@@ -23,24 +23,25 @@ use sha2::{Digest, Sha256};
 /// The indexed column is generated from canonical Session configuration.
 const PIN_ORDER: &str = "catalog_unpinned";
 
-/// Pinned conversations precede the existing ID order.
+/// Pinned first, then newest activity, with stable ID ties.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct CatalogKey {
     pub unpinned: bool,
+    pub recency: i64,
     pub id: String,
 }
 impl CatalogKey {
-    async fn read(db: &mut SqliteConnection, id: &str) -> Result<Self, StoreError> {
-        let sql = format!("SELECT {PIN_ORDER} FROM session_control WHERE id = ?");
-        let unpinned = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+    async fn read(db: &mut SqliteConnection, id: &str) -> Result<Option<Self>, StoreError> {
+        let sql = format!("SELECT {PIN_ORDER}, catalog_recency FROM session_control WHERE id = ?");
+        Ok(sqlx::query_as::<_, (bool, i64)>(sqlx::AssertSqlSafe(sql))
             .bind(id)
             .fetch_optional(db)
             .await?
-            .unwrap_or(true);
-        Ok(Self {
-            unpinned,
-            id: id.to_owned(),
-        })
+            .map(|(unpinned, recency)| Self {
+                unpinned,
+                recency,
+                id: id.to_owned(),
+            }))
     }
 }
 
@@ -145,11 +146,13 @@ impl Selection {
         limit: usize,
     ) -> Result<Vec<CatalogKey>, StoreError> {
         // SQL fragments are closed native state. Every caller value is bound.
-        let (comparison, order, unpinned, cursor) = match position {
-            CatalogPosition::Start => (">", "ASC", false, ""),
-            CatalogPosition::At(key) => (">=", "ASC", key.unpinned, key.id.as_str()),
-            CatalogPosition::After(key) => (">", "ASC", key.unpinned, key.id.as_str()),
-            CatalogPosition::Before(key) => ("<", "DESC", key.unpinned, key.id.as_str()),
+        let (comparison, order, unpinned, recency, cursor) = match position {
+            CatalogPosition::Start => (">", "ASC", false, i64::MIN, ""),
+            CatalogPosition::At(key) => (">=", "ASC", key.unpinned, key.recency, key.id.as_str()),
+            CatalogPosition::After(key) => (">", "ASC", key.unpinned, key.recency, key.id.as_str()),
+            CatalogPosition::Before(key) => {
+                ("<", "DESC", key.unpinned, key.recency, key.id.as_str())
+            }
         };
         let visibility = if self.root_partition.is_some() {
             "AND EXISTS (SELECT 1 FROM root_control.session_routes r WHERE r.session_id=session_control.id AND r.partition=?11 AND r.ready=1 AND r.visible=1)"
@@ -157,11 +160,11 @@ impl Selection {
             ""
         };
         let sql = format!(
-            "SELECT {PIN_ORDER}, id FROM session_control WHERE {PREDICATE} {visibility}
-            AND ({PIN_ORDER}, id) {comparison} (?12, ?9)
-            ORDER BY {PIN_ORDER} {order}, id {order} LIMIT ?10"
+            "SELECT {PIN_ORDER}, catalog_recency, id FROM session_control WHERE {PREDICATE} {visibility}
+            AND ({PIN_ORDER}, catalog_recency, id) {comparison} (?12, ?13, ?9)
+            ORDER BY {PIN_ORDER} {order}, catalog_recency {order}, id {order} LIMIT ?10"
         );
-        let query = sqlx::query_as::<_, (bool, String)>(sqlx::AssertSqlSafe(sql))
+        let query = sqlx::query_as::<_, (bool, i64, String)>(sqlx::AssertSqlSafe(sql))
             .bind(if self.filter.archived_only {
                 2
             } else {
@@ -179,10 +182,15 @@ impl Selection {
         let mut ids: Vec<_> = query
             .bind(self.root_partition.map(|partition| partition as i64))
             .bind(unpinned)
+            .bind(recency)
             .fetch_all(connection)
             .await?
             .into_iter()
-            .map(|(unpinned, id)| CatalogKey { unpinned, id })
+            .map(|(unpinned, recency, id)| CatalogKey {
+                unpinned,
+                recency,
+                id,
+            })
             .collect();
         if position.reverse() {
             ids.reverse();
@@ -312,7 +320,10 @@ impl EventLog {
                         SessionPosition::At(id)
                         | SessionPosition::After(id)
                         | SessionPosition::Before(id) => {
-                            CatalogPosition::new(position, CatalogKey::read(&mut tx, id).await?)
+                            match CatalogKey::read(&mut tx, id).await? {
+                                Some(key) => CatalogPosition::new(position, key),
+                                None => CatalogPosition::Start,
+                            }
                         }
                     };
                     let mut ids = selection.ids(&mut tx, &position, limit).await?;
@@ -408,7 +419,7 @@ impl EventLog {
             .await
     }
 
-    pub(crate) async fn catalog_key(&self, id: &str) -> Result<CatalogKey, StoreError> {
+    pub(crate) async fn catalog_key(&self, id: &str) -> Result<Option<CatalogKey>, StoreError> {
         self.validate_root()?;
         let id = id.to_owned();
         self.connection

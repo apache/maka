@@ -1527,6 +1527,14 @@ export const conversationMessages = {
     '此会话的浏览器访问权限',
     '此對話的瀏覽器存取權限',
   ],
+  'Computer access': ['Computer access', '计算机访问', '電腦存取'],
+  'Toggle computer access': [
+    'Toggle computer access',
+    '展开或收起计算机访问',
+    '展開或收合電腦存取',
+  ],
+  'Conversation details': ['Conversation details', '会话详情', '對話詳情'],
+  'Dismiss action feedback': ['Dismiss action feedback', '关闭操作反馈', '關閉操作回饋'],
   'Computer access this turn': ['Computer access this turn', '本轮计算机访问', '本輪電腦存取'],
   'Computer application access': [
     'Computer application access',

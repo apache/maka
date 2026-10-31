@@ -76,7 +76,7 @@ pub(super) async fn export<W: AsyncWrite + Unpin>(
         let mut after = None::<String>;
         loop {
             let next: Option<(String, String, String, i64)> = sqlx::query_as(
-                "SELECT id,record_json,content_sha256,length(payload) FROM artifacts
+                "SELECT id,record_json,artifacts.content_sha256,length(payload) FROM artifacts JOIN artifact_contents USING(content_sha256)
                  WHERE session_id=?1 AND (?2 IS NULL OR id>?2) ORDER BY id LIMIT 1",
             )
             .bind(&session.id)
@@ -196,8 +196,9 @@ async fn required(db: &mut SqliteConnection, session: &str) -> Result<(), StoreE
            AND h.source_session_id=e.event_session AND h.source_artifact_id=json_extract(proof.value,'$.id')
          LEFT JOIN artifacts a ON a.session_id=e.owner_session_id AND
            a.id=CASE WHEN e.inherited=1 THEN h.artifact_id ELSE json_extract(proof.value,'$.id') END
+         LEFT JOIN artifact_contents c ON c.content_sha256=a.content_sha256
          WHERE e.owner_session_id=? AND e.kind='tool_settled' AND
-           (a.id IS NULL OR length(a.payload)!=json_extract(proof.value,'$.bytes')
+           (a.id IS NULL OR c.content_sha256 IS NULL OR length(c.payload)!=json_extract(proof.value,'$.bytes')
             OR a.content_sha256!=json_extract(proof.value,'$.digest')
             OR json_extract(a.record_json,'$.source')!='tool_result_projection'
             OR json_extract(a.record_json,'$.turnId')!=json_extract(e.event_json,'$.invocation.turn_id')))"
@@ -243,7 +244,7 @@ async fn transfer<W: AsyncWrite + Unpin>(
             }
             Blob::Artifact { metadata, .. } => {
                 sqlx::query_scalar(
-                    "SELECT substr(payload,?3,?4) FROM artifacts WHERE session_id=?1 AND id=?2",
+                    "SELECT substr(payload,?3,?4) FROM artifacts JOIN artifact_contents USING(content_sha256) WHERE session_id=?1 AND id=?2",
                 )
                 .bind(&metadata.session_id)
                 .bind(&metadata.id)

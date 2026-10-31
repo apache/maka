@@ -517,7 +517,7 @@ impl Engine {
 
     /// Observe replay safety without reserving a source or creating a claim.
     /// Model continuation observation does not require a live tool catalog.
-    /// Admission validates tool availability and the claim against current canonical facts.
+    /// Admission validates the claim against current canonical facts and prepares current tools.
     pub async fn check_continuation(
         &self,
         store: &SessionStore,

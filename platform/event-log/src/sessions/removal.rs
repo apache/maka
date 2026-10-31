@@ -308,6 +308,7 @@ impl EventLog {
                         .await?;
                     advance_catalog(&mut tx).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    commits.material_released();
                     if let Some(sequence) = native_terminal {
                         commits.publish(sequence);
                     } else {

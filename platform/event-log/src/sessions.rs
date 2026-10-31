@@ -152,7 +152,7 @@ pub struct SessionPage<T> {
 #[derive(Clone, Copy, Debug)]
 pub enum SessionPosition<'a> {
     Start,
-    /// Inclusive anchor for a fresh snapshot, with backward fallback at the tail.
+    /// Inclusive anchor for a fresh snapshot; a missing anchor resets to the head.
     At(&'a str),
     After(&'a str),
     Before(&'a str),
@@ -367,26 +367,26 @@ pub(crate) async fn insert(
         return Err(StoreError::SessionConflict);
     }
     let inserted = sqlx::query(
-        "INSERT INTO session_control SELECT ?, ?, 1, ?, ?, 0, ?
-         WHERE NOT EXISTS (SELECT 1 FROM session_control WHERE id = ?)
-           AND NOT EXISTS (SELECT 1 FROM session_history_copies WHERE session_id = ?)
-           AND NOT EXISTS (SELECT 1 FROM session_retirements WHERE session_id = ?)
+        "INSERT INTO session_control
+         (id, fingerprint, revision, created_at, updated_at, archived, configuration, catalog_activity_at)
+         SELECT ?1, ?2, 1, ?3, ?4, 0, ?5, COALESCE((
+             SELECT message_at FROM catalog_messages INDEXED BY catalog_latest_message
+             WHERE session_id = ?1 ORDER BY message_at DESC, sequence DESC, ordinal DESC LIMIT 1
+         ), 0)
+         WHERE NOT EXISTS (SELECT 1 FROM session_control WHERE id = ?1)
+           AND NOT EXISTS (SELECT 1 FROM session_history_copies WHERE session_id = ?1)
+           AND NOT EXISTS (SELECT 1 FROM session_retirements WHERE session_id = ?1)
            AND NOT EXISTS (SELECT 1 FROM context_source_prefixes p
              CROSS JOIN event_log e ON e.sequence=p.sequence
              JOIN imported_invocations i ON i.invocation_id=e.invocation_id
-             WHERE p.kind='session' AND p.owner=?)
-           AND NOT EXISTS (SELECT 1 FROM session_imports WHERE session_id = ? AND state != 'published')",
+             WHERE p.kind='session' AND p.owner=?1)
+           AND NOT EXISTS (SELECT 1 FROM session_imports WHERE session_id = ?1 AND state != 'published')",
     )
     .bind(id)
     .bind(fingerprint)
     .bind(now as i64)
     .bind(now as i64)
     .bind(configuration)
-    .bind(id)
-    .bind(id)
-    .bind(id)
-    .bind(id)
-    .bind(id)
     .execute(&mut *tx)
     .await?;
     if inserted.rows_affected() != 1 {

@@ -101,7 +101,6 @@ import {
   InteractionComposer,
   interactionOutcomeSummary,
 } from '../../../../products/maka/workbench/app/InteractionComposer';
-import { ComputerAppControls } from '../../../../products/maka/workbench/app/ComputerAppControls';
 import type { ImagePreview } from '../../../../products/maka/workbench/app/ImageThumbnail';
 import {
   createBrowsing,
@@ -1728,11 +1727,6 @@ export function createConversationUi(
                       const owner = item();
                       return (
                         <View style={{ minHeight: 0, flexShrink: 1, gap: 8 }}>
-                          <ComputerAppControls
-                            sessionId={owner.sessionId}
-                            apps={owner.computerApps}
-                            control={control}
-                          />
                           <Each
                             of={owner.interactions().entries.slice(0, 1)}
                             key={(entry) => entry.requestId}
@@ -1751,10 +1745,46 @@ export function createConversationUi(
                       );
                     }}
                   </Each>
+                  <If when={status()}>
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 8,
+                        paddingHorizontal: 12,
+                        paddingVertical: 4,
+                        flexShrink: 0,
+                      }}
+                    >
+                      <Text
+                        style={[
+                          { ...bodyTextStyle, flex: 1, minWidth: 0, color: C.muted },
+                          { userSelect: 'text' },
+                        ]}
+                      >
+                        {status()}
+                      </Text>
+                      <Button
+                        accessibilityLabel={tr('Dismiss action feedback')}
+                        onPress={inputAction(() => status.set(''), null)}
+                        style={{
+                          ...controlStyle,
+                          width: 32,
+                          height: 32,
+                          paddingHorizontal: 0,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                        hoverStyle={controlHoverStyle()}
+                        focusStyle={controlFocusStyle()}
+                      >
+                        <Icon name="close" color={C.muted} />
+                      </Button>
+                    </View>
+                  </If>
                   <If
                     when={
                       error() ||
-                      status() ||
                       working() ||
                       !controlsKnown() ||
                       controls().length ||
@@ -1789,13 +1819,6 @@ export function createConversationUi(
                           {switching()
                             ? tr('Saving draft before switching…')
                             : tr('Confirming action…')}
-                        </Text>
-                      </If>
-                      <If when={status()}>
-                        <Text
-                          style={[{ ...bodyTextStyle, color: C.muted }, { userSelect: 'text' }]}
-                        >
-                          {status()}
                         </Text>
                       </If>
                       <If when={forkNotice()?.id === selected()}>
@@ -2126,6 +2149,7 @@ function projectComposerSession(
 ): ComposerSession<JSX.Element> {
   return {
     sessionId: owner.sessionId,
+    computerAccess: owner.computerAccess,
     completion: {
       files: (query, directory) =>
         host.subscribe('agent', 'fileCandidates', {

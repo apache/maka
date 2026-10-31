@@ -80,12 +80,14 @@ impl Handler for Agent {
                             match catalog_page(&owner, &input).await {
                                 Ok(page) => {
                                     revision = Some(page.revision.clone());
-                                    input.position = page.sessions.first().map_or(
-                                        SessionPosition::Start,
-                                        |session| SessionPosition::At {
-                                            cursor: session.id.clone(),
-                                        },
-                                    );
+                                    if !matches!(input.position, SessionPosition::Start) {
+                                        input.position = page.sessions.first().map_or(
+                                            SessionPosition::Start,
+                                            |session| SessionPosition::At {
+                                                cursor: session.id.clone(),
+                                            },
+                                        );
+                                    }
                                     context.emit(encode(page)?).await?;
                                 }
                                 // Start/At can race an internal snapshot read.
