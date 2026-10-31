@@ -19,6 +19,14 @@
 
 import { promises as fs } from 'node:fs';
 import { exec } from 'node:child_process';
+import type {
+  FileMutationGuard,
+  FileMutation,
+  FileMutationPreparation,
+  FileWriteResult,
+  FileEditResult,
+} from './file-mutation-guard-contract.js';
+import { prepareFileMutation, executePreparedFileMutation } from './file-mutation-guard.js';
 import { globFiles } from './glob-search.js';
 import { isAbsolute, resolve } from 'node:path';
 import {
@@ -163,6 +171,22 @@ export interface WorkspaceReadModifyWriteResult {
 
 export interface WorkspaceReadModifyWriteExecutor {
   readModifyWrite(input: WorkspaceReadModifyWriteInput): Promise<WorkspaceReadModifyWriteResult>;
+}
+
+export interface WorkspacePreparedMutationExecutor {
+  prepareMutation(input: {
+    cwd: string;
+    path: string;
+    preparation: FileMutationPreparation;
+    scope: WorkspacePathScope;
+  }): Promise<FileMutationGuard | undefined>;
+  executePreparedMutation(input: {
+    cwd: string;
+    path: string;
+    mutation: FileMutation;
+    scope: WorkspacePathScope;
+    guard: FileMutationGuard;
+  }): Promise<FileWriteResult | FileEditResult>;
 }
 
 /**
@@ -349,6 +373,24 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
       path: input.path,
       bytes: Buffer.byteLength(input.content, 'utf8'),
     };
+  }
+
+  async prepareMutation(
+    input: Parameters<WorkspacePreparedMutationExecutor['prepareMutation']>[0],
+  ): Promise<FileMutationGuard | undefined> {
+    const cwd = await fs.realpath(input.cwd);
+    const { path } = await canonicalPathInScope(cwd, input.path, 'Write', input.scope);
+    // Match the local executor's binary/image result policy.
+    if (isSupportedImagePath(path)) return undefined;
+    return prepareFileMutation(cwd, path, input.preparation);
+  }
+
+  async executePreparedMutation(
+    input: Parameters<WorkspacePreparedMutationExecutor['executePreparedMutation']>[0],
+  ): Promise<FileWriteResult | FileEditResult> {
+    const cwd = await fs.realpath(input.cwd);
+    const { path } = await canonicalPathInScope(cwd, input.path, 'Write', input.scope);
+    return executePreparedFileMutation(cwd, path, input.mutation, input.guard);
   }
 
   async readModifyWrite(
