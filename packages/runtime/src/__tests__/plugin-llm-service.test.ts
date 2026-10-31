@@ -163,3 +163,24 @@ function toolContext(abortSignal = new AbortController().signal): MakaToolContex
     emitOutput: () => undefined,
   };
 }
+
+test('one-shot model selection reaches Host without changing invocation identity', async () => {
+  const root = new Context();
+  const agents = new PluginAgentService(root);
+  const llm = new PluginLlmService(root, agents);
+  llm.bindRuntime({
+    generate: async (input, invocation) => {
+      assert.equal(input.modelKey, 'small::flash');
+      assert.equal(invocation.sessionId, 'session-a');
+      return { text: 'ok', modelId: 'flash' };
+    },
+  });
+  try {
+    const result = await agents.withInvocation(toolContext(), () =>
+      llm.generate({ prompt: 'assess', modelKey: 'small::flash' }),
+    );
+    assert.equal(result.modelId, 'flash');
+  } finally {
+    await root.fiber.dispose();
+  }
+});

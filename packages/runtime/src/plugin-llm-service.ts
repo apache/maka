@@ -37,6 +37,8 @@ declare module './plugin-kernel.js' {
 }
 
 export interface PluginLlmGenerateInput {
+  /** Optional configured connectionSlug::modelId for a tool-free auxiliary call. */
+  readonly modelKey?: string;
   readonly prompt: string;
   readonly system?: string;
   readonly maxOutputTokens?: number;

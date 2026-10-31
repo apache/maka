@@ -52,15 +52,35 @@ export interface SourceRead {
   readonly object?: SourceObject;
   readonly content?: unknown;
 }
+/** Adapter-owned durable position, independent from index coverage. First call establishes
+ * a baseline; subsequent calls return changes, including edits to older objects. */
+export interface SourceChange {
+  readonly id: string;
+  readonly object: SourceObject;
+  readonly group: string;
+  readonly occurredAt?: number;
+  readonly content: string;
+}
+export interface SourceChanges {
+  readonly items: readonly SourceChange[];
+  readonly cursor: string;
+  readonly more: boolean;
+}
 export interface PluginSourceAdapter {
   readonly id: string;
   readonly description: string;
   /** Describes provider-supported query fields and the configured enumeration scope. */
   readonly queryHelp: string;
   readonly scope: Readonly<Record<string, unknown>>;
+  readonly changeRole?: 'activity' | 'context';
   /** Cheap scoped change token. Must check permission; must not enumerate bodies or run a model.
    * Null means no complete observation yet. Unsupported adapters use periodic discovery. */
   activityToken?(caller: PluginSessionQueryCaller): Promise<string | null>;
+  changes?(
+    cursor: string | undefined,
+    limit: number,
+    caller: PluginSessionQueryCaller,
+  ): Promise<SourceChanges>;
   /** Enumerates metadata only. Pagination is not an index coverage declaration. */
   enumerate(cursor: string | undefined, caller: PluginSessionQueryCaller): Promise<SourcePage>;
   query(
@@ -113,18 +133,56 @@ export class PluginSourceService extends Service {
     this.caller();
     return this.adapters
       .entries('profile')
-      .map(({ adapter: { id, description, queryHelp, scope } }) => ({
+      .map(({ adapter: { id, description, queryHelp, scope, changes, changeRole } }) => ({
         id,
         description,
         queryHelp,
         scope,
         storage: 'on-demand' as const,
+        changes: typeof changes === 'function',
+        changeRole: changeRole ?? 'activity',
       }));
   }
   async activityToken(id: string): Promise<string | null> {
     const caller = this.caller();
     const adapter = this.adapter(id);
     return adapter.activityToken ? adapter.activityToken(caller) : null;
+  }
+  async changes(id: string, cursor?: string, limit = 50): Promise<SourceChanges> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500)
+      throw Error('Invalid changes limit');
+    const caller = this.caller(),
+      adapter = this.adapter(id);
+    if (!adapter.changes) throw Error(`Source does not support changes: ${id}`);
+    const result = await adapter.changes(cursor, limit, caller);
+    if (
+      !result ||
+      typeof result.cursor !== 'string' ||
+      !result.cursor ||
+      typeof result.more !== 'boolean' ||
+      !Array.isArray(result.items) ||
+      result.items.length > limit
+    )
+      throw Error('Invalid source changes');
+    this.page({ items: result.items.map((item) => item.object) });
+    const allowed = new Set(
+      await adapter.authorize(
+        result.items.map((item) => item.object),
+        caller,
+      ),
+    );
+    for (const item of result.items) {
+      if (
+        !item.id ||
+        typeof item.id !== 'string' ||
+        typeof item.group !== 'string' ||
+        typeof item.content !== 'string'
+      )
+        throw Error('Invalid source change');
+      if (!allowed.has(item.object.id)) throw Error('Source change permission denied');
+    }
+    caller.invocation?.abortSignal?.throwIfAborted();
+    return structuredClone(result);
   }
   async enumerate(id: string, cursor?: string) {
     const caller = this.caller();

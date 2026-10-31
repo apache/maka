@@ -1,0 +1,11 @@
+[
+  {
+    "type": "insert",
+    "rootId": "profile",
+    "entry": {
+      "id": "codex-source-host",
+      "packageId": "dev.maka.codex-source",
+      "disabled": true
+    }
+  }
+]

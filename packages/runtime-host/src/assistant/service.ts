@@ -92,6 +92,10 @@ export interface AssistantDependencies {
 
 export interface AssistantModuleServices
   extends Omit<AssistantDependencies, 'resolveTools' | 'stopSessions' | 'readSessionUsage'> {
+  memoryContext?: {
+    register(read: (queries: string[]) => Promise<unknown>): void;
+    read(queries: string[]): Promise<unknown>;
+  };
   bot: AssistantBotBridge;
   /** Cost and outcome of discovery runs and Matter activations; never limits them (#6309). */
   runCost: RunCostLedger;
@@ -163,7 +167,14 @@ class AssistantRuntime {
     const settings = await this.loadSettings(legacy, entries);
     const runCost = new RunCostLedger(this.directory, this.dependencies.readSessionUsage);
     this.disposers.push(() => runCost.close());
+    let memoryContext: ((queries: string[]) => Promise<unknown>) | undefined;
     const services: AssistantModuleServices = {
+      memoryContext: {
+        register: (read) => {
+          memoryContext = read;
+        },
+        read: async (queries) => (memoryContext ? memoryContext(queries) : { unavailable: true }),
+      },
       bot: this.bot,
       runCost,
       backgroundSessions: { register: (read) => this.backgroundSessions.push(read) },
