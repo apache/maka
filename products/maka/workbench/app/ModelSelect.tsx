@@ -59,6 +59,7 @@ import {
   controlFocusStyle,
   controlDisabledStyle,
   shortcut,
+  toolbarControlStyle,
 } from './ui';
 
 type Pane = 'root' | 'models' | 'connections' | 'effort';
@@ -147,13 +148,13 @@ export function ModelSelect(props: {
             instance: props.instance(),
           })}
           style={{
-            ...controlStyle,
+            ...toolbarControlStyle,
             maxWidth: '100%',
             minWidth: 0,
             flexDirection: 'row',
             justifyContent: 'flex-end',
             alignItems: 'center',
-            gap: 8,
+            gap: platform.isTerminal ? 8 : 4,
           }}
           hoverStyle={{ backgroundColor: C.line }}
           focusStyle={{ backgroundColor: C.line }}

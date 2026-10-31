@@ -30,8 +30,8 @@ import {
   controlDisabledStyle,
   controlFocusStyle,
   controlHoverStyle,
-  controlStyle,
   textTooltip,
+  toolbarControlStyle,
 } from './ui';
 
 /** Plan first: the conversation proposes a plan for approval before it changes anything. */
@@ -78,7 +78,7 @@ export function PlanModeToggle(props: {
         )}
         onPress={inputAction(select, planning() ? 'agent' : 'plan')}
         style={{
-          ...controlStyle,
+          ...toolbarControlStyle,
           flexShrink: 0,
           backgroundColor: planning() ? C.raised : 'transparent',
         }}

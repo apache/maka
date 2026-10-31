@@ -333,11 +333,16 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         desktop={titleBarRow() ? windowDrag : undefined}
         style={{
           height: titleBarRow() ? TITLE_BAR_HEIGHT : compact() ? 32 : 40,
-          // 8 points past the window controls, inside the browser's 12.
-          paddingLeft: titleBarRow() ? Math.max(0, controlsLeft(true) - 4) : 0,
+          // 8 points past the window controls, inside the browser's 12. Away from
+          // them the logo centers on the rows' icons and Maka starts at their labels.
+          paddingLeft: platform.isTerminal
+            ? 0
+            : titleBarRow()
+              ? Math.max(4, controlsLeft(true) - 4)
+              : 4,
           flexDirection: 'row',
           alignItems: 'center',
-          gap: 8,
+          gap: platform.isTerminal ? 8 : 4,
         }}
       >
         <Image src={logo} style={[{ width: 24, height: 24 }, { objectFit: 'contain' }]} />
@@ -615,7 +620,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         minWidth: 0,
                         flexDirection: 'row',
                         alignItems: 'center',
-                        gap: 4,
+                        gap: platform.isTerminal ? 4 : 8,
                         paddingHorizontal: 8,
                         borderRadius: 8,
                       }}
@@ -796,7 +801,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                           minWidth: 0,
                           paddingHorizontal: 8,
                           // Under its workspace, past the workspace's disclosure icon.
-                          paddingLeft: platform.isTerminal ? 8 : 28,
+                          paddingLeft: platform.isTerminal ? 8 : 32,
                           justifyContent: 'center',
                           borderRadius: 8,
                           backgroundColor: platform.isTerminal

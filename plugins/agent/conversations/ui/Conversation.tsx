@@ -64,6 +64,7 @@ import {
   Header,
   captionTextStyle,
   controlStyle,
+  toolbarControlStyle,
   type BrowserHeader,
 } from '../../../../products/maka/workbench/app/ui';
 import {
@@ -272,14 +273,14 @@ function receiptMessage(reply: any): UiText {
   );
 }
 
-// Rows share the composer's column: at most 800 wide, centered, with room for
-// the scroll bar on the right.
+// Rows share the composer's column: at most 800 wide, centered. The terminal's
+// scroll bar takes a cell of the right margin.
 const readingColumn = {
   width: '100%',
   maxWidth: 800,
   alignSelf: 'center',
   paddingLeft: 16,
-  paddingRight: 24,
+  paddingRight: platform.isTerminal ? 24 : 16,
 } as const;
 
 export function Conversation(props: ConversationProps) {
@@ -2527,7 +2528,7 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Chat')}
           selected={reading() === 'chat'}
-          style={controlStyle}
+          style={toolbarControlStyle}
           onPress={inputAction(chooseReading, { owner: sessionId, mode: 'chat' })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
@@ -2546,7 +2547,7 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Trajectory')}
           selected={reading() === 'trajectory'}
-          style={controlStyle}
+          style={toolbarControlStyle}
           onPress={inputAction(chooseReading, { owner: sessionId, mode: 'trajectory' })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
