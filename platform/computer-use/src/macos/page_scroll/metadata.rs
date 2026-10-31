@@ -26,9 +26,16 @@ use serde::{Deserialize, Serialize};
 pub(crate) enum Query {
     WindowOrder,
     KeyboardLayout,
-    Process { pid: i32 },
-    GlobalWindow { point: [f64; 2] },
-    FirstBundleProcess { bundle: String },
+    Process {
+        pid: i32,
+    },
+    GlobalWindow {
+        #[serde(deserialize_with = "crate::protocol::deserialize_numbers")]
+        point: [f64; 2],
+    },
+    FirstBundleProcess {
+        bundle: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

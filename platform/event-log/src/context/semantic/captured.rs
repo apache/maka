@@ -586,10 +586,11 @@ impl CapturedSource {
                         ArtifactLookupResult::Missing=>return Ok(ArtifactLookupResult::Missing),
                         ArtifactLookupResult::Captured(found)=>found,
                     };
-                    let mut statement = raw.prepare("SELECT content_sha256,canonical_at IS NOT NULL FROM artifacts WHERE rowid=?")?;
+                    let mut statement = raw.prepare("SELECT a.content_sha256,a.canonical_at IS NOT NULL,c.rowid FROM artifacts a JOIN artifact_contents c USING(content_sha256) WHERE a.rowid=?")?;
                     let mut records = statement.query([rowid])?;
                     let record = records.next()?.ok_or_else(||invalid("captured artifact disappeared"))?;
-                    let length = blob_length(raw,"artifacts","payload",rowid)?;
+                    let content_rowid: i64 = record.get(2)?;
+                    let length = blob_length(raw,"artifact_contents","payload",content_rowid)?;
                     let metadata_bytes = blob_length(raw,"artifacts","record_json",rowid)?;
                     let mut digest = [0u8;32];
                     let encoded = record.get_ref(0)?.as_str().map_err(|_| invalid("captured artifact digest is not UTF-8"))?;
@@ -604,7 +605,7 @@ impl CapturedSource {
                     let protected_metadata=protected.then_some(PayloadSource { domain,backing:Backing::ArtifactMetadata { rowid,bytes:metadata_bytes,payload_bytes:length,digest } });
                     let capture = ArtifactCapture { bytes:length,digest,metadata_bytes,protected_metadata };
                     with_blob(raw,"artifacts","record_json",rowid,0,metadata_bytes,|metadata| {
-                        with_blob(raw,"artifacts","payload",rowid,0,length,|body| {
+                        with_blob(raw,"artifact_contents","payload",content_rowid,0,length,|body| {
                             consume(capture,metadata,body)
                         })
                     }).map(ArtifactLookupResult::Captured)
@@ -865,7 +866,7 @@ fn check_artifact(
     encoded[..7].copy_from_slice(b"sha256:");
     hex::encode_to_slice(digest, &mut encoded[7..])
         .map_err(|_| invalid("artifact digest encoding failed"))?;
-    let valid:bool=raw.query_row("SELECT EXISTS(SELECT 1 FROM artifacts WHERE rowid=? AND length(payload)=? AND CAST(content_sha256 AS BLOB)=?)",params![rowid,bytes as i64,&encoded[..]],|row|row.get(0))?;
+    let valid:bool=raw.query_row("SELECT EXISTS(SELECT 1 FROM artifacts a JOIN artifact_contents c USING(content_sha256) WHERE a.rowid=? AND length(c.payload)=? AND CAST(a.content_sha256 AS BLOB)=?)",params![rowid,bytes as i64,&encoded[..]],|row|row.get(0))?;
     if valid {
         Ok(())
     } else {

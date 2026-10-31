@@ -55,7 +55,8 @@ pub(crate) async fn initialize_execution(
     if !complete {
         sqlx::raw_sql(
             "DELETE FROM catalog_messages;
-             DELETE FROM catalog_message_watermark;",
+             DELETE FROM catalog_message_watermark;
+             UPDATE session_control SET catalog_activity_at = 0;",
         )
         .execute(&mut *tx)
         .await?;
@@ -208,6 +209,15 @@ pub(crate) async fn project_execution(
     )
     .bind(sequence)
     .bind(prior_clock)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query(
+        "UPDATE session_control SET catalog_activity_at = COALESCE((
+            SELECT message_at FROM catalog_messages INDEXED BY catalog_latest_message
+            WHERE session_id = ?1 ORDER BY message_at DESC, sequence DESC, ordinal DESC LIMIT 1
+         ), 0) WHERE id = ?1",
+    )
+    .bind(&session)
     .execute(&mut *connection)
     .await?;
     sqlx::query(

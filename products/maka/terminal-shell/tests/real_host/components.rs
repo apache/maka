@@ -179,3 +179,114 @@ async fn compaction_waiting_keeps_background_elapsed_time_and_completion_uses_re
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn composer_details_switch_without_expanding_updates_or_losing_queue_edits() {
+    let mut view = component("composer-details").await;
+    support::wait_enabled_button(&mut view, "Toggle conversation todo").await;
+    support::wait_enabled_button(&mut view, "Toggle computer access").await;
+    support::wait_enabled_button(&mut view, "Queued messages").await;
+    assert!(!view.snapshot().contains("Fixture App one"));
+    assert!(!view.snapshot().contains("TODO_NEXT"));
+    assert!(!view.snapshot().contains("QUEUED_ORIGINAL"));
+    support::evidence("composer-details-collapsed", &view.snapshot());
+    support::evidence_cells("composer-details-collapsed", &view);
+    view.resize(60, 24);
+    tab_to_label(&mut view, "Queued messages").await;
+    support::click_button(&mut view, "Queued messages").await;
+    wait_view(&mut view, |screen| screen.contains("QUEUED_ORIGINAL")).await;
+    support::evidence("composer-details-narrow", &view.snapshot());
+    support::evidence_cells("composer-details-narrow", &view);
+    support::click_button(&mut view, "Queued messages").await;
+    view.resize(120, 36);
+
+    support::click_button(&mut view, "Toggle computer access").await;
+    wait_view(&mut view, |screen| screen.contains("Fixture App one")).await;
+    support::click_button(&mut view, "Stop access to Fixture App one").await;
+    wait_view(&mut view, |screen| {
+        screen.contains("stopped:one") && screen.contains("Access stopped for this turn")
+    })
+    .await;
+    support::click_button(&mut view, "Toggle computer access").await;
+    wait_view(&mut view, |screen| !screen.contains("Fixture App one")).await;
+
+    support::click_button(&mut view, "Queued messages").await;
+    support::click_button(&mut view, "Edit queued message 1").await;
+    wait_focused_input(&mut view, "Queued message editor").await;
+    shortcut(&mut view, 'a');
+    view.handle_event(TerminalEvent::Paste("UNSAVED_QUEUE_EDIT".into()));
+    commit_native_events(&mut view).await;
+    support::click_button(&mut view, "Toggle conversation todo").await;
+    wait_view(&mut view, |screen| {
+        screen.contains("TODO_NEXT") && !screen.contains("UNSAVED_QUEUE_EDIT")
+    })
+    .await;
+    support::click_button(&mut view, "Add computer access").await;
+    wait_view(&mut view, |screen| {
+        screen.contains("TODO_NEXT") && !screen.contains("Fixture App two")
+    })
+    .await;
+    assert!(
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Queued message editor")
+    );
+    support::evidence("composer-details-todo", &view.snapshot());
+    support::evidence_cells("composer-details-todo", &view);
+
+    support::click_button(&mut view, "Queued messages").await;
+    wait_view_state(&mut view, |view, _| {
+        view.surface()
+            .input_context()
+            .is_some_and(|input| input.text.as_deref() == Some("UNSAVED_QUEUE_EDIT"))
+    })
+    .await;
+    support::click_button(&mut view, "Drain queued messages").await;
+    support::click_button(&mut view, "Toggle computer access").await;
+    wait_view(&mut view, |screen| {
+        screen.contains("Fixture App one") && !screen.contains("UNSAVED_QUEUE_EDIT")
+    })
+    .await;
+    support::evidence("composer-details-access", &view.snapshot());
+    support::evidence_cells("composer-details-access", &view);
+    support::click_button(&mut view, "Queued messages").await;
+    wait_view_state(&mut view, |view, screen| {
+        screen.contains("Message no longer queued")
+            && view
+                .surface()
+                .input_context()
+                .is_some_and(|input| input.text.as_deref() == Some("UNSAVED_QUEUE_EDIT"))
+    })
+    .await;
+    support::click_button(&mut view, "Cancel queued message edit").await;
+    wait_view_state(&mut view, |view, _| {
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Queued messages")
+    })
+    .await;
+
+    support::click_button(&mut view, "Toggle computer access").await;
+    support::click_button(&mut view, "Clear computer access").await;
+    wait_view_state(&mut view, |view, _| {
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Toggle computer access")
+    })
+    .await;
+    wait_view(&mut view, |screen| {
+        screen.contains("TODO_CURRENT") && !screen.contains("TODO_NEXT")
+    })
+    .await;
+    support::click_button(&mut view, "Restore computer access").await;
+    support::wait_enabled_button(&mut view, "Toggle computer access").await;
+    assert!(!view.snapshot().contains("Fixture App one"));
+    assert!(
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Message composer")
+    );
+}

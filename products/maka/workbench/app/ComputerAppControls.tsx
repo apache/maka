@@ -19,11 +19,8 @@
 
 import { cleanup, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
-import type {
-  AgentComputerApps,
-  GrantScope,
-} from '../../../../packages/plugin-sdk/src/generated/runtime';
-import type { Control } from '../../../../plugins/agent/conversations/ui/Conversation';
+import type { GrantScope } from '../../../../packages/plugin-sdk/src/generated/runtime';
+import type { ComposerComputerAccess } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { computerAppRiskMessage } from './interaction-computer-app';
 import { tr } from './locale';
 import { errorText, renderText, type UiText } from './text';
@@ -41,43 +38,45 @@ import {
 const applicationId = (scope: GrantScope) =>
   scope.kind === 'computer_app' ? scope.applicationId : tr('unavailable');
 
-export function ComputerAppControls(props: {
-  sessionId: string;
-  apps(): AgentComputerApps;
-  control: Control;
-}) {
+export function createComputerAppControls(access: ComposerComputerAccess, height: () => number) {
   let alive = true;
   const failure = signal<{ operationId: string; message: UiText } | null>(null);
   cleanup(() => {
     alive = false;
   });
   const current = (operationId: string) =>
-    props
-      .apps()
+    access
+      .snapshot()
       .entries.find((entry) => entry.activity.operationId === operationId && !entry.stopped);
-  const stop = async ({ sessionId, operationId }: { sessionId: string; operationId: string }) => {
-    if (!alive || sessionId !== props.sessionId || !current(operationId)) return;
+  const stop = async (operationId: string) => {
+    if (!alive || !current(operationId)) return;
     failure.set(null);
     try {
-      await props.control('stopComputerApp', { sessionId, operationId });
+      await access.stop(operationId);
     } catch (reason) {
       if (alive && current(operationId)) failure.set({ operationId, message: errorText(reason) });
     }
   };
-  return (
-    <If when={props.apps().entries.length > 0}>
-      <View
-        style={{ minHeight: 0, flexShrink: 1, gap: 8, padding: 12, backgroundColor: C.surface }}
-      >
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {tr('Computer access this turn')}
-        </Text>
+  return {
+    shown: () => access.snapshot().entries.length > 0,
+    summary: () => String(access.snapshot().entries.filter((entry) => !entry.stopped).length),
+    preview: () =>
+      failure() && current(failure()!.operationId)
+        ? renderText(failure()!.message)
+        : access
+            .snapshot()
+            .entries.map((entry) => entry.activity.display.name)
+            .join(', '),
+    problem: () => !!failure() && !!current(failure()!.operationId),
+    content: () => (
+      <View style={{ minHeight: 0, flexShrink: 1 }}>
         <Scroll
           accessibilityLabel={tr('Computer application access')}
-          style={{ minHeight: 0, maxHeight: 240 }}
+          style={{ minHeight: 0, maxHeight: height(), flexShrink: 1, flexGrow: 0 }}
+          contentStyle={{ padding: 12 }}
         >
           <View style={{ gap: 12 }}>
-            <Each of={props.apps().entries} key={(entry) => entry.activity.operationId}>
+            <Each of={access.snapshot().entries} key={(entry) => entry.activity.operationId}>
               {(entry) => (
                 <View style={{ gap: 4 }}>
                   <Text
@@ -107,10 +106,7 @@ export function ComputerAppControls(props: {
                       app: entry().activity.display.name,
                     })}
                     disabled={entry().stopped}
-                    onPress={inputAction(stop, {
-                      sessionId: props.sessionId,
-                      operationId: entry().activity.operationId,
-                    })}
+                    onPress={inputAction(stop, entry().activity.operationId)}
                     style={controlStyle}
                     hoverStyle={controlHoverStyle()}
                     focusStyle={controlFocusStyle()}
@@ -123,14 +119,14 @@ export function ComputerAppControls(props: {
                 </View>
               )}
             </Each>
+            <If when={failure() && current(failure()!.operationId)}>
+              <Text style={{ ...bodyTextStyle, color: C.danger }}>
+                {failure() ? renderText(failure()!.message) : ''}
+              </Text>
+            </If>
           </View>
         </Scroll>
-        <If when={failure() && current(failure()!.operationId)}>
-          <Text style={{ ...bodyTextStyle, color: C.danger }}>
-            {failure() ? renderText(failure()!.message) : ''}
-          </Text>
-        </If>
       </View>
-    </If>
-  );
+    ),
+  };
 }

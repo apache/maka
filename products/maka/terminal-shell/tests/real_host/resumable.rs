@@ -197,6 +197,8 @@ async fn lost_continuation_receipt_blocks_a_new_send_and_recovers_the_original_t
         assert!(matches!(settled.receipt, Some(Receipt::Recorded {outcome:OperationOutcome::Returned {ref value},..}) if value["kind"] == "started" && value["execution"]["turnId"] != ready["source"]["turnId"]));
         support::wait_draft(&restarted, &fixture.session, "LATER_DRAFT_SURVIVES_CONTINUATION_RECOVERY").await;
         assert!(restarted.pending_controls().await.unwrap().is_empty());
+        support::click_button(&mut view, "Dismiss action feedback").await;
+        wait_view(&mut view, |screen| !screen.contains("Original actions checked.")).await;
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
         support::evidence("composer-recovered-continuation", &view.snapshot());
         drop(view);

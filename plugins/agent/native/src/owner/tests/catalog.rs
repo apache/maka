@@ -60,12 +60,28 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
     assert_eq!(published["sessions"].as_array().unwrap().len(), 1);
     assert_eq!(published["sessions"][0]["id"], first_id);
     assert_eq!(published["sessions"][0]["title"], "First");
-    bootstrap.completion().await;
     let mut ids = vec![first_id];
     for title in ["Second", "Third"] {
-        ids.push(fixture.create(title).await);
+        let id = fixture.create(title).await;
+        let page = loop {
+            let page = next(&mut bootstrap).await;
+            if page["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|session| session["id"] == id)
+            {
+                break page;
+            }
+        };
+        assert_eq!(
+            page["sessions"][0]["id"], id,
+            "Start follows new conversations"
+        );
+        ids.push(id);
     }
-    ids.sort();
+    bootstrap.completion().await;
+    ids.reverse();
     let owned_scope = json!({"kind":"workspace","sessionId":ids[0]});
     let first_title = fixture
         .query(
@@ -253,7 +269,7 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
         if id == &ids[2] {
             assert_eq!(
                 updated["sessions"][0]["id"], ids[0],
-                "empty tail falls back in the same owner scope"
+                "removed anchor resets to the head in the same owner scope"
             );
             assert!(updated["before"].is_null());
             assert!(updated["after"].is_null());

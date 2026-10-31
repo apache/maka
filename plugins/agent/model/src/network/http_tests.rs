@@ -317,3 +317,68 @@ async fn held_response_headers_release_upload_source_without_closing_connection(
     response.body.close().await.unwrap();
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn tls_handshake_eof_is_retryable_but_invalid_tls_is_not() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for eof in [true, false] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!(
+                "https://{}/?api_key=must-not-appear",
+                listener.local_addr().unwrap()
+            );
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut record = [0; 5];
+                socket.read_exact(&mut record).await.unwrap();
+                let mut hello = vec![0; usize::from(u16::from_be_bytes([record[3], record[4]]))];
+                socket.read_exact(&mut hello).await.unwrap();
+                if !eof {
+                    socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                        .await
+                        .unwrap();
+                }
+                socket.shutdown().await.unwrap();
+            });
+            let error = network()
+                .request(
+                    http::Request {
+                        method: http::Method::Get,
+                        url,
+                        headers: Vec::new(),
+                        body: Default::default(),
+                    },
+                    CancellationToken::new(),
+                )
+                .await
+                .err()
+                .expect("TLS handshake must fail");
+            server.await.unwrap();
+            let message = error.to_string();
+            assert!(
+                !message.contains("must-not-appear"),
+                "request URLs must stay private: {message}"
+            );
+            if eof {
+                let Error::Provider(failure) = error else {
+                    panic!("handshake EOF must remain a retryable network failure: {message}");
+                };
+                assert_eq!(failure.reason(), ProviderFailureReason::Network);
+                assert!(failure.retryable() && failure.replay_safe());
+                assert!(failure.message().contains("tls handshake eof"), "{message}");
+            } else {
+                assert!(
+                    matches!(error, Error::Adapter(_)),
+                    "invalid TLS must not become a retryable connection failure: {message}"
+                );
+                assert!(
+                    message.to_ascii_lowercase().contains("invalid"),
+                    "the TLS cause must be preserved: {message}"
+                );
+            }
+        }
+    })
+    .await
+    .unwrap();
+}

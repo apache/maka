@@ -66,6 +66,7 @@ impl EventLog {
         sessions::validate_id(session)?;
         let session = session.to_owned();
         let observations = self.connection.observations();
+        let commits = self.commits.notice();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -112,6 +113,7 @@ impl EventLog {
                     .await?;
                     sessions::advance_catalog(&mut tx).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    commits.material_released();
                     observations.purge_session(session).await?;
                     Ok(AbandonRevision::Abandoned)
                 })

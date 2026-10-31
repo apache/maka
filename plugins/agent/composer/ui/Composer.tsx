@@ -27,8 +27,7 @@ import { Button } from 'nsh/base';
 import { platform, windowSize } from 'nsh';
 import { keymap } from 'nsh';
 import { DraftAttachments } from '../../../../products/maka/workbench/app/Attachments';
-import { Checklist } from '../../../../products/maka/workbench/app/Checklist';
-import { QueueDock } from '../../../../products/maka/workbench/app/QueueDock';
+import { ComposerDetails } from '../../../../products/maka/workbench/app/ComposerDetails';
 import { SessionPermissionsSelect } from '../../../../products/maka/workbench/app/SessionPermissionsSelect';
 import type { AgentExecution } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import type {
@@ -184,8 +183,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   let unbind = () => {};
   cleanup(() => unbind());
   const cardRoot = signal<ViewRef | null>(null);
-  // The todo dock sits on the composer and takes its top corners.
-  const joined = signal(false);
   // A file drag over the editor leaves the conversation's own drop target.
   const draggingOverEditor = signal(false);
   const fileDragging = () =>
@@ -365,19 +362,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             return (
               <View>
                 <ProjectMcp owner={owner.projectMcp} />
-                {/* On the desktop the todo dock joins the composer, so the queue goes above it. */}
-                <If when={!platform.isTerminal}>
-                  <QueueDock session={owner.queue} />
-                </If>
-                <Checklist
-                  sessionId={owner.sessionId}
-                  source={owner.checklist}
-                  tuck={platform.isTerminal ? undefined : compact() ? 16 : 24}
-                  joined={platform.isTerminal ? undefined : (shown) => joined.set(shown)}
-                />
-                <If when={platform.isTerminal}>
-                  <QueueDock session={owner.queue} />
-                </If>
+                <ComposerDetails session={owner} />
                 <If when={owner.recoverable()}>
                   <Button
                     disabled={owner.recovering()}
@@ -435,7 +420,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             flexShrink: 0,
             backgroundColor: C.raised,
             borderRadius: compact() ? 16 : 24,
-            ...(joined() ? { borderTopLeftRadius: 0, borderTopRightRadius: 0 } : {}),
             borderWidth: 1,
             borderColor: fileDragging() ? C.accent : C.line,
             paddingHorizontal: 16,
