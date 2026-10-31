@@ -27,7 +27,7 @@ use gpui::{
 use maka_app_client::Client;
 use maka_plugin_core::operation::{OperationOutcome, Receipt};
 use maka_workbench::bindings::Bindings;
-use nsh_gpui_terminal::TerminalPlatform;
+use nsh_gpui_terminal::{CandidateFrame, TerminalPlatform};
 use nsh_platform_gpui::{AppOptions, AppView};
 use serde_json::{Value, json};
 use std::{
@@ -35,7 +35,7 @@ use std::{
     future::Future,
     path::Path,
     rc::Rc,
-    sync::{Arc, atomic::Ordering},
+    sync::{Arc, Mutex, atomic::Ordering},
     time::Duration,
 };
 use tokio::sync::{Notify, watch};
@@ -45,6 +45,7 @@ const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQN
 
 struct Desktop {
     platform: Rc<TerminalPlatform>,
+    frame: Arc<Mutex<Option<CandidateFrame>>>,
     app: ApplicationHandle,
     window: WindowHandle<AppView>,
     client: Client,
@@ -56,6 +57,21 @@ struct Desktop {
 
 impl Desktop {
     async fn open(fixture: &Fixture, address: &Path) -> Self {
+        Self::open_at(
+            fixture,
+            address,
+            size(gpui::DevicePixels(960), gpui::DevicePixels(640)),
+            nsh_core::platform::Appearance::Dark,
+        )
+        .await
+    }
+
+    async fn open_at(
+        fixture: &Fixture,
+        address: &Path,
+        dimensions: gpui::Size<gpui::DevicePixels>,
+        appearance: nsh_core::platform::Appearance,
+    ) -> Self {
         let client = fixture.client_at(address).await;
         let bindings = Bindings::new(client.clone(), tokio::runtime::Handle::current());
         let mut config = maka_workbench::configuration(
@@ -71,17 +87,21 @@ impl Desktop {
             .with(maka_workbench::Foreground(receiver));
         let wake = Arc::new(Notify::new());
         let notification = wake.clone();
+        let frame = Arc::new(Mutex::new(None));
+        let captured = frame.clone();
         let platform = TerminalPlatform::new(
             Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
-            Box::new(|frame| {
-                std::thread::spawn(move || frame.submit()?.complete())
+            Box::new(move |frame| {
+                let frame = std::thread::spawn(move || frame.submit()?.complete())
                     .join()
                     .unwrap()
                     .unwrap();
+                *captured.lock().unwrap() = Some(frame);
             }),
             Arc::new(move || notification.notify_one()),
         )
         .unwrap();
+        platform.set_viewport(dimensions, 1.0).unwrap();
         let errors = Rc::new(RefCell::new(None));
         let failed = errors.clone();
         let opened = Rc::new(RefCell::new(None));
@@ -92,7 +112,10 @@ impl Desktop {
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                             point(px(0.0), px(0.0)),
-                            size(px(960.0), px(640.0)),
+                            size(
+                                px(dimensions.width.0 as f32),
+                                px(dimensions.height.0 as f32),
+                            ),
                         ))),
                         inactive_frame_interval: None,
                         ..Default::default()
@@ -110,6 +133,7 @@ impl Desktop {
                             view.on_error(move |message| {
                                 *failed.borrow_mut() = Some(message.to_owned())
                             });
+                            view.set_appearance(appearance, cx);
                             view.load_with_config(config);
                             window.focus(&view.focus_handle(cx), cx);
                             view
@@ -122,6 +146,7 @@ impl Desktop {
         let window = opened.borrow_mut().take().unwrap();
         let desktop = Self {
             platform,
+            frame,
             app,
             window,
             client,
@@ -805,4 +830,121 @@ async fn desktop_plans_first_then_runs_the_approved_plan() {
     assert_eq!(observed["session"]["collaborationMode"], "plan");
     desktop.close().await;
     fixture.finish().await;
+}
+
+async fn disconnected_desktop(
+    theme: &str,
+    appearance: nsh_core::platform::Appearance,
+    layout: &str,
+    width: i32,
+    height: i32,
+) {
+    let mut fixture = Fixture::open().await;
+    let dimensions = size(gpui::DevicePixels(width), gpui::DevicePixels(height));
+    let desktop = Desktop::open_at(&fixture, &fixture.address, dimensions, appearance).await;
+    desktop.new_draft().await;
+    desktop.type_text("Start a response").await;
+    desktop.key("enter", false);
+    let mut reply = desktop.request(&mut fixture).await;
+    desktop.control("Pause response").await;
+    let closing = tokio::spawn({
+        let store = fixture.store.clone();
+        async move { store.shutdown().await }
+    });
+    reply.delta("Wake the original source watcher.").await;
+    desktop.control("Details").await;
+    desktop.control("Retry").await;
+    assert!(desktop.controls("Pause response").is_empty());
+    desktop.type_text("DRAFT_KEPT_WHILE_DISCONNECTED").await;
+    desktop.expect_text("DRAFT_KEPT_WHILE_DISCONNECTED").await;
+    let retry = desktop.control("Retry").await;
+    let composer = desktop.control("Focus message composer").await;
+    {
+        let guard = desktop.frame.lock().unwrap();
+        let frame = guard.as_ref().unwrap();
+        assert_eq!(frame.size(), dimensions);
+        if let Some(directory) = std::env::var_os("MAKA_UI_ARTIFACT_DIR") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            let mut ppm = format!("P6\n{} {}\n255\n", width, height).into_bytes();
+            for pixel in frame.pixels().chunks_exact(4) {
+                ppm.extend_from_slice(&pixel[..3]);
+            }
+            std::fs::write(
+                directory.join(format!("disconnected-{theme}-{layout}.ppm")),
+                ppm,
+            )
+            .unwrap();
+        }
+        let pixel = ((height as usize / 3) * width as usize + width as usize - 2) * 4;
+        assert_eq!(
+            frame.pixels()[pixel] > 128,
+            theme == "light",
+            "the requested theme must actually be rendered"
+        );
+    }
+    assert!(
+        retry.top() >= composer.bottom(),
+        "connection feedback overlaps the workspace: retry={retry:?}, composer={composer:?}"
+    );
+    assert!(
+        retry.right() <= px(width as f32) && retry.bottom() <= px(height as f32),
+        "connection actions must stay within the window: {retry:?}"
+    );
+    assert!(
+        retry.bottom() > px(height as f32 - 64.0),
+        "connection status must use the bottom of the actual viewport: {retry:?}"
+    );
+    assert_eq!(
+        desktop.controls("Retry").len(),
+        1,
+        "one connection failure needs one retry action"
+    );
+    assert!(desktop.controls("Pause response").is_empty());
+    reply.finish().await;
+    desktop
+        .wait("the closed store did not drain", closing)
+        .await
+        .unwrap()
+        .unwrap();
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+// GPUI owns process-wide application state; visual cases run in separate processes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_connection_failure_has_one_status_below_the_workspace() {
+    let case = std::env::var("MAKA_UI_VISUAL_CASE").unwrap_or_else(|_| "dark-wide".into());
+    let (theme, appearance, layout, width, height) = match case.as_str() {
+        "light-narrow" => (
+            "light",
+            nsh_core::platform::Appearance::Light,
+            "narrow",
+            720,
+            720,
+        ),
+        "light-wide" => (
+            "light",
+            nsh_core::platform::Appearance::Light,
+            "wide",
+            1280,
+            800,
+        ),
+        "dark-narrow" => (
+            "dark",
+            nsh_core::platform::Appearance::Dark,
+            "narrow",
+            720,
+            720,
+        ),
+        "dark-wide" => (
+            "dark",
+            nsh_core::platform::Appearance::Dark,
+            "wide",
+            1280,
+            800,
+        ),
+        _ => panic!("unsupported visual case: {case}"),
+    };
+    disconnected_desktop(theme, appearance, layout, width, height).await;
 }

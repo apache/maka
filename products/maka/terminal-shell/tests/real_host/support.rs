@@ -141,6 +141,8 @@ pub struct Fixture {
     pub request_count: Arc<AtomicUsize>,
     requests: mpsc::Receiver<ModelRequest>,
     host: Arc<Host>,
+    #[cfg(feature = "desktop-tests")]
+    pub store: Arc<RootStore>,
     server: JoinHandle<Result<(), String>>,
     provider: AbortOnDropHandle<()>,
 }
@@ -248,7 +250,7 @@ impl Fixture {
         )
         .unwrap();
         let host = Host::open(
-            store,
+            store.clone(),
             deployment,
             native,
             None,
@@ -288,6 +290,8 @@ impl Fixture {
             request_count,
             requests,
             host,
+            #[cfg(feature = "desktop-tests")]
+            store,
             server,
             provider,
         };
