@@ -108,6 +108,10 @@ import {
   type BrowserWorkspace,
 } from '../../../../products/maka/workbench/app/browsing';
 import {
+  browserOrder,
+  groupConversations,
+} from '../../../../products/maka/workbench/app/conversationGroups';
+import {
   WorkspaceBrowser,
   type WorkspaceBrowserProps,
 } from '../../../../products/maka/workbench/app/WorkspaceBrowser';
@@ -1368,13 +1372,25 @@ export function createConversationUi(
       textSize: changeTextSize,
     });
   // The conversation below (1) or above (-1) the open one in the session browser.
+  // Kept here so the browser's collapsed workspaces outlive its unmounting
+  // and stepping between conversations skips them as the browser does.
+  const collapsedGroups = signal<ReadonlySet<string>>(new Set());
   const stepSession = (step: 1 | -1) => {
     const current = overlay();
     if (switching() || busy() || (current && current.kind !== 'sessions')) return;
-    const rows = browsing.sessions();
-    const index = rows.findIndex((session) => session.id === selected());
+    const bot = botSession() ?? null;
+    const rows = browserOrder(
+      groupConversations(
+        browsing.sessions().filter((session) => session.id !== bot),
+        browsing.projects(),
+        false,
+      ),
+      collapsedGroups(),
+      selected(),
+    );
+    const index = rows.indexOf(selected() ?? '');
     const next = rows[index === -1 ? 0 : index + step];
-    if (next && next.id !== selected()) void selectBrowsed(next.id, selected());
+    if (next && next !== selected()) void selectBrowsed(next, selected());
   };
   const selectBrowsed = async (id: string, origin: string | null) => {
     const current = overlay();
@@ -1426,6 +1442,7 @@ export function createConversationUi(
     canOpenBeside: () => !!shell()?.openBeside,
     beside: () => shell()?.besideSessionId?.() ?? null,
     openBeside: (sessionId) => shell()?.openBeside?.(sessionId),
+    collapsedGroups,
   };
   let wasDocked = shell()?.sidebarDocked();
   let previousWidth = windowSize().width;

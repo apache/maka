@@ -34,7 +34,7 @@ import {
   List,
   platform,
 } from 'nsh';
-import type { ListRef, ViewRef } from 'nsh';
+import type { ListRef, Signal, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import logo from './assets/maka.png';
 import { keymap } from 'nsh';
@@ -50,7 +50,7 @@ import {
 import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
-import { nestCreated } from './sessionNesting';
+import { groupConversations, type ConversationGroup } from './conversationGroups';
 import {
   hasForkPrefix,
   sessionActionTarget,
@@ -88,16 +88,14 @@ export type WorkspaceBrowserProps = {
   /** The conversation open beside the selected one, marked like a selected row. */
   beside?(): string | null;
   openBeside?(sessionId: string): void;
+  /**
+   * The keys of the collapsed workspace groups, kept by the owner, whose
+   * next and previous conversation skip them.
+   */
+  collapsedGroups?: Signal<ReadonlySet<string>>;
 };
 
-type WorkspaceGroup = {
-  key: string;
-  name: string;
-  project: BrowserProject | null;
-  sessions: string[];
-  /** The conversations shown under the one that created them. */
-  nested: ReadonlySet<string>;
-};
+type WorkspaceGroup = ConversationGroup<BrowserProject> & { name: string };
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const titleBarRow = () => ownTitleBar && props.docked();
@@ -165,48 +163,17 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   // The desktop lists conversations under their workspaces instead of
   // choosing a scope: pinned ones first, then each workspace in the order of
   // its latest loaded conversation, then active projects with none loaded.
-  const collapsed = signal<ReadonlySet<string>>(new Set());
-  const groups = computed(() => {
-    const projects = new Map(browser.projects().map((project) => [project.reference.id, project]));
-    const byKey = new Map<string, WorkspaceGroup>();
-    const add = (key: string, name: string, project: BrowserProject | null) => {
-      const group: WorkspaceGroup = { key, name, project, sessions: [], nested: new Set() };
-      byKey.set(key, group);
-      return group;
-    };
-    for (const session of visibleSessions()) {
-      const projectId = session.workspace.projectId;
-      const key = session.pinned
-        ? 'pinned'
-        : projectId
-          ? `project:${projectId}`
-          : `path:${session.workspace.path}`;
-      const project = (projectId && projects.get(projectId)) || null;
-      const group =
-        byKey.get(key) ??
-        add(
-          key,
-          session.pinned
-            ? tr('Pinned')
-            : (project?.name ??
-                (session.workspace.path.split('/').filter(Boolean).at(-1) ||
-                  session.workspace.path)),
-          session.pinned ? null : project,
-        );
-      group.sessions.push(session.id);
-    }
-    if (browser.filter() === 'all')
-      for (const project of projects.values())
-        if (!project.archived && !byKey.has(`project:${project.reference.id}`))
-          add(`project:${project.reference.id}`, project.name, project);
-    const byId = sessionsById();
-    for (const group of byKey.values()) {
-      const { order, nested } = nestCreated(group.sessions.map((id) => byId.get(id)!));
-      group.sessions = order;
-      group.nested = nested;
-    }
-    return [...byKey.values()];
-  });
+  const collapsed = props.collapsedGroups ?? signal<ReadonlySet<string>>(new Set());
+  const groups = computed(() =>
+    groupConversations(visibleSessions(), browser.projects(), browser.filter() === 'all').map(
+      (group): WorkspaceGroup => ({
+        ...group,
+        name: group.pinned
+          ? tr('Pinned')
+          : (group.project?.name ?? (group.path!.split('/').filter(Boolean).at(-1) || group.path!)),
+      }),
+    ),
+  );
   const nestedRows = computed(() => new Set(groups().flatMap((group) => [...group.nested])));
   const groupsById = computed(
     () => new Map(groups().map((group) => [`group:${group.key}`, group])),
