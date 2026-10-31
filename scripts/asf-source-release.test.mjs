@@ -373,7 +373,7 @@ describe('ASF source release verification', () => {
         'add',
         'package.json',
         'package-lock.json',
-        'DISCLAIMER-WIP',
+        'DISCLAIMER',
         'LICENSE',
         'NOTICE',
         '.gitignore',
@@ -641,7 +641,7 @@ function writeReleaseContents(root, { includeAttributes = false } = {}) {
     `${JSON.stringify({ lockfileVersion: 3, name: 'maka', packages: { '': { name: 'maka', version: '0.1.12' } }, version: '0.1.12' }, null, 2)}\n`,
   );
   writeFileSync(
-    join(root, 'DISCLAIMER-WIP'),
+    join(root, 'DISCLAIMER'),
     'Apache Maka is undergoing incubation at The Apache Software Foundation.\n',
   );
   writeFileSync(join(root, 'LICENSE'), 'Apache License, Version 2.0\n');

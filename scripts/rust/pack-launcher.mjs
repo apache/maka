@@ -18,7 +18,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -48,6 +48,7 @@ export async function packLauncher(directory) {
         '-C',
         stage,
         `${candidate.rootDirectory}/packages/cli`,
+        `${candidate.rootDirectory}/DISCLAIMER`,
         `${candidate.rootDirectory}/LICENSE`,
         `${candidate.rootDirectory}/NOTICE`,
       ],
@@ -80,8 +81,11 @@ export async function packLauncher(directory) {
       join(packageDirectory, 'package.json'),
       JSON.stringify(manifest, null, 2) + '\n',
     );
-    for (const name of ['LICENSE', 'NOTICE'])
+    for (const name of ['DISCLAIMER', 'LICENSE', 'NOTICE'])
       await copyFile(join(root, name), join(packageDirectory, name));
+    const disclaimer = await readFile(join(root, 'DISCLAIMER'), 'utf8');
+    for (const name of ['README.md', 'README.zh-CN.md'])
+      await appendFile(join(packageDirectory, name), '\n\n' + disclaimer);
     const { stdout } = await run(
       'npm',
       ['pack', '--json', '--ignore-scripts', '--offline'],

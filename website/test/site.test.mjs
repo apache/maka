@@ -32,9 +32,9 @@ const page = (path) => readFileSync(new URL(path, dist), 'utf8');
 const locales = ['en', 'zh-CN'];
 const pages = ['index.html', 'downloads/index.html'];
 
-// DISCLAIMER-WIP is the project's copy of the Incubator disclaimer, so the
+// DISCLAIMER is the project's copy of the Incubator disclaimer, so the
 // site has to carry that paragraph rather than a wording of its own.
-const disclaimer = readFileSync(new URL('../../DISCLAIMER-WIP', import.meta.url), 'utf8')
+const disclaimer = readFileSync(new URL('../../DISCLAIMER', import.meta.url), 'utf8')
   .split('\n\n')[0]
   .replace(/\s+/gu, ' ')
   .trim();
