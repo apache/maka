@@ -2711,11 +2711,11 @@ export function Conversation(props: ConversationProps) {
                         return (
                           <BotWorking
                             detail={() => {
-                              const turn = runTurn();
-                              const tool =
-                                turn === null
-                                  ? undefined
-                                  : latestToolActivity(toolActivity(), invocation(), turn);
+                              const tool = latestToolActivity(
+                                toolActivity(),
+                                invocation(),
+                                runTurn(),
+                              );
                               return tool ? `${tool.name}` : '';
                             }}
                           />
