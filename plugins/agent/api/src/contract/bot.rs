@@ -26,7 +26,10 @@ use super::*;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentBotOpen")]
 pub struct BotOpen {
-    pub workspace: WorkspaceSelection,
+    /// Where the Bot Session is created on first use. Absent: the Host's first
+    /// configured workspace root, so opening the Bot never needs another conversation.
+    #[serde(default)]
+    pub workspace: Option<WorkspaceSelection>,
     #[serde(default)]
     #[schemars(length(min = 1))]
     pub title: Option<String>,
@@ -59,6 +62,8 @@ pub enum BotRejection {
     Disabled,
     /// The Session could not be created; see the creation reason.
     CreationRejected,
+    /// No workspace was given and the Host has no configured workspace root.
+    NoWorkspace,
 }
 
 #[derive(Deserialize, JsonSchema)]

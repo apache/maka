@@ -35,6 +35,14 @@ export const canDockBrowser = (withPreview = false) =>
   windowSize().width >=
   CENTER_DOCK_WIDTH + BROWSER_MIN + GAP + (withPreview && canDockPreview() ? PREVIEW_MIN + GAP : 0);
 export const canDockPreview = () => windowSize().width >= CENTER_DOCK_WIDTH + PREVIEW_MIN + GAP;
+/** Side conversations that fit beside the selected one at the panels' minimum widths. */
+export const sidePaneRoom = (browser: boolean, preview: boolean) =>
+  Math.max(
+    0,
+    Math.floor(
+      (windowSize().width - (browser ? BROWSER_MIN : 0) - (preview ? PREVIEW_MIN : 0)) / CENTER_MIN,
+    ) - 1,
+  );
 
 export function Workbench(props: {
   expanded(): boolean;
@@ -44,20 +52,15 @@ export function Workbench(props: {
   closePreview(): void;
   navigation(): JSX.Element;
   preview(docked: boolean): JSX.Element;
-  /** A second conversation beside the first, while one is open. */
-  sideShown?(): boolean;
-  side?(): JSX.Element;
+  /** Stable pane objects keep their mounted conversations through reorder and resize. */
+  sides?(): readonly { render(): JSX.Element }[];
   children: JSX.Element;
 }) {
   const preferredWidth = signal(32 * CELL);
   const preferredPreviewWidth = signal(48 * CELL);
   const preview = () => props.previewShown() && canDockPreview();
   const browser = () => props.expanded() && canDockBrowser(props.previewShown());
-  // The side pane stays mounted while it is open and shows where both
-  // conversations keep their minimum width.
-  const side = () =>
-    (props.sideShown?.() ?? false) &&
-    windowSize().width >= 2 * CENTER_MIN + (browser() ? BROWSER_MIN : 0);
+  const room = () => sidePaneRoom(browser(), preview());
   const previewDialog = signal(false);
   let wasDocked = canDockPreview();
   effect(() => {
@@ -91,9 +94,17 @@ export function Workbench(props: {
         <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
           {props.children}
         </ResizablePanel>
-        <ResizablePanel visible={side()} minSize={CENTER_MIN} style={{ minHeight: 0 }}>
-          <If when={props.sideShown?.()}>{props.side?.()}</If>
-        </ResizablePanel>
+        <Each of={props.sides?.() ?? []} key={(pane) => pane}>
+          {(pane, index) => (
+            <ResizablePanel
+              visible={index() < room()}
+              minSize={CENTER_MIN}
+              style={{ minHeight: 0 }}
+            >
+              {pane().render()}
+            </ResizablePanel>
+          )}
+        </Each>
         <ResizablePanel
           visible={preview()}
           size={preferredPreviewWidth()}

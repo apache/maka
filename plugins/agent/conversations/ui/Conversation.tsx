@@ -2080,6 +2080,15 @@ export function Conversation(props: ConversationProps) {
     resuming: confirmingContinuation,
     resume,
     metrics: () => metricText(metrics()),
+    contextUsage: () => {
+      const value = metrics();
+      if (!value?.contextTokens || !value.contextWindow) return null;
+      return {
+        tokens: value.contextTokens,
+        window: value.contextWindow,
+        approximate: value.approximate || value.contextLastKnown,
+      };
+    },
     changeDraft,
     submit(event) {
       const value = resumable();
