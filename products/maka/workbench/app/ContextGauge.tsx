@@ -17,8 +17,7 @@
  * under the License.
  */
 
-import { Canvas } from 'nsh';
-import { Button } from 'nsh/base';
+import { Canvas, View } from 'nsh';
 import type { ComposerContextUsage } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { tr } from './locale';
 import { C, textTooltip } from './ui';
@@ -38,7 +37,9 @@ export function ContextGauge(props: { usage: () => ComposerContextUsage }) {
   const share = () => Math.min(1, props.usage().tokens / props.usage().window);
   const color = () => (share() >= 0.9 ? C.danger : share() >= 0.7 ? C.warning : C.muted);
   return (
-    <Button
+    <View
+      role="progressbar"
+      accessibilityValue={{ min: 0, max: 100, now: share() * 100 }}
       accessibilityLabel={contextUsageText(props.usage())}
       tooltip={textTooltip(() => contextUsageText(props.usage()))}
       style={{
@@ -67,6 +68,6 @@ export function ContextGauge(props: { usage: () => ComposerContextUsage }) {
           cx.stroke();
         }}
       />
-    </Button>
+    </View>
   );
 }
