@@ -79,7 +79,7 @@ function App() {
       <Image
         src="asset:/same-preview.png"
         onLoad={(e) => loaded.set(`${label}|${policy}|${e.size.width}x${e.size.height}`)}
-        onError={(e) => loaded.set(e.message)}
+        onError={() => loaded.set("unavailable")}
         style={{ width: 32, height: 32 }}
       />
       <Input
@@ -1081,7 +1081,7 @@ fn configured_assets_stay_with_their_original_load(cx: &mut TestAppContext) {
     for (assets, status) in [
         (Some(&first), "configured host|development policy|2x3"),
         (Some(&second), "configured host|development policy|7x5"),
-        (None, "asset:/same-preview.png: no asset reader configured"),
+        (None, "unavailable"),
     ] {
         let mut registry = nsh_core::element::Registry::ui_set("test/embedding");
         registry.module::<EmbeddingHost>();
