@@ -146,7 +146,6 @@ pub(crate) fn catalog(
     let questions_contract = maka_interactions_api::questions::contract();
     let web_contract = maka_web_api::contract();
     let mut web_bindings = std::collections::BTreeMap::<ServiceTarget, Vec<Service>>::new();
-    let mut computer_bindings = std::collections::BTreeMap::<ServiceTarget, Vec<Service>>::new();
     let mut shell_bindings = Vec::new();
     let mut skill_bindings = Vec::new();
     let skill_contract = maka_skills_api::contract();
@@ -310,12 +309,6 @@ pub(crate) fn catalog(
             if selection.input == ToolInput::Skill {
                 skill_bindings.push((selection.name.clone(), Arc::new(SkillBinding(service.clone()))));
             }
-            if selection.result == ToolResult::Computer {
-                computer_bindings
-                    .entry(selection.target.clone())
-                    .or_default()
-                    .push(service.clone());
-            }
             if selection.input == ToolInput::Shell {
                 shell_bindings.push((
                     selection.name.clone(),
@@ -384,21 +377,6 @@ pub(crate) fn catalog(
                 }),
             )
             .map_err(|_| "agent_web_binding_invalid")?;
-    }
-    for services in computer_bindings.into_values() {
-        let names = services
-            .iter()
-            .map(|service| service.selection.name.clone())
-            .collect();
-        catalog = catalog
-            .with_request_binding(
-                names,
-                Arc::new(computer::Binding {
-                    services,
-                    workers: workers.clone(),
-                }),
-            )
-            .map_err(|_| "agent_computer_binding_invalid")?;
     }
     for (name, binding) in shell_bindings {
         catalog = catalog

@@ -1031,6 +1031,32 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn long_lived_readers_do_not_install_startup_migration_functions() {
+        let directory = tempfile::tempdir().unwrap();
+        let options = SqliteConnectOptions::new()
+            .filename(directory.path().join("runtime.sqlite"))
+            .create_if_missing(true)
+            .foreign_keys(true);
+        let mut writer = connect_owned(&options).await.unwrap();
+        crate::schema::initialize_connection(&mut writer)
+            .await
+            .unwrap();
+        writer.close().await.unwrap();
+        for role in [ReaderRole::Read, ReaderRole::Observation] {
+            let mut reader = connect_reader(&options, None, role).await.unwrap();
+            let functions: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_function_list
+                 WHERE name IN ('maka_directory_row','maka_directory_payload','maka_directory_child')",
+            ).fetch_one(&mut reader).await.unwrap();
+            assert_eq!(
+                functions, 0,
+                "readers must never retain migration-only functions"
+            );
+            close_reader(reader).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn canonical_session_reads_bypass_a_blocked_writer() {
         let directory = tempfile::tempdir().unwrap();
         let namespaces = crate::root::RootNamespaces {

@@ -139,14 +139,14 @@ pub(super) fn locate_model_parts(
             .ok_or_else(|| invalid("canonical model part is outside its event"))?;
         i32::try_from(end)
             .map_err(|_| invalid("canonical model part exceeds SQLite Blob range"))?;
-        let span = CanonicalModelPartSpan(CanonicalToolProjectionSpan::from_metadata(
+        let span = CanonicalModelPartSpan::from_metadata(
             i64::try_from(source_sequence)
                 .map_err(|_| invalid("canonical model sequence exceeds SQLite range"))?,
             i64::try_from(offset)
                 .map_err(|_| invalid("canonical model offset exceeds SQLite range"))?,
             i64::try_from(raw.len())
                 .map_err(|_| invalid("canonical model length exceeds SQLite range"))?,
-        )?);
+        )?;
         if spans.insert(ordinal, span).is_some() {
             return Err(invalid("duplicate canonical model ordinal"));
         }
@@ -154,6 +154,17 @@ pub(super) fn locate_model_parts(
     Ok(spans)
 }
 impl CanonicalModelPartSpan {
+    fn from_metadata(sequence: i64, offset: i64, len: i64) -> Result<Self, StoreError> {
+        let span = CanonicalToolProjectionSpan::from_metadata(sequence, offset, len)?;
+        if offset
+            .checked_add(len)
+            .is_none_or(|end| end > i64::from(i32::MAX))
+        {
+            return Err(invalid("canonical model part exceeds SQLite Blob range"));
+        }
+        Ok(Self(span))
+    }
+
     pub(super) fn offset(self) -> i64 {
         self.0.offset()
     }
@@ -164,7 +175,9 @@ impl CanonicalModelPartSpan {
         self,
         worker: &mut SqliteWorkerConnection<'_>,
     ) -> Result<Payload, StoreError> {
-        self.0.read_value::<ModelPart>(worker).map(Payload::Part)
+        self.0
+            .read_inline_value::<ModelPart>(worker)
+            .map(Payload::Part)
     }
 }
 
@@ -190,12 +203,10 @@ impl CanonicalToolProjectionSpan {
         let offset = (projection.as_ptr() as usize)
             .checked_sub(json.as_ptr() as usize)
             .ok_or_else(|| invalid("canonical projection does not borrow its event"))?;
-        let end = offset
+        offset
             .checked_add(projection.len())
             .filter(|end| *end <= json.len())
             .ok_or_else(|| invalid("canonical projection is outside its event"))?;
-        i32::try_from(end)
-            .map_err(|_| invalid("canonical projection exceeds SQLite Blob range"))?;
         Self::from_metadata(
             i64::try_from(source_sequence)
                 .map_err(|_| invalid("canonical source sequence exceeds SQLite range"))?,
@@ -207,13 +218,7 @@ impl CanonicalToolProjectionSpan {
     }
 
     fn from_metadata(sequence: i64, offset: i64, len: i64) -> Result<Self, StoreError> {
-        if sequence <= 0
-            || offset < 0
-            || len <= 0
-            || offset
-                .checked_add(len)
-                .is_none_or(|end| end > i64::from(i32::MAX))
-        {
+        if sequence <= 0 || offset < 0 || len <= 0 || offset.checked_add(len).is_none() {
             return Err(invalid("invalid canonical projection span"));
         }
         Ok(Self {
@@ -234,9 +239,13 @@ impl CanonicalToolProjectionSpan {
         json: &str,
         projection: &DurableToolProjection,
     ) -> Result<bool, StoreError> {
-        let start = self.byte_offset as usize;
+        let start = usize::try_from(self.byte_offset)
+            .map_err(|_| invalid("canonical projection offset exceeds address range"))?;
         let end = start
-            .checked_add(self.byte_len as usize)
+            .checked_add(
+                usize::try_from(self.byte_len)
+                    .map_err(|_| invalid("canonical projection length exceeds address range"))?,
+            )
             .ok_or_else(|| invalid("canonical projection span overflows"))?;
         let expected = json
             .as_bytes()
@@ -249,10 +258,23 @@ impl CanonicalToolProjectionSpan {
         self,
         worker: &mut SqliteWorkerConnection<'_>,
     ) -> Result<Payload, StoreError> {
-        self.read_value::<DurableToolProjection>(worker)
-            .map(Payload::Tool)
+        super::captured::with_raw(worker, |raw| {
+            crate::canonical::with_span(
+                raw,
+                self.source_sequence,
+                self.byte_offset,
+                self.byte_len,
+                |reader| {
+                    let reader = BufReader::with_capacity(READ_BUFFER_BYTES, reader);
+                    Ok(Payload::Tool(serde_json::from_reader::<
+                        _,
+                        DurableToolProjection,
+                    >(reader)?))
+                },
+            )
+        })
     }
-    fn read_value<T: serde::de::DeserializeOwned>(
+    fn read_inline_value<T: serde::de::DeserializeOwned>(
         self,
         worker: &mut SqliteWorkerConnection<'_>,
     ) -> Result<T, StoreError> {
@@ -263,7 +285,7 @@ impl CanonicalToolProjectionSpan {
         let mut blob = borrowed.blob_open(
             "main",
             "event_log",
-            "event_json",
+            "event_header",
             self.source_sequence,
             true,
         )?;
@@ -337,9 +359,9 @@ impl SemanticPayloadSource {
                 ))
             }
             ("canonical_model_part", Some(offset), Some(len)) if index >= 0 => {
-                Ok(Self::CanonicalModelPart(CanonicalModelPartSpan(
-                    CanonicalToolProjectionSpan::from_metadata(sequence, offset, len)?,
-                )))
+                Ok(Self::CanonicalModelPart(
+                    CanonicalModelPartSpan::from_metadata(sequence, offset, len)?,
+                ))
             }
             _ => Err(invalid("invalid semantic payload source")),
         }
@@ -363,5 +385,36 @@ impl std::fmt::Display for ReadAndCloseError {
 impl std::error::Error for ReadAndCloseError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.read)
+    }
+}
+
+#[cfg(test)]
+mod logical_span_tests {
+    use super::*;
+    #[test]
+    fn tools_use_logical_positions_while_model_parts_keep_physical_blob_bounds() {
+        let offset = i64::from(i32::MAX) + 1;
+        assert!(
+            SemanticPayloadSource::from_metadata(
+                1,
+                0,
+                "canonical_tool_projection",
+                Some(offset),
+                Some(32)
+            )
+            .is_ok()
+        );
+        assert!(
+            SemanticPayloadSource::from_metadata(
+                1,
+                0,
+                "canonical_model_part",
+                Some(offset),
+                Some(32)
+            )
+            .is_err()
+        );
+        assert!(CanonicalToolProjectionSpan::from_metadata(1, i64::MAX - 32, 32).is_ok());
+        assert!(CanonicalToolProjectionSpan::from_metadata(1, i64::MAX - 31, 32).is_err());
     }
 }

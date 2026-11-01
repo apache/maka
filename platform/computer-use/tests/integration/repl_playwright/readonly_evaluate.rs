@@ -88,6 +88,11 @@ async fn public_readonly_evaluate_keeps_scope_redaction_and_never_replays_user_c
         7,
         "a failed user evaluation must not automatically execute again"
     );
+    let delayed = evaluate(&repl, bridge.clone(), r#"
+        const delayed=await evalPage.evaluate(()=>new Promise(resolve=>setTimeout(()=>resolve('ready after the former limit'),3200)),undefined,{timeoutMs:8000});
+        nodeRepl.write({delayed});
+    "#).await;
+    assert_eq!(delayed["delayed"], "ready after the former limit");
     authority.allowed.store(false, Ordering::SeqCst);
     let denied=evaluate(&repl,bridge.clone(),r#"
         let denied=false;try{await evalPage.evaluate(()=>document.title);}catch(error){denied=error.message.includes('fixture site denied');}

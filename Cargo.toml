@@ -92,6 +92,7 @@ publish = false
 [workspace.dependencies]
 mxc-sdk = { git = "https://github.com/microsoft/mxc", rev = "05a430bc17a3e1b3fa2131524fc52e4319e07298" }
 flatbuffers = "25.12.19"
+postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
 maka-python-runtime = { path = "platform/python-runtime" }
 maka-mcp = { path = "plugins/agent/mcp" }
 hex = "0.4.3"
@@ -127,8 +128,8 @@ maka-agent-authority = { path = "plugins/agent/authority" }
 maka-web-api = { path = "plugins/workspace/workspace-web/api" }
 maka-agent-api = { path = "plugins/agent/api" }
 maka-transport = { path = "platform/transport" }
-cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "cda1e5c1c7375d7e428e17f3abc75c8cb4d97ae4" }
-cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "cda1e5c1c7375d7e428e17f3abc75c8cb4d97ae4" }
+cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "7dfc429ba3db0568c46c49f633b724750f34f451" }
+cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "7dfc429ba3db0568c46c49f633b724750f34f451" }
 agent-client-protocol = { version = "3.5.0", default-features = false, features = ["unstable_protocol_v2"] }
 apply-patch = { path = "plugins/workspace/workspace-files/patch" }
 cap-fs-ext = "4.0.3"
@@ -256,7 +257,7 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
-zbus = { git = "https://github.com/maka-agent/cua", rev = "cda1e5c1c7375d7e428e17f3abc75c8cb4d97ae4" }
+zbus = { git = "https://github.com/maka-agent/cua", rev = "7dfc429ba3db0568c46c49f633b724750f34f451" }
 nom = { git = "https://github.com/maka-agent/cua", rev = "23221967ce6044c1fed303701f43fa54564f0f53" }
 reqwest = { path = "third-party/reqwest" }
 gix-index = { path = "third-party/gix-index" }

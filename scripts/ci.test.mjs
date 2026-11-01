@@ -116,6 +116,19 @@ test('ordinary Rust source inside a product directory retains package routing', 
   assert.equal(plan.suites.product, undefined);
 });
 
+test('reviewed notices and distributed dependency licenses select the product verifier', () => {
+  const select = fixture();
+  for (const path of [
+    'products/maka/cli/notices.json',
+    'products/maka/cli/THIRD_PARTY_NOTICES.txt',
+    'third-party/nsh/crates/nsh-core/LICENSE',
+  ]) {
+    const plan = select([path]);
+    assert.ok(plan.suites.product, path);
+    assert.equal(plan.full, false, path);
+  }
+});
+
 test('embedded Markdown remains an input even when it belongs to another Cargo package', () => {
   const plan = fixture()(['platform/computer-use/skills/maka-cua/SKILL.md']);
   assert.equal(plan.suites.root.filter, 'all()');

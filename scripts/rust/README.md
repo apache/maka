@@ -42,6 +42,8 @@ node scripts/rust/notices.mjs check
 
 Review the generated inventory and license texts. [notices-sources.json](notices-sources.json) records reviewed upstream exceptions. Release assembly also includes notices from the actual V8 build and Rust standard library. The TSV inventory does not replace full license texts.
 
+`notices.json` records reviewed component identities, sources and license-data digests. `notices check` resolves the Rust dependency closure and builds a temporary product bundle to identify embedded JavaScript packages; it does not download license texts. First-party source edits alone do not invalidate coverage, while importing an unreviewed package already present in the lockfile does. Native packaging checks its target's components and the actual Cargo-produced bundle inputs before packing, reusing that build instead of bundling again. The reviewed catalog may cover additional platforms.
+
 For offline comparisons of the production Rust and TypeScript Hosts on Linux,
 use [host-comparison](host-comparison/README.md). It drives real public clients
 against a loopback SSE fixture, verifies canonical output, and retains per-process

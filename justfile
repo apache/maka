@@ -87,6 +87,7 @@ test-js: setup
 [group('Checks')]
 licenses: setup
     node scripts/ci.mjs check licenses
+    node scripts/ci.mjs check notices
 
 # Build a source-bound native npm package without publishing.
 [group('Release')]

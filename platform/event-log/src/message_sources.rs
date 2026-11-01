@@ -53,17 +53,17 @@ pub(crate) async fn initialize(connection: &mut SqliteConnection) -> Result<(), 
     let mut tx = connection.begin().await?;
     sqlx::raw_sql(
         "INSERT INTO message_sources
-         SELECT json_extract(event_json, '$.invocation.session_id'),
-            json_extract(event_json, '$.fact.message.message_id'), event_id
+         SELECT json_extract(event_header, '$.invocation.session_id'),
+            json_extract(event_header, '$.fact.message.message_id'), event_id
          -- Match runtime_events while using the sparse steering identity index.
          FROM event_log INDEXED BY message_steering_identity
-         WHERE kind = 'message_steered' AND invocation_id IS NOT NULL AND event_json IS NOT NULL;
+         WHERE kind = 'message_steered' AND invocation_id IS NOT NULL AND event_header IS NOT NULL;
          INSERT INTO message_sources
-         SELECT json_extract(e.event_json, '$.invocation.session_id'),
+         SELECT json_extract(e.event_header, '$.invocation.session_id'),
             json_extract(s.value, '$.message_id'), e.event_id
-         FROM runtime_events e, json_each(e.event_json, '$.fact.input.source_messages') s
-         WHERE e.kind = 'invocation_opened' AND json_extract(e.event_json, '$.fact.input.kind') = 'message'
-         AND json_array_length(e.event_json, '$.fact.input.source_messages') > 0;"
+         FROM runtime_events e, json_each(e.event_header, '$.fact.input.source_messages') s
+         WHERE e.kind = 'invocation_opened' AND json_extract(e.event_header, '$.fact.input.kind') = 'message'
+         AND json_array_length(e.event_header, '$.fact.input.source_messages') > 0;"
     ).execute(&mut *tx).await?;
     tx.commit().await.map_err(StoreError::CommitUnknown)?;
     Ok(())
@@ -111,21 +111,21 @@ impl EventLog {
                 "WITH candidates AS (
                  SELECT sequence FROM (
                      SELECT e.sequence FROM runtime_events e
-                     WHERE json_extract(e.event_json,'$.invocation.session_id')=?1 AND e.kind='invocation_opened' AND json_extract(e.event_json,'$.fact.input.kind')='message'
+                     WHERE json_extract(e.event_header,'$.invocation.session_id')=?1 AND e.kind='invocation_opened' AND json_extract(e.event_header,'$.fact.input.kind')='message'
                      ORDER BY e.sequence DESC LIMIT 1)
                  UNION ALL
                  SELECT sequence FROM (
                      SELECT h.sequence FROM session_history_members h
                      JOIN runtime_events e ON e.sequence=h.sequence
-                     WHERE h.session_id=?1 AND e.kind='invocation_opened' AND json_extract(e.event_json,'$.fact.input.kind')='message'
+                     WHERE h.session_id=?1 AND e.kind='invocation_opened' AND json_extract(e.event_header,'$.fact.input.kind')='message'
                      ORDER BY h.sequence DESC LIMIT 1)
                  UNION ALL
                  SELECT sequence FROM (
                      SELECT r.sequence FROM session_revision_sources r
                      JOIN runtime_events e ON e.sequence=r.sequence
-                     WHERE r.session_id=?1 AND e.kind='invocation_opened' AND json_extract(e.event_json,'$.fact.input.kind')='message'
+                     WHERE r.session_id=?1 AND e.kind='invocation_opened' AND json_extract(e.event_header,'$.fact.input.kind')='message'
                      ORDER BY r.sequence DESC LIMIT 1))
-                 SELECT e.sequence,e.event_json FROM runtime_events e
+                 SELECT e.sequence,e.event_header FROM runtime_events e
                  WHERE e.sequence=(SELECT MAX(sequence) FROM candidates)"
             ).bind(session).fetch_optional(connection).await?;
             row.map(|(sequence, json)| decode_delivery(sequence, json)).transpose()
@@ -169,11 +169,11 @@ impl EventLog {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let row: Option<(i64, String)> = sqlx::query_as(
-                        "SELECT e.sequence, e.event_json
+                        "SELECT e.sequence, e.event_header
                  FROM session_message_sources s JOIN runtime_events e ON e.event_id=s.event_id
                  WHERE s.owner_session_id=?1 AND s.message_id=?2
                    AND (e.kind='invocation_opened' OR e.kind='message_steered')
-                   AND json_extract(e.event_json,'$.invocation.turn_id')=?3",
+                   AND json_extract(e.event_header,'$.invocation.turn_id')=?3",
                     )
                     .bind(&session)
                     .bind(&message)
@@ -211,7 +211,7 @@ impl EventLog {
             .run(move |connection| {
                 Box::pin(async move {
                     let row: Option<(i64, String)> = sqlx::query_as(
-                        "SELECT e.sequence, e.event_json
+                        "SELECT e.sequence, e.event_header
                  FROM message_sources s JOIN runtime_events e ON e.event_id = s.event_id
                  WHERE s.session_id = ? AND s.message_id = ?
                    AND (e.kind='invocation_opened' OR e.kind='message_steered')",
@@ -326,21 +326,21 @@ pub(crate) async fn first_message_opening(
         "WITH candidates AS (
                  SELECT sequence FROM (
                      SELECT e.sequence FROM runtime_events e
-                     WHERE e.event_json IS NOT NULL AND e.event_session=?1 AND ((e.kind='invocation_opened' AND json_extract(e.event_json,'$.fact.input.kind')='message') OR (e.kind='message_imported' AND json_extract(e.event_json,'$.fact.record.content.kind')='user'))
+                     WHERE e.event_header IS NOT NULL AND e.event_session=?1 AND ((e.kind='invocation_opened' AND json_extract(e.event_header,'$.fact.input.kind')='message') OR (e.kind='message_imported' AND json_extract(e.event_header,'$.fact.record.content.kind')='user'))
                      ORDER BY e.sequence ASC LIMIT 1)
                  UNION ALL
                  SELECT sequence FROM (
                      SELECT h.sequence FROM session_history_members h
                      JOIN runtime_events e ON e.sequence=h.sequence
-                     WHERE h.session_id=?1 AND ((e.kind='invocation_opened' AND json_extract(e.event_json,'$.fact.input.kind')='message') OR (e.kind='message_imported' AND json_extract(e.event_json,'$.fact.record.content.kind')='user'))
+                     WHERE h.session_id=?1 AND ((e.kind='invocation_opened' AND json_extract(e.event_header,'$.fact.input.kind')='message') OR (e.kind='message_imported' AND json_extract(e.event_header,'$.fact.record.content.kind')='user'))
                      ORDER BY h.sequence ASC LIMIT 1)
                  UNION ALL
                  SELECT sequence FROM (
                      SELECT r.sequence FROM session_revision_sources r
                      JOIN runtime_events e ON e.sequence=r.sequence
-                     WHERE r.session_id=?1 AND ((e.kind='invocation_opened' AND json_extract(e.event_json,'$.fact.input.kind')='message') OR (e.kind='message_imported' AND json_extract(e.event_json,'$.fact.record.content.kind')='user'))
+                     WHERE r.session_id=?1 AND ((e.kind='invocation_opened' AND json_extract(e.event_header,'$.fact.input.kind')='message') OR (e.kind='message_imported' AND json_extract(e.event_header,'$.fact.record.content.kind')='user'))
                      ORDER BY r.sequence ASC LIMIT 1))
-                 SELECT e.sequence,e.event_json,e.kind FROM runtime_events e
+                 SELECT e.sequence,e.event_header,e.kind FROM runtime_events e
                  WHERE e.sequence=(SELECT MIN(sequence) FROM candidates)"
     ).bind(session).fetch_optional(connection).await?;
     match row {

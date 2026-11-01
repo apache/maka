@@ -260,7 +260,7 @@ async fn independently_admitted_title_uses_current_language_after_english_main_c
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         ).unwrap();
         let recorded_language: String = raw.query_row(
-            "SELECT json_extract(event_json, '$.language') FROM event_log WHERE kind='auxiliary_model_started' AND json_extract(event_json, '$.source.kind')='session_title' AND json_extract(event_json, '$.source.invocation.session_id')=?1",
+            "SELECT json_extract(event_header, '$.language') FROM event_log WHERE kind='auxiliary_model_started' AND json_extract(event_header, '$.source.kind')='session_title' AND json_extract(event_header, '$.source.invocation.session_id')=?1",
             [&session], |row| row.get(0),
         ).unwrap();
         drop(raw);

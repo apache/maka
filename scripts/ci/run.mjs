@@ -78,12 +78,10 @@ export function executor(root, worker = {}) {
         ).sort(),
       ]);
     } else if (id === 'licenses') {
-      for (const script of [
-        'scripts/asf-license-headers.mjs',
-        'scripts/rust/dependencies.mjs',
-        'scripts/rust/notices.mjs',
-      ])
+      for (const script of ['scripts/asf-license-headers.mjs', 'scripts/rust/dependencies.mjs'])
         await node([script, 'check']);
+    } else if (id === 'notices') {
+      await node(['scripts/rust/notices.mjs', 'check']);
     } else {
       throw new Error(`Unknown check: ${id}`);
     }
@@ -195,6 +193,7 @@ export function executor(root, worker = {}) {
       }
     } else if (id === 'product') {
       await node(['scripts/rust/product.mjs', 'test']);
+      await check('notices');
     } else if (id === 'nsh') {
       await nextest(id);
       await cargo(['test', ...suites.nsh.cargoArgs, '--doc']);

@@ -35,8 +35,8 @@ const TOOL_MAIN: &str = r#"SELECT EXISTS(SELECT 1 FROM runtime_events request
              AND opening.kind = 'invocation_opened'
              WHERE request.invocation_id = ?1 AND request.operation_id = ?2
              AND request.kind = 'model_requested'
-             AND json_extract(opening.event_json, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
-             AND json_extract(request.event_json, '$.fact.purpose') = 'main')"#;
+             AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
+             AND json_extract(request.event_header, '$.fact.purpose') = 'main')"#;
 
 /// Reconstruct one tool boundary, its actual dispatch ancestry and accepted
 /// provider step. Exclude sibling outcomes and unrelated raw payloads.

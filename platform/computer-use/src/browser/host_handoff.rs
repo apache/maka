@@ -303,6 +303,14 @@ impl Browsers {
             tab.frame = None;
             tab.previous = None;
         }
+        super::extension::drain_extension_cleanup(
+            &host,
+            self.owner,
+            None,
+            Some(ExtensionAdapterMode::Chatgpt),
+            None,
+        )
+        .await?;
         if let Some(turn) = turn {
             let finished = host
                 .lock()

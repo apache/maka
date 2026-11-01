@@ -42,9 +42,9 @@ pub(crate) async fn insert(
         let first: Option<Option<String>> = sqlx::query_scalar(
             "SELECT c.digest FROM runtime_events r LEFT JOIN model_request_compositions c ON c.event_id=r.event_id
              WHERE r.invocation_id=?1 AND r.kind='model_requested' AND r.event_id!=?2
-               AND json_extract(r.event_json,'$.fact.purpose')='summary'
-               AND json_extract(r.event_json,'$.fact.source_scope')=json(?3)
-               AND json_extract(r.event_json,'$.fact.source_high_water')=?4
+               AND json_extract(r.event_header,'$.fact.purpose')='summary'
+               AND json_extract(r.event_header,'$.fact.source_scope')=json(?3)
+               AND json_extract(r.event_header,'$.fact.source_high_water')=?4
              ORDER BY r.sequence LIMIT 1",
         ).bind(&write.event().invocation.invocation_id).bind(&write.event().id)
             .bind(serde_json::to_string(source_scope)?).bind(*source_high_water as i64)
@@ -95,7 +95,7 @@ pub(crate) async fn validate_retry(
     let prior: Option<Option<String>> = sqlx::query_scalar(
         "SELECT c.digest FROM runtime_events r LEFT JOIN model_request_compositions c ON c.event_id=r.event_id
          WHERE r.invocation_id=?1 AND r.kind='model_requested' AND r.event_id!=?2 AND r.sequence>?3
-           AND json_remove(json_extract(r.event_json,'$.fact'),'$.step_id')=json_remove(json(?4),'$.step_id')
+           AND json_remove(json_extract(r.event_header,'$.fact'),'$.step_id')=json_remove(json(?4),'$.step_id')
          ORDER BY r.sequence LIMIT 1"
     ).bind(&event.invocation.invocation_id).bind(&event.id).bind(*source_high_water as i64)
         .bind(serde_json::to_string(&event.fact)?).fetch_optional(connection).await?;
@@ -151,7 +151,7 @@ async fn validate_reference(
         "SELECT c.digest FROM model_request_compositions c
          JOIN runtime_events r ON r.event_id=c.event_id
          WHERE c.event_id=?1 AND r.invocation_id=?2
-           AND json_extract(r.event_json,'$.invocation.session_id')=?3",
+           AND json_extract(r.event_header,'$.invocation.session_id')=?3",
     )
     .bind(event_id)
     .bind(&event.invocation.invocation_id)
@@ -184,7 +184,7 @@ impl EventLog {
                         "SELECT r.event_id FROM runtime_events c JOIN runtime_events r
                  ON r.invocation_id=c.invocation_id AND r.operation_id=c.operation_id
                  WHERE c.sequence=?1 AND c.kind='model_completed' AND r.kind='model_requested'
-                 AND json_extract(c.event_json,'$.invocation.session_id')=?2",
+                 AND json_extract(c.event_header,'$.invocation.session_id')=?2",
                     )
                     .bind(sequence as i64)
                     .bind(owned_session)
@@ -213,7 +213,7 @@ impl EventLog {
                 "SELECT composition.surface FROM request_compositions AS composition
                  JOIN model_request_compositions AS request ON request.digest = composition.digest
                  JOIN runtime_events AS event ON event.event_id = request.event_id
-                 WHERE request.event_id = ? AND json_extract(event.event_json, '$.invocation.session_id') = ?"
+                 WHERE request.event_id = ? AND json_extract(event.event_header, '$.invocation.session_id') = ?"
             ).bind(event_id).bind(session).fetch_optional(connection).await?;
             row.map(|bytes| serde_json::from_slice(&bytes).map_err(StoreError::from)).transpose()
         })).await

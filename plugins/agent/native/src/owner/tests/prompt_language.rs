@@ -108,7 +108,7 @@ fn stored_configuration(fixture: &Fixture, invocation: &str) -> Value {
     )
     .unwrap();
     let raw: String = connection.query_row(
-        "SELECT json_extract(event_json, '$.fact.configuration') FROM runtime_events WHERE invocation_id=?1 AND kind='invocation_opened'",
+        "SELECT json_extract(event_header, '$.fact.configuration') FROM runtime_events WHERE invocation_id=?1 AND kind='invocation_opened'",
         [invocation], |row| row.get(0),
     ).unwrap();
     serde_json::from_str(&raw).unwrap()

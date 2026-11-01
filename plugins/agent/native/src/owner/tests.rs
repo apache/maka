@@ -434,7 +434,7 @@ impl Fixture {
         )
         .unwrap();
         let (count, bytes): (i64, i64) = database.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(length(CAST(event_json AS BLOB))),0) FROM runtime_events WHERE event_session=?",
+            "SELECT COUNT(*), COALESCE(SUM(canonical_bytes),0) FROM runtime_events WHERE event_session=?",
             [session], |row| Ok((row.get(0)?, row.get(1)?)),
         ).unwrap();
         assert!(
@@ -443,7 +443,7 @@ impl Fixture {
         );
         let mut statement = database
             .prepare(
-                "SELECT event_json FROM runtime_events WHERE event_session=? ORDER BY sequence",
+                "SELECT event_header FROM runtime_events WHERE event_session=? ORDER BY sequence",
             )
             .unwrap();
         statement
