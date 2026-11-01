@@ -19,6 +19,23 @@
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "native-desktop")]
+pub(crate) fn timeout_duration(
+    milliseconds: f64,
+) -> Result<std::time::Duration, maka_agent_facts::tools::ToolError> {
+    let invalid = || {
+        maka_agent_facts::tools::ToolError::Failed(
+            "timeoutMs is outside the supported duration range".into(),
+        )
+    };
+    let duration =
+        std::time::Duration::try_from_secs_f64(milliseconds / 1000.0).map_err(|_| invalid())?;
+    tokio::time::Instant::now()
+        .checked_add(duration)
+        .ok_or_else(invalid)?;
+    Ok(duration)
+}
+
 pub(crate) mod browser_capability;
 pub use browser_capability::{
     BundleOptions as PageAssetBundleOptions, Viewport as BrowserViewport,
@@ -399,8 +416,7 @@ pub enum BrowserEvaluateMode {
     All,
 }
 
-/// Evaluate preserves the selected runtime's numeric timeout clamp independently
-/// of locator read option validation. Other JavaScript values use the default.
+/// JavaScript evaluation's mechanical I/O budget.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrowserEvaluateOptions {
@@ -408,14 +424,13 @@ pub struct BrowserEvaluateOptions {
 }
 impl BrowserEvaluateOptions {
     #[cfg(feature = "native-desktop")]
-    pub(crate) fn budget(&self) -> std::time::Duration {
+    pub(crate) fn budget(&self) -> Result<std::time::Duration, maka_agent_facts::tools::ToolError> {
         let milliseconds = self
             .timeout_ms
             .as_ref()
             .and_then(serde_json::Value::as_f64)
-            .unwrap_or(3000.0)
-            .clamp(0.0, 3000.0);
-        std::time::Duration::from_secs_f64(milliseconds / 1000.0)
+            .unwrap_or(3000.0);
+        timeout_duration(milliseconds)
     }
 }
 

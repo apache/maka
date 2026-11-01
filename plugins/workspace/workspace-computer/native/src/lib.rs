@@ -213,7 +213,6 @@ impl Handler for Service {
                     result,
                     Err(ToolError::Persistence(_) | ToolError::CleanupUnconfirmed(_))
                 ) {
-                    owner.stopping.cancel();
                     Err("Computer cleanup unconfirmed".into())
                 } else {
                     Ok(())
@@ -230,8 +229,7 @@ impl Handler for Service {
 impl NativeOwner for Service {
     fn execution_basis(&self) -> Option<Value> {
         // Grants and output artifacts belong to this Root; device selection is
-        // captured configuration. REPL bindings are transient and their current
-        // state is captured separately for each model request.
+        // captured configuration. REPL state belongs to actual tool calls.
         let root = self.0.store.owned_root().ok()?;
         serde_json::to_value((root.root_id(), &self.0.configuration)).ok()
     }

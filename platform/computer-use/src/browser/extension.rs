@@ -806,16 +806,8 @@ struct ControlDrain {
 }
 impl ControlDrain {
     async fn wait(self) -> Result<(), ToolError> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         for gate in self.gates {
-            if tokio::time::timeout_at(deadline, gate.idle())
-                .await
-                .is_err()
-            {
-                return Err(ToolError::CleanupUnconfirmed(
-                    "extension control futures remain active; original custody retained".to_owned(),
-                ));
-            }
+            gate.idle().await;
         }
         Ok(())
     }
@@ -2912,6 +2904,19 @@ impl Host {
                     "extension completion belongs to another physical generation",
                 ));
             }
+            if completion
+                .wire_context
+                .as_ref()
+                .is_some_and(|context| context.host_session_id() != owner.to_string())
+                || completion.host_operation.as_ref().is_some_and(|context| {
+                    !self
+                        .extension
+                        .get(&(owner, browser.clone()))
+                        .is_some_and(|state| state.calls.contains_key(&context.operation_id))
+                })
+            {
+                continue;
+            }
             if completion.outcome.is_none() {
                 unsettled = true;
                 continue;
@@ -4565,13 +4570,10 @@ impl Host {
             let caps = extension
                 .capabilities()
                 .map_err(provider::extension_error)?;
-            let mut events = extension.subscribe_events();
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-            while self.reconcile_provider(owner, &provider).await? {
-                match tokio::time::timeout_at(deadline, events.recv()).await {
-                    Ok(Ok(_)) | Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
-                    _ => return Err(unknown("owner teardown retains pending extension custody")),
-                }
+            if self.reconcile_provider(owner, &provider).await? {
+                return Err(unknown(
+                    "extension cleanup requires the original control operations to settle",
+                ));
             }
             if self
                 .uncertain_creations
@@ -4647,86 +4649,8 @@ impl Host {
                 }
             }
             for identity in identities {
-                let state = self.tabs[&identity]
-                    .extension
-                    .as_ref()
-                    .ok_or_else(|| unknown("owner teardown lost physical custody"))?
-                    .clone();
-                if state.unknown.is_some() || state.cdp_effect_unknown.is_some() {
-                    return Err(unknown("owner teardown retains unknown physical effects"));
-                }
-                if state.claim.is_some()
-                    || !matches!(state.fixed_preparation, FixedPreparation::NotAttempted)
-                {
-                    self.cleanup_extension_control(owner, &identity, FixedCleanupPurpose::Owner)
-                        .await?;
-                }
-                if let Some(claim) = &state.claim {
-                    if caps.header_scope == ExtensionHeaderPolicyScope::Claim
-                        && (state.headers_active || state.preparation_effects.headers_may_exist)
-                    {
-                        let result = scope
-                            .dispatch_retirement(scope.control.clear_scoped_headers(claim))
-                            .await;
-                        self.reconcile_provider(owner, &provider).await?;
-                        if !result.map_err(provider::extension_error)?.cleanup_confirmed {
-                            return Err(unknown("owner scoped headers remain unconfirmed"));
-                        }
-                    }
-                    let drain = scope
-                        .dispatch_retirement(
-                            scope
-                                .control
-                                .wait_claim_cdp_drained(claim, Duration::from_secs(10)),
-                        )
-                        .await
-                        .map_err(provider::extension_error)?;
-                    self.tabs
-                        .get_mut(&identity)
-                        .and_then(|lease| lease.extension.as_mut())
-                        .ok_or_else(|| unknown("owner drain lost custody"))?
-                        .cdp_drain = Some(drain);
-                    self.reconcile_provider(owner, &provider).await?;
-                    if !self.tabs[&identity]
-                        .extension
-                        .as_ref()
-                        .is_some_and(|state| state.released)
-                    {
-                        self.begin_extension_cleanup(&identity)?;
-                        let result = scope
-                            .dispatch_retirement(scope.control.detach_tab(claim))
-                            .await;
-                        self.reconcile_provider(owner, &provider).await?;
-                        result.map_err(provider::extension_error)?;
-                    }
-                }
-                self.retire_extension_cleanup(owner, &provider, &identity, &scope.control)
+                self.park_extension_tab(owner, &provider, &identity, &scope)
                     .await?;
-                let lease = self
-                    .tabs
-                    .get_mut(&identity)
-                    .ok_or_else(|| unknown("owner retirement lost lease"))?;
-                let state = lease
-                    .extension
-                    .as_ref()
-                    .ok_or_else(|| unknown("owner retirement lost custody"))?;
-                if state.claim.is_some()
-                    || !state.fixed_preparation.settled()
-                    || !state.preparation_effects.settled()
-                {
-                    return Err(unknown("owner physical retirement remains unconfirmed"));
-                }
-                // Source cleanup provenance stays with this connection; no
-                // physical claim, prepared grant or CDP route survives parking.
-                lease.extension = Some(ClaimState {
-                    creation: state.creation.clone(),
-                    creation_operation: state.creation_operation.clone(),
-                    group: state.group.clone(),
-                    revoked: true,
-                    released: true,
-                    ..Default::default()
-                });
-                lease.disposition = Disposition::Parked;
             }
             if let Some(state) = self.extension.get_mut(&(owner, browser)) {
                 for call in state.calls.values() {
@@ -4739,6 +4663,92 @@ impl Host {
             }
         }
         Ok(Vec::new())
+    }
+
+    async fn park_extension_tab(
+        &mut self,
+        owner: uuid::Uuid,
+        provider: &Provider,
+        identity: &TabIdentity,
+        scope: &CallScope,
+    ) -> Result<(), ToolError> {
+        let caps = scope
+            .control
+            .capabilities()
+            .map_err(provider::extension_error)?;
+        let state = self.tabs[identity]
+            .extension
+            .as_ref()
+            .ok_or_else(|| unknown("owner teardown lost physical custody"))?
+            .clone();
+        if state.unknown.is_some() || state.cdp_effect_unknown.is_some() {
+            return Err(unknown("owner teardown retains unknown physical effects"));
+        }
+        if state.claim.is_some()
+            || !matches!(state.fixed_preparation, FixedPreparation::NotAttempted)
+        {
+            self.cleanup_extension_control(owner, identity, FixedCleanupPurpose::Owner)
+                .await?;
+        }
+        if let Some(claim) = &state.claim {
+            if caps.header_scope == ExtensionHeaderPolicyScope::Claim
+                && (state.headers_active || state.preparation_effects.headers_may_exist)
+            {
+                let result = scope
+                    .dispatch_retirement(scope.control.clear_scoped_headers(claim))
+                    .await;
+                self.reconcile_provider(owner, provider).await?;
+                if !result.map_err(provider::extension_error)?.cleanup_confirmed {
+                    return Err(unknown("owner scoped headers remain unconfirmed"));
+                }
+            }
+            if state.cdp_drain.is_none() {
+                return Err(unknown(
+                    "extension claim must be drained before physical retirement",
+                ));
+            }
+            self.reconcile_provider(owner, provider).await?;
+            if !self.tabs[identity]
+                .extension
+                .as_ref()
+                .is_some_and(|state| state.released)
+            {
+                self.begin_extension_cleanup(identity)?;
+                let result = scope
+                    .dispatch_retirement(scope.control.detach_tab(claim))
+                    .await;
+                self.reconcile_provider(owner, provider).await?;
+                result.map_err(provider::extension_error)?;
+            }
+        }
+        self.retire_extension_cleanup(owner, provider, identity, &scope.control)
+            .await?;
+        let lease = self
+            .tabs
+            .get_mut(identity)
+            .ok_or_else(|| unknown("owner retirement lost lease"))?;
+        let state = lease
+            .extension
+            .as_ref()
+            .ok_or_else(|| unknown("owner retirement lost custody"))?;
+        if state.claim.is_some()
+            || !state.fixed_preparation.settled()
+            || !state.preparation_effects.settled()
+        {
+            return Err(unknown("owner physical retirement remains unconfirmed"));
+        }
+        // Source cleanup provenance stays with this connection; no
+        // physical claim, prepared grant or CDP route survives parking.
+        lease.extension = Some(ClaimState {
+            creation: state.creation.clone(),
+            creation_operation: state.creation_operation.clone(),
+            group: state.group.clone(),
+            revoked: true,
+            released: true,
+            ..Default::default()
+        });
+        lease.disposition = Disposition::Parked;
+        Ok(())
     }
 
     pub(super) async fn finish_extension(
@@ -4783,17 +4793,10 @@ impl Host {
                 .capabilities()
                 .map_err(provider::extension_error)?;
             let browser = BrowserIdentity::of(&provider, &extension.identity().generation)?;
-            let mut events = extension.subscribe_events();
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-            while self.reconcile_provider(owner, &provider).await? {
-                match tokio::time::timeout_at(deadline, events.recv()).await {
-                    Ok(Ok(_)) | Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
-                    _ => {
-                        return Err(ToolError::CleanupUnconfirmed(
-                            "extension operations remain in flight; custody retained".into(),
-                        ));
-                    }
-                }
+            if self.reconcile_provider(owner, &provider).await? {
+                return Err(unknown(
+                    "extension cleanup requires the original control operations to settle",
+                ));
             }
             let candidates: Vec<_> = self
                 .tabs
@@ -4978,20 +4981,12 @@ impl Host {
                     self.cleanup_extension_control(owner, identity, purpose.clone())
                         .await?;
                 }
-                if let Some(claim) = &state.claim {
-                    let drain = scope
-                        .dispatch_retirement(
-                            scope
-                                .control
-                                .wait_claim_cdp_drained(claim, Duration::from_secs(10)),
-                        )
-                        .await
-                        .map_err(provider::extension_error)?;
-                    self.tabs
-                        .get_mut(identity)
-                        .and_then(|lease| lease.extension.as_mut())
-                        .ok_or_else(|| unknown("extension drain lost its exact claim"))?
-                        .cdp_drain = Some(drain);
+                if state.claim.is_some() {
+                    if state.cdp_drain.is_none() {
+                        return Err(unknown(
+                            "extension claim must be drained before Turn cleanup",
+                        ));
+                    }
                     if self.reconcile_provider(owner, &provider).await? {
                         return Err(ToolError::CleanupUnconfirmed(
                             "extension CDP settled but retained operation custody is still pending"
@@ -5625,11 +5620,7 @@ async fn register(
                     }
                 }
                 Ok(ExtensionProviderEvent::ClaimUnavailable { claim, reason }) => {
-                    let explicit_fixed = provider.extension().is_some_and(|extension| {
-                        extension.capabilities().is_ok_and(|caps| {
-                            caps.session_preparation == ExtensionSessionPreparation::ExplicitFixed
-                        })
-                    });
+                    tracing::warn!(%owner, %claim, %reason, "Browser extension claim unavailable");
                     for lease in ledger.tabs.values_mut().filter(|lease| {
                         lease.creator.owner == owner
                             && lease.creator.provider == provider
@@ -5641,33 +5632,10 @@ async fn register(
                                 .as_ref()
                                 .is_some_and(|owned| owned.claim_id() == claim)
                         {
-                            let logical_retained = explicit_fixed
-                                && state.fixed_preparation.cleanup_receipt().is_some_and(
-                                    |receipt| {
-                                        receipt.wire_context().host_session_id()
-                                            == owner.to_string()
-                                            && receipt.generation() == lease.creator.generation
-                                            && provider.extension().is_some_and(|extension| {
-                                                receipt.generation()
-                                                    == extension.identity().generation
-                                            })
-                                            && state.claim.as_ref().is_some_and(|physical| {
-                                                physical.tab_id() == receipt.tab_id()
-                                            })
-                                    },
-                                );
                             state.revoked = true;
-                            if state.cleanup_started || logical_retained {
-                                // This is a physical-route observation, never
-                                // logical cleanup or underlying-effect proof.
-                                // Core retains every actual pending CDP effect
-                                // independently before broadcasting this event.
-                                // Keep all previous Unknown and physical flags;
-                                // only exact cleanup+drain can retire the claim.
-                                state.cleanup_revocation.get_or_insert(reason.clone());
-                            } else {
-                                state.unknown = Some(reason.clone());
-                            }
+                            // Route loss does not establish an unknown effect.
+                            // Pending CDP and preparation custody remains in its own ledger.
+                            state.cleanup_revocation.get_or_insert(reason.clone());
                         }
                     }
                 }
@@ -5749,6 +5717,130 @@ async fn register(
             let _ = dispatch.await;
         }
     });
+    Ok(())
+}
+
+pub(super) async fn drain_extension_cleanup(
+    host: &Arc<tokio::sync::Mutex<Host>>,
+    owner: uuid::Uuid,
+    turn: Option<&str>,
+    adapter: Option<ExtensionAdapterMode>,
+    target: Option<&TabIdentity>,
+) -> Result<(), ToolError> {
+    let providers: Vec<_> = host
+        .lock()
+        .await
+        .extension
+        .iter()
+        .filter(|((id, browser), state)| {
+            *id == owner
+                && !state.owner_parked
+                && adapter.is_none_or(|adapter| state.provider.extension_adapter() == Some(adapter))
+                && target.is_none_or(|target| target.browser == *browser)
+        })
+        .map(|(_, state)| state.provider.clone())
+        .collect();
+    for provider in providers {
+        let extension = provider
+            .extension()
+            .ok_or_else(|| failed("extension provider required"))?;
+        let mut events = extension.subscribe_events();
+        loop {
+            let pending = host
+                .lock()
+                .await
+                .reconcile_provider(owner, &provider)
+                .await?;
+            if !pending {
+                break;
+            }
+            match events.recv().await {
+                Ok(ExtensionProviderEvent::GenerationClosed { reason }) => {
+                    return Err(unknown(reason));
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(error) => return Err(unknown(error)),
+            }
+        }
+        let claims = {
+            let mut ledger = host.lock().await;
+            let claims: Vec<_> = ledger
+                .tabs
+                .iter()
+                .filter(|(identity, lease)| {
+                    lease.creator.owner == owner
+                        && lease.creator.provider == provider
+                        && !matches!(lease.disposition, Disposition::Parked)
+                        && target.is_none_or(|target| *identity == target)
+                        && turn.is_none_or(|turn| {
+                            !matches!(lease.retention, Retention::Handoff)
+                                && (lease.creator.turn == turn
+                                    || lease.extension.as_ref().is_some_and(|state| {
+                                        !matches!(
+                                            state.fixed_preparation,
+                                            FixedPreparation::NotAttempted
+                                        )
+                                    }))
+                        })
+                })
+                .filter_map(|(identity, lease)| {
+                    lease
+                        .extension
+                        .as_ref()?
+                        .claim
+                        .clone()
+                        .map(|claim| (identity.clone(), claim, lease.creator.turn.clone()))
+                })
+                .collect();
+            let mut planned = Vec::new();
+            for (identity, claim, claim_turn) in claims {
+                if let Some(turn) = turn
+                    && ledger.fixed_cleanup_protected(
+                        owner,
+                        &identity,
+                        &FixedCleanupPurpose::Turn {
+                            turn: turn.to_owned(),
+                        },
+                    )?
+                {
+                    continue;
+                }
+                ledger.check_owned_input(&identity)?;
+                let scope = ledger.extension_context(
+                    owner,
+                    &provider,
+                    context_operation(turn.unwrap_or(&claim_turn)),
+                    crate::desktop::NativeEpochId::new(),
+                    CallTarget::Retirement,
+                    false,
+                )?;
+                planned.push((identity, claim, scope));
+            }
+            planned
+        };
+        for (identity, claim, scope) in claims {
+            let drain = scope
+                .dispatch_retirement(scope.control.wait_claim_cdp_drained(&claim))
+                .await
+                .map_err(provider::extension_error)?;
+            let mut ledger = host.lock().await;
+            let state = ledger
+                .tabs
+                .get_mut(&identity)
+                .filter(|lease| lease.creator.owner == owner && lease.creator.provider == provider)
+                .and_then(|lease| lease.extension.as_mut())
+                .filter(|state| {
+                    state
+                        .claim
+                        .as_ref()
+                        .is_some_and(|current| current.claim_id() == claim.claim_id())
+                })
+                .ok_or_else(|| {
+                    unknown("extension drain no longer belongs to the retained claim")
+                })?;
+            state.cdp_drain = Some(drain);
+        }
+    }
     Ok(())
 }
 
@@ -6395,6 +6487,14 @@ impl Browsers {
         let host = self.host().await;
         let generation = extension.identity().generation.clone();
         let identity = BrowserIdentity::of(&provider, &generation)?.tab(&id.to_string());
+        let revoked = host.lock().await.tabs.get(&identity).is_some_and(|lease| {
+            lease.creator.owner == self.owner
+                && !matches!(lease.disposition, Disposition::Parked)
+                && lease.extension.as_ref().is_some_and(|state| state.revoked)
+        });
+        if revoked {
+            drain_extension_cleanup(&host, self.owner, None, None, Some(&identity)).await?;
+        }
         let history = self
             .acquisition_history(&provider)
             .into_iter()
@@ -6414,6 +6514,24 @@ impl Browsers {
                 },
                 true,
             )?;
+            if ledger.tabs.get(&identity).is_some_and(|lease| {
+                lease.creator.owner == self.owner
+                    && !matches!(lease.disposition, Disposition::Parked)
+                    && lease.extension.as_ref().is_some_and(|state| state.revoked)
+            }) {
+                ledger.check_owned_input(&identity)?;
+                let retirement = ledger.extension_context(
+                    self.owner,
+                    &provider,
+                    context_operation(invocation.turn()),
+                    self.epoch,
+                    CallTarget::Retirement,
+                    false,
+                )?;
+                ledger
+                    .park_extension_tab(self.owner, &provider, &identity, &retirement)
+                    .await?;
+            }
             if !ledger.begin_handoff_transfer(
                 self.owner,
                 &provider,
@@ -8924,11 +9042,7 @@ impl Tab {
                 .await?;
         }
         let drain = scope
-            .dispatch_retirement(
-                scope
-                    .control
-                    .wait_claim_cdp_drained(&claim, Duration::from_secs(10)),
-            )
+            .dispatch_retirement(scope.control.wait_claim_cdp_drained(&claim))
             .await
             .map_err(provider::extension_error)?;
         {

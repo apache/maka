@@ -490,7 +490,8 @@ impl Computer {
         let effect_owner = self.clone();
         let effect_store = lease.store();
         let journal_store = effect_store.clone();
-        let settlement = admission::Operation::new(self, lease, &bridge.epoch.native)?;
+        let settlement =
+            admission::Operation::new(self, lease, &bridge.epoch.native, &bridge.admission)?;
         let operation_settlement = settlement.handoff();
         let host_effects = admission::host_effects_with_lease_children(
             self,
@@ -651,7 +652,7 @@ impl Computer {
                     // its canonical fence remains a Host persistence/cleanup
                     // failure; a physical drain must not wash that failure.
                     receipt.fail(error.clone());
-                    self.stopping.cancel();
+                    bridge.admission.close_admission();
                     settlement.complete(Some(error.clone()));
                     return Err(error.into());
                 }
@@ -671,7 +672,7 @@ impl Computer {
         )) = &result
         {
             receipt.fail(error.clone());
-            self.stopping.cancel();
+            bridge.admission.close_admission();
             Some(error.clone())
         } else {
             None
@@ -858,7 +859,7 @@ impl ToolExecutor for Bridge {
                             | ToolError::OperationCleanupUnconfirmed { .. }
                     ) {
                         receipt.fail(error.clone());
-                        bridge.owner.stopping.cancel();
+                        bridge.admission.close_admission();
                     } else {
                         receipt.complete_call();
                     }
@@ -1071,16 +1072,17 @@ mod tests {
                     }
                     _ => panic!("unexpected bridge failure for {error:?}: {result:?}"),
                 }
-                assert!(owner.stopping.is_cancelled());
+                assert!(!owner.stopping.is_cancelled());
                 assert!(admission.check_open().is_err());
             }
             runtime.close().await.unwrap();
             drop(bridge);
+            kernel.close(CancellationToken::new()).await.unwrap();
             owner.sessions.close().await.unwrap();
             owner.resources.settle().await.unwrap();
             owner.tasks.close();
             owner.tasks.wait().await;
-            drop((kernel, interaction, owner));
+            drop((interaction, owner));
             Arc::try_unwrap(root).ok().unwrap().close().await.unwrap();
         }
     }

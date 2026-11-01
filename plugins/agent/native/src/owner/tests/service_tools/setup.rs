@@ -24,6 +24,7 @@ enum Service {
         handler: Option<Arc<Counter>>,
         query: bool,
     },
+    Computer(Arc<Counter>),
     Questions,
     Forms,
     File(&'static str),
@@ -164,6 +165,9 @@ impl Setup {
     pub(in crate::owner::tests) fn jev() -> Self {
         Self::new(Service::Jev)
     }
+    pub(super) fn computer(handler: Arc<Counter>) -> Self {
+        Self::new(Service::Computer(handler))
+    }
     pub(in crate::owner::tests) fn web() -> Self {
         Self::new(Service::Web)
     }
@@ -289,7 +293,9 @@ impl Setup {
             },
             title: None,
             confirmation: self.confirmation,
-            result: if matches!(self.service, Service::File("readImage"))
+            result: if matches!(self.service, Service::Computer(_)) {
+                contract::ToolResult::Computer
+            } else if matches!(self.service, Service::File("readImage"))
                 || matches!(&self.service, Service::Images(_))
             {
                 contract::ToolResult::Image
@@ -461,6 +467,7 @@ impl Service {
     fn contract(&self) -> Contract {
         match self {
             Self::Counter { .. } => counter_contract(),
+            Self::Computer(_) => maka_workspace_api::computer::contract(),
             Self::Questions => maka_interactions_api::questions::contract(),
             Self::Forms => maka_interactions_api::forms::contract(),
             Self::File(_) | Self::FileEditors => maka_workspace_api::files::contract(),
@@ -476,6 +483,7 @@ impl Service {
     fn export(&self) -> &str {
         match self {
             Self::Counter { .. } => "Counter",
+            Self::Computer(_) => maka_workspace_api::computer::EXPORT,
             Self::Questions => maka_interactions_api::questions::EXPORT,
             Self::Forms => maka_interactions_api::forms::EXPORT,
             Self::File(_) | Self::FileEditors => maka_workspace_api::files::EXPORT,
@@ -490,6 +498,7 @@ impl Service {
     }
     fn method(&self) -> &str {
         match self {
+            Self::Computer(_) => "evaluate",
             Self::Counter { query: true, .. } => "read",
             Self::Counter { .. } => "write",
             Self::Questions | Self::Forms => "ask",
@@ -510,6 +519,7 @@ impl Service {
                 return json!({"kind":"javascript","module":"counter.mjs","realm":"shared"});
             }
             Self::Counter { .. } => "fixture.counter",
+            Self::Computer(_) => maka_workspace_api::computer::IMPLEMENTATION,
             Self::Questions => maka_interactions_api::questions::IMPLEMENTATION,
             Self::Forms => maka_interactions_api::forms::IMPLEMENTATION,
             Self::File(_) | Self::FileEditors => maka_workspace_api::files::IMPLEMENTATION,
@@ -560,6 +570,7 @@ impl Service {
                 ..
             }) => &["prepare", "search"],
             Self::Web => &["capture"],
+            Self::Computer(_) => &["state"],
             #[cfg(target_os = "macos")]
             Self::Protocol => &["run", "input"],
             _ => &[],
@@ -594,6 +605,29 @@ impl Service {
                     .unwrap();
             }
             Self::Counter { handler: None, .. } => {}
+            Self::Computer(handler) => {
+                let handler = handler.clone();
+                registry
+                    .insert(
+                        maka_workspace_api::computer::IMPLEMENTATION.into(),
+                        Arc::new(move |_, _| {
+                            let handler = handler.clone();
+                            Box::pin(async move {
+                                NativeActivation {
+                                    exports: Ok(BTreeMap::from([(
+                                        maka_workspace_api::computer::EXPORT.into(),
+                                        Published {
+                                            contract: maka_workspace_api::computer::contract(),
+                                            value: handler.clone() as Arc<dyn Handler>,
+                                        },
+                                    )])),
+                                    owner: handler,
+                                }
+                            })
+                        }),
+                    )
+                    .unwrap();
+            }
             Self::Questions => maka_interactions_native::questions::provide(registry).unwrap(),
             Self::Forms => maka_interactions_native::forms::provide(registry).unwrap(),
             Self::File(_) | Self::FileEditors => maka_files_native::provide(registry).unwrap(),

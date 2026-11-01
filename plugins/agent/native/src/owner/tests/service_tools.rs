@@ -56,6 +56,7 @@ fn counter_contract() -> Contract {
 #[derive(Clone, Copy)]
 enum Behavior {
     Returned,
+    ComputerClosed,
     Unknown,
     CleanupFailed,
     Blocked,
@@ -85,6 +86,9 @@ impl Handler for Counter {
         input: Value,
         context: Context,
     ) -> BoxFuture<'static, Result<Value, String>> {
+        if matches!(self.behavior, Behavior::ComputerClosed) {
+            return Box::pin(async { Err("computer_closed".into()) });
+        }
         let count = if method == "read" {
             assert!(context.operation().is_none());
             self.effects.load(Ordering::SeqCst)
@@ -102,6 +106,9 @@ impl Handler for Counter {
             entered.add_permits(1);
             match behavior {
                 Behavior::Returned => Ok(json!({"effects":count})),
+                Behavior::ComputerClosed => {
+                    unreachable!("unavailable Computer returns before effects")
+                }
                 Behavior::Unknown => Err("lost reply after original effect".into()),
                 Behavior::CleanupFailed => {
                     let mut ticket = context.scope().resources.reserve().unwrap();
@@ -193,6 +200,45 @@ pub(super) async fn pending_approval(
         }
         commits.changed().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn ordinary_conversation_survives_an_unavailable_computer_service() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let fixture = Fixture::with_services(
+            &base,
+            None,
+            None,
+            Some(Setup::computer(Counter::new(Behavior::ComputerClosed))),
+        )
+        .await;
+        let session = fixture.create("Continue without browser").await;
+        fixture.send(&session).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert!(
+            sent["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == "Counter")
+        );
+        response_with_text(&mut socket, "We can continue discussing the task.").await;
+        fixture.drained().await;
+        let facts = facts(&fixture, &session).await;
+        assert!(facts.iter().any(|fact| matches!(
+            fact,
+            Fact::InvocationEnded {
+                outcome: maka_agent_facts::event::InvocationOutcome::Completed
+            }
+        )));
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

@@ -92,8 +92,7 @@ Turn 清理移除頁面橋接並保留資料；重設會建立新的空上下文
 `*` 不跨越 `/`，`**` 可以跨越 `/`，其餘字元依字面值比對。`waitUntil` 預設為
 `commit`；可指定 `load`、`domcontentloaded` 或 `networkidle`，在 URL 相符後繼續等待。
 `tab.playwright.waitForLoadState({state?, timeoutMs?})` 預設等待 `load`，亦支援
-`domcontentloaded` 和 `networkidle`。條件等待預設 3000 ms，數值逾時上限為
-3000 ms。零不提供事件等待時間：定位器仍檢查一次，目前 URL/載入狀態可能已符合，
+`domcontentloaded` 和 `networkidle`。條件等待預設 3000 ms，也可以指定更長的等待時間。零不提供事件等待時間：定位器仍檢查一次，目前 URL/載入狀態可能已符合，
 networkidle 則逾時。
 `tab.playwright.waitForTimeout(ms)` 接受非負整數並等待固定時長。等待某個動作觸發的
 變化時，先啟動等待，再執行動作，最後等待兩個 promise。Stop 會取消原來的等待。
@@ -112,8 +111,7 @@ networkidle 則逾時。
 點擊選項為 `button: 'left'|'right'|'middle'`、`modifiers`、`force`、`timeoutMs`；
 勾選選項為 `force`、`timeoutMs`。修飾鍵為 `Alt`、`Control`、`ControlOrMeta`、
 `Meta`、`Shift`；`ControlOrMeta` 按所選瀏覽器的平台解析。其他輸入選項為
-`timeoutMs`，必須是正整數；準備階段預設且最多 3000 毫秒，逐字元輸入最多
-5000 毫秒。選項選擇接受 value 字串，或帶 `value`、`label`、非負整數
+`timeoutMs`，必須是正整數；準備階段預設等待 3000 毫秒，也可以指定更長的等待時間。選項選擇接受 value 字串，或帶 `value`、`label`、非負整數
 `index` 的描述物件；陣列用來選擇多個選項。
 
 定位器選擇唯一匹配，或多個匹配中唯一可見的元素；有歧義時會報錯。
@@ -173,7 +171,7 @@ REPL 被取消、逾時或耗盡堆積記憶體後，需要 `cua_reset` 並重�
 - `await browser.user.getTabContext(tabOrId)` 讀取目前可見使用者分頁的內容，不認領或啟用分頁。Host 對目前實際 URL 授權，呼叫者不能指定替代 URL。隱私分頁和單次讀取前後發生 URL 變更的頁面會被拒絕。結果為 `{kind:'text',text,title,url,truncated}`，或 `{kind:'document',data,fileName,mimeType,title,url}`；`data` 為實際匯出檔案的 `Uint8Array`。Host 提供檔案發布服務時，文件還包含本 Session 持有的真實 `path`。Google Workspace 可提供 Markdown、PDF 或 XLSX，一般頁面可包含目前選取內容，YouTube 影片頁可包含字幕。`maka` 實作固定讀取，`chatgpt` 在支援時重用原版讀取協定；第三方擴充功能依實際能力盡力支援。
 
 - `await tab.playwright.evaluate(pageFunction, arg?, {timeoutMs}?)` 在目前頁面執行自包含函式；字串按運算式處理。`locator.evaluate` 向函式傳入 `(element, arg)`，`locator.evaluateAll` 傳入 `(elements, arg)`；單元素形式要求目標明確，集合形式允許零匹配。參數須可 JSON 序列化。結果為一般資料：略過函式和 Symbol，BigInt 轉為字串，非有限數字轉為 `null`。本 API 的結果上限為深度 8、陣列 2000 項、物件 200 個鍵、字串 200000 個 UTF-16 單元，視需要使用 `[MaxDepth]`、`[Circular]` 和 `[Truncated]` 標記。
-- 執行環境提供 DOM、CSS、幾何、Range 和 Selection 的唯讀檢視，不開放網路、Cookie、模組載入或 DOM 修改。捲動、局部 Range 邊界和僅接收函式的計時器仍受支援。逾時預設為 3000 ms，數字值限制在 0–3000 ms。停止或中斷時，指令碼可能已經執行；系統不會自動重播。現有網站授權和分頁歸屬繼續生效。
+- 執行環境提供 DOM、CSS、幾何、Range 和 Selection 的唯讀檢視，不開放網路、Cookie、模組載入或 DOM 修改。捲動、局部 Range 邊界和僅接收函式的計時器仍受支援。逾時預設為 3000 ms，也可以指定更長的等待時間。停止或中斷時，指令碼可能已經執行；系統不會自動重播。現有網站授權和分頁歸屬繼續生效。
 
 瀏覽器指標方法包括 `tab.cua.move({x,y,keys?})`、
 `click({x,y,button?,keypress?})`、`double_click({x,y,keypress?})`、
@@ -267,7 +265,7 @@ chooser.isMultiple();
 await chooser.setFiles(['workspace-file.bin']);
 ```
 
-先開始等待，再執行開啟檔案選擇器的操作。預設及最長事件等待時間為 3000 毫秒；明確指定的 timeout 必須是正整數。`isMultiple()` 同步回傳。`setFiles(pathOrPaths, {timeoutMs})` 接受單一路徑或非空陣列；單選選擇器拒絕多個路徑。可選 timeout 會驗證，但不會丟棄已派發的檔案選擇請求。
+先開始等待，再執行開啟檔案選擇器的操作。預設事件等待時間為 3000 毫秒；明確指定的 timeout 必須是正整數。`isMultiple()` 同步回傳。`setFiles(pathOrPaths, {timeoutMs})` 接受單一路徑或非空陣列；單選選擇器拒絕多個路徑。可選 timeout 會驗證，但不會丟棄已派發的檔案選擇請求。
 
 路徑屬於 Agent Host 的檔案系統，仍受呼叫者的工作區檔案原則約束。網頁存取、目前 HTTP(S) 來源的上傳批准、檔案讀取權限彼此獨立。目前輸入快照支援一般檔案。檔案以不可變位元組傳輸，由所選 Maka 瀏覽器宿主實體化；不要自行換算作業系統之間的檔案路徑。
 

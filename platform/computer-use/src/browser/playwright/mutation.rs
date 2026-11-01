@@ -144,16 +144,8 @@ pub(in crate::browser) fn validate_mutation(
     Ok(())
 }
 
-fn timeout(operation: &BrowserMutationOperation) -> Duration {
-    let maximum = if matches!(
-        operation,
-        BrowserMutationOperation::PressSequentially { .. }
-    ) {
-        5000.0
-    } else {
-        3000.0
-    };
-    Duration::from_secs_f64(operation.timeout_ms().unwrap_or(3000.0).min(maximum) / 1000.0)
+fn timeout(operation: &BrowserMutationOperation) -> Result<Duration, ToolError> {
+    crate::protocol::timeout_duration(operation.timeout_ms().unwrap_or(3000.0))
 }
 
 // Raw AX names have a small preprocessing layer before the shared key layout.
@@ -578,7 +570,7 @@ impl Tab {
         let language = call.language;
         validate_mutation(&operation)?;
         let resources = Resources::new();
-        let deadline = tokio::time::Instant::now() + timeout(&operation);
+        let deadline = tokio::time::Instant::now() + timeout(&operation)?;
         let context = MutationContext {
             document: &document,
             clock: MutationClock::Selector(deadline),
