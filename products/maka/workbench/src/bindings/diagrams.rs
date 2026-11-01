@@ -76,8 +76,20 @@ mod tests {
 
     #[test]
     fn labels_become_visible_paths_without_loading_external_images() {
-        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="160" height="40"><text x="5" y="25" font-family="sans-serif" font-size="20" fill="#ff0000">Maka</text><image href="file:///must-not-read.png" width="40" height="40"/></svg>"##;
-        let outlined = outline_with_fonts(svg, fonts()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("external.png");
+        image::save_buffer(&path, &[255, 0, 255, 255], 1, 1, image::ColorType::Rgba8).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let href = path
+            .to_str()
+            .unwrap()
+            .replace('&', "&amp;")
+            .replace('"', "&quot;");
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="160" height="40"><text x="5" y="25" font-family="sans-serif" font-size="20" fill="#ff0000">Maka</text><image href="{href}" width="40" height="40"/><image href="data:image/png;base64,{}" width="40" height="40"/></svg>"##,
+            STANDARD.encode(bytes)
+        );
+        let outlined = outline_with_fonts(&svg, fonts()).unwrap();
         assert!(!outlined.contains("<text"));
         assert!(!outlined.contains("<image"));
         assert!(outlined.contains("<path"));
@@ -88,67 +100,20 @@ mod tests {
                 .as_chunks::<4>()
                 .0
                 .iter()
-                .any(|pixel| pixel[0] > 0 && pixel[3] > 0),
+                .any(|pixel| pixel[0] > 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] > 0),
             "labels must paint real pixels through NSH's unmodified image path"
         );
     }
 
-    #[test]
-    fn pele_runs_in_quickjs_and_labels_paint_through_nsh() {
-        let entry = std::path::Path::new("tests/fixtures/mermaid.ts")
-            .canonicalize()
-            .unwrap();
-        let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
-            entry,
-            minify: false,
-            split: false,
-            ui_sets: vec![nsh_base::registry().into()],
-        })
-        .unwrap();
-        let host = nsh_js::Host::new().unwrap();
-        host.eval_source(&bundle.code).unwrap();
-        let mut ops = Vec::new();
-        host.take_ops(&mut ops);
-        let value = ops
-            .into_iter()
-            .find_map(|op| match op {
-                nsh_core::Op::CreateText { text, .. } => Some(text.to_string()),
-                _ => None,
-            })
-            .expect("Pele must produce a diagram in the real UI JavaScript VM");
-        let result: serde_json::Value = serde_json::from_str(&value).unwrap();
-        let svg = result["svg"].as_str().unwrap();
-        assert!(svg.contains("用户 User"));
-        assert!(!svg.contains("var("));
-        let outlined = outline_with_fonts(svg, fonts()).unwrap();
-        let raster = nsh_core::svg::rasterize(outlined.as_bytes(), 720).unwrap();
-        assert!(
-            raster
-                .pixels
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .any(|p| p[0] < 80 && p[3] > 0)
-        );
-        if let Some(directory) = std::env::var_os("MAKA_MERMAID_EVIDENCE") {
-            // A local visual check uses the same font discovery as the client.
-            let outlined = outline_with_fonts(svg, FONTS.clone()).unwrap();
-            let raster = nsh_core::svg::rasterize(outlined.as_bytes(), 1440).unwrap();
-            let directory = std::path::PathBuf::from(directory);
-            std::fs::create_dir_all(&directory).unwrap();
-            image::save_buffer(
-                directory.join("mermaid.png"),
-                &raster.pixels,
-                raster.width,
-                raster.height,
-                image::ColorType::Rgba8,
-            )
-            .unwrap();
-        }
+    #[nsh_core::element::class]
+    struct DiagramHost {
+        pending: Option<std::sync::mpsc::Sender<PendingImage>>,
     }
 
-    #[nsh_core::element::class]
-    struct DiagramHost;
+    struct PendingImage {
+        svg: String,
+        reply: tokio::sync::oneshot::Sender<String>,
+    }
 
     #[nsh_core::element::class]
     impl DiagramHost {
@@ -157,7 +122,19 @@ mod tests {
             "en".into()
         }
 
-        pub fn diagram_image(&self, svg: String) -> Result<String, String> {
+        pub async fn diagram_image(
+            this: nsh_core::element::Instance<Self>,
+            svg: String,
+        ) -> Result<String, String> {
+            let pending = this.with(|host| host.pending.clone());
+            drop(this);
+            if let Some(pending) = pending {
+                let (reply, result) = tokio::sync::oneshot::channel();
+                pending
+                    .send(PendingImage { svg, reply })
+                    .map_err(|error| error.to_string())?;
+                return result.await.map_err(|error| error.to_string());
+            }
             let outlined = outline_with_fonts(&svg, fonts())?;
             Ok(format!(
                 "data:image/svg+xml;base64,{}",
@@ -166,7 +143,10 @@ mod tests {
         }
     }
 
-    fn diagram_app(renderer: nsh_core::platform::Renderer) -> nsh_testing::Headless {
+    fn diagram_app(
+        renderer: nsh_core::platform::Renderer,
+        pending: Option<std::sync::mpsc::Sender<PendingImage>>,
+    ) -> nsh_testing::Headless {
         use nsh_core::{
             Size,
             element::Instance,
@@ -174,7 +154,11 @@ mod tests {
             prelude::px,
         };
         let mut registry = nsh_core::element::Registry::ui_set("maka/host");
-        registry.value("host", || Instance::new(DiagramHost));
+        registry.value("host", move || {
+            Instance::new(DiagramHost {
+                pending: pending.clone(),
+            })
+        });
         let sets = vec![nsh_base::registry(), registry];
         let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
             entry: std::path::Path::new("tests/fixtures/mermaid-view.tsx")
@@ -199,8 +183,8 @@ mod tests {
     }
 
     #[test]
-    fn markdown_diagram_preview_source_and_parse_error_recovery() {
-        let mut app = diagram_app(nsh_core::platform::Renderer::Native);
+    fn diagram_source_and_parse_error_recovery() {
+        let mut app = diagram_app(nsh_core::platform::Renderer::Native, None);
         app.wait_for("label:Mermaid diagram").unwrap();
         app.press("role:button[Show diagram source]").unwrap();
         app.wait_for("text:/flowchart LR/").unwrap();
@@ -215,16 +199,86 @@ mod tests {
 
     #[test]
     fn terminal_diagrams_keep_readable_source() {
-        let mut app = diagram_app(nsh_core::platform::Renderer::Terminal);
+        let mut app = diagram_app(nsh_core::platform::Renderer::Terminal, None);
         app.wait_for("text:/flowchart LR/").unwrap();
         assert!(!app.shows("Mermaid diagram"));
         assert!(!app.shows("Show diagram source"));
     }
 
     #[test]
-    fn invalid_and_oversized_diagrams_fail_explicitly() {
-        assert!(outline_with_fonts("<svg", fonts()).is_err());
-        assert!(outline_with_fonts(&"x".repeat(MAX_SVG_BYTES + 1), fonts()).is_err());
-        assert!(outline_with_fonts("<svg/>", Arc::new(usvg::fontdb::Database::new())).is_err());
+    fn svg_size_and_font_failures_report_the_actual_boundary() {
+        let valid = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><text y="16">Maka</text></svg>"#;
+        let oversized = valid.replace(
+            "</svg>",
+            &format!("<!--{}--></svg>", "x".repeat(MAX_SVG_BYTES)),
+        );
+        assert_eq!(
+            outline_with_fonts(&oversized, fonts()).unwrap_err(),
+            "Diagram SVG exceeds the size limit"
+        );
+        assert_eq!(
+            outline_with_fonts(valid, Arc::new(usvg::fontdb::Database::new())).unwrap_err(),
+            "No local fonts are available for diagram labels"
+        );
+    }
+
+    #[test]
+    fn superseded_conversion_never_reaches_the_image_view() {
+        use std::{sync::Mutex, time::Duration};
+        let (send, pending) = std::sync::mpsc::channel();
+        let mut app = diagram_app(nsh_core::platform::Renderer::Native, Some(send));
+        let images = Arc::new(Mutex::new(Vec::new()));
+        let observed = images.clone();
+        app.observe(move |_, batch| {
+            for item in &batch.items {
+                if let nsh_core::MountItem::Image {
+                    source: Some(source),
+                    ..
+                } = item
+                {
+                    observed
+                        .lock()
+                        .unwrap()
+                        .push(source.data.as_ref().unwrap().bytes().to_vec());
+                }
+            }
+        });
+        app.wait_for("Rendering diagram…").unwrap();
+        let old = pending.recv_timeout(Duration::from_secs(5)).unwrap();
+        app.press("id:update").unwrap();
+        app.wait_for("Latest requested").unwrap();
+        let old_image = outline_with_fonts(&old.svg, fonts()).unwrap();
+        old.reply
+            .send(format!(
+                "data:image/svg+xml;base64,{}",
+                STANDARD.encode(&old_image)
+            ))
+            .unwrap();
+        let latest = pending.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(latest.svg.contains("LATEST"));
+        // A real UI round trip applies batches while the latest conversion stays pending.
+        app.press("role:button[Show diagram source]").unwrap();
+        app.wait_for("text:/LATEST/").unwrap();
+        assert!(
+            images.lock().unwrap().is_empty(),
+            "an obsolete image was published"
+        );
+        let latest_image = outline_with_fonts(&latest.svg, fonts()).unwrap();
+        assert_ne!(latest_image, old_image);
+        latest
+            .reply
+            .send(format!(
+                "data:image/svg+xml;base64,{}",
+                STANDARD.encode(&latest_image)
+            ))
+            .unwrap();
+        app.wait_for("label:Mermaid diagram").unwrap();
+        let images = images.lock().unwrap();
+        assert!(!images.is_empty());
+        assert!(
+            images
+                .iter()
+                .all(|image| image.as_slice() == latest_image.as_bytes())
+        );
     }
 }

@@ -18,35 +18,30 @@
  */
 
 import { mount, signal, Text, View } from 'nsh';
-import { MarkdownBody } from '../../app/MarkdownBody';
+import { MermaidView } from '../../app/MermaidView';
 
-const valid = '```mermaid\nflowchart LR\n A[User] --> B[Maka]\n```';
+const valid = 'flowchart LR\n A[User] --> B[Maka]';
 const source = signal(valid);
 mount(() => (
   <View style={{ width: '100%', gap: 8 }}>
     <View
       testID="break"
       style={{ height: 32 }}
-      onPress={() => source.set('```mermaid\nflowchart LR\n A[unfinished\n```')}
+      onPress={() => source.set('flowchart LR\n A[unfinished')}
     >
       <Text>Break diagram</Text>
     </View>
     <View testID="repair" style={{ height: 32 }} onPress={() => source.set(valid)}>
       <Text>Repair diagram</Text>
     </View>
-    <MarkdownBody
-      row={() => ({
-        key: 'diagram',
-        messageId: 'diagram',
-        field: 'body',
-        role: 'assistant',
-        prefix: true,
-        text: source(),
-      })}
-      sourceId="diagram"
-      sessionId="diagram-test"
-      openLink={async () => {}}
-      userScroll={() => {}}
-    />
+    <View
+      testID="update"
+      style={{ height: 32 }}
+      onPress={() => source.set(valid.replace('User', 'LATEST'))}
+    >
+      <Text>Update diagram</Text>
+    </View>
+    <Text>{source().includes('LATEST') ? 'Latest requested' : 'Initial requested'}</Text>
+    <MermaidView source={source} />
   </View>
 ));
