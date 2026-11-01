@@ -28,8 +28,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   test:
@@ -37,12 +37,10 @@ jobs:
     # Allow cold compilation and Host fixtures that reserve multiple CPU slots.
     timeout-minutes: 180
     env:
-      MBX_CACHE_EXPORT_GROUP: ci-${{ github.run_id }}-${{ github.run_attempt }}-test
-      MBX_GC_AUTO: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview') && '0' || '1' }}
+      MBX_GC_AUTO: "1"
       MBX_TARGET_VIEWS: "0"
-      # Linked outputs already live in target; retain cache copies only for export.
-      # Pushes to either long-lived branch save the cache their pull requests restore.
-      MBX_CACHE_LINKS: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview') && '1' || '0' }}
+      # Cargo retains linked outputs in target; avoid another copy in mbx's store.
+      MBX_CACHE_LINKS: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,7 +71,6 @@ jobs:
             https://api.github.com/repos/jdx/mr-boxington/releases/latest \
             --output "$release"
           jq --exit-status '.immutable == true' "$release" > /dev/null
-          version=$(jq --exit-status --raw-output '.tag_name | ltrimstr("v")' "$release")
           asset='.assets[] | select(.name == "mbx-x86_64-unknown-linux-gnu.tar.gz")'
           url=$(jq --exit-status --raw-output "$asset | .browser_download_url" "$release")
           digest=$(jq --exit-status --raw-output "$asset | .digest | select(startswith(\"sha256:\")) | ltrimstr(\"sha256:\")" "$release")
@@ -86,11 +83,12 @@ jobs:
           XDG_DATA_HOME="$RUNNER_TEMP/mbx-data" "$RUNNER_TEMP/mbx-bin/mbx" setup --yes
           echo "$RUNNER_TEMP/mbx-bin" >> "$GITHUB_PATH"
           echo "$RUNNER_TEMP/mbx-data/mbx/bin" >> "$GITHUB_PATH"
-          echo "key=mbx-${version}-${RUNNER_OS}-${RUNNER_ARCH}-$(rustc -vV | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          echo "key=rust-target-${RUNNER_OS}-${RUNNER_ARCH}-$(rustc -vV | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: just@1.59.0,cargo-nextest@0.9.149,cargo-deny
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
         with:
           path: |
             ~/.cargo/registry
@@ -98,17 +96,14 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'third-party/termina/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
       - name: Restore compiled Rust cache
-        id: mbx-cache
+        id: rust-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/mbx-cache
+          path: target
           key: ${{ steps.mbx.outputs.key }}-${{ hashFiles('Cargo.lock', 'third-party/termina/Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
             ${{ steps.mbx.outputs.key }}-${{ hashFiles('Cargo.lock', 'third-party/termina/Cargo.lock') }}-
             ${{ steps.mbx.outputs.key }}-
-      - name: Import compiled Rust cache
-        if: steps.mbx-cache.outputs.cache-matched-key != ''
-        run: mbx cache import "$RUNNER_TEMP/mbx-cache"
       - name: Select npm
         run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
       - run: just setup
@@ -117,11 +112,52 @@ jobs:
           node scripts/rust/dependencies.mjs generate
           sha256sum products/maka/cli/DEPENDENCIES.rust.tsv
           git diff --exit-code -- products/maka/cli/DEPENDENCIES.rust.tsv
-      - name: Verify Computer Use bridge build
+      - name: Compile Computer Use bridge and tests
         run: |
           node scripts/rust/check-cua-build.mjs
           cargo build --locked -p maka-cli --no-default-features
+          # Later feature builds replace target/debug/maka.
+          cp target/debug/maka "$RUNNER_TEMP/maka-bridge"
+          cargo test --locked -p maka-computer-use --no-default-features --lib --test integration --no-run
+      - name: Check Termina Windows input
+        run: |
+          rustup target add x86_64-pc-windows-msvc
+          cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}"
+          cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}" --features windows-legacy
+      - name: Compile workspace tests
+        run: cargo nextest run --locked --workspace --no-run
+        env:
+          NEXTEST_PROFILE: ci
+      - name: Compile workspace Clippy targets
+        run: cargo clippy --config 'build.warnings="deny"' --locked --workspace --all-targets
+      - name: Compile desktop conversation tests
+        run: cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test integration -E 'test(terminal::desktop_new_session)' --no-run
+      - name: Compile Termina tests
+        run: cargo test --locked --manifest-path third-party/termina/Cargo.toml --lib --target-dir "${CARGO_TARGET_DIR:-target}" --no-run
+      - run: just build
+      # Publish complete compiler outputs before any behavior tests can fail.
+      - name: Save compiled Rust cache
+        if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview'))) && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+      - name: Save Cargo downloads
+        if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview'))) && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+      - name: Native CLI smoke
+        run: |
           target/debug/maka --version
+          target/debug/maka desktop --version
+          target/debug/maka-desktop-shell --version
+      - name: Verify Computer Use bridge
+        run: |
+          "$RUNNER_TEMP/maka-bridge" --version
           cargo test --locked -p maka-computer-use --no-default-features --lib --test integration
       - name: Verify model search keyboard selection before full checks
         shell: bash
@@ -141,11 +177,6 @@ jobs:
             'terminal::keyboard::connection_filter_preserves_model_search_focus_and_keyboard_selection', false]]);
           NODE
           cargo nextest run --locked --workspace -E "$filter"
-      - name: Check Termina Windows input
-        run: |
-          rustup target add x86_64-pc-windows-msvc
-          cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}"
-          cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}" --features windows-legacy
       - name: Report storage before checks
         run: |
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
@@ -164,21 +195,6 @@ jobs:
           for path in "$GITHUB_WORKSPACE/target" "$HOME/.cache/mbx" "$HOME/.cargo/registry" "$HOME/.cargo/git"; do
             if [ -d "$path" ]; then du -sh "$path"; fi
           done
-      - run: just build
-      - name: Native CLI smoke
-        run: |
-          target/debug/maka --version
-          target/debug/maka desktop --version
-          target/debug/maka-desktop-shell --version
-      - name: Export compiled Rust cache
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview') && steps.mbx-cache.outputs.cache-hit != 'true'
-        run: mbx cache export --group "$MBX_CACHE_EXPORT_GROUP" --format directory "$RUNNER_TEMP/mbx-cache"
-      - name: Save compiled Rust cache
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview') && steps.mbx-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/mbx-cache
-          key: ${{ steps.mbx-cache.outputs.cache-primary-key }}
 
   # Root workspace tests compile NSH dependencies but do not select the nested
   # workspace's own tests. Run them serially on a fresh runner when dispatched.
@@ -205,7 +221,10 @@ jobs:
           test "$actual" = "$EXPECTED_SHA"
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/nsh-target" >> "$GITHUB_ENV"
       - name: Update Rust
-        run: rustup update stable --no-self-update
+        id: rust
+        run: |
+          rustup update stable --no-self-update
+          echo "key=nsh-target-${RUNNER_OS}-${RUNNER_ARCH}-$(rustc -vV | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -213,6 +232,15 @@ jobs:
             ~/.cargo/git
           key: nsh-cargo-${{ runner.os }}-${{ hashFiles('third-party/nsh/Cargo.lock', 'third-party/nsh/crates/gpui/Cargo.lock') }}
           restore-keys: nsh-cargo-${{ runner.os }}-
+      - name: Restore NSH compiled cache
+        id: nsh-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CARGO_TARGET_DIR }}
+          key: ${{ steps.rust.outputs.key }}-${{ hashFiles('third-party/nsh/Cargo.lock', 'third-party/nsh/crates/gpui/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ steps.rust.outputs.key }}-${{ hashFiles('third-party/nsh/Cargo.lock', 'third-party/nsh/crates/gpui/Cargo.lock') }}-
+            ${{ steps.rust.outputs.key }}-
       - name: Test NSH core, JS, headless, terminal and development tooling
         run: |
           df -h "$RUNNER_TEMP"
@@ -304,3 +332,9 @@ jobs:
           df -h "$RUNNER_TEMP"
           df -i "$RUNNER_TEMP"
           if [ -d "$CARGO_TARGET_DIR" ]; then du -sh "$CARGO_TARGET_DIR"; fi
+      - name: Save NSH compiled cache
+        if: ${{ !cancelled() && steps.nsh-cache.outcome == 'success' && steps.nsh-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CARGO_TARGET_DIR }}
+          key: ${{ steps.nsh-cache.outputs.cache-primary-key }}
