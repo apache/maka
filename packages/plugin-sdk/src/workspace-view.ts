@@ -60,6 +60,5 @@ export interface WorkspaceViewInput {
   attach(handle: WorkspaceViewHandle): void;
 }
 
-export const workspaceViewContract = defineUiViewContract<WorkspaceViewInput>(
-  'maka.workspace.preview.v2',
-);
+export const workspaceViewContract =
+  defineUiViewContract<WorkspaceViewInput>('maka.workspace.preview');

@@ -42,7 +42,7 @@ export default {
         terminal: { contract: sdk.contracts.terminal, cardinality: { kind: 'optional' } },
       },
       contributions: {
-        workspace: { kind: 'view', contract: 'maka.workspace.preview.v2' },
+        workspace: { kind: 'view', contract: 'maka.workspace.preview' },
         changes: {
           kind: 'panel',
           title: {
