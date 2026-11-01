@@ -4388,6 +4388,22 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['kind', 'sessionId', 'messageId', 'revision'],
               },
+              {
+                description:
+                  'The caller may not send to this conversation: the Bot sends only to the\nworkers it created. Nothing was admitted.',
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'not_your_worker',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId'],
+              },
             ],
             $defs: {
               AgentSkillInputRejection: {
@@ -20603,6 +20619,22 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['kind', 'sessionId', 'messageId', 'revision'],
+              },
+              {
+                description:
+                  'The caller may not send to this conversation: the Bot sends only to the\nworkers it created. Nothing was admitted.',
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'not_your_worker',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId'],
               },
             ],
             $defs: {

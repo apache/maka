@@ -3852,6 +3852,10 @@ export type AgentSendResult =
       sessionId: string;
       messageId: string;
       revision: number;
+    }
+  | {
+      kind: 'not_your_worker';
+      sessionId: string;
     };
 export type AgentSkillInputRejection = 'skills_unavailable';
 export type AgentDeliveryFact =
