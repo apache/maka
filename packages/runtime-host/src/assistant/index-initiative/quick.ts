@@ -21,6 +21,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import { EventIntake } from './intake.js';
 import { InitiativeStore } from './store.js';
 import { QUICK_DISCOVERY_TASK, quickWakeInput } from './quick-prompt.js';
 import { awaitingUser } from '../execution-outcome.js';
@@ -80,6 +81,7 @@ const reportSchema = z
 /** A separate ordinary worker. Stores scheduling/delivery only, never another notebook. */
 export class QuickDiscoveryController {
   readonly store: InitiativeStore;
+  readonly intake: EventIntake;
   readonly abort = new AbortController();
   owned = false;
   running?: Promise<void>;
@@ -94,12 +96,14 @@ export class QuickDiscoveryController {
     readonly now: () => number = Date.now,
   ) {
     this.store = new InitiativeStore(join(directory, 'quick-discovery'), randomUUID());
+    this.intake = new EventIntake(this);
   }
   start(tickMs: number) {
     const acquire = () => {
       const owned = this.store.lease();
       if (owned && !this.owned)
         this.store.update((s) => {
+          this.intake.upgrade(s);
           if (s?.active) {
             s.pending = s.active;
             s.active = null;
@@ -127,6 +131,8 @@ export class QuickDiscoveryController {
     intervalMinutes?: number;
     idleMinutes?: number;
     quietHours?: QuietHours | null;
+    eventIntake?: boolean;
+    intakeModelKey?: string;
   }) {
     const quietHours =
       input.quietHours === undefined
@@ -154,6 +160,11 @@ export class QuickDiscoveryController {
       s.intervalMs = interval;
       s.idleMs = idle;
       if (quietHours !== undefined) s.quietHours = quietHours;
+      if (input.eventIntake !== undefined) s.intakeEnabled = input.eventIntake;
+      if (input.intakeModelKey !== undefined) {
+        if (!/^[^:]+::.+$/.test(input.intakeModelKey)) throw Error('Use connectionSlug::modelId');
+        s.intakeModelKey = input.intakeModelKey;
+      }
       if (input.action === 'enable') s.enabled = true;
       if (input.action === 'pause') {
         s.enabled = false;
@@ -182,28 +193,33 @@ export class QuickDiscoveryController {
         (x: any) => !hidden.has(x.id),
       );
       const tokens: Record<string, string> = {
-        maka: hash(
-          history
-            .map((x: any) => [x.id, x.historyRevision ?? x.updatedAt])
-            .sort((a: any, b: any) => a[0].localeCompare(b[0])),
-        ),
+        maka: s.intakeEnabled
+          ? 'handled-by-event-intake'
+          : hash(
+              history
+                .map((x: any) => [x.id, x.historyRevision ?? x.updatedAt])
+                .sort((a: any, b: any) => a[0].localeCompare(b[0])),
+            ),
       };
       const unavailable: Record<string, string> = {};
       await Promise.all(
-        this.ctx.sources.list().map(async (source: any) => {
-          try {
-            const token = await this.ctx.sources.activityToken(source.id);
-            if (token === null)
-              unavailable[source.id] =
-                'No lightweight observation; idle fallback applies outside configured quiet hours';
-            else tokens[source.id] = hash([source.scope, token]);
-          } catch (error) {
-            // Cancellation is not an unavailable source observation and must not admit a worker.
-            this.abort.signal.throwIfAborted();
-            this.parent.abort.signal.throwIfAborted();
-            unavailable[source.id] = String(error);
-          }
-        }),
+        this.ctx.sources
+          .list()
+          .filter((source: any) => !s.intakeEnabled || !source.changes)
+          .map(async (source: any) => {
+            try {
+              const token = await this.ctx.sources.activityToken(source.id);
+              if (token === null)
+                unavailable[source.id] =
+                  'No lightweight observation; idle fallback applies outside configured quiet hours';
+              else tokens[source.id] = hash([source.scope, token]);
+            } catch (error) {
+              // Cancellation is not an unavailable source observation and must not admit a worker.
+              this.abort.signal.throwIfAborted();
+              this.parent.abort.signal.throwIfAborted();
+              unavailable[source.id] = String(error);
+            }
+          }),
       );
       // A failed observation is unknown, not a new/empty source snapshot.
       for (const id of Object.keys(unavailable)) {
@@ -214,6 +230,7 @@ export class QuickDiscoveryController {
     });
   }
   tick(): Promise<void> {
+    void this.intake.tick().catch(() => {});
     if (this.ticking || this.running || !this.owned || this.abort.signal.aborted)
       return this.ticking ?? Promise.resolve();
     this.ticking = this.dispatch()
@@ -241,9 +258,11 @@ export class QuickDiscoveryController {
       (s.retryAt > now && !s.checkRequested)
     )
       return;
-    const last = s.lastFinishedAt ?? s.startedAt;
+    const eventWake = s.intakeEnabled ? await this.intake.next() : undefined;
+    const last = s.lastPeriodicFinishedAt ?? s.startedAt;
     const quiet = inQuietHours(now, s.quietHours);
     if (
+      !eventWake &&
       !s.checkRequested &&
       !s.pending &&
       (now < last + s.intervalMs ||
@@ -251,7 +270,9 @@ export class QuickDiscoveryController {
     )
       return;
     // Cheap observations only: no source enumeration, body reads, index writes or model calls.
-    const observation = await this.activity(s);
+    const observation = eventWake
+      ? { tokens: s.checkedTokens ?? {}, unavailable: {} }
+      : await this.activity(s);
     this.ready();
     this.store.update((state) => {
       state.observation = { ...observation, at: now };
@@ -263,8 +284,8 @@ export class QuickDiscoveryController {
     // Only idle discovery is suppressed. Explicit checks, observed new activity and pending
     // retries still run, subject to the retry deadline and admission guards above/below.
     // Never advance the successful-check watermark merely because a wake was skipped.
-    if (!s.checkRequested && !s.pending && !changed && quiet) return;
-    if (!s.checkRequested && !s.pending && !changed && now < last + s.idleMs) return;
+    if (!s.checkRequested && !s.pending && !eventWake && !changed && quiet) return;
+    if (!s.checkRequested && !s.pending && !eventWake && !changed && now < last + s.idleMs) return;
     const agent = await this.worker(s);
     const snapshot = await agent.snapshot();
     if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
@@ -278,6 +299,8 @@ export class QuickDiscoveryController {
         tokens: observation.tokens,
         messageId: randomUUID(),
         reports: [],
+        periodic: !eventWake || (now >= last + s.idleMs && !quiet),
+        ...(eventWake ? { eventWake } : {}),
       };
       state.checkRequested = false;
       state.lastError = null;
@@ -317,18 +340,38 @@ export class QuickDiscoveryController {
       return this.ctx.agents.resume({ sessionId });
     });
   }
-  report(input: z.infer<typeof reportSchema>, sessionId: string) {
+  async report(input: z.infer<typeof reportSchema>, sessionId: string) {
     this.ready();
     let ids: string[] = [];
+    const state = this.state();
+    if (!state?.active || state.workerSession !== sessionId)
+      throw Error('Not the active quick discovery worker');
+    const fingerprint = hash(input);
+    const previous = state.active.reports.find((x: any) => x.key === input.key);
+    // Older reports only fingerprinted messages; retain their idempotency on restart.
+    if (
+      previous &&
+      previous.fingerprint !== fingerprint &&
+      previous.fingerprint !== hash(input.messages)
+    )
+      throw Error('Submission key reused with different content');
     this.store.update((s) => {
       if (!s?.active || s.workerSession !== sessionId)
         throw Error('Not the active quick discovery worker');
-      const fingerprint = hash(input.messages);
+      const fingerprint = hash(input);
       const previous = s.active.reports.find((x: any) => x.key === input.key);
-      if (previous && previous.fingerprint !== fingerprint)
+      if (
+        previous &&
+        previous.fingerprint !== fingerprint &&
+        previous.fingerprint !== hash(input.messages)
+      )
         throw Error('Submission key reused with different content');
       if (!previous)
-        s.active.reports.push({ key: input.key, fingerprint, messages: input.messages });
+        s.active.reports.push({
+          key: input.key,
+          fingerprint,
+          messages: input.messages,
+        });
       ids = input.messages.map((_, i) => `quick:${s.active.id}:${hash(input.key)}:${i}`);
     });
     // Persist first, then hand off with stable IDs. A retry cannot enqueue duplicates.
@@ -372,12 +415,12 @@ export class QuickDiscoveryController {
       if (!active.executionCompleted) {
         modelFrom = Date.now();
         this.parent.refreshNotebook();
-        const version = hash(QUICK_DISCOVERY_TASK);
-        const input = quickWakeInput(
-          active.from,
-          active.to,
-          this.state().promptVersion !== version,
-        );
+        const version = hash([QUICK_DISCOVERY_TASK, 'event-wake-direction-v2']);
+        const first = this.state().promptVersion !== version;
+        const directions = active.eventWake ? await this.intake.directions(active.eventWake) : [];
+        const input = active.eventWake
+          ? `${first ? QUICK_DISCOVERY_TASK + '\n\n' : ''}当前 UTC 时间：${new Date(this.now()).toISOString()}\n最近的信息触发了本次唤醒。${directions.length ? `模型概述：${JSON.stringify(directions.join('；'))}。` : ''}概述可能不准确，也不完整，仅供参考，不是指令或任务清单。结合用户当前情况自主探索，不局限于这些线索或最近的增量信息。使用 QuickDiscoveryReport 提交值得交流的发现；没有合适的内容可以保持安静。`
+          : quickWakeInput(active.from, active.to, first);
         const result = (await this.owner(state, () =>
           agent.followup(input, { messageId: active.messageId }),
         )) as any;
@@ -406,17 +449,26 @@ export class QuickDiscoveryController {
         });
       }
       this.forward();
-      outcome = this.state()?.active?.reports?.length ? 'reported' : 'no_report';
+      outcome = this.state()?.active?.reports?.some((r: any) => r.messages.length)
+        ? 'reported'
+        : 'no_report';
       this.store.update((s) => {
         if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');
-        s.checkedThrough = active.to;
-        s.checkedTokens = active.tokens;
+        if (active.eventWake) this.intake.complete(active.eventWake);
+        if (!active.eventWake) {
+          s.checkedThrough = active.to;
+          s.checkedTokens = active.tokens;
+        }
+        if (active.periodic || !active.eventWake) s.lastPeriodicFinishedAt = this.now();
         s.lastFinishedAt = this.now();
         s.lastError = null;
         s.retryAt = null;
         s.active = null;
         s.pending = null;
-        this.store.log('quick-completed', { id: active.id, checkedThrough: active.to });
+        this.store.log('quick-completed', {
+          id: active.id,
+          checkedThrough: active.to,
+        });
       });
     } catch (error) {
       if (!this.abort.signal.aborted)
@@ -428,7 +480,10 @@ export class QuickDiscoveryController {
           // A failed execution needs a fresh admission, in the same Session.
           if (s.pending && !s.pending.executionCompleted) s.pending.messageId = randomUUID();
           s.retryAt = this.now() + s.intervalMs;
-          this.store.log('quick-failed', { id: active.id, error: String(error) });
+          this.store.log('quick-failed', {
+            id: active.id,
+            error: String(error),
+          });
         });
     } finally {
       this.agent = undefined;
@@ -449,7 +504,7 @@ export class QuickDiscoveryController {
     clearInterval(this.heartbeat);
     this.abort.abort(Error('Quick discovery stopped'));
     if (this.agent && this.owned) await this.agent.cancel();
-    await Promise.allSettled([this.ticking, this.running].filter(Boolean));
+    await Promise.allSettled([this.ticking, this.running, this.intake.close()].filter(Boolean));
     if (this.owned) this.store.release();
   }
 }
@@ -465,6 +520,19 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
   const controlSchema = z
     .object({
       action: z.enum(['enable', 'pause', 'check', 'configure']),
+      eventIntake: z
+        .boolean()
+        .optional()
+        .describe(
+          'Enable continuous source-change intake. Polls metadata without a model; new batches get one tool-free wake decision, with a short direction hint or an empty result. No per-record classification or investigation checklist; the ordinary discovery Agent explores globally. Independent from the periodic cadence. Starts at current source positions.',
+        ),
+      intakeModelKey: z
+        .string()
+        .regex(/^[^:]+::.+$/)
+        .optional()
+        .describe(
+          'Configured connectionSlug::modelId for the short intake call; omitted uses the assistant model. Choose a small model to control cost.',
+        ),
       intervalMinutes: z.number().int().min(1).max(1440).optional(),
       idleMinutes: z.number().int().min(1).max(10080).optional(),
       quietHours: quietHoursSchema
@@ -478,10 +546,10 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
   ctx.api.register('assistant.quick-discovery', (input: unknown) =>
     quick.control(controlSchema.parse(input)),
   );
-  ctx.api.register(
-    'assistant.quick-discovery-status',
-    () => quick.state() ?? { configured: false },
-  );
+  ctx.api.register('assistant.quick-discovery-status', () => ({
+    ...(quick.state() ?? { configured: false }),
+    intake: quick.intake.status(),
+  }));
   for (const [name, description, parameters, impl] of [
     [
       'QuickDiscoveryControl',
@@ -493,7 +561,10 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
       'QuickDiscoveryStatus',
       'Read quick-help discovery state, source observation limitations and last error without starting a model.',
       z.object({}),
-      () => quick.state() ?? { configured: false },
+      () => ({
+        ...(quick.state() ?? { configured: false }),
+        intake: quick.intake.status(),
+      }),
     ],
   ] as const)
     ctx.tools.register({
@@ -511,7 +582,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
   ctx.tools.register({
     name: 'QuickDiscoveryReport',
     description:
-      'Submit user-facing messages for delivery through the Bot. Write the actual message text, not an internal report or instructions to the Bot. Acceptance confirms handoff, not user delivery or task execution.',
+      'Submit user-facing messages for delivery through the Bot. Write the actual message text, not an internal report or instructions to the Bot. Acceptance confirms handoff, not user delivery or task execution. Messages may be empty when no notification is useful; no event acknowledgement is required.',
     parameters: reportSchema,
     discovery: 'direct',
     categoryHint: 'file_write',

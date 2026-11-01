@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { CorpusStore } from './corpus.js';
+import { estimatePluginLlmInputTokens } from '@maka/runtime/plugin-llm-service';
 
 /** A single model call over caller-selected originals, not an Agent or index writer. */
 export async function extractHistory(
@@ -31,35 +32,60 @@ export async function extractHistory(
   input: any,
   call: any,
   readHistory?: (input: any) => Promise<any>,
+  readReferences?: (refs: string[]) => Promise<any>,
 ) {
   call.abortSignal?.throwIfAborted();
   const select = (messages: any[], request: any) =>
     ctx.sessionQuery.selectMessages(messages, request);
-  const page = readHistory
-    ? await readHistory({ ...input, mode: 'messages' })
-    : store.history(
-        input.from,
-        input.to,
-        await visible(),
-        {
-          ...input,
-          mode: 'messages',
-        },
-        select,
-      );
+  // Validate both boundaries before invoking a model; a label or filename is not a cursor.
+  if (!input.refs && readHistory) {
+    for (const field of ['from', 'to'] as const) {
+      if (input[field] === null && field === 'from') continue;
+      try {
+        store.cursor(input[field]);
+      } catch (error) {
+        if (!String(error).includes('Unknown history cursor')) throw error;
+        return {
+          status: 'invalid_cursor',
+          modelCalled: false,
+          field,
+          message: `${field} must be an existing history cursor, not a filename, date or label. Copy MemoryRange.to or MemoryIndexRead.range.to; alternatively use refs returned by MemorySourceQuery/MemoryOriginal. No input was processed.`,
+        };
+      }
+    }
+  }
+  const page = input.refs
+    ? await readReferences!(input.refs)
+    : readHistory
+      ? await readHistory({ ...input, mode: 'messages' })
+      : store.history(
+          input.from,
+          input.to,
+          await visible(),
+          {
+            ...input,
+            mode: 'messages',
+          },
+          select,
+        );
   const selection = {
-    from: input.from,
-    to: input.to,
-    source: input.source,
-    recordIds: input.recordIds,
-    types: input.types,
-    view: input.view,
-    messageId: input.messageId,
-    query: input.query,
-    since: input.since,
-    until: input.until,
-    offset: input.offset,
-    limit: input.limit,
+    mode: input.refs ? 'refs' : 'history',
+    ...(input.refs
+      ? { refs: [...new Set(input.refs)] }
+      : {
+          from: input.from,
+          to: input.to,
+          source: input.source,
+          recordIds: input.recordIds,
+          types: input.types,
+          view: input.view,
+          messageId: input.messageId,
+          query: input.query,
+          since: input.since,
+          until: input.until,
+          offset: input.offset,
+          limit: input.limit,
+        }),
     totalMatchingMessages: page.total,
     includedMessages: page.items.length,
     nextOffset: page.nextOffset,
@@ -83,10 +109,26 @@ export async function extractHistory(
       maxInputChars: input.maxInputChars,
       modelCalled: false,
       message:
-        'Nothing was submitted or truncated. Narrow recordIds, filters or limit, or raise maxInputChars within the chosen model context budget. Character counts are not token counts.',
+        'Nothing was submitted or truncated. Choose fewer refs, narrow history filters/limit, or raise maxInputChars within the model context budget. All selected input remains unprocessed. Character counts are not token counts.',
     };
   }
   if (!page.items.length) return { status: 'empty', selection, modelCalled: false };
+  // Production exposes the selected model's capacity. No extra model call for budgeting.
+  if (typeof ctx.llm.budget === 'function') {
+    const budget = await ctx.llm.budget({ maxOutputTokens: input.maxOutputTokens });
+    const estimatedInputTokens = estimatePluginLlmInputTokens(system, prompt);
+    if (estimatedInputTokens > budget.maxInputTokens)
+      return {
+        status: 'input_too_large',
+        modelCalled: false,
+        selection,
+        inputChars,
+        estimatedInputTokens,
+        budget,
+        message:
+          'All selected originals remain unprocessed. Select fewer refs or a smaller history range; the complete selection exceeds the current model capacity. No input was truncated.',
+      };
+  }
   // No extractor-specific deadline. The owning turn/user can still cancel,
   // including when a provider fails to observe its AbortSignal promptly.
   const signal: AbortSignal = call.abortSignal ?? new AbortController().signal;
@@ -99,7 +141,13 @@ export async function extractHistory(
   try {
     signal.throwIfAborted();
     result = await Promise.race([
-      ctx.llm.generate({ system, prompt, maxOutputTokens: input.maxOutputTokens, signal }),
+      ctx.llm.generate({
+        system,
+        prompt,
+        maxOutputTokens: input.maxOutputTokens,
+        signal,
+        boundedInput: true,
+      }),
       stopped,
     ]);
     signal.throwIfAborted();
@@ -107,7 +155,8 @@ export async function extractHistory(
     signal.removeEventListener('abort', onAbort!);
   }
   if (!result.text?.trim()) throw Error('Extractor returned no text; no index was changed.');
-  store.assertVisible(store.cursor(input.to), await visible());
+  if (input.refs) await page.recheck();
+  else store.assertVisible(store.cursor(input.to), await visible());
   call.abortSignal?.throwIfAborted();
   const allowedRefs = new Set(page.items.map((item: any) => item.ref));
   const citedRefs = [
@@ -135,11 +184,12 @@ export async function extractHistory(
     outputChars: result.text.length,
     citedRefs,
     unknownRefs,
-    originals: page.items.map(({ source, recordId, ref, message }: any) => ({
+    originals: page.items.map(({ source, recordId, ref, message, object }: any) => ({
       source,
       recordId,
       ref,
-      messageId: message.id,
+      messageId: message?.id,
+      ...(object ? { objectId: object.id, revision: object.revision } : {}),
     })),
   };
   await writeFile(path, result.text, { flag: 'wx', mode: 0o600 });
