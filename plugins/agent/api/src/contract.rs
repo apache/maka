@@ -94,7 +94,7 @@ pub struct Configuration {
     /// Enable model proposals and approved scheduled work for this Agent.
     #[serde(default)]
     pub scheduled_tasks: bool,
-    /// Enable explicitly approved, bounded Goal continuation.
+    /// Enable explicitly approved Goal continuation.
     #[serde(default)]
     pub goals: bool,
     /// Enable planning, reviewed approval and execution progress.

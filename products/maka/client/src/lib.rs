@@ -66,6 +66,7 @@ const CONTROL_METHODS: &[&str] = &[
     "fork",
     "openBot",
     "changePlan",
+    "changeGoal",
 ];
 const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
