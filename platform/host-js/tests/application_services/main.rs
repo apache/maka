@@ -1536,7 +1536,7 @@ async fn javascript_forwarding_uses_exact_local_imports_original_evidence_and_ac
     .unwrap();
 }
 #[tokio::test]
-async fn javascript_catch_cannot_acknowledge_child_cleanup_or_release_parent_and_child_capacity() {
+async fn javascript_caught_child_cleanup_retains_custody_without_poisoning_the_caller() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let (provider, consumer) = attached_packages();
         let wrapper = script_forwarder(Realm::Dedicated);
@@ -1575,7 +1575,7 @@ async fn javascript_catch_cannot_acknowledge_child_cleanup_or_release_parent_and
         assert_eq!(
             client
                 .start(
-                    binding,
+                    binding.clone(),
                     "echo".into(),
                     json!("fail-cleanup-error"),
                     scope(&issuer, true),
@@ -1591,21 +1591,34 @@ async fn javascript_catch_cannot_acknowledge_child_cleanup_or_release_parent_and
         assert!(weak.upgrade().is_some());
         let snapshot = client.snapshot();
         assert!(snapshot.cleanup_error.unwrap().contains("unconfirmed"));
-        for instance in [id(1), id(4)] {
+        for (instance, failed) in [(id(1), true), (id(4), false)] {
             let state = snapshot
                 .instances
                 .iter()
                 .find(|s| s.activation.instance() == &instance)
                 .unwrap();
-            assert_eq!(
-                state.calls, 1,
-                "both actual child and parent keep their core work"
-            );
-            assert_eq!(state.phase, Phase::Retiring);
+            assert_eq!(state.failures.is_empty(), !failed);
         }
-        // Use a real binding captured before retirement: input preparation runs
-        // before final admission, so this proves both actual 32 MiB charges remain.
-        let (attachments, rejected) = bytes(5);
+        let (attachments, released) = bytes(5);
+        assert_eq!(
+            client
+                .start(
+                    binding,
+                    "echo".into(),
+                    json!("healthy"),
+                    scope(&issuer, true),
+                    attachments.into(),
+                )
+                .await
+                .unwrap()
+                .result()
+                .await
+                .unwrap(),
+            json!("xxxxx")
+        );
+        assert!(released.upgrade().is_none());
+        // The failed leaf still holds half of the 64 MiB Host window.
+        let (attachments, rejected) = bytes(32 * 1024 * 1024 + 1);
         assert!(
             client
                 .start(

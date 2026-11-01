@@ -477,7 +477,7 @@ async fn failed_captured_cleanup_retains_all_payload_capacity_without_a_completi
         permit(&f.started).await;
         drop(accepted);
         f.release.add_permits(1);
-        assert!(source.finish().await.is_err());
+        source.finish().await.unwrap();
         let next = scope(&f.issuer, true);
         assert!(
             f.client

@@ -343,7 +343,7 @@ async fn failed_resource_mutation_keeps_original_snapshot_and_capacity_after_bus
         let completed=client.mutate(prepared,recorded).await.unwrap().completion().await;
         assert!(completed.cleanup.is_err());
         assert!(matches!(completed.reply.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned {ref value},cleanup:OperationCleanup::Failed {..}} if value==&json!("xxxxx")));
-        assert!(original_scope.finish().await.is_err());assert!(weak.upgrade().is_some());
+        original_scope.finish().await.unwrap();assert!(weak.upgrade().is_some());
         let (resources,rejected)=bytes(1);
         let failure=client.prepare_mutation(binding,"echo".into(),json!("public"),scope(&issuer,true),Uuid::new_v4(),resources.into()).await.err().unwrap();
         assert!(failure.contains("budget"));assert!(rejected.upgrade().is_none());
