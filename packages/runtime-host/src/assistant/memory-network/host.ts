@@ -23,7 +23,6 @@ import { CorpusStore } from './corpus.js';
 import { MemoryController } from './controller.js';
 import { MemoryReads } from './reads.js';
 import { extractHistory } from './extractor.js';
-import { relatedContext } from '../related-context.js';
 
 const id = z.string().min(1).max(300);
 const INDEX_USAGE =
@@ -53,21 +52,6 @@ export async function initializeMemory(
   const store = new CorpusStore(location.value);
   const controller = new MemoryController(ctx, store, config);
   const reads = new MemoryReads(controller);
-  ctx.memoryContext?.register(async (queries) => {
-    const visible = await controller.visible(undefined, true);
-    const documents = store.list().flatMap((index) =>
-      store.allEntries(index.id, visible).map((entry) => ({
-        indexId: index.id,
-        key: entry.id,
-        text: entry.body,
-        refs: entry.refs,
-      })),
-    );
-    return {
-      items: relatedContext(queries, documents),
-      notice: '已授权的缓存索引摘录，可能滞后；只用于补充背景，需核对原文。未刷新来源或推进覆盖。',
-    };
-  });
   ctx.backgroundSessions?.register(() => [...controller.hidden()]);
   const activate = () => {
     controller.start();

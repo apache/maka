@@ -30,6 +30,22 @@ import {
 } from './plugin-runtime.js';
 import { PluginScopeRegistry } from './plugin-scope-registry.js';
 
+/** Capacity facts for the actual selected model; no provider call is made. */
+export interface PluginLlmBudget {
+  readonly modelId: string;
+  readonly contextWindow?: number;
+  readonly inputLimit?: number;
+  readonly maxInputTokens: number;
+  readonly maxOutputTokens: number;
+  readonly estimate: 'utf8-conservative';
+}
+
+/** Conservative text estimate, not a claim to use the provider's tokenizer.
+ * Include framing; the capacity calculation also leaves room for provider wrappers. */
+export function estimatePluginLlmInputTokens(system: string, prompt: string): number {
+  return new TextEncoder().encode(system).length + new TextEncoder().encode(prompt).length + 128;
+}
+
 declare module './plugin-kernel.js' {
   interface Context {
     readonly llm: PluginLlmService;
@@ -43,6 +59,8 @@ export interface PluginLlmGenerateInput {
   readonly system?: string;
   readonly maxOutputTokens?: number;
   readonly signal?: AbortSignal;
+  /** Recheck current model capacity immediately before sending. */
+  readonly boundedInput?: boolean;
 }
 
 export interface PluginLlmGenerateResult {
@@ -52,6 +70,10 @@ export interface PluginLlmGenerateResult {
 }
 
 export interface PluginLlmRuntime {
+  budget?(
+    input: { modelKey?: string; maxOutputTokens?: number },
+    invocation: PluginAgentInvocation,
+  ): Promise<PluginLlmBudget>;
   generate(
     input: PluginLlmGenerateInput,
     invocation: PluginAgentInvocation,
@@ -89,6 +111,13 @@ export class PluginLlmService extends Service {
 
   bindRuntime(runtime: PluginLlmRuntime): Disposable<Promise<void>> {
     return this.runtimeBinding.bind(this.ctx, runtime);
+  }
+
+  budget(input: { modelKey?: string; maxOutputTokens?: number }): Promise<PluginLlmBudget> {
+    const invocation = this.agents.requireInvocation();
+    const runtime = this.runtimeBinding.get();
+    if (!runtime.budget) throw new Error('Model context budget is unavailable');
+    return runtime.budget(input, invocation);
   }
 
   register(adapter: PluginLlmAdapter): Disposable<Promise<void>> {

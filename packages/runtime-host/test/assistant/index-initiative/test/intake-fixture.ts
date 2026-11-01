@@ -43,23 +43,6 @@ export async function intakeFixture() {
     followup: async (text: string) => {
       workerCalls++;
       prompts.push(text);
-      const batch = q.state().active?.eventBatch;
-      if (batch) {
-        let next: any = { offset: 0, contentOffset: 0 };
-        while (next) {
-          const page = await q.intake.read({ batchId: batch.id, ...next }, 'worker');
-          next = page.next;
-        }
-        await q.report(
-          {
-            key: 'fixture-assessed',
-            batchId: batch.id,
-            processedEventIds: batch.ids,
-            messages: [],
-          },
-          'worker',
-        );
-      }
       return { disposition: 'turn_started' };
     },
     messageExecution: async () => ({ state: 'owned' }),
@@ -110,20 +93,15 @@ export async function intakeFixture() {
       },
     },
     llm: {
-      generate: async (input: any) => {
+      budget: async () => ({
+        modelId: 'fixture',
+        maxInputTokens: 64000,
+        maxOutputTokens: 2048,
+        estimate: 'utf8-conservative',
+      }),
+      generate: async (_input: any) => {
         modelCalls++;
-        const p = JSON.parse(input.prompt);
-        return {
-          modelId: 'fixture',
-          text: JSON.stringify({
-            decisions: p.events.map((e: any) => ({
-              id: e.id,
-              action: 'investigate',
-              reason: 'related change',
-            })),
-            context: 'demo is waiting for approval',
-          }),
-        };
+        return { modelId: 'fixture', text: JSON.stringify('客户安排可能有变化') };
       },
     },
   };

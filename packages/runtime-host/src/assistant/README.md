@@ -284,34 +284,65 @@ not an independent activity trigger.
 
 Each received page and its cursor commit together to the private quick-discovery
 SQLite database. Replays are deduplicated by source/event ID. A short burst is
-grouped by source/conversation and rotated fairly across groups. Each bounded
-model request decides once per group, with recent and lexically related older
-conversation, authorized retained originals, cached index excerpts and current
-tasks. The cache read does not enumerate sources or advance index coverage.
-Oldest and newest pending records both make progress; unselected records remain
-pending. Each group gets a share before spare space is reused. The model sees
-content, occurrence time, kind/title and short batch-local group IDs, not repeated
-receipt hashes or opaque authorization locators. Full originals and mappings stay
-in SQLite. Queued investigations are permission-checked context too, so background
-clues already being handled need not start a second investigation. There are no tools in this call. It can
-retain a clue as context or request investigation; retained clues are not closed
-user tasks. Related later events recover retained originals; a new user message
-can reconsider matching retained input. Lexical matches are partial context,
-not a guarantee of relevance or complete knowledge. Invalid/partial output or
-provider failure leaves the input pending and backs off those groups only.
-Source failures retain positions, report through Bot and do not block healthy
-sources. Permission is rechecked before both model stages. Source text is
-untrusted evidence, never an authorization to act.
+grouped by source/conversation and rotated fairly across groups. Oldest and newest
+pending records both make progress; records outside the current batch remain
+pending. Each group gets a share before spare space is reused.
 
-Receipts coalesce for 1.5 seconds; an approved assessment immediately tries to
-wake the existing quick worker, without waiting for another periodic tick or the
-15-minute cadence. New input continues to be collected while that worker runs.
-The worker can read indexes/originals and uses QuickDiscoveryReport -> Bot; Bot
-keeps its existing SendUser/Matter routing. Previously investigated originals remain retrievable as context. Worker failures retain the original batch and
-reuse existing durable delivery IDs. Idle exploration remains independently
-scheduled: event completion does not postpone its deadline. A due periodic check
-can accompany an event wake. Wakes carry only a batch identity and count, never event bodies or assembled investigation context. `QuickDiscoveryEvents` reads authorized originals in byte-bounded pages, including explicit content continuations for long records. Reads do not consume events. `QuickDiscoveryReport` accepts `batchId` and `processedEventIds`; acknowledgements and the report outbox commit together, and empty messages acknowledge a considered no-notification outcome. The finish hook asks the worker to account for unprocessed accessible events. Unavailable sources stay queued for retry; normal exit alone never marks a whole batch investigated. Existing persisted batches remain readable through their IDs after restart. `QuickDiscoveryStatus.intake` exposes queue counts, source errors and
-last model/input size; characters are not represented as token accounting.
+Screening is a tool-free, stateless call. Its input is only `{now, events}`: source
+and conversation groups containing occurrence time, content and kind/title.
+There are no model-facing receipt IDs or per-record selection labels. Any quote already in source content stays
+intact. It does not query owner conversation, tasks, indexes or old events, and
+does not maintain a screening notebook or search index. The investigator retrieves
+that context when a specific clue warrants it. Opaque receipt/authorization
+metadata and full originals remain in SQLite rather than repeated in the prompt.
+
+Screening batches use the selected model's resolved context window/input limit,
+including user overrides, instead of a fixed character limit. The input budget is
+90% of the smaller of the input limit and context window minus the output reserve
+(2,048 tokens, capped by the model's output limit). Full serialized input and the
+system prompt are counted with a conservative UTF-8-byte estimate plus framing,
+not an exact provider tokenizer. Unknown capacity is a visible configuration error;
+records remain pending. Host rechecks capacity immediately before sending.
+An oversized record is durably split to fit the selected model, preserving the
+original and fragment offsets. Remaining records are processed in later batches;
+no source content is silently cut to fit a request.
+
+The output is a single JSON string: one short direction such as
+`"The card deployment may not have taken effect"`, or `""` when no wake is useful.
+All input records in a successful call advance to `screened`; this only means the
+wake decision has read them, not that any underlying matter was investigated.
+A nonempty direction creates a durable wake hint atomically with that progress.
+There is no selected-event queue or model-authored investigation checklist.
+Host-only references retain authorization checks; they are not sent as work items.
+
+Malformed/truncated output and provider failures leave inputs pending and back off
+those groups. Source failures retain positions, report through Bot and do not
+block healthy sources. Permissions are checked before and after screening and
+again before a direction is shown to the worker. Transient permission-check
+failures retain a hint; revoked evidence invalidates it. Source text and generated
+hints are reference material, never authorization or instructions.
+
+Receipts coalesce for 1.5 seconds. A direction requests a wake of the ordinary quick
+discovery Agent without waiting for the periodic cadence. Multiple pending hints
+coalesce into one wake, with identical direction text shown once. Hints arriving
+during execution stay pending for a subsequent wake. The wake carries current
+time and short directions, explicitly described as possibly inaccurate/incomplete.
+The worker uses its existing global discovery instructions, reads sources/indexes/
+history as it judges useful, and may investigate a different direction or stay
+quiet. There is no event-reading tool, per-event report acknowledgement or finish
+hook requiring every event to be investigated. QuickDiscoveryReport only hands
+user-facing messages to Bot, which retains SendUser/Matter routing.
+
+Successful execution consumes the captured wake hints atomically with activation
+completion, even if no notification was warranted. Failures preserve the wake and
+existing delivery IDs for retry. Event wakes do not postpone the independently
+scheduled periodic fallback. Upgrade preserves originals, cursors and reports;
+unfinished legacy selected-event records return to pending screening, and legacy
+activations no longer carry a mandatory event checklist. Old search tables and
+historical event statuses may remain unused on disk. QuickDiscoveryStatus.intake
+separately exposes receipt/screening counts, wake delivery counts, source errors
+and the last call's direction and estimated model input budget. None of these
+counts is an independent-matter count or a measure of investigation completeness.
 
 The optional `scripts/plugins/codex-source` adapter supports Codex session changes
 and Computer History appended complete records. Files/database updates are polled

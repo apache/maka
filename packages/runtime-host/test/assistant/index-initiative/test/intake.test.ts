@@ -37,7 +37,7 @@ test('baseline costs no model; new event starts investigation before 15 minutes'
   await f.q.tick();
   await f.q.running;
   assert.equal(f.counts().workerCalls, 1);
-  assert.match(f.prompts[0], /QuickDiscoveryEvents/);
+  assert.match(f.prompts[0], /不局限于这些线索/);
   assert.doesNotMatch(f.prompts[0], /客户明早来/);
   assert.doesNotMatch(f.prompts[0], /这是定时唤醒/);
   await f.q.tick();
@@ -90,72 +90,54 @@ test('network failure preserves cursor; changed scope baselines separately', asy
   assert.equal(f.sourceCalls.at(-1), undefined);
   assert.equal(f.q.intake.status().counts[0].count, 1);
 });
-test('malformed or partial model decisions keep all inputs pending', async (t) => {
+test('malformed or obsolete output remains pending; the only result is a direction string', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
   await f.q.intake.collect();
   f.add('a');
-  f.add('b');
   await f.q.intake.collect();
   f.advance();
-  f.ctx.llm.generate = async () => ({ text: '{"decisions":[],"context":""}' });
-  await assert.rejects(f.q.intake.judge(), /every input/);
+  for (const text of ['{}', 'null', '[]', '{"investigate":[]}', 'unquoted direction']) {
+    f.ctx.llm.generate = async () => ({ text });
+    await assert.rejects(f.q.intake.judge());
+    f.advance(31000);
+  }
   assert.equal(
     f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='pending'").get()?.n,
-    2,
+    1,
   );
-  assert.throws(
-    () =>
-      parseIntake(
-        '{"decisions":[{"id":"a","action":"retain","reason":"x"},{"id":"a","action":"retain","reason":"x"}],"context":""}',
-        ['a', 'b'],
-      ),
-    /every input/,
-  );
+  assert.equal(parseIntake('"  卡片部署可能没生效  "'), '卡片部署可能没生效');
+  assert.equal(parseIntake('""'), '');
 });
-test('retained original is supplied again for related thread changes', async (t) => {
+test('empty selection retains originals without waking or repeating them as background', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
   await f.q.intake.collect();
   f.add('a', '演示尚未验收');
   await f.q.intake.collect();
   f.advance();
-  f.ctx.llm.generate = async (input: any) => {
-    const p = JSON.parse(input.prompt);
-    return {
-      modelId: 'small',
-      text: JSON.stringify({
-        decisions: p.events.map((e: any) => ({
-          id: e.id,
-          action: 'retain',
-          reason: 'await context',
-        })),
-        context: '演示尚未验收',
-      }),
-    };
-  };
+  f.ctx.llm.generate = async () => ({ text: '""' });
   await f.q.intake.judge();
   assert.equal(await f.q.intake.next(), undefined);
   f.add('b', '客户提前');
   await f.q.intake.collect();
   f.advance();
   f.ctx.llm.generate = async (input: any) => {
-    const p = JSON.parse(input.prompt);
-    assert.match(JSON.stringify(p.context.relatedEvents), /尚未验收/);
+    assert.doesNotMatch(input.prompt, /尚未验收/);
     return {
-      modelId: 'small',
-      text: JSON.stringify({
-        decisions: p.events.map((e: any) => ({
-          id: e.id,
-          action: 'investigate',
-          reason: '提前与验收关联',
-        })),
-        context: '提前与验收关联',
-      }),
+      text: JSON.stringify('客户提前可能影响安排'),
     };
   };
   await f.q.intake.judge();
-  assert.ok(await f.q.intake.next());
+  const batch = await f.q.intake.next();
+  assert.equal(batch?.ids.length, 1);
+  assert.match(
+    String(
+      f.q.store.db.prepare("SELECT payload FROM intake_events WHERE status='screened'").get()
+        ?.payload,
+    ),
+    /尚未验收/,
+  );
 });
 test('permission revocation blocks queued evidence before model and after model', async (t) => {
   const f = await intakeFixture();
@@ -174,14 +156,7 @@ test('permission revocation blocks queued evidence before model and after model'
   f.ctx.llm.generate = async (input: any) => {
     f.allow(false);
     return {
-      text: JSON.stringify({
-        decisions: JSON.parse(input.prompt).events.map((e: any) => ({
-          id: e.id,
-          action: 'investigate',
-          reason: 'x',
-        })),
-        context: 'secret',
-      }),
+      text: JSON.stringify('可能有变化'),
     };
   };
   await f.q.intake.judge();
@@ -225,7 +200,7 @@ test('events arriving during investigation remain for the next batch', async (t)
   await f.q.intake.judge();
   release();
   await f.q.running;
-  assert.equal((await f.q.intake.next())?.events[0].group, 'chat');
+  assert.equal((await f.q.intake.next())?.ids.length, 1);
 });
 
 test('source authorization outage cannot block healthy source delivery or consume failed inputs', async (t) => {
@@ -250,7 +225,7 @@ test('source authorization outage cannot block healthy source delivery or consum
   await f.q.intake.judge();
   await f.q.intake.judge();
   assert.equal(f.counts().modelCalls, 1);
-  assert.equal((await f.q.intake.next())?.events[0].source, 'healthy');
+  assert.equal((await f.q.intake.next())?.ids.length, 1);
   assert.equal(
     f.q.store.db.prepare("SELECT count(*) n FROM intake_events WHERE status='pending'").get()?.n,
     13,
@@ -274,7 +249,7 @@ test('large events are delivered in bounded calls with no total-work truncation'
   const generate = f.ctx.llm.generate;
   const contents: string[] = [];
   f.ctx.llm.generate = async (input: any) => {
-    assert.ok(input.prompt.length < 45000);
+    assert.ok(input.prompt.length < 64000);
     contents.push(
       ...JSON.parse(input.prompt).events.flatMap((e: any) => e.records.map((r: any) => r.content)),
     );
@@ -286,4 +261,73 @@ test('large events are delivered in bounded calls with no total-work truncation'
     f.q.store.db.prepare("SELECT count(*) n FROM intake_events WHERE status='pending'").get()?.n,
     0,
   );
+});
+
+test('one batch produces one hint, without selected IDs or an investigation checklist', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  for (let i = 0; i < 100; i++) f.add('noise' + i, '闲聊' + i, 'busy');
+  f.add('customer', '客户明天九点来', 'busy');
+  f.add('family', '陪家人复诊', 'family');
+  await f.q.intake.collect();
+  f.advance();
+  f.ctx.llm.generate = async (input: any) => {
+    const records = JSON.parse(input.prompt).events.flatMap((g: any) => g.records);
+    assert.equal(records.length, 102);
+    assert.ok(records.every((record: any) => !('id' in record)));
+    return { text: JSON.stringify('明天的安排可能有冲突') };
+  };
+  await f.q.intake.judge();
+  assert.equal(
+    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()?.n,
+    102,
+  );
+  const wake = await f.q.intake.next();
+  assert.equal(wake?.ids.length, 1);
+  await f.restart();
+  assert.deepEqual(await f.q.intake.next(), wake);
+  f.agent.followup = async (text: string) => {
+    assert.match(text, /明天的安排可能有冲突/);
+    assert.match(text, /不准确.*不完整/);
+    assert.match(text, /不局限于这些线索或最近的增量/);
+    assert.doesNotMatch(text, /闲聊|processedEventIds|QuickDiscoveryEvents|batchId/);
+    await f.q.report({ key: 'discovery', messages: ['核实后有个建议'] }, 'worker');
+    return { disposition: 'turn_started' };
+  };
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(await f.q.intake.next(), undefined);
+  assert.equal(f.delivered.size, 1);
+});
+test('new arrivals cannot be consumed by a screening decision for an older batch', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  f.add('old');
+  await f.q.intake.collect();
+  f.advance();
+  f.ctx.llm.generate = async () => {
+    f.add('new');
+    await f.q.intake.collect();
+    return { text: '""' };
+  };
+  await f.q.intake.judge();
+  const pending = f.q.store.db
+    .prepare("SELECT payload FROM intake_events WHERE status='pending'")
+    .all();
+  assert.equal(pending.length, 1);
+  assert.equal(JSON.parse(String(pending[0].payload)).object.id, 'new');
+});
+
+test('a truncated but parseable response cannot silently retain omitted evidence', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  f.add('a');
+  await f.q.intake.collect();
+  f.advance();
+  f.ctx.llm.generate = async () => ({ text: '""', finishReason: 'length' });
+  await assert.rejects(f.q.intake.judge(), /truncated/);
+  assert.equal(f.q.intake.status().counts[0].status, 'pending');
 });

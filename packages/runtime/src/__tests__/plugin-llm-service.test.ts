@@ -184,3 +184,34 @@ test('one-shot model selection reaches Host without changing invocation identity
     await root.fiber.dispose();
   }
 });
+
+test('model budget uses the same owner and explicit model selection as generation', async () => {
+  const root = new Context();
+  const agents = new PluginAgentService(root);
+  const llm = new PluginLlmService(root, agents);
+  llm.bindRuntime({
+    budget: async (input, invocation) => {
+      assert.equal(input.modelKey, 'small::flash');
+      assert.equal(input.maxOutputTokens, 2048);
+      assert.equal(invocation.sessionId, 'session-a');
+      return {
+        modelId: 'flash',
+        maxInputTokens: 8000,
+        maxOutputTokens: 2048,
+        estimate: 'utf8-conservative',
+      };
+    },
+    generate: async () => {
+      throw Error('budget must not invoke a model');
+    },
+  });
+  try {
+    assert.throws(() => llm.budget({}));
+    const budget = await agents.withInvocation(toolContext(), () =>
+      llm.budget({ modelKey: 'small::flash', maxOutputTokens: 2048 }),
+    );
+    assert.equal(budget.maxInputTokens, 8000);
+  } finally {
+    await root.fiber.dispose();
+  }
+});

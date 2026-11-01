@@ -22,13 +22,8 @@ import assert from 'node:assert/strict';
 import { intakeFixture } from './intake-fixture.js';
 import { QUICK_DISCOVERY_TASK } from '../../../../src/assistant/index-initiative/quick-prompt.js';
 
-const response = (input: any, action = 'retain') => ({
-  text: JSON.stringify({
-    decisions: JSON.parse(input.prompt).events.map((g: any) => ({
-      id: g.id,
-      action,
-    })),
-  }),
+const response = (_input: any, action = 'retain') => ({
+  text: JSON.stringify(action === 'retain' ? '' : '安排可能有变化'),
 });
 
 test('busy threads cannot hide another thread or their own newest reply; every original eventually settles', async (t) => {
@@ -61,7 +56,7 @@ test('busy threads cannot hide another thread or their own newest reply; every o
     f.advance();
   }
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='retain'").get()?.n,
+    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()?.n,
     402,
   );
   assert.ok(calls > 1);
@@ -87,89 +82,57 @@ test('a failed group backs off while other groups continue and retries survive r
   };
   await f.q.intake.judge();
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='retain'").get()?.n,
+    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()?.n,
     2,
   );
   f.advance(31000);
   f.ctx.llm.generate = async (input: any) => response(input);
   await f.q.intake.judge();
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='retain'").get()?.n,
+    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()?.n,
     10,
   );
 });
-test('related owner history and cached memory enter screening without index refresh', async (t) => {
+test('screening reads only current event bodies, never owner history, indexes or task context', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
-  f.messages.push({
-    type: 'user',
-    text: '明天九点陪妈妈复诊，白鹭演示由我负责。',
-  });
-  for (let i = 0; i < 12; i++) f.messages.push({ type: 'assistant', text: '周末随便聊聊' + i });
-  let reads = 0;
-  f.ctx.memoryContext = {
-    read: async () => {
-      reads++;
-      return { items: [{ text: '白鹭演示安排', refs: ['original'] }] };
+  const forbidden = async () => {
+    throw Error('screening must not read global context');
+  };
+  f.ctx.sessionQuery.read = forbidden;
+  f.ctx.memoryContext = { read: forbidden };
+  f.ctx.tools = {
+    resolve: () => {
+      throw Error('screening must not query tasks');
     },
   };
   await f.q.intake.collect();
-  f.add('x', '白鹭演示改时间');
+  f.add('x', '白鹭演示改时间，引用：原定周五下午');
   await f.q.intake.collect();
   f.advance();
   f.ctx.llm.generate = async (input: any) => {
     const p = JSON.parse(input.prompt);
-    assert.match(JSON.stringify(p.context.relatedMessages), /复诊/);
-    assert.match(JSON.stringify(p.context.memory), /白鹭/);
-    return response(input);
+    assert.deepEqual(Object.keys(p).sort(), ['events', 'now']);
+    assert.match(p.events[0].records[0].content, /引用：原定周五下午/);
+    return response(input, 'investigate');
   };
   await f.q.intake.judge();
-  assert.equal(reads, 2);
-  assert.equal(f.sourceCalls.length, 2);
+  assert.ok(await f.q.intake.next());
 });
-test('new user information reconsiders retained input and invalidates an in-flight old decision', async (t) => {
+test('unrelated owner changes do not invalidate screening or requeue already screened inputs', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
-  f.messages.push({ type: 'user', text: '演示安排我负责' });
   await f.q.intake.collect();
   f.add('x', '白鹭演示明天九点');
   await f.q.intake.collect();
   f.advance();
-  f.ctx.llm.generate = async (input: any) => response(input);
-  await f.q.intake.judge();
-  f.messages.push({ type: 'user', text: '演示只能下午，上午要复诊' });
-  await f.q.intake.collect();
-  assert.equal(f.q.intake.status().counts[0].status, 'pending');
   f.ctx.llm.generate = async (input: any) => {
-    f.messages.push({ type: 'user', text: '刚才说错了，后天复诊' });
-    return response(input, 'investigate');
+    f.messages.push({ type: 'user', text: '新的聊天要求' });
+    return response(input);
   };
   await f.q.intake.judge();
-  assert.equal(await f.q.intake.next(), undefined);
-  f.ctx.llm.generate = async (input: any) => response(input);
-  await f.q.intake.judge();
-  assert.equal(f.q.intake.status().counts[0].status, 'retain');
-});
-test('revoked index context cannot approve an investigation after screening', async (t) => {
-  const f = await intakeFixture();
-  t.after(() => f.close());
-  let allowed = true;
-  f.ctx.memoryContext = {
-    read: async () => ({
-      items: allowed ? [{ text: 'private', refs: ['r'] }] : [],
-    }),
-  };
   await f.q.intake.collect();
-  f.add('x');
-  await f.q.intake.collect();
-  f.advance();
-  f.ctx.llm.generate = async (input: any) => {
-    allowed = false;
-    return response(input, 'investigate');
-  };
-  await f.q.intake.judge();
-  assert.equal(await f.q.intake.next(), undefined);
-  assert.equal(f.q.intake.status().counts[0].status, 'pending');
+  assert.equal(f.q.intake.status().counts[0].status, 'screened');
 });
 test('first event installs the discovery instructions and never postpones the periodic deadline', async (t) => {
   const f = await intakeFixture();
@@ -193,7 +156,7 @@ test('first event installs the discovery instructions and never postpones the pe
   await f.q.dispatch();
   await f.q.running;
   assert.equal(f.prompts.length, 2);
-  assert.match(f.prompts[1], /待筛选/);
+  assert.match(f.prompts[1], /全局信息探索/);
   assert.doesNotMatch(f.prompts[1], /新的客户安排/);
   assert.ok(f.q.state().lastPeriodicFinishedAt);
 });
@@ -226,13 +189,13 @@ test('screening more records cannot back off an already approved investigation i
   }
 });
 
-test('ongoing investigation context contains identities, not nested old batches', async (t) => {
+test('ongoing investigation does not inflate the screening prompt', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
   await f.q.intake.collect();
   f.q.store.update((s: any) => {
     s.active = {
-      eventBatch: {
+      eventWake: {
         id: 'active',
         events: [
           {
@@ -250,10 +213,8 @@ test('ongoing investigation context contains identities, not nested old batches'
   await f.q.intake.collect();
   f.advance();
   f.ctx.llm.generate = async (input: any) => {
-    const context = JSON.parse(input.prompt).context;
-    assert.equal(context.investigating.id, 'active');
-    assert.match(JSON.stringify(context.investigating), /time conflict/);
-    assert.ok(JSON.stringify(context.investigating).length < 500);
+    assert.equal(JSON.parse(input.prompt).context, undefined);
+    assert.ok(input.prompt.length < 1000);
     return response(input);
   };
   await f.q.intake.judge();
@@ -293,7 +254,7 @@ test('screening packs all short messages without repeating opaque receipt and lo
     calls++;
     const p = JSON.parse(input.prompt);
     assert.equal(p.events.flatMap((g: any) => g.records).length, 301);
-    assert.ok(p.events.every((g: any) => g.id.length <= 2));
+    assert.ok(p.events.flatMap((g: any) => g.records).every((r: any) => !('id' in r)));
     assert.doesNotMatch(input.prompt, /opaque-routing/);
     assert.ok(input.prompt.length < 40000);
     assert.ok(
@@ -306,7 +267,7 @@ test('screening packs all short messages without repeating opaque receipt and lo
   await f.q.intake.judge();
   assert.equal(calls, 1);
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='retain'").get()?.n,
+    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()?.n,
     301,
   );
   assert.match(
@@ -314,7 +275,7 @@ test('screening packs all short messages without repeating opaque receipt and lo
     /opaque-routing/,
   );
 });
-test('queued investigations are visible before the worker starts, and revoked reasons are withheld', async (t) => {
+test('queued investigations are not repeated as background, and remain authorization checked', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
   await f.q.intake.collect();
@@ -326,24 +287,13 @@ test('queued investigations are visible before the worker starts, and revoked re
   await f.q.intake.collect();
   f.advance();
   f.ctx.llm.generate = async (input: any) => {
-    const p = JSON.parse(input.prompt);
-    assert.equal(p.context.queuedInvestigations[0].group, 'docs');
-    assert.match(p.context.queuedInvestigations[0].reason, /related change/);
+    assert.doesNotMatch(input.prompt, /演示改期|related change/);
     return response(input);
   };
   await f.q.intake.judge();
   f.ctx.sources.authorize = async (_source: string, objects: any[]) =>
     objects.filter((o) => o.id !== 'approved').map((o) => o.id);
-  f.add('fresh', '另一条消息', 'fresh');
-  await f.q.intake.collect();
-  f.advance();
-  f.ctx.llm.generate = async (input: any) => {
-    const context = JSON.parse(input.prompt).context;
-    assert.deepEqual(context.queuedInvestigations, []);
-    assert.ok(context.relatedEvents.every((e: any) => e.original.id !== 'approved'));
-    return response(input);
-  };
-  await f.q.intake.judge();
+  assert.equal(await f.q.intake.next(), undefined);
 });
 test('successful screening dispatches without waiting for another periodic tick', async (t) => {
   const f = await intakeFixture();
@@ -364,6 +314,11 @@ test('successful screening dispatches without waiting for another periodic tick'
 
 test('unused group allocation is reused without postponing another readable group', async (t) => {
   const f = await intakeFixture();
+  f.ctx.llm.budget = async () => ({
+    modelId: 'large-fixture',
+    maxInputTokens: 128000,
+    maxOutputTokens: 2048,
+  });
   t.after(() => f.close());
   await f.q.intake.collect();
   for (let g = 0; g < 5; g++)
