@@ -270,8 +270,8 @@ export function executor(root, worker = {}) {
     } finally {
       rmSync(temporary, { recursive: true, force: true });
     }
-    // Two runners remove the existing single-runner heavy-fixture bottleneck.
-    const partitions = Math.min(2, count);
+    // Balance measured fixture execution time against producer and transfer time.
+    const partitions = Math.min(4, count);
     return Array.from({ length: partitions }, (_, index) => ({
       partition: `slice:${index + 1}/${partitions}`,
     }));
