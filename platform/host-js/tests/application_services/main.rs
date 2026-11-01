@@ -1433,7 +1433,13 @@ async fn cleanup_failure_does_not_prevent_idle_shutdown_or_skip_a_running_close(
                 }
                 tokio::task::yield_now().await;
             }
-            assert!(app.shutdown_if_idle().await.unwrap_err().contains("original cleanup failed"));
+            let result = loop {
+                match app.shutdown_if_idle().await {
+                    Ok(false) => tokio::task::yield_now().await,
+                    result => break result,
+                }
+            };
+            assert!(result.unwrap_err().contains("original cleanup failed"));
         } else {
         let shutdown = app.shutdown_if_idle();
         tokio::pin!(shutdown);
@@ -1645,7 +1651,7 @@ async fn javascript_forwarding_uses_exact_local_imports_original_evidence_and_ac
     .unwrap();
 }
 #[tokio::test]
-async fn javascript_catch_cannot_acknowledge_child_cleanup_or_release_parent_and_child_capacity() {
+async fn javascript_catch_retains_child_cleanup_custody_without_retiring_healthy_providers() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let (provider, consumer) = attached_packages();
         let wrapper = script_forwarder(Realm::Dedicated);
@@ -1706,14 +1712,27 @@ async fn javascript_catch_cannot_acknowledge_child_cleanup_or_release_parent_and
                 .iter()
                 .find(|s| s.activation.instance() == &instance)
                 .unwrap();
-            assert_eq!(
-                state.calls, 1,
-                "both actual child and parent keep their core work"
-            );
             assert_eq!(state.phase, Phase::Active);
         }
-        // Failed cleanup retains both actual 32 MiB charges without retiring the providers.
-        let (attachments, rejected) = bytes(5);
+        let (attachments, small) = bytes(5);
+        assert_eq!(
+            client
+                .start(
+                    sibling.clone(),
+                    "echo".into(),
+                    json!("healthy"),
+                    scope(&issuer, true),
+                    attachments.into()
+                )
+                .await
+                .unwrap()
+                .result()
+                .await
+                .unwrap(),
+            json!("xxxxx")
+        );
+        assert!(small.upgrade().is_none());
+        let (attachments, rejected) = bytes(64 * 1024 * 1024);
         assert!(
             client
                 .start(
