@@ -850,6 +850,17 @@ fn the_instructions_name_only_the_tools_the_bot_holds() {
             some.contains("ScheduledTask") && some.contains("todo_read") && some.contains("Skill")
         );
         assert!(!some.contains("workhub_tasks"), "{language:?}: {some}");
+        // A partial family is credited only with the members it holds.
+        let skill_only = bot_prompt(language, &held(&["Skill"]));
+        assert!(
+            skill_only.contains("Skill") && !skill_only.contains("SkillSearch"),
+            "{language:?}: {skill_only}"
+        );
+        let todo_write = bot_prompt(language, &held(&["todo_write"]));
+        assert!(
+            todo_write.contains("todo_write") && !todo_write.contains("todo_read"),
+            "{language:?}: {todo_write}"
+        );
         let hub = bot_prompt(language, &held(&["workhub_tasks"]));
         assert!(hub.contains("workhub_tasks"), "{language:?}: {hub}");
     }
