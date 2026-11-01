@@ -20,6 +20,7 @@
 import { platform, reduceMotion, Text, View } from 'nsh';
 import { tr } from './locale';
 import { C, captionTextStyle } from './ui';
+import { Icon } from './Icon';
 
 export function LoadingIndicator(props: { label?: string; size?: number; color?: string }) {
   const size = props.size ?? 16;
@@ -49,16 +50,14 @@ export function LoadingIndicator(props: { label?: string; size?: number; color?:
           style={{
             width: size,
             height: size,
-            borderRadius: size / 2,
-            borderWidth: 2,
-            borderColor: C.line,
-            borderTopColor: props.color ?? C.muted,
             animationName: reduceMotion() ? 'none' : 'spin',
             animationDuration: 800,
             animationTimingFunction: 'linear',
             animationIterationCount: 'infinite',
           }}
-        />
+        >
+          <Icon name="loader" size={size} color={props.color ?? C.muted} />
+        </View>
       </If>
     </View>
   );

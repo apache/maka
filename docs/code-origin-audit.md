@@ -35,7 +35,7 @@ Native npm packages include the root legal documents and the reviewed Rust, embe
 
 ### Workbench icon source
 
-`products/maka/workbench/app/Icon.tsx`: Brain icon paths from Lucide `icons/brain.svg`, revision `a630cec77eac6568b989e87e4947a8bfe45caacd`, scaled from 24 to 16 points. The ISC notice is preserved in `LICENSE`; the remaining icons are first-party.
+`products/maka/workbench/app/Icon.tsx`: Brain, status and loading icon geometry from Lucide `icons/{brain,circle-check,circle-dot,circle-question-mark,circle-x,circle-arrow-up,circle,circle-pause,loader-circle}.svg`, revision `a630cec77eac6568b989e87e4947a8bfe45caacd`, scaled from 24 to 16 points. SVG circles and lines use equivalent path commands. The ISC and MIT notices are preserved in `LICENSE`; the remaining icons are first-party.
 
 ### Source archive non-text inventory
 

@@ -1450,8 +1450,61 @@ async fn desktop_reasoning_and_tool_status_icons_share_the_activity_layout() {
         Some((source, "en", "Thinking · Check browser connection")),
     )
     .await;
+    let icon_center = |row: Bounds<gpui::Pixels>| {
+        let crop = Bounds::new(
+            point(row.right() - row.size.height, row.top()),
+            size(row.size.height, row.size.height),
+        );
+        let pixels = desktop.pixels(crop)?;
+        let background = &pixels[..3];
+        let contrast: Vec<_> = pixels
+            .chunks_exact(4)
+            .map(|pixel| {
+                (0..3)
+                    .map(|channel| pixel[channel].abs_diff(background[channel]))
+                    .max()
+                    .unwrap()
+            })
+            .collect();
+        let peak = *contrast.iter().max()?;
+        if peak == 0 {
+            return None;
+        }
+        let side = f32::from(crop.size.width) as usize;
+        let mut left = side;
+        let mut right = 0;
+        let mut top = side;
+        let mut bottom = 0;
+        for (index, contrast) in contrast.into_iter().enumerate() {
+            if contrast < peak / 2 {
+                continue;
+            }
+            left = left.min(index % side);
+            right = right.max(index % side);
+            top = top.min(index / side);
+            bottom = bottom.max(index / side);
+        }
+        Some((
+            f32::from(crop.left()) + (left + right) as f32 / 2.,
+            f32::from(crop.top()) + (top + bottom) as f32 / 2.,
+        ))
+    };
+    let mut column = None;
     for index in 0..8 {
-        desktop.control(&format!("Toggle tool tool-{index}")).await;
+        let row = desktop.control(&format!("Toggle tool tool-{index}")).await;
+        let (x, y) = desktop
+            .until("the status icon did not paint", || icon_center(row))
+            .await;
+        let expected_x = *column.get_or_insert(x);
+        assert!(
+            (x - expected_x).abs() <= 1.,
+            "status {index} is off the icon column: {x} vs {expected_x}"
+        );
+        let expected_y = f32::from(row.center().y);
+        assert!(
+            (y - expected_y).abs() <= 1.,
+            "status {index} is not vertically centered: {y} vs {expected_y}"
+        );
     }
     desktop.artifact("activity-status-icons-collapsed");
     desktop.press("Thinking · Check browser connection").await;

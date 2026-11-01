@@ -52,9 +52,25 @@ type StatusKind =
   | 'rejected'
   | 'stopped'
   | 'dispatched'
-  | 'pending';
+  | 'pending'
+  | 'preparing'
+  | 'running';
+
+const statusIcons = {
+  recorded: 'statusRecorded',
+  success: 'statusSuccess',
+  error: 'statusError',
+  unknown: 'statusUnknown',
+  rejected: 'statusError',
+  stopped: 'statusStopped',
+  dispatched: 'statusDispatched',
+  pending: 'statusPending',
+  preparing: 'loader',
+  running: 'loader',
+} as const;
 
 function Status(props: { label: string; kind?: StatusKind }) {
+  const active = () => props.kind === 'preparing' || props.kind === 'running';
   const color = () =>
     props.kind === 'error'
       ? C.danger
@@ -63,7 +79,7 @@ function Status(props: { label: string; kind?: StatusKind }) {
         : C.muted;
   return (
     <View
-      accessible
+      accessible={!active()}
       accessibilityLabel={props.label}
       tooltip={textTooltip(() => props.label)}
       style={{
@@ -75,70 +91,10 @@ function Status(props: { label: string; kind?: StatusKind }) {
       }}
     >
       <If
-        when={platform.isTerminal}
-        else={
-          <View
-            style={{
-              width: 16,
-              height: 16,
-              borderRadius: 8,
-              borderWidth: 1,
-              borderColor: color(),
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <If when={props.kind === 'unknown'}>
-              <Text
-                accessibilityElementsHidden
-                style={{ color: color(), fontSize: 11, lineHeight: 14, fontWeight: '600' }}
-              >
-                ?
-              </Text>
-            </If>
-            <If
-              when={
-                props.kind === 'success' ||
-                props.kind === 'error' ||
-                props.kind === 'rejected' ||
-                props.kind === 'stopped' ||
-                props.kind === 'dispatched'
-              }
-            >
-              <Icon
-                name={
-                  props.kind === 'success'
-                    ? 'check'
-                    : props.kind === 'stopped'
-                      ? 'pause'
-                      : props.kind === 'dispatched'
-                        ? 'send'
-                        : 'close'
-                }
-                size={11}
-                color={color()}
-              />
-            </If>
-            <If when={props.kind === undefined || props.kind === 'recorded'}>
-              <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: color() }} />
-            </If>
-          </View>
-        }
+        when={active()}
+        else={<Icon name={statusIcons[props.kind ?? 'recorded']} color={color()} />}
       >
-        <Text accessibilityElementsHidden style={{ color: color(), lineHeight: 16 }}>
-          {
-            {
-              recorded: '●',
-              success: '✓',
-              error: '×',
-              unknown: '?',
-              rejected: '×',
-              stopped: 'Ⅱ',
-              dispatched: '↑',
-              pending: '○',
-            }[props.kind ?? 'recorded']
-          }
-        </Text>
+        <LoadingIndicator label={props.label} color={color()} />
       </If>
     </View>
   );
@@ -449,8 +405,9 @@ export function ToolCard(props: {
             </If>
           }
         >
-          <LoadingIndicator
+          <Status
             label={props.progress?.() === 'preparing' ? tr('Preparing tool') : tr('Running tool')}
+            kind={props.progress?.() ?? 'running'}
           />
         </If>
       </Disclosure>
