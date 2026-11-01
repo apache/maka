@@ -65,6 +65,19 @@ python3 scripts/rust/benchmark-long-task.py \
 
 For larger histories, set `MAKA_ENGINE_PERF_FIXTURE_DIR` to a disposable directory and `MAKA_ENGINE_PERF_FIXTURE_TAG` to a revision label. Closed snapshots are keyed by workload settings and fixture source; preserve both when comparing retained executables. Seeding is separate from request latency and may take much longer. Run without competing builds and collect CPU profiles separately.
 
+## CI
+
+The [suite catalog](../ci/suites.mjs) defines maintained build and test scopes. `just` and the [workflow](../../.github/workflows/ci.yml) use the same [executor](../ci.mjs). Inspect committed changes or reproduce a suite after `just setup`:
+
+```sh
+node scripts/ci.mjs plan --base origin/rust-preview
+node scripts/ci.mjs run bridge
+```
+
+PR plans follow Cargo reverse dependencies and declared runtime inputs; shared or unclassified changes select the full maintained set. Branch pushes and manual runs select the full set. Package filtering preserves each suite's workspace/features build recipe. The GPUI suite covers selected headless platform and terminal tests; standalone host webview/video configurations are outside that scope.
+
+The root producer creates a nextest archive, including runtime product assets. Test workers execute partitions of that same artifact; the final `test` check requires all selected work to succeed. Cargo caches accelerate builds and are not test artifacts.
+
 ## Windows State Root ownership
 
 New State Root directories are created with an explicit current-account owner and a private ACL. An elevated Windows token can otherwise default the owner to the Administrators group. Existing directories retain their permissions until Root validation; nonempty, unrecognized directories are not adopted.

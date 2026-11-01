@@ -31,16 +31,182 @@ concurrency:
   group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_INCREMENTAL: "0"
+  MBX_GC_AUTO: "1"
+  MBX_TARGET_VIEWS: "0"
+  MBX_CACHE_LINKS: "0"
+  MBX_SHARE_OUT_DIR: "0"
+
 jobs:
-  test:
+  plan:
     runs-on: ubuntu-latest
-    # Allow cold compilation and Host fixtures that reserve multiple CPU slots.
+    outputs:
+      root: ${{ steps.plan.outputs.root }}
+      workers: ${{ steps.plan.outputs.workers }}
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+        with:
+          role: plan
+          compile: "false"
+      - id: plan
+        run: node scripts/ci.mjs plan
+      - uses: actions/upload-artifact@v7
+        id: upload
+        with:
+          name: ci-plan-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-plan.json
+          if-no-files-found: error
+
+  tooling:
+    runs-on: ubuntu-latest
     timeout-minutes: 180
-    env:
-      MBX_GC_AUTO: "1"
-      MBX_TARGET_VIEWS: "0"
-      # Cargo retains linked outputs in target; avoid another copy in mbx's store.
-      MBX_CACHE_LINKS: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+        with:
+          role: tooling
+          javascript: "true"
+          compile: "false"
+      - run: node scripts/ci.mjs run tooling
+
+  root-build:
+    needs: plan
+    if: needs.plan.outputs.root == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    outputs:
+      partitions: ${{ steps.archive.outputs.partitions }}
+      has_tests: ${{ steps.archive.outputs.has_tests }}
+      nextest: ${{ steps.archive.outputs.nextest }}
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+        id: setup
+        with:
+          role: root
+          dependencies: headless
+          javascript: "true"
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.plan.outputs.artifact }}
+          path: ${{ runner.temp }}
+          merge-multiple: true
+      - name: Build and archive selected tests
+        id: archive
+        run: node scripts/ci.mjs archive
+      - uses: actions/upload-artifact@v7
+        id: upload
+        if: steps.archive.outputs.has_tests == 'true'
+        with:
+          name: root-tests-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests.tar.zst
+          compression-level: 0
+          if-no-files-found: error
+      - uses: ./.github/actions/ci-cache
+        with:
+          compiled_key: ${{ steps.setup.outputs.compiled_key }}
+          compiled_hit: ${{ steps.setup.outputs.compiled_hit }}
+          compiled_writer: ${{ steps.setup.outputs.compiled_writer }}
+          downloads_key: ${{ steps.setup.outputs.downloads_key }}
+          downloads_hit: ${{ steps.setup.outputs.downloads_hit }}
+          downloads_writer: ${{ steps.setup.outputs.downloads_writer }}
+      - name: Report producer storage
+        if: always()
+        run: |
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          if [ -d target ]; then du -sh target; fi
+
+  root-tests:
+    needs: root-build
+    if: needs.root-build.outputs.has_tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.root-build.outputs.partitions) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+        with:
+          role: replay
+          dependencies: headless
+          javascript: "true"
+          compile: "false"
+          nextest: ${{ needs.root-build.outputs.nextest }}
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.root-build.outputs.artifact }}
+          path: ${{ runner.temp }}
+          merge-multiple: true
+      - name: Execute the produced test partition
+        run: node scripts/ci.mjs replay '${{ matrix.partition }}'
+
+  suites:
+    needs: plan
+    if: needs.plan.outputs.workers != '[]'
+    name: ${{ matrix.id }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.workers) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+        id: setup
+        with:
+          role: ${{ matrix.id }}
+          workspace: ${{ matrix.workspace }}
+          dependencies: ${{ matrix.dependencies }}
+          javascript: ${{ matrix.javascript }}
+          compile: ${{ matrix.compile }}
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.plan.outputs.artifact }}
+          path: ${{ runner.temp }}
+          merge-multiple: true
+      - name: Compile selected suites
+        run: node scripts/ci.mjs prepare '${{ matrix.id }}'
+      - uses: ./.github/actions/ci-cache
+        with:
+          compiled_key: ${{ steps.setup.outputs.compiled_key }}
+          compiled_hit: ${{ steps.setup.outputs.compiled_hit }}
+          compiled_writer: ${{ steps.setup.outputs.compiled_writer }}
+          downloads_key: ${{ steps.setup.outputs.downloads_key }}
+          downloads_hit: ${{ steps.setup.outputs.downloads_hit }}
+          downloads_writer: ${{ steps.setup.outputs.downloads_writer }}
+      - name: Verify selected suites
+        run: node scripts/ci.mjs verify '${{ matrix.id }}'
+      - name: Report worker storage
+        if: always()
+        run: |
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          if [ -d target ]; then du -sh target; fi
+
+  test:
+    needs: [plan, tooling, root-build, root-tests, suites]
+    if: always()
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,291 +214,18 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: latest
-          cache: npm
-      # NSH headless rendering tests need Vulkan and Mesa software adapters,
-      # as in third-party/nsh/.github/workflows/gpui.yml.
-      - name: Install native dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap ripgrep pkg-config libx11-dev libxi-dev libxtst-dev libxext-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libvulkan1 mesa-vulkan-drivers
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: Update Rust
-        run: rustup update stable --no-self-update
-      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+      - name: Require a successful plan
+        if: needs.plan.result != 'success'
+        run: node -e 'throw new Error("CI planning did not succeed")'
+      - uses: actions/download-artifact@v8
+        if: needs.plan.result == 'success'
         with:
-          tool: cargo-binstall
-      - name: Install latest Rust tools
+          artifact-ids: ${{ needs.plan.outputs.artifact }}
+          path: ${{ runner.temp }}
+          merge-multiple: true
+      - name: Require all planned work to succeed
+        if: needs.plan.result == 'success'
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cargo binstall --no-confirm --force cargo-binstall
-          cargo binstall --no-confirm --force just cargo-nextest cargo-deny
-      # mr-boxington-action is not on the ASF allowlist. Install the immutable
-      # release directly and transport its cache with GitHub's official actions.
-      - name: Install mbx
-        id: mbx
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          release="$RUNNER_TEMP/mbx-release.json"
-          curl --fail --silent --show-error --location --retry 3 \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            https://api.github.com/repos/jdx/mr-boxington/releases/latest \
-            --output "$release"
-          jq --exit-status '.immutable == true' "$release" > /dev/null
-          asset='.assets[] | select(.name == "mbx-x86_64-unknown-linux-gnu.tar.gz")'
-          url=$(jq --exit-status --raw-output "$asset | .browser_download_url" "$release")
-          digest=$(jq --exit-status --raw-output "$asset | .digest | select(startswith(\"sha256:\")) | ltrimstr(\"sha256:\")" "$release")
-          archive="$RUNNER_TEMP/mbx.tar.gz"
-          curl --fail --silent --show-error --location --retry 3 "$url" --output "$archive"
-          echo "$digest  $archive" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/mbx-bin"
-          tar -xzf "$archive" -C "$RUNNER_TEMP/mbx-bin"
-          "$RUNNER_TEMP/mbx-bin/mbx" --version
-          XDG_DATA_HOME="$RUNNER_TEMP/mbx-data" "$RUNNER_TEMP/mbx-bin/mbx" setup --yes
-          echo "$RUNNER_TEMP/mbx-bin" >> "$GITHUB_PATH"
-          echo "$RUNNER_TEMP/mbx-data/mbx/bin" >> "$GITHUB_PATH"
-          echo "key=rust-target-${RUNNER_OS}-${RUNNER_ARCH}-$(rustc -vV | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v6
-        id: cargo-cache
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'third-party/termina/Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
-      - name: Restore compiled Rust cache
-        id: rust-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: target
-          key: ${{ steps.mbx.outputs.key }}-${{ hashFiles('Cargo.lock', 'third-party/termina/Cargo.lock') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ steps.mbx.outputs.key }}-${{ hashFiles('Cargo.lock', 'third-party/termina/Cargo.lock') }}-
-            ${{ steps.mbx.outputs.key }}-
-      - name: Select npm
-        run: npm install --global --no-audit --no-fund npm@latest
-      - run: just setup
-      - name: Verify Rust dependency inventory before compilation
-        run: |
-          node scripts/rust/dependencies.mjs generate
-          sha256sum products/maka/cli/DEPENDENCIES.rust.tsv
-          git diff --exit-code -- products/maka/cli/DEPENDENCIES.rust.tsv
-      - name: Compile Computer Use bridge and tests
-        run: |
-          node scripts/rust/check-cua-build.mjs
-          cargo build --locked -p maka-cli --no-default-features
-          # Later feature builds replace target/debug/maka.
-          cp target/debug/maka "$RUNNER_TEMP/maka-bridge"
-          cargo nextest run --locked -p maka-computer-use --no-default-features --lib --test integration --no-run
-      - name: Check Termina Windows input
-        run: |
-          rustup target add x86_64-pc-windows-msvc
-          cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}"
-          cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}" --features windows-legacy
-      - name: Compile workspace tests
-        run: cargo nextest run --locked --workspace --no-run
-        env:
-          NEXTEST_PROFILE: ci
-      - name: Compile workspace Clippy targets
-        run: cargo clippy --config 'build.warnings="deny"' --locked --workspace --all-targets
-      - name: Compile desktop conversation tests
-        run: cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test integration -E 'test(terminal::desktop_new_session)' --no-run
-      - name: Compile Termina tests
-        run: cargo nextest run --locked --manifest-path third-party/termina/Cargo.toml --lib --target-dir "${CARGO_TARGET_DIR:-target}" --no-run
-      - run: just build
-      # Publish complete compiler outputs before any behavior tests can fail.
-      - name: Save compiled Rust cache
-        if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview'))) && steps.rust-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: target
-          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
-      - name: Save Cargo downloads
-        if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview'))) && steps.cargo-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
-      - name: Native CLI smoke
-        run: |
-          target/debug/maka --version
-          target/debug/maka desktop --version
-          target/debug/maka-desktop-shell --version
-      - name: Verify Computer Use bridge
-        run: |
-          "$RUNNER_TEMP/maka-bridge" --version
-          cargo nextest run --locked -p maka-computer-use --no-default-features --lib --test integration
-      - name: Verify model search keyboard selection before full checks
-        shell: bash
-        env:
-          NEXTEST_PROFILE: ci
-        run: |
-          filter='package(=maka-cli) & binary(=integration) & test(=terminal::keyboard::connection_filter_preserves_model_search_focus_and_keyboard_selection)'
-          cargo nextest list --locked --workspace -E "$filter" --message-format json > "$RUNNER_TEMP/model-search-tests.json"
-          node --input-type=module - "$RUNNER_TEMP/model-search-tests.json" <<'NODE'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          const listing = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-          const matches = Object.values(listing['rust-suites']).flatMap(suite =>
-            Object.entries(suite.testcases).filter(([, test]) => test['filter-match'].status === 'matches')
-              .map(([name, test]) => [suite['package-name'], suite['binary-name'], name, test.ignored]));
-          assert.deepEqual(matches, [['maka-cli', 'integration',
-            'terminal::keyboard::connection_filter_preserves_model_search_focus_and_keyboard_selection', false]]);
-          NODE
-          cargo nextest run --locked --workspace -E "$filter"
-      - name: Report storage before checks
-        run: |
-          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-          for path in "$GITHUB_WORKSPACE/target" "$HOME/.cache/mbx" "$HOME/.cargo/registry" "$HOME/.cargo/git"; do
-            if [ -d "$path" ]; then du -sh "$path"; fi
-          done
-      - run: just check
-        env:
-          NEXTEST_PROFILE: ci
-      - name: Desktop conversation lifecycle
-        run: cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test integration -E 'test(terminal::desktop_new_session)' -j 1
-      - name: Report storage after checks
-        if: ${{ always() && steps.mbx.outcome == 'success' }}
-        run: |
-          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-          for path in "$GITHUB_WORKSPACE/target" "$HOME/.cache/mbx" "$HOME/.cargo/registry" "$HOME/.cargo/git"; do
-            if [ -d "$path" ]; then du -sh "$path"; fi
-          done
-
-  # Root workspace tests compile NSH dependencies but do not select the nested
-  # workspace's own tests. Run them serially on a fresh runner when dispatched.
-  nsh-integration:
-    needs: test
-    if: ${{ always() && github.event_name == 'workflow_dispatch' && !cancelled() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      CARGO_BUILD_JOBS: "2"
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - name: Verify source revision
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-        run: |
-          actual=$(git rev-parse HEAD)
-          echo "NSH validation source: $actual"
-          test "$actual" = "$EXPECTED_SHA"
-          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/nsh-target" >> "$GITHUB_ENV"
-      - name: Update Rust
-        id: rust
-        run: |
-          rustup update stable --no-self-update
-          echo "key=nsh-target-${RUNNER_OS}-${RUNNER_ARCH}-$(rustc -vV | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: nsh-cargo-${{ runner.os }}-${{ hashFiles('third-party/nsh/Cargo.lock', 'third-party/nsh/crates/gpui/Cargo.lock') }}
-          restore-keys: nsh-cargo-${{ runner.os }}-
-      - name: Restore NSH compiled cache
-        id: nsh-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ env.CARGO_TARGET_DIR }}
-          key: ${{ steps.rust.outputs.key }}-${{ hashFiles('third-party/nsh/Cargo.lock', 'third-party/nsh/crates/gpui/Cargo.lock') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ steps.rust.outputs.key }}-${{ hashFiles('third-party/nsh/Cargo.lock', 'third-party/nsh/crates/gpui/Cargo.lock') }}-
-            ${{ steps.rust.outputs.key }}-
-      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
-        with:
-          tool: cargo-binstall
-      - name: Install latest nextest
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cargo binstall --no-confirm --force cargo-binstall
-          cargo binstall --no-confirm --force cargo-nextest
-      - name: Test NSH core, JS, headless, terminal and development tooling
-        run: |
-          df -h "$RUNNER_TEMP"
-          df -i "$RUNNER_TEMP"
-          available=$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
-          test "$available" -ge 8589934592 || { echo "NSH tests require 8 GiB free before compilation" >&2; exit 1; }
-          args=(--locked --manifest-path third-party/nsh/Cargo.toml
-            -p nsh-core -p nsh-base -p nsh-engine -p nsh-js
-            -p nsh-testing -p nsh-platform-tui -p nsh-dev -p nsh-bundler
-            --features nsh-testing/agent,nsh-dev/client,nsh-dev/server)
-          cargo nextest run "${args[@]}"
-          cargo test "${args[@]}" --doc
-      - name: Test portable Web text layout and hit testing
-        run: |
-          available=$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
-          test "$available" -ge 4294967296 || { echo "Web text tests require 4 GiB free before compilation" >&2; exit 1; }
-          cargo nextest run --locked --manifest-path third-party/nsh/Cargo.toml \
-            -p nsh-platform-web --no-default-features --test text
-      - name: Test Web shader lifecycle in the installed browser
-        shell: bash
-        run: |
-          chrome=$(command -v google-chrome || command -v chromium || command -v chromium-browser) || {
-            echo "A preinstalled Chrome/Chromium is required for Web shader lifecycle tests" >&2
-            exit 1
-          }
-          "$chrome" --version
-          node --test third-party/nsh/crates/nsh-platform-web/web/nsh.test.mjs
-          CHROME="$chrome" node --test --test-reporter=tap \
-            third-party/nsh/crates/nsh-platform-web/web/shader-browser.test.mjs \
-            | tee "$RUNNER_TEMP/nsh-shader-browser-tests.tap"
-          grep -Fx '# tests 2' "$RUNNER_TEMP/nsh-shader-browser-tests.tap"
-          grep -Fx '# pass 2' "$RUNNER_TEMP/nsh-shader-browser-tests.tap"
-          grep -Fx '# fail 0' "$RUNNER_TEMP/nsh-shader-browser-tests.tap"
-          grep -Fx '# skipped 0' "$RUNNER_TEMP/nsh-shader-browser-tests.tap"
-      # This owning workspace has a distinct lock/patch graph; root build
-      # artifacts are not assumed reusable. Selected tests open no native window.
-      - name: Check GPUI test build reserve
-        run: |
-          available=$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
-          inodes=$(df --output=iavail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
-          test "$available" -ge 17179869184 || { echo "GPUI queue tests require 16 GiB free before setup" >&2; exit 1; }
-          test "$inodes" -ge 100000 || { echo "GPUI queue tests require 100000 free inodes" >&2; exit 1; }
-      - name: Install GPUI queue test native dependencies
-        timeout-minutes: 10
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            clang libclang-dev build-essential pkg-config \
-            libasound2-dev libfontconfig1-dev libfreetype6-dev libssl-dev \
-            libvulkan1 mesa-vulkan-drivers libwayland-dev libx11-xcb-dev libxcb1-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev
-      - name: Test GPUI input ownership, window reload and pixel transport
-        shell: bash
-        timeout-minutes: 30
-        run: |
-          available=$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
-          inodes=$(df --output=iavail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
-          test "$available" -ge 17179869184 || { echo "GPUI queue tests require 16 GiB free before compilation" >&2; exit 1; }
-          test "$inodes" -ge 100000 || { echo "GPUI queue tests require 100000 free inodes" >&2; exit 1; }
-          args=(--locked --manifest-path third-party/nsh/crates/gpui/Cargo.toml
-            -p nsh-platform-gpui -p nsh-gpui-terminal --no-default-features
-            --features nsh-platform-gpui/js,nsh-platform-gpui/shot
-            --lib)
-          cargo nextest run "${args[@]}" -j 1 -E '
-            test(native::tests::animated_props_) |
-            test(=input::tests::nonpressable_focusable_views_join_native_stops_without_stealing_presses) |
-            test(=tests::windows) |
-            test(kitty::tests::)'
-      - name: Report NSH storage
-        if: ${{ always() }}
-        run: |
-          df -h "$RUNNER_TEMP"
-          df -i "$RUNNER_TEMP"
-          if [ -d "$CARGO_TARGET_DIR" ]; then du -sh "$CARGO_TARGET_DIR"; fi
-      - name: Save NSH compiled cache
-        if: ${{ !cancelled() && steps.nsh-cache.outcome == 'success' && steps.nsh-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ env.CARGO_TARGET_DIR }}
-          key: ${{ steps.nsh-cache.outputs.cache-primary-key }}
+          MAKA_CI_RESULTS: ${{ toJSON(needs) }}
+          MAKA_CI_HAS_TESTS: ${{ needs.root-build.outputs.has_tests }}
+        run: node scripts/ci.mjs gate
