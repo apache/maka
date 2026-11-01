@@ -121,12 +121,67 @@ impl ProductHost {
     }
 }
 
+/// launchd starts Dock apps with a soft limit of 256 descriptors, which an idle
+/// Host nearly fills; a store that then fails to open a file stops the Host.
+#[cfg(unix)]
+fn raise_open_file_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a valid rlimit for the duration of the call.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        eprintln!(
+            "open file limit unchanged: {}",
+            std::io::Error::last_os_error()
+        );
+        return;
+    }
+    let wanted = limit.rlim_max;
+    #[cfg(target_os = "macos")]
+    let wanted = {
+        let mut maximum: libc::c_int = 0;
+        let mut size = std::mem::size_of_val(&maximum);
+        // SAFETY: the named sysctl writes one c_int into `maximum`; no new value is supplied.
+        if unsafe {
+            libc::sysctlbyname(
+                c"kern.maxfilesperproc".as_ptr(),
+                (&raw mut maximum).cast(),
+                &raw mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        } != 0
+        {
+            eprintln!(
+                "open file limit unchanged: cannot read kern.maxfilesperproc: {}",
+                std::io::Error::last_os_error()
+            );
+            return;
+        }
+        wanted.min(maximum as libc::rlim_t)
+    };
+    if wanted <= limit.rlim_cur {
+        return;
+    }
+    limit.rlim_cur = wanted;
+    // SAFETY: `limit` is a valid rlimit; its hard limit is unchanged.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
+        eprintln!(
+            "open file limit unchanged: cannot raise to {wanted}: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
 pub(crate) async fn open_host(
     owner: RootOwner,
     options: Options,
     roots: Roots,
     catalog_transport: Option<Arc<dyn maka_agent_ports::model::Transport>>,
 ) -> Result<ProductHost, HostError> {
+    #[cfg(unix)]
+    raise_open_file_limit();
     let store = Arc::new(maka_transport::open_store(Arc::new(owner)).await?);
     let catalog = async {
         let configuration = maka_config::ConfigurationStore::for_root(store.owned_root()?).await?;
@@ -578,6 +633,67 @@ async fn replace_workspace_locations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_low_open_file_limit_is_raised_within_the_hard_limit() {
+        const CHILD: &str = "MAKA_OPEN_FILE_LIMIT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "application::product::headless::tests::a_low_open_file_limit_is_raised_within_the_hard_limit",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated open file limit test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        // This exact-test subprocess owns its limit.
+        let read = || {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: `limit` is a valid rlimit for the duration of the call.
+            assert_eq!(
+                unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+                0
+            );
+            limit
+        };
+        let original = read();
+        #[cfg(not(target_os = "macos"))]
+        {
+            let low = libc::rlimit {
+                rlim_cur: original.rlim_max.min(64),
+                rlim_max: original.rlim_max,
+            };
+            // SAFETY: only this subprocess's soft limit is lowered.
+            assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &low) }, 0);
+            raise_open_file_limit();
+            let raised = read();
+            assert_eq!(raised.rlim_cur, original.rlim_max);
+            assert_eq!(raised.rlim_max, original.rlim_max);
+        }
+
+        let hard = original.rlim_max.min(200);
+        let low = libc::rlimit {
+            rlim_cur: hard.min(64),
+            rlim_max: hard,
+        };
+        // SAFETY: `low` is a valid rlimit for the duration of the call.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &low) }, 0);
+        raise_open_file_limit();
+        assert_eq!(read().rlim_cur, hard);
+    }
 
     #[tokio::test]
     async fn explicit_update_previews_and_applies_launch_drift_with_current_packages() {

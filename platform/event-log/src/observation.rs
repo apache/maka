@@ -86,15 +86,14 @@ impl EventLog {
         let invocation = invocation.clone();
         let event_id = event_id.to_owned();
         self.connection.read(move |connection| Box::pin(async move {
-            let row: Option<(i64, String)> = sqlx::query_as(
-                "SELECT sequence, event_json FROM runtime_events WHERE event_id = ?1 AND sequence <= ?2
-                 AND (event_json IS NOT NULL AND event_session=?3)
-                 AND json_extract(event_json, '$.invocation.turn_id') = ?4"
-            ).bind(event_id).bind(through as i64).bind(invocation.session_id).bind(invocation.turn_id)
+            let row=sqlx::query(sqlx::AssertSqlSafe(format!(
+                "SELECT e.sequence,e.event_header,{columns} FROM runtime_events e {joins} WHERE e.event_id=?1 AND e.sequence<=?2
+                 AND (e.event_header IS NOT NULL AND e.event_session=?3)
+                 AND json_extract(e.event_header,'$.invocation.turn_id')=?4",
+                columns=crate::canonical::COLUMNS,joins=crate::canonical::JOINS,
+            ))).bind(event_id).bind(through as i64).bind(invocation.session_id).bind(invocation.turn_id)
                 .fetch_optional(connection).await?;
-            row.map(|(sequence, json)| Ok(StoredEvent {
-                sequence: sequence_number(sequence)?, event: serde_json::from_str(&json)?,
-            })).transpose()
+            row.map(|row|Ok(StoredEvent {sequence:sequence_number(row.try_get(0)?)?,event:serde_json::from_str(&crate::canonical::json(&row)?)?})).transpose()
         })).await
     }
 
@@ -113,7 +112,7 @@ impl EventLog {
                     COALESCE((SELECT revision FROM message_queue_state WHERE session_id = session.id), 0),
                     COALESCE((SELECT sequence FROM event_log INDEXED BY event_material_owner
                         WHERE invocation_id IS NOT NULL
-                        AND (event_json IS NOT NULL AND event_session=session.id)
+                        AND (event_header IS NOT NULL AND event_session=session.id)
                         ORDER BY sequence DESC LIMIT 1), 0),
                     control.revision
                  FROM session_control session CROSS JOIN root_app_revision control
@@ -281,9 +280,10 @@ impl EventLog {
                     let mut next_after = None;
                     {
                         let mut rows = sqlx::query(
-                            "SELECT sequence, length(CAST(event_json AS BLOB)), event_json FROM runtime_events
-                             WHERE (event_json IS NOT NULL AND event_session=?1)
-                             AND sequence > ?2 AND sequence <= ?3 ORDER BY sequence LIMIT ?4",
+                            sqlx::AssertSqlSafe(format!("SELECT e.sequence,e.canonical_bytes,e.event_header,{columns} FROM runtime_events e {joins}
+                             WHERE (e.event_header IS NOT NULL AND e.event_session=?1)
+                             AND e.sequence>?2 AND e.sequence<=?3 ORDER BY e.sequence LIMIT ?4",
+                             columns=crate::canonical::COLUMNS,joins=crate::canonical::JOINS)),
                         )
                         .bind(&session_id)
                         .bind(after_sql)
@@ -300,7 +300,7 @@ impl EventLog {
                             }
                             let sequence = sequence_number(row.try_get(0)?)?;
                             let event: RuntimeEvent =
-                                serde_json::from_str(row.try_get::<&str, _>(2)?)?;
+                                serde_json::from_str(&crate::canonical::json(&row)?)?;
                             if event.invocation.session_id != session_id {
                                 return Err(invalid("stored observation scope changed"));
                             }

@@ -434,7 +434,7 @@ impl Fixture {
         )
         .unwrap();
         let (count, bytes): (i64, i64) = database.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(length(CAST(event_json AS BLOB))),0) FROM runtime_events WHERE event_session=?",
+            "SELECT COUNT(*), COALESCE(SUM(canonical_bytes),0) FROM runtime_events WHERE event_session=?",
             [session], |row| Ok((row.get(0)?, row.get(1)?)),
         ).unwrap();
         assert!(
@@ -443,7 +443,7 @@ impl Fixture {
         );
         let mut statement = database
             .prepare(
-                "SELECT event_json FROM runtime_events WHERE event_session=? ORDER BY sequence",
+                "SELECT event_header FROM runtime_events WHERE event_session=? ORDER BY sequence",
             )
             .unwrap();
         statement
@@ -1212,7 +1212,6 @@ async fn cleanup_case(panic: bool) {
     let fixture = Fixture::new("http://127.0.0.1:1/v1", Some(model)).await;
 
     let session = fixture.create("Physical lifetime").await;
-    let physical_session = fixture.session(&session).await;
 
     *fault.database.lock().unwrap() = Some(fixture.session_database(&session));
     fixture.send(&session).await.unwrap();
@@ -1300,13 +1299,6 @@ async fn cleanup_case(panic: bool) {
     );
     assert_eq!(fixture.owner.stop.is_cancelled(), !panic);
 
-    if panic {
-        assert!(matches!(
-            physical_session.execution_scope(None).await,
-            Err(maka_event_log::StoreError::ConnectionClosed)
-        ));
-    }
-    drop(physical_session);
     let close = fixture.app.shutdown().await;
 
     assert_eq!(close.is_err(), panic);

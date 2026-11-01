@@ -136,13 +136,13 @@ pub(crate) async fn resolve_cut(
             let (first, last): (Option<i64>, Option<i64>) = sqlx::query_as(
                 "SELECT MIN(sequence),MAX(sequence) FROM session_history_events
                  WHERE owner_session_id = ?1
-                   AND json_extract(event_json,'$.invocation.turn_id') = ?2
+                   AND json_extract(event_header,'$.invocation.turn_id') = ?2
                    AND sequence <= ?3
                    AND EXISTS(SELECT 1 FROM session_history_events opening
                        WHERE (opening.kind = 'message_imported' OR (opening.kind = 'invocation_opened'
-                         AND json_extract(opening.event_json,'$.fact.input.kind') IN ('message','continuation','handoff')))
+                         AND json_extract(opening.event_header,'$.fact.input.kind') IN ('message','continuation','handoff')))
                          AND opening.owner_session_id = ?1
-                         AND json_extract(opening.event_json,'$.invocation.turn_id') = ?2
+                         AND json_extract(opening.event_header,'$.invocation.turn_id') = ?2
                          AND opening.sequence <= ?3)",
             )
             .bind(session)
@@ -161,7 +161,7 @@ pub(crate) async fn resolve_cut(
     let crossing: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM session_history_events
          WHERE owner_session_id = ?1 AND sequence <= ?2
-         GROUP BY json_extract(event_json,'$.invocation.turn_id')
+         GROUP BY json_extract(event_header,'$.invocation.turn_id')
          HAVING MIN(sequence) <= ?3 AND MAX(sequence) > ?3)",
     )
     .bind(session)

@@ -25,6 +25,7 @@ autotests = false
 
 [dependencies]
 hex.workspace = true
+postcard.workspace = true
 maka-agent-facts.workspace = true
 maka-packages.workspace = true
 maka-agent-ports.workspace = true

@@ -322,9 +322,10 @@ pub struct ProviderAuthenticationSummary {
     pub interactive: bool,
 }
 #[derive(Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsProviderSummary")]
 pub struct ProviderSummary {
+    pub custom_endpoint: bool,
     pub identity: maka_agent_facts::provider::Identity,
     pub label: String,
     pub authentication: Vec<ProviderAuthenticationSummary>,

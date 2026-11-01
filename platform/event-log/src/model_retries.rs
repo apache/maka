@@ -66,7 +66,7 @@ pub(crate) async fn frontier(
     {
         return Ok(false);
     }
-    let row: Option<(i64,String)> = sqlx::query_as("SELECT sequence,event_json FROM runtime_events WHERE event_id=? AND invocation_id=? AND kind='model_interrupted'")
+    let row: Option<(i64,String)> = sqlx::query_as("SELECT sequence,event_header FROM runtime_events WHERE event_id=? AND invocation_id=? AND kind='model_interrupted'")
         .bind(&plan.failure_event_id).bind(&invocation.invocation_id).fetch_optional(&mut *tx).await?;
     let Some((sequence, json)) = row else {
         return Ok(false);
@@ -103,7 +103,7 @@ pub(crate) async fn frontier(
     {
         return Ok(false);
     }
-    let row: Option<(i64,String)> = sqlx::query_as("SELECT sequence,event_json FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='model_requested'")
+    let row: Option<(i64,String)> = sqlx::query_as("SELECT sequence,event_header FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='model_requested'")
         .bind(&invocation.invocation_id).bind(step_id).fetch_optional(&mut *tx).await?;
     let Some((requested, json)) = row else {
         return Ok(false);
@@ -120,7 +120,7 @@ pub(crate) async fn frontier(
     if request.invocation != *invocation || requested >= sequence {
         return Ok(false);
     }
-    let advanced: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events e WHERE e.invocation_id=? AND e.sequence>? AND (e.kind IN ('executor_started','invocation_ended','tool_dispatched','tool_rejected','tool_notified','message_steered') OR (e.kind='model_requested' AND json_extract(e.event_json,'$.fact.purpose')='main') OR (e.kind='model_completed' AND EXISTS(SELECT 1 FROM runtime_events r WHERE r.invocation_id=e.invocation_id AND r.kind='model_requested' AND r.operation_id=e.operation_id AND json_extract(r.event_json,'$.fact.purpose')='main'))))")
+    let advanced: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events e WHERE e.invocation_id=? AND e.sequence>? AND (e.kind IN ('executor_started','invocation_ended','tool_dispatched','tool_rejected','tool_notified','message_steered') OR (e.kind='model_requested' AND json_extract(e.event_header,'$.fact.purpose')='main') OR (e.kind='model_completed' AND EXISTS(SELECT 1 FROM runtime_events r WHERE r.invocation_id=e.invocation_id AND r.kind='model_requested' AND r.operation_id=e.operation_id AND json_extract(r.event_header,'$.fact.purpose')='main'))))")
         .bind(&invocation.invocation_id).bind(requested).fetch_one(&mut *tx).await?;
     let obligations: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM context_obligations WHERE invocation_id=? AND kind IN ('model','tool','call','completed_provider','interrupted_provider'))")
         .bind(&invocation.invocation_id).fetch_one(&mut *tx).await?;
@@ -130,7 +130,7 @@ pub(crate) async fn frontier(
         return Ok(false);
     }
     if *item_acceptance {
-        let accepted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='model_observed' AND json_extract(event_json,'$.fact.event.kind')='part')")
+        let accepted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='model_observed' AND json_extract(event_header,'$.fact.event.kind')='part')")
             .bind(&invocation.invocation_id).bind(step_id).fetch_one(&mut *tx).await?;
         if accepted {
             return Ok(false);
@@ -178,7 +178,7 @@ impl EventLog {
                 Box::pin(async move {
                     let mut tx = db.begin().await?;
                     let stored: Option<(i64, String)> = sqlx::query_as(
-                        "SELECT sequence,event_json FROM runtime_events WHERE event_id=?",
+                        "SELECT sequence,event_header FROM runtime_events WHERE event_id=?",
                     )
                     .bind(&write.event().id)
                     .fetch_optional(&mut *tx)
@@ -381,7 +381,7 @@ async fn cancellation_confirmed(
     tx: &mut SqliteConnection,
     receipt: &ParkedActivationReceipt,
 ) -> Result<bool, StoreError> {
-    let row: Option<String> = sqlx::query_scalar("SELECT event_json FROM runtime_events WHERE event_id=? AND invocation_id=? AND kind='invocation_ended'")
+    let row: Option<String> = sqlx::query_scalar("SELECT event_header FROM runtime_events WHERE event_id=? AND invocation_id=? AND kind='invocation_ended'")
         .bind(format!("model-retry-cancel:{}", receipt.checkpoint_id())).bind(&receipt.invocation().invocation_id).fetch_optional(tx).await?;
     row.map(|json| -> Result<bool, StoreError> {
         let event: RuntimeEvent = serde_json::from_str(&json)?;

@@ -42,12 +42,12 @@ pub(super) async fn read(
     // The canonical seal already authenticated this root across every handoff.
     // Resolve provenance once, without replaying model/tool bodies or guessing latest.
     let rows: Vec<String> = sqlx::query_scalar(
-        "SELECT event_json FROM event_log INDEXED BY turn_opening_lookup
-         WHERE invocation_id IS NOT NULL AND event_json IS NOT NULL
+        "SELECT event_header FROM event_log INDEXED BY turn_opening_lookup
+         WHERE invocation_id IS NOT NULL AND event_header IS NOT NULL
          AND kind='invocation_opened'
-         AND json_extract(event_json,'$.invocation.session_id')=?1
-         AND json_extract(event_json,'$.invocation.turn_id')=?2
-         AND json_extract(event_json,'$.invocation.run_id')=?3 LIMIT 2",
+         AND json_extract(event_header,'$.invocation.session_id')=?1
+         AND json_extract(event_header,'$.invocation.turn_id')=?2
+         AND json_extract(event_header,'$.invocation.run_id')=?3 LIMIT 2",
     )
     .bind(&current.session_id)
     .bind(&current.turn_id)

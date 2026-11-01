@@ -96,7 +96,7 @@ pub(super) async fn compacting(
         maka_agent_facts::input::InvocationInput::ContextCompact { .. }
     ) {
         sqlx::query_as(
-            "SELECT opening.event_id, catalog_time(json_extract(opening.event_json, '$.recorded_at'))
+            "SELECT opening.event_id, catalog_time(json_extract(opening.event_header, '$.recorded_at'))
              FROM runtime_events opening WHERE opening.event_id = ?
              AND NOT EXISTS (SELECT 1 FROM runtime_events checkpoint
                  WHERE checkpoint.invocation_id = opening.invocation_id
@@ -110,27 +110,27 @@ pub(super) async fn compacting(
             "WITH waiting AS MATERIALIZED (
                  SELECT sequence FROM event_log INDEXED BY context_compaction_waiting
                  WHERE invocation_id = ?1 AND kind = 'context_compaction_waiting'
-                 AND event_json IS NOT NULL
+                 AND event_header IS NOT NULL
                  ORDER BY sequence DESC LIMIT 1
              ), latest AS MATERIALIZED (
-                 SELECT sequence, event_json FROM event_log INDEXED BY context_summary_sequence
+                 SELECT sequence, event_header FROM event_log INDEXED BY context_summary_sequence
                  WHERE invocation_id = ?1 AND kind = 'model_requested'
-                 AND json_extract(event_json, '$.fact.purpose') = 'summary'
+                 AND json_extract(event_header, '$.fact.purpose') = 'summary'
                  ORDER BY sequence DESC LIMIT 1
              )
-             SELECT first.event_id, catalog_time(json_extract(first.event_json, '$.recorded_at'))
+             SELECT first.event_id, catalog_time(json_extract(first.event_header, '$.recorded_at'))
              FROM waiting, latest JOIN event_log first INDEXED BY context_summary_round
                ON first.invocation_id = ?1 AND first.kind = 'model_requested'
-               AND json_extract(first.event_json, '$.fact.purpose') = 'summary'
-               AND json_extract(first.event_json, '$.fact.source_high_water') = json_extract(latest.event_json, '$.fact.source_high_water')
-               AND json_extract(first.event_json, '$.fact.source_digest') = json_extract(latest.event_json, '$.fact.source_digest')
+               AND json_extract(first.event_header, '$.fact.purpose') = 'summary'
+               AND json_extract(first.event_header, '$.fact.source_high_water') = json_extract(latest.event_header, '$.fact.source_high_water')
+               AND json_extract(first.event_header, '$.fact.source_digest') = json_extract(latest.event_header, '$.fact.source_digest')
                AND first.sequence <= latest.sequence
-             WHERE first.event_json IS NOT NULL
+             WHERE first.event_header IS NOT NULL
                AND NOT EXISTS (SELECT 1 FROM runtime_events boundary
                    WHERE boundary.invocation_id = ?1 AND boundary.sequence > waiting.sequence
                    AND (boundary.kind = 'context_checkpoint_recorded'
-                       OR (boundary.kind = 'model_requested' AND json_extract(boundary.event_json, '$.fact.purpose') = 'main')
-                       OR (boundary.kind = 'model_interrupted' AND json_extract(boundary.event_json, '$.fact.status') = 'cancelled')))
+                       OR (boundary.kind = 'model_requested' AND json_extract(boundary.event_header, '$.fact.purpose') = 'main')
+                       OR (boundary.kind = 'model_interrupted' AND json_extract(boundary.event_header, '$.fact.status') = 'cancelled')))
                AND NOT EXISTS (SELECT 1 FROM runtime_events boundary
                    WHERE boundary.invocation_id = ?1 AND boundary.sequence > first.sequence
                    AND boundary.kind = 'context_checkpoint_recorded')

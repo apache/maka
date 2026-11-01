@@ -126,7 +126,7 @@ async fn obligations(
     SELECT e.event_session, e.invocation_id, 'tool', e.operation_id, e.sequence,
            EXISTS(SELECT 1 FROM runtime_events terminal
              WHERE terminal.invocation_id=e.invocation_id AND terminal.kind='invocation_ended'
-               AND json_extract(terminal.event_json,'$.fact.outcome.kind') IN ('failed','cancelled'))
+               AND json_extract(terminal.event_header,'$.fact.outcome.kind') IN ('failed','cancelled'))
     FROM runtime_events e
     WHERE e.sequence=?1 AND e.kind='tool_dispatched'
       AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id=e.invocation_id AND t.operation_id=e.operation_id AND t.kind='tool_settled')"#).bind(sequence).execute(&mut *db).await?;
@@ -341,10 +341,10 @@ FROM runtime_events e WHERE e.kind='tool_dispatched' AND e.sequence=?1"#).bind(s
             sqlx::query("INSERT OR IGNORE INTO context_execution_work(invocation_id,kind,operation_id,opened_at,closed_at)
                 SELECT ?1,'executor_tool',?2,?3,
                     (SELECT MIN(e.sequence) FROM event_log e INDEXED BY executor_tool_observations
-                     WHERE e.invocation_id=?1 AND e.event_json IS NOT NULL
+                     WHERE e.invocation_id=?1 AND e.event_header IS NOT NULL
                        AND e.kind IN ('executor_observed','executor_completed')
-                       AND json_extract(e.event_json,'$.fact.output.toolCallId')=?2
-                       AND json_extract(e.event_json,'$.fact.output.type')='tool_result')
+                       AND json_extract(e.event_header,'$.fact.output.toolCallId')=?2
+                       AND json_extract(e.event_header,'$.fact.output.type')='tool_result')
                 WHERE NOT EXISTS(SELECT 1 FROM context_execution_work
                     WHERE invocation_id=?1 AND kind='executor_tool' AND operation_id=?2
                       AND call_id='' AND call_name='')")

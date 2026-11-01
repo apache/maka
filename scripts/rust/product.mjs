@@ -32,7 +32,7 @@ export async function uiCompiler(root = repository, env = process.env) {
     { cwd: root, env },
   );
   if (code !== 0 || signal) throw new Error(`UI compiler build failed: ${signal ?? code}`);
-  const executable = executables.get('maka-ui-build');
+  const executable = executables.get('maka-ui-build')?.path;
   if (!executable) throw new Error('Cargo did not report the Maka UI compiler executable');
   return executable;
 }

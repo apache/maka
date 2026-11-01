@@ -52,3 +52,11 @@ Use **Pin conversation** in a conversation’s action menu to keep it in the **P
 Only skills installed through Maka have an update button. Updating replaces their entire directory from the recorded source, including resources, and overwrites local edits. Other skills in the four standard directories can still be inspected and deleted. The source registry lives in the Host database; no npx lockfile or private copy of the skills is created.
 
 **Settings → MCP servers** manages the four corresponding `mcp.json` files through command/HTTP forms. It preserves other entries and custom fields. Selecting a project does not create a conversation. Downloads, file changes and registrations run on the connected Host; saving a project MCP file does not grant it trust.
+
+**Settings → Connections & models** keeps provider sign-in, connection details and the model list together. A new or edited connection can be saved and signed in with one action. Device sign-in opens the browser and keeps the code, copy controls and cancellation available in the dialog. Model discovery can be retried independently after successful sign-in. Advanced connection and model options stay behind disclosures; saved connections can be reloaded after external changes, and Back asks before discarding edits.
+
+The provider picker separates account sign-in, custom endpoints and named API services, with alphabetical choices within each section. Search accepts multiple terms, supports arrow keys and Enter, and Escape clears the query before returning. Returning from a new connection preserves the provider search and selection; adding another connection suggests an unused ID among the loaded connections.
+
+![Provider picker, rendered in the desktop test fixture against the built-in catalog.](screenshots/provider-picker-light.png)
+
+Built-in subscription, compatible-endpoint and region labels follow the interface language. Provider search matches both the original and localized labels. Saved connection names, brand names, model IDs and reasoning-effort values keep their original spelling.

@@ -107,7 +107,7 @@ fn ensure_for(
     }
     // Canonical membership retains copied material. A bare imported owner can
     // lose its own material without a session retirement row.
-    let unavailable: bool = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM event_log INDEXED BY event_retired_material_owner WHERE event_session=?1 AND sequence<=?2 AND event_json IS NULL AND invocation_id IS NOT NULL)")?
+    let unavailable: bool = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM event_log INDEXED BY event_retired_material_owner WHERE event_session=?1 AND sequence<=?2 AND event_header IS NULL AND invocation_id IS NOT NULL)")?
         .query_row(params![session,through], |row| row.get(0))?;
     if unavailable {
         return Err(StoreError::InvalidTransition(

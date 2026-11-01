@@ -29,11 +29,11 @@ use sqlx::{Row, SqliteConnection};
 // combined history view makes SQLite sort the entire remainder on every page.
 // The copied branch exposes h.sequence so its membership index supplies order.
 pub(super) const SOURCES: [&str; 2] = [
-    "SELECT e.sequence,e.event_id,e.invocation_id,e.operation_id,e.event_json,
-       json_extract(e.event_json,'$.invocation.session_id') AS owner_session_id,
+    "SELECT e.sequence,e.event_id,e.invocation_id,e.operation_id,e.event_header,e.body_id,
+       json_extract(e.event_header,'$.invocation.session_id') AS owner_session_id,
        0 AS inherited,NULL AS archive_sequence
      FROM runtime_events e WHERE e.kind='tool_settled'",
-    "SELECT h.sequence,e.event_id,e.invocation_id,e.operation_id,e.event_json,
+    "SELECT h.sequence,e.event_id,e.invocation_id,e.operation_id,e.event_header,e.body_id,
        h.session_id AS owner_session_id,1 AS inherited,h.archive_sequence
      FROM session_history_members h CROSS JOIN runtime_events e
      WHERE e.sequence=h.sequence AND e.kind='tool_settled'",
@@ -56,23 +56,22 @@ pub(super) async fn read(
 ) -> Result<Option<Target>, StoreError> {
     // Filter before SQLite materializes the compound acceptance query, so only
     // matching calls carry their full inputs into its temporary rows.
-    let row = sqlx::query(concat!("WITH ", crate::model_items::accepted_calls!(),
-        " SELECT t.sequence, t.event_id, t.operation_id, json_extract(t.event_json, '$.invocation') AS ti,
-         json_extract(d.event_json, '$.invocation') AS di, json_extract(d.event_json, '$.fact.call') AS call,
-         json_extract(d.event_json, '$.fact.name') AS name,
-         json_extract(t.event_json, '$.fact.outcome.kind') AS outcome,
-         json_extract(t.event_json, '$.fact.outcome.model_projection') AS projection,
-         json_extract(t.event_json, '$.fact.outcome.message') AS message,
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(concat!("WITH ", crate::model_items::accepted_calls!(),
+        " SELECT e.event_header,{columns},t.sequence, t.event_id, t.operation_id, json_extract(t.event_header, '$.invocation') AS ti,
+         json_extract(d.event_header, '$.invocation') AS di, json_extract(d.event_header, '$.fact.call') AS call,
+         json_extract(d.event_header, '$.fact.name') AS name,
+         json_extract(t.event_header, '$.fact.outcome.kind') AS outcome,
+         json_extract(t.event_header, '$.fact.outcome.message') AS message,
          c.sequence AS completed,
-         (json_extract(t.event_json,'$.id')=t.event_id
-           AND json_extract(t.event_json,'$.invocation.invocation_id')=t.invocation_id
-           AND json_extract(t.event_json,'$.fact.operation_id')=t.operation_id
-           AND json_extract(t.event_json,'$.fact.kind')='tool_settled'
-           AND json_extract(d.event_json,'$.id')=d.event_id
-           AND json_extract(d.event_json,'$.fact.operation_id')=d.operation_id
-           AND json_extract(d.event_json,'$.fact.kind')='tool_dispatched'
+         (json_extract(t.event_header,'$.id')=t.event_id
+           AND json_extract(t.event_header,'$.invocation.invocation_id')=t.invocation_id
+           AND json_extract(t.event_header,'$.fact.operation_id')=t.operation_id
+           AND json_extract(t.event_header,'$.fact.kind')='tool_settled'
+           AND json_extract(d.event_header,'$.id')=d.event_id
+           AND json_extract(d.event_header,'$.fact.operation_id')=d.operation_id
+           AND json_extract(d.event_header,'$.fact.kind')='tool_dispatched'
            AND c.invocation_id=t.invocation_id
-           AND json_extract(c.call,'$.name')=json_extract(d.event_json,'$.fact.name')
+           AND json_extract(c.call,'$.name')=json_extract(d.event_header,'$.fact.name')
            AND json_extract(c.call,'$.provider_executed')=0
            AND c.sequence<d.sequence AND d.sequence<t.sequence) AS identities
          FROM session_history_events t LEFT JOIN runtime_events d ON d.invocation_id = t.invocation_id
@@ -80,21 +79,34 @@ pub(super) async fn read(
          LEFT JOIN (
            SELECT * FROM accepted_calls
            WHERE invocation_id=(SELECT invocation_id FROM runtime_events WHERE event_id=?1)
-             AND step_id=(SELECT json_extract(d.event_json,'$.fact.call.origin.step_id')
+             AND step_id=(SELECT json_extract(d.event_header,'$.fact.call.origin.step_id')
                FROM runtime_events t JOIN runtime_events d ON d.operation_id=t.operation_id
                  AND d.invocation_id=t.invocation_id AND d.kind='tool_dispatched'
                WHERE t.event_id=?1)
-             AND json_extract(call,'$.id')=(SELECT json_extract(d.event_json,'$.fact.call.tool_call_id')
+             AND json_extract(call,'$.id')=(SELECT json_extract(d.event_header,'$.fact.call.tool_call_id')
                FROM runtime_events t JOIN runtime_events d ON d.operation_id=t.operation_id
                  AND d.invocation_id=t.invocation_id AND d.kind='tool_dispatched'
                WHERE t.event_id=?1)
          ) c ON c.invocation_id = t.invocation_id
-           AND c.step_id = json_extract(d.event_json, '$.fact.call.origin.step_id')
-           AND json_extract(c.call,'$.id') = json_extract(d.event_json,'$.fact.call.tool_call_id')
+           AND c.step_id = json_extract(d.event_header, '$.fact.call.origin.step_id')
+           AND json_extract(c.call,'$.id') = json_extract(d.event_header,'$.fact.call.tool_call_id')
+         JOIN runtime_events e ON e.sequence=t.sequence {joins}
          WHERE t.event_id = ?1 AND t.kind = 'tool_settled' AND t.owner_session_id = ?2",
-    )).bind(id).bind(session).fetch_optional(&mut *connection).await?;
+    ), columns=crate::canonical::COLUMNS, joins=crate::canonical::JOINS))).bind(id).bind(session).fetch_optional(&mut *connection).await?;
     let Some(row) = row else {
         return Ok(None);
+    };
+    let event: maka_agent_facts::event::RuntimeEvent =
+        serde_json::from_str(&crate::canonical::json(&row)?)?;
+    let mut durable = match event.fact {
+        maka_agent_facts::event::Fact::ToolSettled {
+            outcome:
+                maka_agent_facts::event::ToolOutcome::Succeeded {
+                    model_projection, ..
+                },
+            ..
+        } => Some(model_projection),
+        _ => None,
     };
     let decoded = (|| -> Option<Target> {
         if !row.try_get::<bool, _>("identities").ok()? {
@@ -110,7 +122,7 @@ pub(super) async fn read(
         }
         let outcome: &str = row.try_get("outcome").ok()?;
         let projection = match outcome {
-            "succeeded" => serde_json::from_str(row.try_get::<&str, _>("projection").ok()?).ok()?,
+            "succeeded" => durable.take()?,
             "failed" | "unknown" => DurableToolProjection::Text {
                 text: row.try_get("message").ok()?,
             },

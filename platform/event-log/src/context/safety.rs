@@ -32,8 +32,8 @@ pub(crate) async fn current_opening(
         return Ok(None);
     };
     let row: Option<(i64, String)> = sqlx::query_as(
-        "SELECT sequence, event_json FROM runtime_events e WHERE invocation_id = ?
-         AND kind = 'invocation_opened' AND json_extract(event_json, '$.invocation.session_id') = ?
+        "SELECT sequence, event_header FROM runtime_events e WHERE invocation_id = ?
+         AND kind = 'invocation_opened' AND json_extract(event_header, '$.invocation.session_id') = ?
          AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id = e.invocation_id AND t.kind = 'invocation_ended')",
     ).bind(id).bind(session).fetch_optional(connection).await?;
     let (sequence, json) =
@@ -129,7 +129,7 @@ async fn require_safe_through_policy(
         "WITH runtime_events AS NOT MATERIALIZED (SELECT * FROM main.runtime_events WHERE sequence <= ?3), ",
         crate::model_items::accepted_calls!(), "
          SELECT EXISTS(SELECT 1 FROM runtime_events e
-         WHERE json_extract(e.event_json, '$.invocation.session_id') = ?1
+         WHERE json_extract(e.event_header, '$.invocation.session_id') = ?1
          AND (e.kind = 'invocation_opened' OR e.kind = 'tool_dispatched'
            OR e.kind = 'model_requested' OR e.kind = 'model_completed')
          AND (?2 IS NULL OR e.invocation_id != ?2) AND (
@@ -139,7 +139,7 @@ async fn require_safe_through_policy(
               WHERE t.invocation_id = e.invocation_id AND t.operation_id = e.operation_id AND t.kind = 'tool_settled')
               AND (?4 = 0 OR NOT EXISTS(SELECT 1 FROM runtime_events terminal
                 WHERE terminal.invocation_id = e.invocation_id AND terminal.kind = 'invocation_ended'
-                AND json_extract(terminal.event_json, '$.fact.outcome.kind') IN ('failed','cancelled'))))
+                AND json_extract(terminal.event_header, '$.fact.outcome.kind') IN ('failed','cancelled'))))
            OR (e.kind = 'model_requested' AND NOT EXISTS(SELECT 1 FROM runtime_events t
               WHERE t.invocation_id = e.invocation_id AND t.operation_id = e.operation_id AND t.kind IN ('model_completed','model_interrupted')))
            OR (e.kind = 'model_requested' AND EXISTS(SELECT 1 FROM accepted_calls p
@@ -257,18 +257,18 @@ pub(crate) async fn model_source_unchanged(
     let changed: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT EXISTS(SELECT 1 FROM runtime_events e
          LEFT JOIN context_execution_steps s ON s.invocation_id=e.invocation_id
-           AND s.operation_id=CAST(json_extract(e.event_json,'$.fact.step_id') AS TEXT)
+           AND s.operation_id=CAST(json_extract(e.event_header,'$.fact.step_id') AS TEXT)
          WHERE e.sequence > ?2
-           AND (e.event_json IS NOT NULL AND e.event_session=?3) AND {filter}
+           AND (e.event_header IS NOT NULL AND e.event_session=?3) AND {filter}
            AND NOT (e.invocation_id=?1 AND e.kind IN ('tool_dispatched','tool_settled','tool_rejected','tool_notified')
              AND EXISTS(SELECT 1 FROM context_independent_tools i WHERE i.invocation_id=e.invocation_id
                AND i.operation_id=CASE WHEN e.kind='tool_notified'
-                 THEN json_extract(e.event_json,'$.fact.operation_id') ELSE e.operation_id END))
+                 THEN json_extract(e.event_header,'$.fact.operation_id') ELSE e.operation_id END))
            AND NOT (e.invocation_id=?1 AND e.kind IN ('model_requested','model_observed','model_interrupted')
              AND EXISTS(SELECT 1 FROM runtime_events r WHERE r.sequence=s.requested_at AND r.sequence>?2
                AND s.terminal_kind='model_interrupted' AND s.terminal_status='retryable_failure'
                AND (s.item_acceptance!=1 OR s.accepted_at IS NULL) AND s.barrier_at IS NULL
-               AND json_remove(json_extract(r.event_json,'$.fact'),'$.step_id')=json_remove(json(?5),'$.step_id')))
+               AND json_remove(json_extract(r.event_header,'$.fact'),'$.step_id')=json_remove(json(?5),'$.step_id')))
            AND NOT (e.invocation_id=?1 AND e.kind IN ('model_requested','model_observed','model_completed','model_interrupted')
              AND COALESCE(s.purpose='summary' AND s.tool_observed_at IS NULL,0)))"
     )))

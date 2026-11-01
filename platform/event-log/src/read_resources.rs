@@ -51,11 +51,11 @@ impl EventLog {
                    AND (t.event_session=?1 OR EXISTS(
                        SELECT 1 FROM session_history_members h
                        WHERE h.session_id=?1 AND h.sequence=t.sequence))
-                   AND json_extract(t.event_json,'$.fact.outcome.kind') IN ('succeeded','failed')
+                   AND json_extract(t.event_header,'$.fact.outcome.kind') IN ('succeeded','failed')
                    AND EXISTS(SELECT 1 FROM runtime_events d
                        WHERE d.invocation_id=t.invocation_id AND d.operation_id=t.operation_id
                          AND d.kind='tool_dispatched'
-                         AND json_extract(d.event_json,'$.fact.call.origin.kind')='provider')",
+                         AND json_extract(d.event_header,'$.fact.call.origin.kind')='provider')",
                 "t.event_id",
             ),
         };

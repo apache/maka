@@ -134,7 +134,7 @@ pub(super) async fn check_bindings(
          LEFT JOIN runtime_events a ON a.sequence=h.archive_sequence
          WHERE t.event_session=h.session_id OR (h.archive_sequence IS NOT NULL AND
            (a.kind IS NOT 'tool_result_archived' OR a.sequence<=t.sequence OR
-            json_extract(a.event_json,'$.fact.placeholder.identity.runtime_event_id') IS NOT t.event_id)))"
+            json_extract(a.event_header,'$.fact.placeholder.identity.runtime_event_id') IS NOT t.event_id)))"
     ).fetch_one(&mut *db).await?;
     if invalid_pin {
         return Err(invalid("copy has a self member or mismatched archive pin"));
@@ -147,7 +147,7 @@ pub(super) async fn check_bindings(
          WHERE h.archive_sequence IS NOT COALESCE(
             (SELECT a.sequence FROM runtime_events a WHERE a.kind='tool_result_archived'
              AND a.event_session=c.source_session_id AND a.sequence<=c.observed_through
-             AND json_extract(a.event_json,'$.fact.placeholder.identity.runtime_event_id')=target.event_id),
+             AND json_extract(a.event_header,'$.fact.placeholder.identity.runtime_event_id')=target.event_id),
             parent.archive_sequence))"
     ).fetch_one(&mut *db).await?;
     if changed_projection {

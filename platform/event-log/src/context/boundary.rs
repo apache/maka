@@ -101,11 +101,11 @@ pub(super) async fn summary_start(
 ) -> Result<Option<u64>, StoreError> {
     let first: Option<i64> = sqlx::query_scalar(
         "SELECT sequence FROM event_log INDEXED BY context_summary_round
-         WHERE invocation_id = ?1 AND event_json IS NOT NULL
+         WHERE invocation_id = ?1 AND event_header IS NOT NULL
          AND kind = 'model_requested' AND sequence < ?2
-         AND json_extract(event_json, '$.fact.purpose') = 'summary'
-         AND json_extract(event_json, '$.fact.source_high_water') = ?3
-         AND json_extract(event_json, '$.fact.source_scope') = json(?4)
+         AND json_extract(event_header, '$.fact.purpose') = 'summary'
+         AND json_extract(event_header, '$.fact.source_high_water') = ?3
+         AND json_extract(event_header, '$.fact.source_scope') = json(?4)
          ORDER BY sequence LIMIT 1",
     )
     .bind(invocation)
@@ -118,26 +118,26 @@ pub(super) async fn summary_start(
 }
 
 pub(super) const SUMMARY_ADMISSION: &str = "WITH covered AS (
-           SELECT json_extract(event_json,'$.fact.source_high_water') AS high
+           SELECT json_extract(event_header,'$.fact.source_high_water') AS high
            FROM event_log INDEXED BY context_summary_round
-           WHERE invocation_id=?1 AND event_json IS NOT NULL AND kind='model_requested'
-             AND json_extract(event_json,'$.fact.purpose')='summary'
-           ORDER BY json_extract(event_json,'$.fact.source_high_water') DESC LIMIT 1)
+           WHERE invocation_id=?1 AND event_header IS NOT NULL AND kind='model_requested'
+             AND json_extract(event_header,'$.fact.purpose')='summary'
+           ORDER BY json_extract(event_header,'$.fact.source_high_water') DESC LIMIT 1)
          SELECT EXISTS(SELECT 1 FROM context_execution_work w INDEXED BY context_execution_live
            JOIN context_execution_steps s ON s.invocation_id=w.invocation_id AND s.operation_id=w.operation_id
            WHERE w.invocation_id=?1 AND w.closed_at IS NULL AND w.kind='model' AND s.purpose='summary'),
            (SELECT COUNT(*) FROM (SELECT 1 FROM event_log INDEXED BY context_summary_sequence
-             WHERE invocation_id=?1 AND event_json IS NOT NULL AND kind='model_requested'
-               AND json_extract(event_json,'$.fact.purpose')='summary' AND sequence>=?2 LIMIT 3)),
+             WHERE invocation_id=?1 AND event_header IS NOT NULL AND kind='model_requested'
+               AND json_extract(event_header,'$.fact.purpose')='summary' AND sequence>=?2 LIMIT 3)),
            NOT EXISTS(SELECT 1 FROM covered) OR EXISTS(
              SELECT 1 FROM runtime_events c JOIN runtime_events r
                ON r.invocation_id=c.invocation_id AND r.kind='model_requested'
                  AND r.operation_id=CASE WHEN c.kind='model_observed'
-                   THEN CAST(json_extract(c.event_json,'$.fact.step_id') AS TEXT) ELSE c.operation_id END
+                   THEN CAST(json_extract(c.event_header,'$.fact.step_id') AS TEXT) ELSE c.operation_id END
              WHERE c.invocation_id=?1 AND (c.kind='model_completed' OR
-               (c.kind='model_observed' AND json_extract(r.event_json,'$.fact.item_acceptance')=1
-                 AND json_extract(c.event_json,'$.fact.event.kind')='part'))
-               AND json_extract(r.event_json, '$.fact.purpose')='main'
+               (c.kind='model_observed' AND json_extract(r.event_header,'$.fact.item_acceptance')=1
+                 AND json_extract(c.event_header,'$.fact.event.kind')='part'))
+               AND json_extract(r.event_header, '$.fact.purpose')='main'
                AND c.sequence <= ?3 AND c.sequence > (SELECT high FROM covered))";
 
 /// Renewal must be Main progress covered by the new source. A fast Main can

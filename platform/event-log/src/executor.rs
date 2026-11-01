@@ -52,7 +52,7 @@ pub(crate) async fn validate(
                 return Err(invalid("executor already started"));
             }
             let opening: String = sqlx::query_scalar(
-                "SELECT event_json FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_opened'"
+                "SELECT event_header FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_opened'"
             ).bind(id).fetch_one(&mut *connection).await?;
             let opening: RuntimeEvent = serde_json::from_str(&opening)?;
             if !matches!(opening.fact, Fact::InvocationOpened {

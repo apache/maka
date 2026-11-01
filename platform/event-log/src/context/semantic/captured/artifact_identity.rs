@@ -54,20 +54,10 @@ fn with_range<T>(
             length,
             consume,
         ),
-        Backing::Canonical { key, offset, bytes } => {
-            check_canonical(raw, key, offset, bytes)?;
-            with_blob(
-                raw,
-                "event_log",
-                "event_json",
-                key.source_sequence as i64,
-                offset
-                    .checked_add(range.start)
-                    .ok_or_else(|| invalid("identity range overflow"))?,
-                length,
-                consume,
-            )
-        }
+        Backing::Canonical { key, offset, bytes } => CanonicalRead::load_on_handle(
+            raw, key, offset, bytes,
+        )?
+        .with_range(raw, range.start, length, consume),
         Backing::Pieces { key, .. } => {
             check_pieces(raw, key)?;
             let mut reader = PieceReader {

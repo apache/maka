@@ -137,7 +137,8 @@ async fn preturn_keeps_anchor_and_latest_main_never_falls_back_a_broken_newer_tr
         Some(write.event().id.as_str())
     );
     let inspect = rusqlite::Connection::open(&path).unwrap();
-    inspect.execute("UPDATE event_log SET event_json=json_remove(event_json, '$.fact.context') WHERE operation_id='new-main' AND kind='model_requested'", []).unwrap();
+    // Keep the storage recipe valid while removing the trace being tested.
+    inspect.execute("UPDATE event_log SET event_header=json_remove(event_header, '$.fact.context'),canonical_bytes=length(CAST(json_remove(event_header, '$.fact.context') AS BLOB)) WHERE operation_id='new-main' AND kind='model_requested'", []).unwrap();
     assert!(
         matches!(log.latest_main_context("session").await.unwrap(), LatestMainContext::Selected(value) if value.context.is_none() && value.finished_at == Some(finished_at))
     );

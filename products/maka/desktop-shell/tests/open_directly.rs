@@ -37,7 +37,7 @@ fn a_shell_opened_without_the_launcher_runs_maka_desktop_beside_it() {
         "maka-desktop-shell"
     });
     std::fs::create_dir_all(shell.parent().unwrap()).unwrap();
-    std::fs::copy(env!("CARGO_BIN_EXE_maka-desktop-shell"), &shell).unwrap();
+    std::fs::hard_link(env!("CARGO_BIN_EXE_maka-desktop-shell"), &shell).unwrap();
     let launcher = directory.join("maka");
     let arguments = directory.join("arguments");
     std::fs::write(

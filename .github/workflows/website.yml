@@ -54,15 +54,15 @@ concurrency:
 jobs:
   validate:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@v7
         with:
-          node-version: "26"
+          node-version: latest
           cache: npm
           cache-dependency-path: website/package-lock.json
       - run: npm --prefix website ci
@@ -71,18 +71,18 @@ jobs:
   publish:
     # Release tags publish nothing; only release candidates are staged.
     if: github.event_name != 'pull_request' && (github.event_name != 'push' || github.ref_type == 'branch' || contains(github.ref_name, '-rc'))
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@v7
         with:
-          node-version: "26"
+          node-version: latest
           cache: npm
           cache-dependency-path: website/package-lock.json
 

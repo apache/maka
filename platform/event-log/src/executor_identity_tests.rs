@@ -103,7 +103,7 @@ fn claim(invocation: &Invocation, message_id: &str) -> EventWrite {
     })
 }
 fn events(db: &Connection) -> Vec<(i64, Vec<u8>)> {
-    db.prepare("SELECT sequence,CAST(event_json AS BLOB) FROM event_log ORDER BY sequence")
+    db.prepare("SELECT sequence,CAST(event_header AS BLOB) FROM event_log ORDER BY sequence")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap()

@@ -20,110 +20,179 @@
 import { inputAction, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import type { ModelSettingsOwner } from './settings';
+import { Icon } from './Icon';
 import { tr } from './locale';
-import { C, controlStyle, controlHoverStyle, controlFocusStyle, controlDisabledStyle } from './ui';
+import {
+  C,
+  bodyTextStyle,
+  captionTextStyle,
+  controlStyle,
+  controlHoverStyle,
+  controlFocusStyle,
+  controlDisabledStyle,
+} from './ui';
 
 export function ConnectionLogin(props: { owner: ModelSettingsOwner; disabled: boolean }) {
   const owner = props.owner;
   const methods = () =>
     owner.editor()!.provider.descriptor.authentication.filter((m) => m.interactive);
-  const login = () => owner.login.state();
+  const authorization = owner.login.authorization;
+  const needsSave = () => !owner.editor()!.baseline || owner.dirty();
+  const label = (method: { label: string }) =>
+    needsSave()
+      ? tr('Save and sign in')
+      : owner.credential()?.configured
+        ? tr('Sign in again')
+        : method.label === 'Sign in with ChatGPT'
+          ? tr('Sign in with ChatGPT')
+          : method.label;
   return (
     <If when={methods().length > 0}>
-      <View style={{ gap: 8 }}>
-        <Text style={{ color: C.text, fontWeight: '700' }}>{tr('Provider sign-in')}</Text>
-        <If when={!owner.editor()!.baseline}>
-          <Text style={{ color: C.muted }}>
-            {tr('Save this connection before starting sign-in.')}
+      <View style={{ gap: 12 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Icon
+            name={owner.credential()?.configured ? 'check' : 'lock'}
+            color={owner.credential()?.configured ? C.success : C.secondary}
+          />
+          <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '500' }}>
+            {owner.credential()?.configured ? tr('Signed in') : tr('Provider sign-in')}
           </Text>
-        </If>
-        <If when={owner.editor()!.baseline && !login()}>
-          <Text style={{ color: C.muted }}>
-            {owner.credential()?.configured
-              ? tr('A provider credential is stored. Sign in again to replace it.')
-              : tr('Complete sign-in with your provider. Credentials stay in the Host vault.')}
-          </Text>
+        </View>
+        <If when={!owner.login.state()}>
           <Each of={methods()} key={(method) => method.id}>
             {(method) => (
               <Button
-                accessibilityLabel={method().label}
-                disabled={props.disabled || owner.dirty()}
-                onPress={inputAction(owner.login.start, owner.loginAction(method().id))}
-                style={controlStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
+                accessibilityLabel={label(method())}
+                disabled={props.disabled}
+                onPress={inputAction(owner.signIn, { ...owner.action(), method: method().id })}
+                style={{
+                  ...controlStyle,
+                  alignSelf: 'flex-start',
+                  ...(!owner.credential()?.configured ? { backgroundColor: C.accent } : {}),
+                }}
+                hoverStyle={
+                  owner.credential()?.configured
+                    ? controlHoverStyle()
+                    : { backgroundColor: C.accentHover }
+                }
+                focusStyle={{
+                  ...controlFocusStyle(),
+                  ...(!owner.credential()?.configured ? { backgroundColor: C.accentHover } : {}),
+                }}
+                activeStyle={{
+                  backgroundColor: owner.credential()?.configured ? C.raised : C.accentHover,
+                }}
                 disabledStyle={controlDisabledStyle}
               >
-                <Text style={{ color: C.accent }}>{method().label}</Text>
+                <Text
+                  style={{
+                    ...captionTextStyle,
+                    color: owner.credential()?.configured ? C.secondary : C.background,
+                    fontWeight: '500',
+                  }}
+                >
+                  {label(method())}
+                </Text>
               </Button>
             )}
           </Each>
-          <If when={owner.dirty()}>
-            <Text style={{ color: C.muted }}>
-              {tr('Save or discard connection edits before signing in.')}
-            </Text>
-          </If>
         </If>
-        <If when={login()}>
-          <Text style={{ color: C.muted }}>
-            {login()!.cancelling
-              ? tr('Cancelling sign-in; waiting for the original result…')
-              : login()!.prompt
-                ? login()!.prompt!.userCode
-                  ? tr('Open this URL in your browser and enter the code. Waiting for sign-in…')
-                  : tr('Open this URL in your browser. Waiting for sign-in…')
-                : tr('Starting sign-in…')}
+        <If when={owner.login.state()?.kind === 'models'}>
+          <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('Loading models…')}</Text>
+        </If>
+        <If when={authorization()}>
+          <Text style={{ ...bodyTextStyle, color: C.secondary }}>
+            {authorization()!.cancelling
+              ? tr('Cancelling sign-in…')
+              : !authorization()!.prompt
+                ? tr('Starting sign-in…')
+                : authorization()!.browser === 'failed'
+                  ? tr('Copy the URL and open it in your browser.')
+                  : tr('Complete sign-in in your browser.')}
           </Text>
-          <If when={login()!.prompt}>
-            <Text style={[{ color: C.text }, { userSelect: 'text' }]}>{login()!.prompt!.url}</Text>
-            <If when={login()!.prompt!.userCode}>
-              <Text style={[{ color: C.accent, fontWeight: '700' }, { userSelect: 'text' }]}>
-                {login()!.prompt!.userCode}
-              </Text>
-            </If>
-            <View style={{ flexDirection: 'row', gap: 16 }}>
-              <Button
-                accessibilityLabel={tr('Copy sign-in URL')}
-                onPress={inputAction(owner.login.copy, {
-                  occurrence: login()!.occurrence,
-                  field: 'url',
-                  value: login()!.prompt!.url,
-                })}
-                style={controlStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                disabledStyle={controlDisabledStyle}
+          <If when={authorization()!.prompt}>
+            <If when={authorization()!.prompt!.userCode}>
+              <View
+                style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}
               >
-                <Text style={{ color: C.accent }}>{tr('Copy URL')}</Text>
-              </Button>
-              <If when={login()!.prompt!.userCode}>
+                <Text
+                  style={[
+                    { color: C.text, fontSize: 20, fontWeight: '600', fontFamily: 'monospace' },
+                    { userSelect: 'text' },
+                  ]}
+                >
+                  {authorization()!.prompt!.userCode}
+                </Text>
                 <Button
                   accessibilityLabel={tr('Copy sign-in code')}
                   onPress={inputAction(owner.login.copy, {
-                    occurrence: login()!.occurrence,
+                    occurrence: authorization()!.occurrence,
                     field: 'userCode',
-                    value: login()!.prompt!.userCode,
+                    value: authorization()!.prompt!.userCode,
                   })}
                   style={controlStyle}
                   hoverStyle={controlHoverStyle()}
                   focusStyle={controlFocusStyle()}
-                  disabledStyle={controlDisabledStyle}
+                  activeStyle={{ backgroundColor: C.raised }}
                 >
-                  <Text style={{ color: C.accent }}>{tr('Copy code')}</Text>
+                  <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                    {owner.login.copied() === 'userCode' ? tr('Copied') : tr('Copy code')}
+                  </Text>
                 </Button>
-              </If>
+              </View>
+            </If>
+            <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}>
+              {authorization()!.prompt!.url}
+            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+              <Button
+                accessibilityLabel={tr('Open sign-in page')}
+                disabled={authorization()!.cancelling || authorization()!.browser === 'opening'}
+                onPress={inputAction(owner.login.open, {
+                  occurrence: authorization()!.occurrence,
+                  url: authorization()!.prompt!.url,
+                })}
+                style={{ ...controlStyle, backgroundColor: C.accent }}
+                hoverStyle={{ backgroundColor: C.accentHover }}
+                focusStyle={{ backgroundColor: C.accentHover }}
+                activeStyle={{ backgroundColor: C.accentHover }}
+                disabledStyle={controlDisabledStyle}
+              >
+                <Text style={{ ...captionTextStyle, color: C.background, fontWeight: '500' }}>
+                  {authorization()!.browser === 'opening'
+                    ? tr('Opening browser…')
+                    : tr('Open sign-in page')}
+                </Text>
+              </Button>
+              <Button
+                accessibilityLabel={tr('Copy sign-in URL')}
+                onPress={inputAction(owner.login.copy, {
+                  occurrence: authorization()!.occurrence,
+                  field: 'url',
+                  value: authorization()!.prompt!.url,
+                })}
+                style={controlStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+                activeStyle={{ backgroundColor: C.raised }}
+              >
+                <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                  {owner.login.copied() === 'url' ? tr('Copied') : tr('Copy URL')}
+                </Text>
+              </Button>
             </View>
           </If>
           <Button
             accessibilityLabel={tr('Cancel provider sign-in')}
-            disabled={login()!.cancelling}
-            onPress={inputAction(owner.login.cancel, login()!.occurrence)}
-            style={controlStyle}
+            disabled={authorization()!.cancelling}
+            onPress={inputAction(owner.login.cancel, authorization()!.occurrence)}
+            style={{ ...controlStyle, alignSelf: 'flex-start' }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
+            activeStyle={{ backgroundColor: C.raised }}
             disabledStyle={controlDisabledStyle}
           >
-            <Text style={{ color: C.warning }}>{tr('Cancel sign-in')}</Text>
+            <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Cancel sign-in')}</Text>
           </Button>
         </If>
       </View>

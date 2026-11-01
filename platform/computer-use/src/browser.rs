@@ -168,10 +168,10 @@ struct ReadBudget {
     remaining: Duration,
 }
 impl ReadBudget {
-    fn new(options: &BrowserReadOptions) -> Self {
-        Self {
-            remaining: Duration::from_millis(options.timeout_ms.unwrap_or(3000).min(3000)),
-        }
+    fn new(options: &BrowserReadOptions) -> Result<Self, ToolError> {
+        Ok(Self {
+            remaining: crate::protocol::timeout_duration(options.timeout_ms.unwrap_or(3000) as f64)?,
+        })
     }
 }
 #[derive(Clone, Copy)]
@@ -1197,7 +1197,7 @@ impl Browsers {
                 self.use_tab(&identity, turn, cancellation).await?;
                 let tab = self.targets.get_mut(&handle).expect("checked browser handle");
                 tab.last_turn = turn.to_owned();
-                let mut budget = Some(ReadBudget { remaining:options.budget() });
+                let mut budget = Some(ReadBudget { remaining:options.budget()? });
                 tab.authorize_with_budget(None,invocation,cancellation,language,
                     extension::ClaimIntent::Implicit,&mut budget).await?;
                 tab.playwright_evaluate(locator.as_ref(),mode,&script_json,&options,
@@ -1220,7 +1220,7 @@ impl Browsers {
                     self.use_tab(&identity, turn, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).unwrap();
                     tab.last_turn = turn.to_owned();
-                    let mut budget = Some(ReadBudget::new(&options));
+                    let mut budget = Some(ReadBudget::new(&options)?);
                     tab.authorize_with_budget(
                         None,
                         invocation,
@@ -1966,6 +1966,8 @@ impl Browsers {
             tab.frame = None;
             tab.previous = None;
         }
+        extension::drain_extension_cleanup(&self.host().await, self.owner, Some(turn), None, None)
+            .await?;
         let finished = self
             .host()
             .await
@@ -2045,6 +2047,7 @@ impl Browsers {
             failures.push(error.to_string());
         }
         let host = self.host().await;
+        extension::drain_extension_cleanup(&host, self.owner, None, None, None).await?;
         let mut host = host.lock().await;
         let cursor_result = host.finalize_cursors(self.owner, cursor).await;
         let tabs_result = host.finish(self.owner, None).await;
@@ -3797,11 +3800,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn healthy_browser_discovery_and_opencli_preference_keep_other_provider_uncertainty() {
+    async fn healthy_browser_discovery_keeps_other_provider_uncertainty() {
         for unhealthy_first in [true, false] {
             let (healthy, _, healthy_server) = inventory_provider("actual-cdp", 3, vec![]).await;
             let (unhealthy, generation, unhealthy_server) =
-                inventory_provider("unconfirmed-cdp", 3, vec![]).await;
+                inventory_provider("unconfirmed-cdp", 2, vec![]).await;
             let mut browsers = Browsers::default();
             let connections = if unhealthy_first {
                 vec![unhealthy.clone(), healthy]
@@ -3850,7 +3853,7 @@ mod tests {
                 .invoke(
                     Command::GetBrowser {
                         options: BrowserOptions {
-                            id: Some("opencli".into()),
+                            id: Some("actual-cdp".into()),
                             url: None,
                             extension_instance_id: None,
                         },
@@ -3870,7 +3873,7 @@ mod tests {
                 1
             );
             assert_eq!(healthy_server.await.unwrap().len(), 6);
-            assert_eq!(unhealthy_server.await.unwrap().len(), 6);
+            assert_eq!(unhealthy_server.await.unwrap().len(), 4);
         }
     }
 
@@ -4001,9 +4004,12 @@ mod tests {
             };
             let tab = browsers.targets.get_mut(&handle).unwrap();
             assert!(tab.socket.is_none(), "binding must remain lazy");
-            let mut budget = Some(ReadBudget::new(&BrowserReadOptions {
-                timeout_ms: Some(if cancel_at_handshake { 3000 } else { 200 }),
-            }));
+            let mut budget = Some(
+                ReadBudget::new(&BrowserReadOptions {
+                    timeout_ms: Some(if cancel_at_handshake { 3000 } else { 200 }),
+                })
+                .unwrap(),
+            );
             // This is the same bounded connect used by metadata preparation;
             // inventory and consent have their own behavior tests.
             let result = tokio::time::timeout(

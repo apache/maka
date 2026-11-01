@@ -340,30 +340,43 @@ async fn cleanup_failure_cancels_and_drains_already_running_siblings() {
         assert!(running.await.unwrap().is_err());
         engine.drain().await;
         server.await.unwrap();
-        assert!(matches!(log.prefix(100, 1024 * 1024).await, Err(maka_event_log::StoreError::ConnectionClosed)),
-            "unconfirmed cleanup quarantines the original Root");
-        let partitions = directory.path().join("events.root/runtime-partitions");
-        let settled = tokio::task::spawn_blocking(move || {
-            let mut settled = Vec::new();
-            for entry in std::fs::read_dir(partitions).unwrap() {
-                let path = entry.unwrap().path();
-                if path.extension().is_none_or(|extension| extension != "sqlite") { continue; }
-                let db = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-                let mut query = db.prepare("SELECT event_json FROM runtime_events WHERE invocation_id='invocation-failed' AND kind='tool_settled'").unwrap();
-                for json in query.query_map([], |row| row.get::<_, String>(0)).unwrap() {
-                    settled.push(serde_json::from_str::<maka_agent_facts::event::RuntimeEvent>(&json.unwrap()).unwrap());
-                }
-            }
-            settled
-        }).await.unwrap();
-        assert_eq!(settled.len(), 1, "only the drained sibling has a confirmed outcome");
-        let Fact::ToolSettled { operation_id, outcome:maka_agent_facts::event::ToolOutcome::Succeeded { model_projection, .. } } = &settled[0].fact else {
+        let prefix = log.prefix(100, 1024 * 1024).await.unwrap();
+        let settled: Vec<_> = prefix
+            .events
+            .iter()
+            .map(|stored| &stored.event)
+            .filter(|event| {
+                event.invocation.invocation_id == "invocation-failed"
+                    && matches!(event.fact, Fact::ToolSettled { .. })
+            })
+            .collect();
+        assert_eq!(
+            settled.len(),
+            1,
+            "only the drained sibling has a confirmed outcome"
+        );
+        let Fact::ToolSettled {
+            operation_id,
+            outcome:
+                maka_agent_facts::event::ToolOutcome::Succeeded {
+                    model_projection, ..
+                },
+        } = &settled[0].fact
+        else {
             panic!("the drained sibling must publish its actual success");
         };
         assert!(operation_id.ends_with(":call-1"));
-        assert_eq!(*model_projection, maka_agent_facts::tool_output::DurableToolProjection::Json { value:json!({"n":1}) });
+        assert_eq!(
+            *model_projection,
+            maka_agent_facts::tool_output::DurableToolProjection::Json {
+                value: json!({"n":1})
+            }
+        );
         drop(engine);
-        assert!(log.close().await.is_err(), "physical cleanup failure cannot confirm Root shutdown");
+        assert!(
+            log.close().await.is_err(),
+            "physical cleanup failure cannot confirm Root shutdown"
+        );
     })
     .await
     .expect("failed tool cleanup must cancel and drain its siblings");

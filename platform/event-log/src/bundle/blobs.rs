@@ -23,8 +23,9 @@ use super::{
     format::{Blob, CHUNK, Record, Writer},
 };
 use crate::{StoreError, sequence_number};
+use futures_util::TryStreamExt;
 use sha2::{Digest, Sha256};
-use sqlx::SqliteConnection;
+use sqlx::{Row, SqliteConnection};
 use tokio::io::AsyncWrite;
 
 pub(super) async fn export<W: AsyncWrite + Unpin>(
@@ -35,8 +36,8 @@ pub(super) async fn export<W: AsyncWrite + Unpin>(
 ) -> Result<(), StoreError> {
     for sequence in &closure.events {
         let tool: Option<(String, i64, Option<String>, Option<i64>)> = sqlx::query_as(
-            "SELECT e.event_id,length(p.payload),json_extract(e.event_json,'$.fact.outcome.raw.digest'),
-                json_extract(e.event_json,'$.fact.outcome.raw.bytes')
+            "SELECT e.event_id,length(p.payload),json_extract(e.event_header,'$.fact.outcome.raw.digest'),
+                json_extract(e.event_header,'$.fact.outcome.raw.bytes')
              FROM runtime_events e JOIN tool_result_payloads p ON p.event_id=e.event_id WHERE e.sequence=?"
         ).bind(*sequence as i64).fetch_optional(&mut *db).await?;
         if let Some((event_id, bytes, digest, expected_bytes)) = tool {
@@ -155,35 +156,61 @@ async fn frozen_witness(
     if metadata.kind != kind {
         return Ok(None);
     }
-    let sequence: Option<i64> = sqlx::query_scalar(
-        "WITH media AS (
-            SELECT e.sequence,e.inherited,
-                CASE json_extract(p.value,'$.kind')
-                    WHEN 'artifact' THEN json_extract(p.value,'$.image')
-                    WHEN 'audio' THEN json_extract(p.value,'$.audio') END AS value
-            FROM session_history_events e
-            JOIN json_each(e.event_json,'$.fact.outcome.model_projection.parts') p
-            JOIN artifacts a ON a.session_id=?1 AND a.id=?2
-            WHERE e.owner_session_id=?1 AND e.kind='tool_settled'
-                AND json_extract(e.event_json,'$.fact.outcome.kind')='succeeded'
-                AND json_extract(e.event_json,'$.fact.outcome.model_projection.kind')='content'
-                AND a.canonical_at>0 AND a.canonical_at<=e.sequence)
-         SELECT MIN(sequence) FROM media
-         WHERE json_extract(value,'$.ref.kind')='session_file'
-           AND json_extract(value,'$.mimeType')=?3
-           AND ((inherited=0 AND json_extract(value,'$.ref.sessionId')=?1
-                AND json_extract(value,'$.ref.relativePath')=?2)
-             OR (inherited=1 AND EXISTS(
-                SELECT 1 FROM session_history_artifacts h WHERE h.session_id=?1 AND h.artifact_id=?2
-                  AND h.source_session_id=json_extract(value,'$.ref.sessionId')
-                  AND h.source_artifact_id=json_extract(value,'$.ref.relativePath'))))",
-    )
+    let mut rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT e.sequence,e.inherited,e.event_header,{},h.source_session_id,h.source_artifact_id
+         FROM session_history_events e {}
+         JOIN artifacts a ON a.session_id=?1 AND a.id=?2
+         LEFT JOIN session_history_artifacts h ON h.session_id=?1 AND h.artifact_id=?2
+         WHERE e.owner_session_id=?1 AND e.kind='tool_settled'
+           AND json_extract(e.event_header,'$.fact.outcome.kind')='succeeded'
+           AND a.canonical_at>0 AND a.canonical_at<=e.sequence ORDER BY e.sequence",
+        crate::canonical::COLUMNS,
+        crate::canonical::JOINS
+    )))
     .bind(&metadata.session_id)
     .bind(&metadata.id)
-    .bind(&metadata.mime_type)
-    .fetch_one(db)
-    .await?;
-    sequence.map(sequence_number).transpose()
+    .fetch(db);
+    while let Some(row) = rows.try_next().await? {
+        let event: maka_agent_facts::event::RuntimeEvent =
+            serde_json::from_str(&crate::canonical::json(&row)?)?;
+        let maka_agent_facts::event::Fact::ToolSettled {
+            outcome:
+                maka_agent_facts::event::ToolOutcome::Succeeded {
+                    model_projection:
+                        maka_agent_facts::tool_output::DurableToolProjection::Content { parts },
+                    ..
+                },
+            ..
+        } = event.fact
+        else {
+            continue;
+        };
+        let inherited: bool = row.try_get("inherited")?;
+        let source_session: Option<&str> = row.try_get("source_session_id")?;
+        let source_artifact: Option<&str> = row.try_get("source_artifact_id")?;
+        for part in parts {
+            let Some((
+                maka_agent_facts::attachment::StorageRef::SessionFile {
+                    session_id,
+                    relative_path,
+                },
+                part_mime,
+            )) = part.media()
+            else {
+                continue;
+            };
+            let owned = if inherited {
+                source_session == Some(session_id.as_str())
+                    && source_artifact == Some(relative_path.as_str())
+            } else {
+                session_id == &metadata.session_id && relative_path == &metadata.id
+            };
+            if owned && part_mime == mime {
+                return Ok(Some(sequence_number(row.try_get("sequence")?)?));
+            }
+        }
+    }
+    Ok(None)
 }
 
 async fn required(db: &mut SqliteConnection, session: &str) -> Result<(), StoreError> {
@@ -191,7 +218,7 @@ async fn required(db: &mut SqliteConnection, session: &str) -> Result<(), StoreE
     // a live lookup into an ancestor's artifact namespace.
     let broken: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM session_history_events e
-         JOIN json_each(e.event_json,'$.fact.outcome.artifacts') proof
+         JOIN json_each(e.event_header,'$.fact.outcome.artifacts') proof
          LEFT JOIN session_history_artifacts h ON h.session_id=e.owner_session_id
            AND h.source_session_id=e.event_session AND h.source_artifact_id=json_extract(proof.value,'$.id')
          LEFT JOIN artifacts a ON a.session_id=e.owner_session_id AND
@@ -201,7 +228,7 @@ async fn required(db: &mut SqliteConnection, session: &str) -> Result<(), StoreE
            (a.id IS NULL OR c.content_sha256 IS NULL OR length(c.payload)!=json_extract(proof.value,'$.bytes')
             OR a.content_sha256!=json_extract(proof.value,'$.digest')
             OR json_extract(a.record_json,'$.source')!='tool_result_projection'
-            OR json_extract(a.record_json,'$.turnId')!=json_extract(e.event_json,'$.invocation.turn_id')))"
+            OR json_extract(a.record_json,'$.turnId')!=json_extract(e.event_header,'$.invocation.turn_id')))"
     ).bind(session).fetch_one(db).await?;
     if broken {
         return Err(invalid("bundle lacks generated tool material"));

@@ -274,12 +274,16 @@ impl SessionOwner {
     }
 
     /// Finalize shared resources after joining every original epoch close.
-    /// All observers retain the same original cleanup result.
+    /// Concurrent observers join the original cleanup; terminal failures may reconcile again.
     pub async fn close(&self) -> Result<(), ToolError> {
         let pending = {
             let mut state = self.state.lock().unwrap();
             state.closed = true;
-            if let Some(pending) = &state.cleanup {
+            if let Some(pending) = state
+                .cleanup
+                .as_ref()
+                .filter(|pending| !matches!(*pending.borrow(), Some(Err(_))))
+            {
                 pending.clone()
             } else {
                 let remote_live = !state.remote_epochs.is_empty();
@@ -850,6 +854,13 @@ impl Session {
             #[cfg(feature = "native-desktop")]
             Some(Backend::Local(local)) => local.close_native().await,
             Some(Backend::Windows { .. }) => {
+                if self
+                    .remote_cleanup
+                    .as_ref()
+                    .is_some_and(|pending| matches!(*pending.borrow(), Some(Err(_))))
+                {
+                    self.remote_cleanup = None;
+                }
                 let pending = self.remote_cleanup.get_or_insert_with(|| {
                     let (reply, pending) = tokio::sync::watch::channel(None);
                     let driver = self.driver.clone();

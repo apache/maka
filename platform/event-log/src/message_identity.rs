@@ -159,8 +159,8 @@ pub(crate) async fn validate_derived_tool_id(
             SELECT 1 FROM session_history_events
             WHERE owner_session_id=?1 AND invocation_id=?2
               AND kind IN ('executor_observed','executor_completed')
-              AND json_extract(event_json,'$.fact.output.toolCallId')=?3
-              AND json_extract(event_json,'$.fact.output.type')='tool_start')",
+              AND json_extract(event_header,'$.fact.output.toolCallId')=?3
+              AND json_extract(event_header,'$.fact.output.type')='tool_start')",
     )
     .bind(session)
     .bind(invocation)
@@ -217,8 +217,8 @@ pub(crate) async fn validate_source_id(
                     AND owner_session_id = ?1 AND maka_tool_use_id(invocation_id, operation_id) = ?2
                     UNION ALL
                     SELECT 1 FROM session_history_events WHERE kind = 'executor_observed'
-                    AND owner_session_id = ?1 AND json_extract(event_json, '$.fact.output.type') = 'tool_start'
-                    AND maka_tool_use_id(invocation_id, json_extract(event_json, '$.fact.output.toolCallId')) = ?2
+                    AND owner_session_id = ?1 AND json_extract(event_header, '$.fact.output.type') = 'tool_start'
+                    AND maka_tool_use_id(invocation_id, json_extract(event_header, '$.fact.output.toolCallId')) = ?2
                     UNION ALL
                     SELECT 1 FROM accepted_calls c JOIN session_history_events e ON e.event_id=c.event_id
                     WHERE e.owner_session_id=?1 AND maka_tool_use_id(c.invocation_id, c.step_id || ':' || json_extract(c.call,'$.id'))=?2)"
@@ -256,19 +256,19 @@ async fn executor_pending(
     // Keep the partial-index kind predicate for executor_tool_observations.
     // Original JSON equality matches the pending tool ID, not a cast spelling.
     let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(DISTINCT json_extract(start.event_json, '$.fact.output.toolCallId'))
+        "SELECT COUNT(DISTINCT json_extract(start.event_header, '$.fact.output.toolCallId'))
          FROM runtime_events AS start
          WHERE start.invocation_id = ?1
            AND start.kind IN ('executor_observed', 'executor_completed')
            AND start.sequence > ?2 AND start.sequence < ?3
-           AND json_extract(start.event_json, '$.fact.output.type') = 'tool_start'
+           AND json_extract(start.event_header, '$.fact.output.type') = 'tool_start'
            AND NOT EXISTS(SELECT 1 FROM runtime_events AS result
              WHERE result.invocation_id = start.invocation_id
                AND result.kind IN ('executor_observed', 'executor_completed')
-               AND json_extract(result.event_json, '$.fact.output.toolCallId') =
-                   json_extract(start.event_json, '$.fact.output.toolCallId')
+               AND json_extract(result.event_header, '$.fact.output.toolCallId') =
+                   json_extract(start.event_header, '$.fact.output.toolCallId')
                AND result.sequence > start.sequence AND result.sequence < ?3
-               AND json_extract(result.event_json, '$.fact.output.type') = 'tool_result')",
+               AND json_extract(result.event_header, '$.fact.output.type') = 'tool_result')",
     )
     .bind(invocation)
     .bind(started)

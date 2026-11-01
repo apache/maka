@@ -722,3 +722,214 @@ async fn retained_chatgpt_page_keeps_origin_when_a_new_native_generation_claims_
         current.assert_no_frame_and_close().await;
     }
 }
+
+#[tokio::test]
+async fn revoked_tab_retires_its_old_claim_and_can_be_explicitly_claimed_again() {
+    let mut fixture = Fixture::open().await;
+    let provider = fixture.provider();
+    let owner = uuid::Uuid::new_v4();
+    let identity = browser(&provider).tab("17");
+    let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
+    register(&host, owner, &provider).await.unwrap();
+    let epoch = crate::desktop::NativeEpochId::new();
+    let operation = context_operation("recover-turn");
+    let call = {
+        let mut ledger = host.lock().await;
+        ledger
+            .extension_reserve(owner, &provider, "recover-turn", "17", Origin::AgentCreated)
+            .unwrap();
+        ledger
+            .extension_context(
+                owner,
+                &provider,
+                operation.clone(),
+                epoch,
+                CallTarget::Tab {
+                    origin: Origin::UserClaimed,
+                    tab: Some("17".into()),
+                },
+                true,
+            )
+            .unwrap()
+    };
+    let attach = async {
+        let frame = read_frame(&mut fixture.server).await;
+        assert_eq!(frame["request"]["method"], "attach");
+        result(
+            &mut fixture.server,
+            frame["request"]["id"].as_u64().unwrap(),
+            json!({"claim":"original-claim","tabId":17,"targetId":"target-17"}),
+        )
+        .await;
+    };
+    let (attached, ()) =
+        bounded(async { tokio::join!(call.dispatch(call.control.attach_tab(17)), attach) }).await;
+    attached.unwrap();
+    host.lock()
+        .await
+        .reconcile_provider(owner, &provider)
+        .await
+        .unwrap();
+    write_frame(&mut fixture.server, json!({"kind":"controlEvent","event":{"kind":"claimUnavailable","data":{"claim":"original-claim","reason":"fixture route revoked"}}})).await;
+    bounded(async {
+        loop {
+            if host.lock().await.tabs[&identity]
+                .extension
+                .as_ref()
+                .unwrap()
+                .revoked
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    {
+        let mut ledger = host.lock().await;
+        assert!(
+            matches!(ledger.extension_reserve(owner, &provider, "recover-turn", "17", Origin::UserClaimed),
+            Err(ToolError::Failed(message)) if message.contains("explicitly claim"))
+        );
+        let state = ledger.tabs[&identity].extension.as_ref().unwrap();
+        assert!(
+            state.unknown.is_none(),
+            "route loss must not invent an unknown Chrome effect"
+        );
+        assert_eq!(
+            state.cleanup_revocation.as_deref(),
+            Some("fixture route revoked")
+        );
+    }
+    let retirement = host
+        .lock()
+        .await
+        .extension_context(
+            owner,
+            &provider,
+            context_operation("recover-turn"),
+            epoch,
+            CallTarget::Retirement,
+            false,
+        )
+        .unwrap();
+    let retire = async {
+        drain_extension_cleanup(&host, owner, None, None, Some(&identity)).await?;
+        host.lock()
+            .await
+            .park_extension_tab(owner, &provider, &identity, &retirement)
+            .await
+    };
+    let peer = async {
+        let fence = read_frame(&mut fixture.server).await;
+        assert_eq!(fence["request"]["method"], "fenceCdp");
+        host.lock()
+            .await
+            .extension_reserve(owner, &provider, "recover-turn", "18", Origin::UserClaimed)
+            .expect("another page remains usable while the original drain waits");
+        result(&mut fixture.server, fence["request"]["id"].as_u64().unwrap(),
+            json!({"claim":"original-claim","generation":fixture.extension.identity().generation,"fenced":true,"pending":[]})).await;
+        let detach = read_frame(&mut fixture.server).await;
+        assert_eq!(detach["request"]["method"], "detach");
+        assert_eq!(detach["request"]["claim"], "original-claim");
+        result(
+            &mut fixture.server,
+            detach["request"]["id"].as_u64().unwrap(),
+            json!({"detached":true,"proof":"detach_ack"}),
+        )
+        .await;
+        let retired = read_frame(&mut fixture.server).await;
+        assert_eq!(retired["request"]["method"], "retireClaim");
+        result(
+            &mut fixture.server,
+            retired["request"]["id"].as_u64().unwrap(),
+            json!({"retired":true,"claim":"original-claim"}),
+        )
+        .await;
+        Ok::<(), ToolError>(())
+    };
+    bounded(async { tokio::try_join!(retire, peer) })
+        .await
+        .unwrap();
+    let operation = context_operation("recover-turn");
+    let replacement = {
+        let mut ledger = host.lock().await;
+        assert!(!ledger.extension[&(owner, identity.browser.clone())].owner_parked);
+        assert!(
+            ledger
+                .begin_handoff_transfer(owner, &provider, &operation, epoch, "17")
+                .unwrap()
+        );
+        ledger
+            .extension_context(
+                owner,
+                &provider,
+                operation.clone(),
+                epoch,
+                CallTarget::Tab {
+                    origin: Origin::UserClaimed,
+                    tab: Some("17".into()),
+                },
+                true,
+            )
+            .unwrap()
+    };
+    let attach = async {
+        let frame = read_frame(&mut fixture.server).await;
+        assert_eq!(frame["request"]["method"], "attach");
+        result(
+            &mut fixture.server,
+            frame["request"]["id"].as_u64().unwrap(),
+            json!({"claim":"replacement-claim","tabId":17,"targetId":"target-17"}),
+        )
+        .await;
+    };
+    let (attached, ()) = bounded(async {
+        tokio::join!(
+            replacement.dispatch(replacement.control.attach_tab(17)),
+            attach
+        )
+    })
+    .await;
+    attached.unwrap();
+    {
+        let mut ledger = host.lock().await;
+        ledger.reconcile_provider(owner, &provider).await.unwrap();
+        ledger
+            .apply_user_preparation(
+                owner,
+                &provider,
+                &identity.browser,
+                Some("17".into()),
+                PreparedOperation::Acquired { operation, epoch },
+                serde_json::from_value(json!({"id":17})).unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            ledger.tabs[&identity].disposition,
+            Disposition::Live
+        ));
+        assert!(matches!(
+            ledger.tabs[&identity].origin,
+            Origin::AgentCreated
+        ));
+        assert_eq!(
+            ledger.tabs[&identity]
+                .extension
+                .as_ref()
+                .unwrap()
+                .claim
+                .as_ref()
+                .unwrap()
+                .claim_id(),
+            "replacement-claim"
+        );
+        assert!(matches!(
+            ledger.tabs[&identity.browser.tab("18")].disposition,
+            Disposition::Live
+        ));
+        ledger.reconcile_provider(owner, &provider).await.unwrap();
+        ledger.extension.clear();
+    }
+    fixture.assert_no_frame_and_close().await;
+}

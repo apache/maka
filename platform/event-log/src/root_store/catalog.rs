@@ -619,7 +619,7 @@ async fn workspace_page(
         use sqlx::{Connection,Row};
         let mut tx=db.begin().await?; require_snapshot(&mut tx,expected).await?;
         let rows=sqlx::query("SELECT s.id,s.revision,b.metadata_epoch,json_extract(s.configuration,'$.workspace.metadataEpochAtAttach') AS attached_epoch,
-             COALESCE((SELECT MAX(e.sequence) FROM runtime_events e WHERE e.event_json IS NOT NULL AND e.event_session=s.id),0) AS sequence,
+             COALESCE((SELECT MAX(e.sequence) FROM runtime_events e WHERE e.event_header IS NOT NULL AND e.event_session=s.id),0) AS sequence,
              EXISTS(SELECT 1 FROM shell_runs r WHERE r.session_id=s.id AND json_extract(r.record_json,'$.state.outcome.kind')='orphaned') AS orphaned
              FROM workspace_bindings b JOIN session_control s INDEXED BY session_workspace_binding
              ON json_extract(s.configuration,'$.workspace.id')=b.id

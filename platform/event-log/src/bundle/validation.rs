@@ -171,7 +171,7 @@ async fn replay(
     let mixed: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM runtime_events GROUP BY invocation_id
            HAVING SUM(kind='message_imported')>0 AND COUNT(*)>1)
-         OR EXISTS(SELECT 1 FROM runtime_events GROUP BY event_session,json_extract(event_json,'$.invocation.run_id')
+         OR EXISTS(SELECT 1 FROM runtime_events GROUP BY event_session,json_extract(event_header,'$.invocation.run_id')
            HAVING COUNT(DISTINCT invocation_id)>1)",
     )
     .fetch_one(&mut *original)
@@ -182,7 +182,7 @@ async fn replay(
     let mut after = 0i64;
     loop {
         let row: Option<(i64,String)> = sqlx::query_as(
-            "SELECT sequence,event_json FROM runtime_events WHERE kind='context_checkpoint_recorded' AND sequence>? ORDER BY sequence LIMIT 1"
+            "SELECT sequence,event_header FROM runtime_events WHERE kind='context_checkpoint_recorded' AND sequence>? ORDER BY sequence LIMIT 1"
         ).bind(after).fetch_optional(&mut *original).await?;
         let Some((sequence, json)) = row else {
             break;
