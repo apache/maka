@@ -767,33 +767,13 @@ impl Owner {
                 });
             }
         }
-        // A Bot's workers are ordinary conversations in the Bot's own workspace. They
-        // are not bounded by the Bot's coordination-only tool list, but they are not
-        // given the tools that change or message conversations either.
+        // A Session the Bot creates follows the ordinary creation rules and is only
+        // recorded under the Bot as its parent. The Bot's own tool list says what it
+        // may call itself; it is not the ceiling for the workers it delegates to.
         let bot_caller = scope
             .identity
             .agent()
             .is_some_and(|source| self.bot.is(&source.session_id));
-        if bot_caller {
-            let WorkspaceSelection::Session { session_id } = &input.workspace else {
-                return Ok(Created::Rejected {
-                    reason: Rejection::WorkspaceUnavailable,
-                });
-            };
-            if !self.bot_owns_or_is(scope, session_id).await? {
-                return Ok(Created::Rejected {
-                    reason: Rejection::SessionUnavailable,
-                });
-            }
-            tools = match self.worker_tools(tools) {
-                Some(tools) => Some(tools),
-                None => {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::ToolsUnavailable,
-                    });
-                }
-            };
-        }
         let selected = match input.workspace {
             WorkspaceSelection::IsolatedGit { selection } => {
                 let Some(workspace) = self.isolated_workspace(selection, operation, scope).await?

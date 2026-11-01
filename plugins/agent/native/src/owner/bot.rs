@@ -65,19 +65,6 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "SessionSend",
     "SessionStop",
 ];
-/// Tools that change or message conversations. A Bot's worker never holds them:
-/// otherwise delegating would be a way around the Bot's own limits.
-const WORKER_WITHHELD: &[&str] = &[
-    "SessionCreate",
-    "SessionFork",
-    "SessionUpdate",
-    "SessionChange",
-    "SessionSend",
-    "SessionStop",
-    "SessionResume",
-    "SessionEditQueue",
-    WORKHUB,
-];
 const PAGE: usize = 100;
 const RECORD_KEY: &str = "bot";
 /// How long an open waits for a live creator in this process before asking the
@@ -853,44 +840,6 @@ impl Owner {
     }
     pub fn bot_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.bot.changed.subscribe()
-    }
-    /// The tools a Bot's worker holds: everything installed except what changes or
-    /// messages conversations. A requested list can only narrow that; `None`
-    /// means the request names a tool the worker may not hold.
-    pub(super) fn worker_tools(&self, requested: Option<Vec<String>>) -> Option<Vec<String>> {
-        let mut allowed: Vec<String> = self
-            .tools
-            .names()
-            .into_iter()
-            .filter(|name| {
-                !WORKER_WITHHELD.contains(&name.as_str())
-                    && name != SEND_USER
-                    && name != SLEEP
-                    && !crate::workhub::tasks::graph::NAMES.contains(&name.as_str())
-            })
-            .collect();
-        allowed.sort();
-        match requested {
-            None => Some(allowed),
-            Some(names) => names
-                .iter()
-                .all(|name| allowed.contains(name))
-                .then_some(names),
-        }
-    }
-    /// Whether `session` is the calling Bot or a worker it created.
-    pub(super) async fn bot_owns_or_is(
-        &self,
-        scope: &maka_capabilities::call::Scope,
-        session: &str,
-    ) -> Result<bool, String> {
-        let Some(source) = scope.identity.agent() else {
-            return Ok(false);
-        };
-        if source.session_id == session {
-            return Ok(self.bot.is(session));
-        }
-        self.bot_worker(source, session).await
     }
     async fn bot_worker(
         &self,

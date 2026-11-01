@@ -1000,7 +1000,7 @@ async fn the_bot_can_read_conversations_but_is_not_given_tools_that_change_them(
 }
 
 #[tokio::test]
-async fn the_bot_delegates_to_workers_it_created_and_controls_only_those() {
+async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = Fixture::configured(
@@ -1043,14 +1043,9 @@ async fn the_bot_delegates_to_workers_it_created_and_controls_only_those() {
         };
         assert_eq!(created["session"]["parentSessionId"], bot.as_str(), "{created}");
         let worker = created["session"]["id"].as_str().unwrap().to_owned();
-        // Not bounded by the Bot's coordination-only list, but never able to
-        // change or message conversations itself.
-        let tools: Vec<String> = serde_json::from_value(created["session"]["tools"].clone()).unwrap();
-        assert!(tools.iter().any(|name| name == "SessionList"), "{tools:?}");
-        for withheld in ["SessionCreate", "SessionSend", "SessionStop", "SendUser", "sleep"] {
-            assert!(!tools.iter().any(|name| name == withheld), "{withheld} in {tools:?}");
-        }
-        assert!(tools.iter().any(|name| name == "SessionRead"), "{tools:?}");
+        // Omitted tools follow the ordinary rule: nothing narrows the worker, and
+        // it does not become a Bot.
+        assert!(created["session"]["tools"].is_null(), "{created}");
 
         // Sending to a conversation the Bot did not create is refused.
         service_tools::named_tool_response(
@@ -1063,16 +1058,27 @@ async fn the_bot_delegates_to_workers_it_created_and_controls_only_those() {
         let sent = request(&mut socket).await;
         assert!(last_tool_result(&sent).contains("not_your_worker"), "{}", last_tool_result(&sent));
 
-        // Creating a worker anywhere but the Bot's own workspace is refused.
+        // Explicit tools are not intersected with the Bot's own list: the Bot does
+        // not hold SessionChange, its worker may.
         service_tools::named_tool_response(
             &mut socket,
             "SessionCreate",
-            json!({"title":"Elsewhere","labels":[],"workspace":{"kind":"session","sessionId":ordinary}}),
+            json!({"title":"Narrow","labels":[],"tools":["SessionChange"],"workspace":{"kind":"session","sessionId":bot}}),
         )
         .await;
         let (mut socket, _) = listener.accept().await.unwrap();
         let sent = request(&mut socket).await;
-        assert!(!last_tool_result(&sent).contains("\"parentSessionId\""), "{}", last_tool_result(&sent));
+        assert!(last_tool_result(&sent).contains("SessionChange"), "{}", last_tool_result(&sent));
+        // SendUser and sleep still follow Bot identity alone.
+        service_tools::named_tool_response(
+            &mut socket,
+            "SessionCreate",
+            json!({"title":"Voice","labels":[],"tools":["SendUser"],"workspace":{"kind":"session","sessionId":bot}}),
+        )
+        .await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert!(last_tool_result(&sent).contains("tools_unavailable"), "{}", last_tool_result(&sent));
 
         // Its own worker can be sent to; the worker starts its admitted message.
         service_tools::named_tool_response(
