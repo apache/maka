@@ -38,8 +38,8 @@ inputs:
     default: ""
 outputs:
   compiled_key:
-    description: Compiler cache key for this revision.
-    value: ${{ steps.keys.outputs.compiled }}-${{ github.sha }}
+    description: Compiler cache key for this toolchain and lockfile.
+    value: ${{ steps.keys.outputs.compiled }}
   compiled_hit:
     description: Whether the exact compiler cache was restored.
     value: ${{ steps.compiled.outputs.cache-hit }}
@@ -120,9 +120,8 @@ runs:
       if: inputs.compile == 'true'
       with:
         path: target
-        key: ${{ steps.keys.outputs.compiled }}-${{ github.sha }}
+        key: ${{ steps.keys.outputs.compiled }}
         restore-keys: |
-          ${{ steps.keys.outputs.compiled }}-
           ${{ steps.keys.outputs.compiled_prefix }}-
     - uses: actions/cache@v6
       if: inputs.javascript == 'true'
