@@ -100,9 +100,9 @@ impl ToolOutput {
             return match reply.receipt {
                 maka_plugin_core::operation::Receipt::Recorded {
                     outcome: maka_plugin_core::operation::OperationOutcome::Returned { value },
-                    cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+                    ..
                 } => Ok(value),
-                _ => Err("Code Mode requires a confirmed returned operation receipt"),
+                _ => Err("Code Mode requires a returned operation receipt"),
             };
         }
         Ok(self.into_json())

@@ -172,15 +172,14 @@ struct Control {
     invocation: Invocation,
     basis: Arc<MessageBasis>,
     cancellation: CancellationToken,
-    failure: Option<&'static str>,
 }
 #[derive(Default)]
 struct Runs {
     closing: bool,
     controls: BTreeMap<String, Control>,
     preparing: BTreeMap<String, CancellationToken>,
-    /// Sessions whose original execution has not confirmed physical cleanup.
-    quarantined: BTreeSet<String>,
+    /// Original execution custody retained after its worker has ended.
+    retained_cleanup: BTreeSet<String>,
 }
 impl Runs {
     fn busy(&self, session: &str) -> bool {
@@ -1175,13 +1174,7 @@ impl Owner {
             if runs.closing {
                 return Err("agent_closed".into());
             }
-            if runs.quarantined.contains(&id) {
-                return Err("agent_cleanup_unconfirmed".into());
-            }
             let current = runs.controls.get(&id);
-            if let Some(reason) = current.and_then(|control| control.failure) {
-                return Err(reason.into());
-            }
             current.map(|control| control.invocation.clone())
         };
         let queued = match queued {
@@ -1263,13 +1256,7 @@ impl Owner {
                         if runs.closing || self.stop.is_cancelled() {
                             return Err("agent_closed".into());
                         }
-                        if runs.quarantined.contains(&id) {
-                            return Err("agent_cleanup_unconfirmed".into());
-                        }
                         let current = runs.controls.get(&id);
-                        if let Some(reason) = current.and_then(|control| control.failure) {
-                            return Err(reason.into());
-                        }
                         current.map(|control| control.invocation.clone())
                     };
                     let queued = match queued {
@@ -1460,7 +1447,7 @@ impl Owner {
             Ok(running) => running,
             Err(error) => {
                 if error.is_cleanup_unconfirmed() {
-                    admission.state().await.quarantined.insert(id.clone());
+                    admission.state().await.retained_cleanup.insert(id.clone());
                 }
                 return Err(public_error(error));
             }
@@ -1497,7 +1484,7 @@ impl Owner {
         let runs = self.runs.clone().try_lock_owned().ok()?;
         if !runs.controls.is_empty()
             || !runs.preparing.is_empty()
-            || !runs.quarantined.is_empty()
+            || !runs.retained_cleanup.is_empty()
             || !self.workers.is_empty()
             || !self.auxiliary.resources.is_idle()
             || self.goals.keeps_host_awake()
@@ -1553,7 +1540,7 @@ impl Owner {
                     "Agent configuration store cleanup failed");
             }
             let runs = owner.runs.lock().await;
-            if !runs.quarantined.is_empty() || !runs.preparing.is_empty() {
+            if !runs.retained_cleanup.is_empty() || !runs.preparing.is_empty() {
                 return Err("agent_cleanup_unconfirmed".into());
             }
             projects?;

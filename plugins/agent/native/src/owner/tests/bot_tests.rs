@@ -410,23 +410,7 @@ async fn origin_wake_after_unknown_outcome(bot_mode: bool) -> bool {
         .await
         .unwrap()
         .expect("idle session accepts a notification");
-    let requested = |facts: &[Fact]| {
-        facts
-            .iter()
-            .filter(|fact| matches!(fact, Fact::ModelRequested { .. }))
-            .count()
-    };
-    let before = requested(&service_tools::facts(&f, &session).await);
     assert!(f.owner.admit_notification(&admission).await.unwrap());
-    if !bot_mode {
-        // Judge by this Session's own log: under parallel tests, a stray client of
-        // another fixture can reach a reused listener port.
-        tokio::time::sleep(Duration::from_secs(4)).await;
-        let reached = requested(&service_tools::facts(&f, &session).await) > before;
-        f.app.shutdown().await.unwrap();
-        f.config.shutdown().await.unwrap();
-        return reached;
-    }
     let reached = match tokio::time::timeout(Duration::from_secs(6), listener.accept()).await {
         Ok(accepted) => {
             let (mut socket, _) = accepted.unwrap();
@@ -447,15 +431,15 @@ async fn origin_wake_after_unknown_outcome(bot_mode: bool) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn bot_continues_after_unknown_tool_outcome_and_ordinary_sessions_keep_protection() {
+async fn bot_and_ordinary_sessions_process_notifications_after_unknown_tool_outcomes() {
     tokio::time::timeout(Duration::from_secs(90), async {
         assert!(
             origin_wake_after_unknown_outcome(true).await,
             "Bot Session must continue"
         );
         assert!(
-            !origin_wake_after_unknown_outcome(false).await,
-            "ordinary Session keeps the stricter rule"
+            origin_wake_after_unknown_outcome(false).await,
+            "ordinary sessions also receive the unknown outcome and continue"
         );
     })
     .await

@@ -43,7 +43,6 @@ fn input(
     let mut input = fixture::input(base, turn, false);
     input.configuration.tool_mode = mode;
     input.work = RunWork::Message {
-        allow_prior_unknown: false,
         source_messages: vec![],
         message: "continue".into(),
         tools,

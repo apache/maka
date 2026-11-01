@@ -48,7 +48,6 @@ pub(super) async fn project(
     reply: OperationReply,
     language: Language,
 ) -> Result<ToolSuccess, ToolError> {
-    // Validate original physical completion before interpreting business output.
     mutation_result(reply.clone(), language)?;
     let Receipt::Recorded {
         outcome: OperationOutcome::Returned { value },

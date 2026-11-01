@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createPendingRecovery } from './pendingRecovery';
 import { textTooltip } from './ui';
 import {
   createText,
@@ -308,13 +309,20 @@ export function InteractionComposer({
           toolName: original.toolName,
         })
       : null;
-  const originalPending = async () =>
-    (await host.pendingControls()).some(
-      (original: any) =>
-        original.method === 'respond' &&
-        original.sessionId === sessionId &&
-        original.correlation?.requestId === requestId,
-    );
+  const originalPending = async () => {
+    const matches = (original: any) =>
+      original.method === 'respond' &&
+      original.sessionId === sessionId &&
+      original.correlation?.requestId === requestId;
+    for (const original of (await host.pendingControls()).filter(matches)) {
+      try {
+        await host.recoverControl(original.id);
+      } catch (reason) {
+        console.warn('Answer status lookup failed:', reason);
+      }
+    }
+    return (await host.pendingControls()).some(matches);
+  };
   const blocked = () =>
     !alive ||
     confirming() ||
@@ -433,10 +441,10 @@ export function InteractionComposer({
     loading.set(true);
     error.set('');
     try {
-      const [canonical, list, unresolved] = await Promise.all([
+      const unresolved = await originalPending();
+      const [canonical, list] = await Promise.all([
         host.query('agent', 'interaction', { sessionId, requestId }),
         host.query('agent', 'pendingInteractions', { sessionId }),
-        originalPending(),
       ]);
       if (!alive) return;
       if (!sameRecord(canonical)) throw new UiError('The Host returned a different request.');
@@ -472,6 +480,11 @@ export function InteractionComposer({
       if (alive) loading.set(false);
     }
   };
+  createPendingRecovery({
+    pending: () => uncertain(),
+    blocked: () => loading() || busy() || confirming(),
+    recover: refresh,
+  });
   const refreshRendered = (owner: InteractionOwner) => {
     if (ownsAction(owner)) void refresh();
   };
@@ -501,29 +514,18 @@ export function InteractionComposer({
         pending.set(false);
       } else {
         uncertain.set(true);
-        error.set(
-          uiMessage(
-            'Answer status is unknown. Recover its original receipt in the main view; do not submit again.',
-          ),
-        );
+        error.set(uiMessage('Syncing changes…'));
       }
     } catch (reason) {
       let unresolved = true;
       try {
         unresolved = await originalPending();
-      } catch {
-        /* Unknown receipt state stays blocked. */
+      } catch (lookupError) {
+        console.warn('Answer status lookup failed:', lookupError);
       }
       if (alive) {
         uncertain.set(unresolved);
-        error.set(
-          unresolved
-            ? uiMessage(
-                'Answer status is unknown. Recover its original receipt in the main view. {reason}',
-                { reason: errorText(reason) },
-              )
-            : errorText(reason),
-        );
+        error.set(unresolved ? uiMessage('Syncing changes…') : errorText(reason));
       }
     } finally {
       if (alive) busy.set(false);
@@ -1022,11 +1024,7 @@ export function InteractionComposer({
             </Text>
           </If>
           <If when={uncertain() && !record()?.outcome}>
-            <Text style={{ ...bodyTextStyle, color: C.warning }}>
-              {tr(
-                'An original answer receipt is unresolved. Refresh is read-only; further answers stay disabled.',
-              )}
-            </Text>
+            <Text style={{ ...bodyTextStyle, color: C.warning }}>{tr('Syncing changes…')}</Text>
           </If>
           <If when={request()?.kind === 'question' && !record()?.outcome && !questionReady()}>
             <Text style={{ ...captionTextStyle, color: C.muted }}>

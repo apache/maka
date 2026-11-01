@@ -62,7 +62,6 @@ fn input(base: &str, suffix: &str) -> RunInput {
         base,
         suffix,
         maka_agent_engine::RunWork::Message {
-            allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: format!("question {suffix}").into(),
             tools: Default::default(),

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createText, errorText, UiError } from './text';
+import { createText, errorText, errorMessage, UiError } from './text';
 import { batch, cleanup, signal } from 'nsh';
 import type { Host } from './host';
 import type {
@@ -195,7 +195,7 @@ export function createBrowsing(host: Host): Browsing {
           if (!owns(read)) return;
           // Subscription-before-read guarantees a newer catalog window for
           // this conflict. Keep the gate until it arrives, without retry IO.
-          if (errorText(reason) === 'agent_catalog_changed') continue;
+          if (errorMessage(reason) === 'agent_catalog_changed') continue;
           throw reason;
         }
         const snapshot = [...rows.values()];
@@ -249,7 +249,7 @@ export function createBrowsing(host: Host): Browsing {
       return 'advanced';
     } catch (reason) {
       if (!owns(read) || continuation !== original) return 'waiting';
-      if (errorText(reason) === 'agent_catalog_changed') {
+      if (errorMessage(reason) === 'agent_catalog_changed') {
         waitForCatalog = true;
         return 'waiting';
       }

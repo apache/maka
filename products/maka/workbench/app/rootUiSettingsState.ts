@@ -30,6 +30,7 @@ import type {
   UiContributionRef,
   UiRuntime,
 } from '../../../../packages/plugin-sdk/src/workbench.js';
+import { createPendingRecovery } from './pendingRecovery';
 import { sameValue } from '../../../../plugins/shared/value';
 import { createTransientText, createText, errorText, message, UiError } from './text';
 
@@ -121,9 +122,7 @@ export function createRootUiSettings(
   const settled = (reply: OperationReply) => {
     const receipt = reply.receipt;
     if (receipt.kind !== 'recorded' || receipt.outcome.kind !== 'returned')
-      throw new UiError(
-        'The result is unknown. Recover the original action before making another change.',
-      );
+      throw new UiError('This action could not be completed.');
     const result = receipt.outcome.value as ManagementResultForDeploymentRef;
     if (result.status === 'conflict')
       throw new UiError('These settings changed elsewhere. Reload before saving again.');
@@ -133,6 +132,26 @@ export function createRootUiSettings(
       });
     if (alive) notice.set(message('Interface selected.'));
   };
+  const recover = () =>
+    run(async () => {
+      await refreshPending();
+      for (const original of pending()) {
+        try {
+          const reply = await context.operations.recover(original.id);
+          if (!alive) return;
+          if (reply.receipt.kind === 'recorded' && reply.receipt.outcome.kind === 'unresolved')
+            continue;
+          settled(reply);
+        } catch (reason) {
+          report(reason);
+        }
+      }
+    });
+  createPendingRecovery({
+    pending: () => active() && (!pendingKnown() || pending().length > 0),
+    blocked: busy,
+    recover,
+  });
   return {
     query,
     busy,
@@ -146,18 +165,6 @@ export function createRootUiSettings(
     current: () => choices().find(selected) ?? null,
     disabled,
     activate: () => void refreshPending().catch(report),
-    recover: () =>
-      run(async () => {
-        await refreshPending();
-        for (const original of pending()) {
-          if (original.reference) settled(await context.operations.recover(original.id));
-        }
-      }),
-    abandon: (id: string) =>
-      run(async () => {
-        const original = pending().find((item) => item.id === id);
-        if (original && !original.reference) await context.operations.abandon(id);
-      }),
     filtered: computed(() => {
       const needle = query().trim().toLowerCase();
       return choices().filter((choice) =>

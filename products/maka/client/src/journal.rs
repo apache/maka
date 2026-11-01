@@ -60,7 +60,7 @@ pub struct Operation {
     pub abandoned: bool,
     /// Present only after original preparation has been durably recorded.
     pub reference: Option<RecoveryRef>,
-    /// A known returned business outcome; absent is never proof that it did not run.
+    /// A terminal business outcome; absent is never proof that it did not run.
     pub receipt: Option<Receipt>,
 }
 
@@ -69,6 +69,7 @@ pub struct Operation {
 pub struct Journal {
     pub(crate) pool: SqlitePool,
     writes: tokio::sync::mpsc::Sender<write::Pending>,
+    path: std::path::PathBuf,
     #[cfg(test)]
     pub(crate) preparing: std::sync::Arc<tokio::sync::Notify>,
 }
@@ -209,6 +210,34 @@ impl Journal {
         };
         Ok(draft)
     }
+    // The stable file coordinates preparation across independent shell processes.
+    // Each lease opens its own descriptor; never replace or unlink this lock file.
+    pub(crate) async fn preparation_lease(&self, exclusive: bool) -> Result<Option<std::fs::File>> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut path = path.canonicalize().map_err(error)?.into_os_string();
+            path.push(".preparations.lock");
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path)
+                .map_err(error)?;
+            if exclusive {
+                match file.try_lock() {
+                    Ok(()) => {}
+                    Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+                    Err(std::fs::TryLockError::Error(cause)) => return Err(error(cause)),
+                }
+            } else {
+                file.lock_shared().map_err(error)?;
+            }
+            Ok(Some(file))
+        })
+        .await
+        .map_err(error)?
+    }
     pub(crate) async fn reserve(&self, operation: &Operation) -> Result<()> {
         self.write(write::Command::Reserve(write::Reservation::new(operation)?))
             .await
@@ -267,7 +296,7 @@ impl Journal {
         if !matches!(
             receipt,
             Receipt::Recorded {
-                outcome: OperationOutcome::Returned { .. },
+                outcome: OperationOutcome::Returned { .. } | OperationOutcome::Unknown { .. },
                 ..
             }
         ) {
@@ -351,7 +380,13 @@ impl Journal {
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating pending operations index: {error}"))?;
             sqlx::query("CREATE TABLE IF NOT EXISTS dismissed_controls (operation TEXT PRIMARY KEY REFERENCES operations(id))")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating dismissed controls table: {error}"))?;
-            for index in recovery::INDEXES {
+            for (name, index, remove) in recovery::INDEXES {
+                let previous: Option<String> = sqlx::query_scalar("SELECT sql FROM sqlite_schema WHERE type='index' AND name=?")
+                    .bind(name).fetch_optional(&mut *transaction).await.map_err(error)?;
+                if previous.as_ref().is_some_and(|sql| *sql != index.replace(" IF NOT EXISTS", "")) {
+                    sqlx::query(remove)
+                        .execute(&mut *transaction).await.map_err(error)?;
+                }
                 sqlx::query(index).execute(&mut *transaction).await
                     .map_err(|error| format!("client journal creating recovery index: {error}"))?;
             }
@@ -376,6 +411,7 @@ impl Journal {
         Ok(Self {
             pool,
             writes,
+            path: path.to_owned(),
             #[cfg(test)]
             preparing: std::sync::Arc::new(tokio::sync::Notify::new()),
         })
@@ -593,6 +629,15 @@ pub(crate) fn validate_upload(operation: &Operation, key: &DraftKey) -> Result<(
 
 pub(crate) fn uploaded_attachment(operation: &Operation) -> Result<Option<DraftAttachment>> {
     if operation.abandoned {
+        return Ok(None);
+    }
+    if matches!(
+        &operation.receipt,
+        Some(Receipt::Recorded {
+            outcome: OperationOutcome::Unknown { .. },
+            ..
+        })
+    ) {
         return Ok(None);
     }
     let Some(Receipt::Recorded {

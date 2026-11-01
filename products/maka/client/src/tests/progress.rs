@@ -21,8 +21,13 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn progress_cancellation_and_scope_drain_preserve_saved_business_receipts() {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        for (finish, cleanup_failure) in [("next", false), ("mutation", false), ("client", false), ("next", true)] {
+    for (finish, cleanup_failure) in [
+        ("next", false),
+        ("mutation", false),
+        ("client", false),
+        ("next", true),
+    ] {
+        tokio::time::timeout(Duration::from_secs(30), async {
             let fixture = Fixture::new().await;
             fixture.counter.blocked.store(true, Ordering::SeqCst);
             let client = fixture.client().await;
@@ -69,14 +74,14 @@ async fn progress_cancellation_and_scope_drain_preserve_saved_business_receipts(
                 client.close().await.unwrap();
                 fixture.finish().await;
             }
-        }
-    }).await.unwrap();
+        }).await.unwrap();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn only_original_clean_undispatched_abort_retires_prepared_settings() {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        for finish in ["next", "mutation", "client", "disconnect"] {
+async fn proven_undispatched_preparation_releases_settings_even_when_physical_cleanup_is_unknown() {
+    for finish in ["next", "mutation", "client", "disconnect"] {
+        tokio::time::timeout(Duration::from_secs(30), async {
             let fixture = Fixture::new().await;
             let client = fixture.client().await;
             let observer = fixture.client().await;
@@ -105,7 +110,7 @@ async fn only_original_clean_undispatched_abort_retires_prepared_settings() {
                 "mutation" => mutation.close().await.unwrap(),
                 "client" => client.close().await.unwrap(),
                 "disconnect" => {
-                    mutation.disconnect().await;
+                    mutation.disconnect().await.unwrap();
                     assert!(mutation.close().await.is_err());
                     client.close().await.unwrap();
                 }
@@ -117,11 +122,7 @@ async fn only_original_clean_undispatched_abort_retires_prepared_settings() {
                 original.receipt.is_none(),
                 "no business receipt is fabricated: {original:?}"
             );
-            assert_eq!(
-                original.abandoned,
-                finish != "disconnect",
-                "finish={finish}, original={original:?}"
-            );
+            assert!(original.abandoned, "finish={finish}, original={original:?}");
             assert_eq!(fixture.counter.effects.load(Ordering::SeqCst), 0);
             let pending = observer.pending_settings().await.unwrap();
             let replacement = observer
@@ -133,34 +134,68 @@ async fn only_original_clean_undispatched_abort_retires_prepared_settings() {
                     Attachments::new(),
                 )
                 .await;
-            if finish == "disconnect" {
-                assert_eq!(
-                    pending
-                        .iter()
-                        .map(|operation| operation.id)
-                        .collect::<Vec<_>>(),
-                    [id]
-                );
-                assert_eq!(
-                    replacement.err().unwrap(),
-                    "settings operation already exists or has an unresolved original"
-                );
-            } else {
-                assert!(pending.is_empty());
-                let replacement = replacement.unwrap();
-                assert!(
-                    observer
-                        .abandon_unprepared(replacement.id())
-                        .await
-                        .unwrap()
-                        .abandoned
-                );
-                replacement.close().await.unwrap();
-            }
+            assert!(pending.is_empty());
+            let replacement = replacement.unwrap();
+            assert!(
+                observer
+                    .abandon_unprepared(replacement.id())
+                    .await
+                    .unwrap()
+                    .abandoned
+            );
+            replacement.close().await.unwrap();
             client.close().await.unwrap();
             observer.close().await.unwrap();
             fixture.finish().await;
-        }
+        })
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn confirmed_business_result_is_usable_while_original_cleanup_is_retained() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let fixture = Fixture::new().await;
+        let client = fixture.client().await;
+        let mutation = client
+            .settings_mutation(
+                Uuid::new_v4(),
+                "setup",
+                "discoverModels",
+                json!({"cleanupFailure":true}),
+                Attachments::new(),
+            )
+            .await
+            .unwrap();
+        mutation.prepare().await.unwrap();
+        let reply = mutation.confirm().await.unwrap();
+        assert!(matches!(reply.receipt, Receipt::Recorded {
+            outcome: OperationOutcome::Returned { ref value },
+            cleanup: OperationCleanup::Failed { .. },
+        } if value == &json!({"sent":1})));
+        assert!(client.pending_settings().await.unwrap().is_empty());
+        assert_eq!(client.pending_requests().await, 1);
+        let next = client
+            .settings_mutation(
+                Uuid::new_v4(),
+                "setup",
+                "discoverModels",
+                Value::Null,
+                Attachments::new(),
+            )
+            .await
+            .unwrap();
+        next.prepare().await.unwrap();
+        assert!(
+            matches!(next.confirm().await.unwrap().receipt, Receipt::Recorded {
+            outcome: OperationOutcome::Returned { ref value }, ..
+        } if value == &json!({"sent":2}))
+        );
+        assert_eq!(client.pending_requests().await, 1);
+        client.close().await.unwrap();
+        let _ = fixture.host.shutdown().await;
+        let _ = fixture.serving.await;
     })
     .await
     .unwrap();

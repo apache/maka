@@ -124,7 +124,7 @@ async fn assert_drained(fixture: &Fixture) {
     assert!(runs.controls.is_empty(), "no live invocation controls");
     assert!(runs.preparing.is_empty(), "no preparation custody");
     assert!(
-        runs.quarantined.is_empty(),
+        runs.retained_cleanup.is_empty(),
         "physical cleanup was confirmed"
     );
     assert!(!runs.closing, "original Owner remains open");
@@ -203,7 +203,7 @@ async fn native_memory_release_after_joined_workers() {
                 let runs = fixture.owner.runs.lock().await;
                 assert_eq!(runs.controls.len(), ACTIVE);
                 assert!(runs.preparing.is_empty());
-                assert!(runs.quarantined.is_empty());
+                assert!(runs.retained_cleanup.is_empty());
                 assert!(!runs.closing);
                 assert!(!fixture.owner.stop.is_cancelled());
                 for (session, invocation) in &accepted {

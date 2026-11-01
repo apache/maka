@@ -125,7 +125,6 @@ async fn due_checkpoint_resumes_under_fresh_engine_and_consumes_once() {
                 message: "original input".into(),
                 source_messages: vec![],
                 tools: ToolCatalog::default(),
-                allow_prior_unknown: false,
             },
         },
     )

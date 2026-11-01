@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
   createText,
   createTransientText,
@@ -57,7 +58,6 @@ import {
   confirmSend,
   pendingSends,
   recoverSend,
-  abandonSend,
   type ScopedHost,
 } from '../../../../products/maka/workbench/app/host';
 import {
@@ -273,9 +273,7 @@ function receiptMessage(reply: any): UiText {
       ? uiMessage('Send rejected: {reason}', { reason: value.reason })
       : uiMessage('Host returned an unexpected send result.');
   }
-  return uiMessage(
-    'The original send has no confirmed result. Recover its receipt before sending again.',
-  );
+  return uiMessage('This action could not be completed.');
 }
 
 // Rows share the composer's column: at most 800 wide, centered. The terminal's
@@ -1253,16 +1251,10 @@ export function Conversation(props: ConversationProps) {
       try {
         await stream.close();
       } catch (reason) {
-        throw new UiError(
-          '{observation}; original observation cleanup remains unconfirmed: {reason}',
-          {
-            observation: failure ? errorText(failure.reason) : uiMessage('Observation stopped'),
-            reason: errorText(reason),
-          },
-        );
+        console.warn('Conversation observer cleanup failed:', reason);
       } finally {
         // This replaces only the read-only JS observer. Native Client retains
-        // unconfirmed Request custody, within its existing limit, until the
+        // unconfirmed Request custody until the
         // original session close acknowledges cleanup. No mutation is replayed.
         if (subscription === stream) subscription = null;
         if (readFailure?.stream === stream) readFailure = null;
@@ -1870,9 +1862,8 @@ export function Conversation(props: ConversationProps) {
     if (attachments.blocked()) return attachments.blocked();
     if (confirmingContinuation()) return tr('Confirming continuation…');
     if (sending()) return tr('Confirming send… New typing is kept.');
-    if (recovering()) return tr('Reading original receipts… New typing is kept.');
-    if (!receiptsKnown() || unresolved().length)
-      return tr('Sending waits for the original receipt; it will not be replayed.');
+    if (recovering()) return tr('Checking send status…');
+    if (!receiptsKnown() || unresolved().length) return tr('Checking send status…');
     return '';
   };
   const send = async (text: string, expectedBackend?: BackendIdentity, first?: boolean) => {
@@ -1954,17 +1945,15 @@ export function Conversation(props: ConversationProps) {
       unresolved.set(originals);
       receiptsKnown.set(true);
       for (const original of originals) {
-        if (!original.reference) {
-          notice.set(
-            uiMessage(
-              'An attempt was not confirmed. Explicitly abandon it below before starting a new send.',
-            ),
-          );
-          continue;
+        try {
+          const reply = await recoverSend(client, original.id);
+          if (!alive) return;
+          if (reply.receipt.kind === 'recorded' && reply.receipt.outcome.kind === 'unresolved')
+            continue;
+          settleReply(reply);
+        } catch (reason) {
+          report(reason);
         }
-        const reply = await recoverSend(client, original.id);
-        if (!alive) return;
-        settleReply(reply);
       }
       const stored = await loadDraft(client);
       if (!alive) return;
@@ -1979,38 +1968,11 @@ export function Conversation(props: ConversationProps) {
     }
   };
 
-  const abandon = async (operationId: string) => {
-    if (!alive || recovering() || sending()) return;
-    recovering.set(true);
-    const epoch = editEpoch;
-    try {
-      const original = await abandonSend(client, operationId);
-      if (!alive) return;
-      if (original.abandoned) {
-        notice.set(
-          uiMessage(
-            'Unconfirmed attempt abandoned. The draft is kept; press Enter explicitly to send a new attempt.',
-          ),
-        );
-      } else if (original.reference) {
-        const reply = await recoverSend(client, operationId);
-        if (!alive) return;
-        settleReply(reply);
-        const stored = await loadDraft(client);
-        if (!alive) return;
-        acceptRecoveredDraft(stored, epoch);
-      }
-      const operations = await pendingSends(client);
-      if (!alive) return;
-      unresolved.set(operations);
-      receiptsKnown.set(true);
-    } catch (reason) {
-      report(reason);
-    } finally {
-      if (alive) recovering.set(false);
-    }
-  };
-
+  createPendingRecovery({
+    pending: () => !receiptsKnown() || unresolved().length > 0,
+    blocked: () => !draftReady() || sending() || recovering(),
+    recover,
+  });
   const stop = async (invocationId: string | null) => {
     if (!alive || !invocationId || invocation() !== invocationId || stopping()) return;
     stoppingRun.set(invocationId);
@@ -2094,12 +2056,7 @@ export function Conversation(props: ConversationProps) {
     connected,
     error: () => (connected() ? error() : ''),
     notice: () => (connected() ? notice() : ''),
-    recoverable: () => connected() && !sending() && draftReady() && unresolved().length > 0,
     recovering: () => recovering() || sending(),
-    unconfirmed: () =>
-      unresolved()
-        .filter((original) => !original.reference)
-        .map((original) => original.id),
     stopping,
     resumable,
     resuming: confirmingContinuation,
@@ -2122,8 +2079,6 @@ export function Conversation(props: ConversationProps) {
       else void send(event.text);
     },
     sendRendered,
-    recover,
-    abandon,
     invocation,
     activeTurn: runTurn,
     activityTurn: () => {

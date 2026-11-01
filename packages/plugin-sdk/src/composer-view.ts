@@ -107,7 +107,6 @@ export interface ComposerUploadRow {
   name: string;
   kind: 'reading' | 'uploading' | 'failed' | 'unknown';
   error?: string;
-  recovery: 'inspect' | 'recover' | 'recover_or_abandon';
 }
 
 export interface ComposerAttachmentTarget {
@@ -133,10 +132,6 @@ export interface ComposerAttachments<Element = unknown> {
   dropFiles(uris: string[], onText: (text: string) => void): void;
   open(target: { owner: string; value: boolean }): void;
   remove(target: ComposerAttachmentTarget): void;
-  recover(target: ComposerAttachmentTarget): Promise<void>;
-  abandon(target: ComposerAttachmentTarget): Promise<void>;
-  inspect(target: ComposerAttachmentTarget): Promise<void>;
-  retry(): Promise<void>;
   reportError(reason: unknown): void;
   notify(reason: unknown): void;
   clearNotice(): void;
@@ -250,9 +245,7 @@ export interface ComposerSession<Element = unknown> {
   empty(): boolean;
   error(): string;
   notice(): string;
-  recoverable(): boolean;
   recovering(): boolean;
-  unconfirmed(): string[];
   connected(): boolean;
   invocation(): string | null;
   stopping(): boolean;
@@ -265,8 +258,6 @@ export interface ComposerSession<Element = unknown> {
   changeDraft(text: string): void;
   submit(event: { text: string }): void;
   sendRendered(action: ComposerSendAction): void;
-  recover(): Promise<void>;
-  abandon(id: string): Promise<void>;
   stop(invocationId: string | null): Promise<void>;
 }
 

@@ -274,17 +274,10 @@ export async function terminalMutation<M extends Method<'terminal', 'mutation'>>
   input: Input<'terminal', M>,
 ): Promise<Output<'terminal', M>> {
   const observed = await scope.terminal(method, input);
-  if (!object(observed) || !object(observed.reply)) throw new UiError('Invalid terminal receipt.');
+  if (!object(observed) || !object(observed.reply)) throw new Error('Invalid terminal receipt.');
   const reply = observed.reply as unknown as OperationReply;
   if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
-    throw new UiError(
-      'Terminal result is unknown. Recover the original action before trying again.',
-    );
-  if (observed.cleanupError)
-    throw new UiError(
-      'Terminal result was recorded, but its original call did not finish cleanup: {reason}. Do not repeat this action.',
-      { reason: String(observed.cleanupError) },
-    );
+    throw new UiError('This action could not be completed.');
   return reply.receipt.outcome.value as Output<'terminal', M>;
 }
 export const pendingTerminals = (scope: ScopedHost) =>

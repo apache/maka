@@ -56,7 +56,6 @@ pub fn input(base: &str, attachments: Value) -> RunInput {
         base,
         "current",
         maka_agent_engine::RunWork::Message {
-            allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: serde_json::from_value(json!({"text":"current", "attachments":attachments}))
                 .unwrap(),

@@ -67,7 +67,7 @@ impl Owner {
         let control = runs
             .controls
             .get(&invocation.session_id)
-            .filter(|control| control.invocation == *invocation && control.failure.is_none())
+            .filter(|control| control.invocation == *invocation)
             .ok_or("graph_source_inactive")?;
         let epoch = control.basis.graph.clone().ok_or("graph_source_invalid")?;
         let current = self

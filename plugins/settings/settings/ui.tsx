@@ -62,6 +62,8 @@ import {
 import { sameValue } from '../../shared/value';
 import { createHost, HostProvider } from '../../../products/maka/workbench/app/host';
 
+import { createPendingRecovery } from '../../../products/maka/workbench/app/pendingRecovery';
+
 type Snapshot = {
   route: SettingsRoute | null;
   connections: ModelSettingsSnapshot;
@@ -159,6 +161,11 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         changed();
       }
     });
+  createPendingRecovery({
+    pending: () => !operations.pendingKnown() || operations.pending().length > 0,
+    blocked: operations.busy,
+    recover,
+  });
   const invokeOwn = (id: string, argument?: string) => {
     const command = runtime
       .contributions()
@@ -220,7 +227,6 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
                   route={route}
                   defaultRoute={defaultRoute}
                   operations={operations}
-                  recover={recover}
                 />
               </If>
             </HostProvider>

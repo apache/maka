@@ -133,8 +133,7 @@ impl Owner {
             });
         }
         let rejected = |reason| Ok(CompactResult::Rejected { reason });
-        if runs.closing || self.stop.is_cancelled() || runs.quarantined.contains(&input.session_id)
-        {
+        if runs.closing || self.stop.is_cancelled() {
             return rejected(CompactRejection::Closed);
         }
         if session.archived {
@@ -275,9 +274,7 @@ impl Owner {
             Err(RunError::Busy) => return rejected(CompactRejection::Busy),
             Err(error) => {
                 if error.is_cleanup_unconfirmed() {
-                    runs.quarantined.insert(input.session_id.clone());
-                    runs.closing = true;
-                    self.stop.cancel();
+                    runs.retained_cleanup.insert(input.session_id.clone());
                 }
                 return Err(public_error(error));
             }
@@ -290,7 +287,6 @@ impl Owner {
                 invocation: invocation.clone(),
                 basis: Arc::new(basis),
                 cancellation: running.cancellation(),
-                failure: None,
             },
         );
         self.workers.spawn(self.clone().drive(running));

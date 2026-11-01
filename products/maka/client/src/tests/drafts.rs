@@ -189,36 +189,31 @@ async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart
             .await
             .unwrap();
         unknown.prepare().await.unwrap();
-        unknown.disconnect().await;
+        unknown.disconnect().await.unwrap();
         assert!(matches!(
             client.recover(unknown.id()).await.unwrap().receipt,
             Receipt::NotRecorded
         ));
+        client
+            .save_draft(
+                "agent",
+                "session-one",
+                "composer",
+                Some(1),
+                DraftEdit {
+                    text: String::new(),
+                    settled_uploads: vec![unknown.id()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
         assert!(
-            client
-                .save_draft(
-                    "agent",
-                    "session-one",
-                    "composer",
-                    Some(1),
-                    DraftEdit {
-                        text: String::new(),
-                        settled_uploads: vec![unknown.id()],
-                        ..Default::default()
-                    }
-                )
-                .await
-                .is_err()
-        );
-        assert_eq!(
             client
                 .pending_uploads("session-one", "composer")
                 .await
                 .unwrap()
-                .iter()
-                .map(|operation| operation.id)
-                .collect::<Vec<_>>(),
-            [unknown.id()]
+                .is_empty()
         );
         client.close().await.unwrap();
         fixture.finish().await;
@@ -307,11 +302,12 @@ async fn saved_drafts_and_receipts_preserve_new_edits_across_clear_ordering_and_
         assert_eq!(restarted.load_draft("agent", "session-one", "composer").await.unwrap().unwrap().text, "reject");
         let unconfirmed = restarted.send_draft(Uuid::new_v4(), "agent", "session-one", "composer", 4, json!({})).await.unwrap();
         unconfirmed.prepare().await.unwrap();
-        unconfirmed.disconnect().await;
+        unconfirmed.disconnect().await.unwrap();
         assert!(matches!(restarted.recover(unconfirmed.id()).await.unwrap().receipt, Receipt::NotRecorded));
         assert_eq!(restarted.load_draft("agent", "session-one", "composer").await.unwrap().unwrap().text, "reject");
         let pending = restarted.pending_operations("agent", "session-one", "composer").await.unwrap();
-        assert_eq!(pending.iter().map(|operation|operation.id).collect::<Vec<_>>(), [unconfirmed.id()]);
+        assert!(pending.is_empty());
+        assert!(restarted.operation(unconfirmed.id()).await.unwrap().abandoned);
         restarted.close().await.unwrap();
         fixture.finish().await;
     }).await.unwrap();

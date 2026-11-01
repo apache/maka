@@ -263,8 +263,6 @@ pub enum RunWork {
         message: MessageInput,
         source_messages: Vec<maka_agent_facts::message::RootSourceMessage>,
         tools: ToolCatalog,
-        /// Only a newly submitted client Turn may observe a sealed, unknown prior tool effect.
-        allow_prior_unknown: bool,
     },
     ContextCompact,
 }

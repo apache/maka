@@ -576,7 +576,7 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
         drop(confirmation);
         assert_eq!(mutation.next().await.unwrap_err(),"original mutation lost its observer; close or recover it");
         assert!(mutation.confirm().await.is_err(),"the same owner cannot confirm twice");
-        mutation.disconnect().await;
+        mutation.disconnect().await.unwrap();
         assert!(mutation.close().await.is_err(),"disconnect is not a cleanup acknowledgement");
         assert_eq!(client.pending_requests().await,1);
         client.dismiss_control(id).await.unwrap();
@@ -700,6 +700,76 @@ async fn cancelling_a_sql_blocked_preparation_fences_confirmation_even_after_the
                 .is_err()
         );
         client.close().await.unwrap();
+        fixture.finish().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn automatic_recovery_does_not_cancel_an_opening_in_an_independent_client() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let fixture = Fixture::new().await;
+        let client = fixture.client().await;
+        let recovering = fixture.client().await;
+        let id = Uuid::new_v4();
+        let operation = Operation {
+            id,
+            host: client.source().clone(),
+            endpoint: "agent".into(),
+            method: "selectBackend".into(),
+            session_id: Some("session-one".into()),
+            correlation: Value::Null,
+            draft: None,
+            upload: None,
+            abandoned: false,
+            reference: None,
+            receipt: None,
+        };
+        // Hold admission after the journal reservation has become visible.
+        let host = client.0.host.lock().await;
+        let mut opening =
+            Box::pin(client.begin_mutation(operation, Value::Null, Attachments::new()));
+        tokio::select! {
+            result = &mut opening => panic!("opening bypassed the held Host: {}", result.is_ok()),
+            () = async {
+                loop {
+                    if recovering.operation(id).await.is_ok() { break; }
+                    tokio::task::yield_now().await;
+                }
+            } => {}
+        }
+        assert_eq!(
+            recovering.recover(id).await.unwrap_err(),
+            "client journal still has active preparation"
+        );
+        assert!(!recovering.operation(id).await.unwrap().abandoned);
+        drop(host);
+        let mutation = opening.await.unwrap();
+        mutation.prepare().await.unwrap();
+        let reply = mutation.confirm().await.unwrap();
+        assert!(matches!(
+            reply.receipt,
+            Receipt::Recorded {
+                outcome: OperationOutcome::Returned { .. },
+                ..
+            }
+        ));
+        assert_eq!(fixture.counter.effects.load(Ordering::SeqCst), 1);
+        let lost = client
+            .control(Uuid::new_v4(), "create", Value::Null)
+            .await
+            .unwrap();
+        let lost_id = lost.id();
+        drop(lost);
+        assert_eq!(
+            recovering.recover(lost_id).await.unwrap_err(),
+            "client operation ended before dispatch"
+        );
+        assert!(recovering.operation(lost_id).await.unwrap().abandoned);
+        assert_eq!(fixture.counter.effects.load(Ordering::SeqCst), 1);
+        client.close().await.unwrap();
+        recovering.close().await.unwrap();
         fixture.finish().await;
     })
     .await

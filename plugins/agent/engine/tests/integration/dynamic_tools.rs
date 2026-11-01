@@ -162,7 +162,7 @@ async fn discovery_defers_direct_admission_but_only_defers_descriptions_in_code_
                 // Exercise measured-usage compaction, without making the
                 // discovery prompt itself exceed the provider input capacity.
                 input.context = Some(ModelRequestContext { provider_id:"openai".into(), context_window:Some(64_000), declared_window:Some(210), model_context_window:None });
-                input.work = RunWork::Message { allow_prior_unknown:false, source_messages:Vec::new(), message:"Use echo".into(), tools:catalog };
+                input.work = RunWork::Message { source_messages:Vec::new(), message:"Use echo".into(), tools:catalog };
                 let engine = fixture::engine();
                 engine.run(log.store(), input, CancellationToken::new()).await.unwrap();
                 engine.drain().await;

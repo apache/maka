@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
   cleanup,
   untracked,
@@ -62,6 +63,7 @@ import {
   createTransientText,
   UiError,
   errorText,
+  errorMessage,
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
 import { currentLocale, displayText, tr } from '../../../../products/maka/workbench/app/locale';
@@ -438,13 +440,9 @@ export function createConversationUi(
   const returned = (reply: any) => {
     const receipt = reply?.receipt;
     if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'unknown')
-      throw new UiError(
-        'The action outcome is unknown. Check the current state before trying again.',
-      );
+      throw new UiError('This action could not be completed.');
     if (receipt?.kind !== 'recorded' || receipt.outcome?.kind !== 'returned')
-      throw new UiError(
-        'No confirmed result is available. Check the current state before repeating the action. You can dismiss this notice.',
-      );
+      throw new UiError('Syncing changes…');
     const value = receipt.outcome.value;
     return value;
   };
@@ -465,10 +463,7 @@ export function createConversationUi(
         (method !== 'stopComputerApp' || original.correlation.operationId === input.operationId) &&
         (method !== 'respond' || original.correlation.requestId === input.requestId),
     );
-    if (unresolved)
-      throw new UiError(
-        'This action has an unresolved original. Recover it below before trying again.',
-      );
+    if (unresolved) throw new UiError('Syncing changes…');
     if (!urgent && busy())
       throw new UiError('An action is being confirmed. Try again in a moment.');
     const pendingCreation = method === 'create' && pendingSending() && pendingWorkspace() !== null;
@@ -480,13 +475,17 @@ export function createConversationUi(
         updatePending({ target: { kind: 'creating', operationId: original.operationId } });
         for (;;) {
           const event = await original.next();
-          if (event === null)
-            throw new UiError('Confirmation is still unknown. Recover the original action below.');
+          if (event === null) throw new UiError('Syncing changes…');
           if (event.kind === 'not_dispatched') {
             updatePending({ target: null });
             throw new UiError('The action was not dispatched. Try again.');
           }
           if (event.kind === 'finished') {
+            if (
+              event.reply?.receipt?.kind === 'recorded' &&
+              event.reply.receipt.outcome?.kind === 'unknown'
+            )
+              updatePending({ target: null });
             result = returned(event.reply);
             updatePending({
               target:
@@ -940,9 +939,7 @@ export function createConversationUi(
                   (original) => original.sessionId === id && original.method === 'metadata',
                 )
               )
-                throw new UiError(
-                  'This action has an unresolved original. Recover it below before trying again.',
-                );
+                throw new UiError('Syncing changes…');
               const observed = await host.query('agent', 'observe', { sessionId: id });
               const session = observed.session;
               const settings = {
@@ -1285,10 +1282,18 @@ export function createConversationUi(
     try {
       const originals = await host.pendingControls();
       for (const original of originals) {
-        if (!original.reference) continue;
         try {
           const reply = await host.recoverControl(original.id);
           if (!alive) return;
+          if (reply?.receipt?.kind === 'recorded' && reply.receipt.outcome?.kind === 'unresolved')
+            continue;
+          if (
+            original.method === 'create' &&
+            original.id === pendingCreateAttempt() &&
+            reply?.receipt?.kind === 'recorded' &&
+            reply.receipt.outcome?.kind === 'unknown'
+          )
+            updatePending({ target: null });
           const result = returned(reply);
           if (
             original.method === 'respond' &&
@@ -1338,6 +1343,12 @@ export function createConversationUi(
               });
           }
         } catch (reason) {
+          if (
+            original.method === 'create' &&
+            original.id === pendingCreateAttempt() &&
+            errorMessage(reason) === 'client operation ended before dispatch'
+          )
+            updatePending({ target: null });
           failed = true;
           report(reason);
         }
@@ -1356,49 +1367,12 @@ export function createConversationUi(
       });
       if (alive) {
         recovering.set(false);
-        if (!failed && !responseConfirmed && controls().length === 0)
-          status.set(uiMessage('Original actions checked.'));
+        if (!failed && !responseConfirmed && controls().length === 0) status.set('');
       }
     }
   };
-  const controlStatusLabel = () =>
-    recovering()
-      ? tr('Reading original action receipts…')
-      : controlsKnown()
-        ? tr('Check action status ({count})', { count: controls().length })
-        : tr('Recheck original actions');
   const openBrowsed = ({ id, origin }: { id: string; origin: string | null }) =>
     selectBrowsed(id, origin);
-  const abandonControl = async (id: string) => {
-    try {
-      const original = await host.abandonControl(id);
-      if (id === pendingCreateAttempt() && original.abandoned) {
-        updatePending({ target: null });
-      }
-      await refreshControls();
-    } catch (reason) {
-      report(reason);
-    }
-  };
-  const dismissControl = async (id: string) => {
-    if (recovering()) return;
-    recovering.set(true);
-    status.set('');
-    try {
-      await host.dismissControl(id);
-      if (alive && id === pendingCreateAttempt()) updatePending({ target: null });
-      await refreshControls();
-      if (alive) {
-        error.set('');
-        status.set(uiMessage('Action notice dismissed.'));
-        focusComposer();
-      }
-    } catch (reason) {
-      report(reason);
-    } finally {
-      if (alive) recovering.set(false);
-    }
-  };
   const previewImage = (image: ImagePreview) => {
     if (!alive || selected() !== image.source.read.sessionId || overlay()) return;
     browserFocus.set(false);
@@ -1561,6 +1535,11 @@ export function createConversationUi(
     previousWidth = width;
   });
   void refreshControls().catch(report);
+  createPendingRecovery({
+    pending: () => !controlsKnown() || controls().length > 0,
+    blocked: () => recovering() || busy(),
+    recover: recoverControls,
+  });
   // Whether the Host has no model connection, read each time the composer is
   // shown again (back from Settings, too): the start pane then asks for one.
   const noConnections = signal(false);
@@ -1962,59 +1941,9 @@ export function createConversationUi(
                         </View>
                       </If>
                       <If when={!controlsKnown() || controls().length > 0}>
-                        <Button
-                          accessibilityLabel={controlStatusLabel()}
-                          disabled={recovering()}
-                          onPress={inputAction(recoverControls, null)}
-                          style={controlStyle}
-                          hoverStyle={controlHoverStyle()}
-                          focusStyle={controlFocusStyle()}
-                        >
-                          <Text style={{ ...bodyTextStyle, color: C.warning }}>
-                            {controlStatusLabel()}
-                          </Text>
-                        </Button>
-                        <Each
-                          of={controls().filter((original) => original.reference)}
-                          key={(original) => original.id}
-                        >
-                          {(original) => (
-                            <Button
-                              accessibilityLabel={tr('Dismiss action notice {id}', {
-                                id: original().id.slice(0, 8),
-                              })}
-                              disabled={recovering()}
-                              onPress={inputAction(dismissControl, original().id)}
-                              style={controlStyle}
-                              hoverStyle={controlHoverStyle()}
-                              focusStyle={controlFocusStyle()}
-                            >
-                              <Text style={{ ...bodyTextStyle, color: C.secondary }}>
-                                {tr('Dismiss this notice')}
-                              </Text>
-                            </Button>
-                          )}
-                        </Each>
-                        <Each
-                          of={controls().filter((original) => !original.reference)}
-                          key={(original) => original.id}
-                        >
-                          {(original) => (
-                            <Button
-                              onPress={inputAction(abandonControl, original().id)}
-                              style={controlStyle}
-                              hoverStyle={controlHoverStyle()}
-                              focusStyle={controlFocusStyle()}
-                            >
-                              <Text style={{ ...bodyTextStyle, color: C.warning }}>
-                                {tr('Abandon unconfirmed {method}', {
-                                  method: original().method,
-                                })}{' '}
-                                · {original().id.slice(0, 8)}
-                              </Text>
-                            </Button>
-                          )}
-                        </Each>
+                        <Text style={{ ...bodyTextStyle, color: C.secondary }}>
+                          {tr('Syncing changes…')}
+                        </Text>
                       </If>
                     </Scroll>
                   </If>
@@ -2350,9 +2279,7 @@ function projectComposerSession(
     empty: owner.empty,
     error: owner.error,
     notice: owner.notice,
-    recoverable: owner.recoverable,
     recovering: owner.recovering,
-    unconfirmed: owner.unconfirmed,
     connected: owner.connected,
     invocation: owner.invocation,
     stopping: owner.stopping,
@@ -2364,8 +2291,6 @@ function projectComposerSession(
     changeDraft: owner.changeDraft,
     submit: owner.submit,
     sendRendered: owner.sendRendered,
-    recover: owner.recover,
-    abandon: owner.abandon,
     stop: owner.stop,
   };
 }

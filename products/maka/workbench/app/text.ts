@@ -73,10 +73,21 @@ export class UiError extends Error {
   }
 }
 
+export const errorMessage = (reason: unknown): string =>
+  reason instanceof Error ? reason.message : String(reason);
+
 export function errorText(reason: unknown): UiText {
   if (reason instanceof UiError) return reason.text;
-  const detail = reason instanceof Error ? reason.message : String(reason);
+  const detail = errorMessage(reason);
+  if (!detail) return '';
   switch (detail) {
+    case 'client journal still has active preparation':
+    case 'client operation ended before dispatch':
+      return '';
+    case 'agent_observation_cancelled':
+    case 'agent_observation_closed':
+    case 'agent_closed':
+      return message('Connection interrupted. Your draft is kept.');
     case 'agent_store_unavailable':
       return message('Conversation data is temporarily unavailable. Try reconnecting.');
     case 'agent_catalog_unavailable':
@@ -84,6 +95,7 @@ export function errorText(reason: unknown): UiText {
     case 'database connection closed before accepting the operation':
       return message('Connection interrupted. Reconnect to continue; your draft is kept.');
     default:
-      return detail;
+      console.warn('Maka request failed:', detail);
+      return message('This action could not be completed.');
   }
 }

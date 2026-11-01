@@ -1744,4 +1744,19 @@ export const conversationMessages = {
     '在訊息中說明要改什麼，模型會提交修訂後的計劃。',
   ],
   'Toggle plan': ['Toggle plan', '展开或收起计划', '展開或收合計劃'],
+  'Connection interrupted. Your draft is kept.': [
+    'Connection interrupted. Your draft is kept.',
+    '连接已中断，草稿已保留。',
+    '連線已中斷，草稿已保留。',
+  ],
+  'This action could not be completed.': [
+    'This action could not be completed.',
+    '暂时未能完成此操作。',
+    '暫時未能完成此操作。',
+  ],
+  'Checking send status…': ['Checking send status…', '正在确认发送状态…', '正在確認傳送狀態…'],
+  'Checking action status…': ['Checking action status…', '正在确认操作状态…', '正在確認操作狀態…'],
+  'Checking upload status…': ['Checking upload status…', '正在确认上传状态…', '正在確認上傳狀態…'],
+  'Syncing changes…': ['Syncing changes…', '正在同步更改…', '正在同步變更…'],
+  'Connecting to terminal…': ['Connecting to terminal…', '正在连接终端…', '正在連線終端…'],
 } as const satisfies Catalog;

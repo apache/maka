@@ -114,7 +114,6 @@ async fn verify_yielded(continuation: bool) {
         &base,
         "yielded",
         maka_agent_engine::RunWork::Message {
-            allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: "question yielded".into(),
             tools: ToolCatalog::new([ToolRegistration {

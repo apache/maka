@@ -169,7 +169,6 @@ async fn accepted_parallel_calls_overlap_and_preserve_every_result() {
         });
         let mut input = fixture::input(&base, "parallel", false);
         input.work = RunWork::Message {
-            allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: "run queries".into(),
             tools: catalog(gates.clone()),
@@ -313,7 +312,6 @@ async fn cleanup_failure_cancels_and_drains_already_running_siblings() {
         });
         let mut input = fixture::input(&base, "failed", false);
         input.work = RunWork::Message {
-            allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: "run queries".into(),
             tools: catalog(gates.clone()),
@@ -417,7 +415,6 @@ async fn accepted_exclusive_call_rejects_siblings_in_arrival_order() {
         });
         let mut input = fixture::input(&base, "exclusive", false);
         input.work = RunWork::Message {
-            allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: "run queries".into(),
             tools: catalog(gates.clone()),

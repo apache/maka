@@ -212,8 +212,18 @@ struct Request {
     id: Uuid,
     operation: Option<Uuid>,
     observation_ended: AtomicBool,
+    preparation: std::sync::Mutex<Option<std::fs::File>>,
     stop: CancellationToken,
     state: Mutex<State>,
+}
+impl Request {
+    fn end_observation(&self) {
+        self.observation_ended.store(true, Ordering::Release);
+        self.preparation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
 }
 struct State {
     call: LocalCall,
@@ -376,6 +386,7 @@ impl Client {
                             id: Uuid::new_v4(),
                             operation,
                             observation_ended: AtomicBool::new(false),
+                            preparation: std::sync::Mutex::new(None),
                             stop: CancellationToken::new(),
                             state: Mutex::new(State {
                                 call,
@@ -396,7 +407,7 @@ impl Client {
                     Err(error) => Err(error),
                 };
                 if let Err(Ok((request, _))) = opened.send(result) {
-                    request.observation_ended.store(true, Ordering::Release);
+                    request.end_observation();
                     client.0.requests_changed.notify_waiters();
                 }
                 ticket.complete(Ok(()));
@@ -413,7 +424,7 @@ impl Client {
         if matches!(state.phase, Phase::Complete | Phase::Interrupted)
             || state.call.cleanup_confirmed()
         {
-            request.observation_ended.store(true, Ordering::Release);
+            request.end_observation();
             self.0.requests_changed.notify_waiters();
         }
         if state.call.cleanup_confirmed() {
@@ -527,17 +538,25 @@ impl Client {
         input: Value,
         resources: Attachments,
     ) -> Result<Mutation> {
+        let preparation = self
+            .0
+            .journal
+            .preparation_lease(false)
+            .await?
+            .expect("shared preparation lease");
         self.0.journal.reserve(&operation).await?;
         if operation.upload.is_some() {
             self.notify_uploads();
         }
-        self.open_mutation(operation, input, resources).await
+        self.open_mutation(operation, input, resources, preparation)
+            .await
     }
     async fn open_mutation(
         &self,
         operation: Operation,
         input: Value,
         resources: Attachments,
+        preparation: std::fs::File,
     ) -> Result<Mutation> {
         let (request, description) = self
             .open(
@@ -562,6 +581,10 @@ impl Client {
             closed?;
             return Err("client operation target changed before opening its original call".into());
         }
+        *request
+            .preparation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(preparation);
         Ok(Mutation {
             client: self.clone(),
             request,
@@ -631,8 +654,15 @@ impl Client {
             reference: None,
             receipt: None,
         };
+        let preparation = self
+            .0
+            .journal
+            .preparation_lease(false)
+            .await?
+            .expect("shared preparation lease");
         self.0.journal.reserve_settings(&operation).await?;
-        self.open_mutation(operation, input, resources).await
+        self.open_mutation(operation, input, resources, preparation)
+            .await
     }
     /// Upload bytes selected by native input, with the original editor/provider owner.
     pub async fn upload_attachment(
@@ -877,23 +907,10 @@ impl Client {
             reference: None,
             receipt: None,
         };
-        self.0.journal.reserve(&operation).await?;
-        let (request, description) = self
-            .open(
-                endpoint,
-                "send",
-                Value::Object(input),
-                Attachments::new(),
-                Some(id),
-            )
-            .await?;
-        Ok(Mutation {
-            client: self.clone(),
-            request,
-            operation,
-            description,
-        })
+        self.begin_mutation(operation, Value::Object(input), Attachments::new())
+            .await
     }
+
     pub async fn operation(&self, id: Uuid) -> Result<Operation> {
         self.0.journal.load(&self.0.source, id).await
     }
@@ -1049,11 +1066,20 @@ impl Client {
     /// Query only the exact reference recorded before confirmation. A missing or
     /// unknown receipt never authorizes replay of the business method.
     pub async fn recover(&self, id: Uuid) -> Result<OperationReply> {
-        let operation = self.operation(id).await?;
+        let mut operation = self.operation(id).await?;
+        if operation.reference.is_none() {
+            let _lease = self
+                .0
+                .journal
+                .preparation_lease(true)
+                .await?
+                .ok_or("client journal still has active preparation")?;
+            operation = self.abandon_unprepared(id).await?;
+        }
         let original = operation
             .reference
             .as_ref()
-            .ok_or("client attempt has no confirmed preparation; it cannot be replayed")?;
+            .ok_or("client operation ended before dispatch")?;
         let reader = match &self.0.parent {
             Some((owner, _)) => Self(owner.upgrade().ok_or("original receipt reader is closed")?),
             None => self.clone(),
@@ -1203,6 +1229,13 @@ pub struct Mutation {
     operation: Operation,
     description: Description,
 }
+impl Drop for Mutation {
+    fn drop(&mut self) {
+        self.request.end_observation();
+        self.client.0.requests_changed.notify_waiters();
+    }
+}
+
 /// One observation from the original mutation. Cleanup never replaces its business receipt.
 #[derive(Debug)]
 pub enum MutationEvent {
@@ -1248,6 +1281,7 @@ impl Mutation {
                     return Err("Host preparation belongs to another draft owner".into());
                 }
                 self.client.0.journal.prepared(self.operation.id, &reference).await?;
+                self.request.preparation.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
                 if self.operation.upload.is_some() { self.client.notify_uploads(); }
                 state.phase = Phase::Prepared;
                 self.client.operation(self.operation.id).await
@@ -1267,8 +1301,7 @@ impl Mutation {
         loop {
             match event {
                 Some(MutationEvent::Progress(_)) => event = self.next().await?,
-                Some(MutationEvent::Finished { reply, cleanup }) => {
-                    cleanup?;
+                Some(MutationEvent::Finished { reply, .. }) => {
                     return Ok(*reply);
                 }
                 Some(MutationEvent::NotDispatched) => {
@@ -1399,20 +1432,36 @@ impl Mutation {
                 }
             }
         };
-        self.request
-            .observation_ended
-            .store(true, Ordering::Release);
+        self.request.end_observation();
         self.client.0.requests_changed.notify_waiters();
         self.client.release_if_clean(&self.request, &state).await;
         result
     }
 
     /// Lose only the physical observer. The shell still owns the original request.
-    pub async fn disconnect(&self) {
+    pub async fn disconnect(&self) -> Result<()> {
         let mut state = self.request.state.lock().await;
+        let undispatched = state
+            .call
+            .awaiting_confirmation()
+            .then(|| state.call.reference().cloned())
+            .flatten();
         state.call.disconnect();
         state.phase = Phase::Interrupted;
+        let recorded = if let Some(reference) = undispatched {
+            // Disconnect fences this caller from ever confirming. It does not
+            // acknowledge remote cleanup of the prepared call.
+            self.client
+                .0
+                .journal
+                .abandon_undispatched(&self.client.0.source, self.operation.id, &reference)
+                .await
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
         self.client.release_if_clean(&self.request, &state).await;
+        recorded
     }
     pub async fn close(&self) -> Result<()> {
         self.request_cancel();

@@ -31,10 +31,7 @@ const record = (value: unknown): value is Record<string, unknown> =>
 export function settingsValue(reply: unknown): unknown {
   const receipt = record(reply) && record(reply.receipt) ? reply.receipt : null;
   const outcome = receipt?.kind === 'recorded' && record(receipt.outcome) ? receipt.outcome : null;
-  if (outcome?.kind !== 'returned')
-    throw new UiError(
-      'The result is unknown. Recover the original action before making another change.',
-    );
+  if (outcome?.kind !== 'returned') throw new UiError('This action could not be completed.');
   return outcome.value;
 }
 
@@ -134,72 +131,70 @@ export function createSettingsOperations(host: Host) {
     if (!alive || busy()) return;
     busy.set(true);
     error.set('');
-    void (async () => {
+    return (async () => {
       try {
         for (const original of await host.pendingSettings()) {
-          if (!original.reference) continue;
-          const value = settingsValue(await host.recoverSetting(original.id));
-          if (!alive) return;
-          if (
-            original.endpoint === 'skills' ||
-            (original.endpoint === 'agent' &&
-              ['selectWorkspace', 'manageMcpServer'].includes(original.method))
-          ) {
-            await afterKnown(original, value);
-            if (record(value) && (value.kind === 'rejected' || value.kind === 'changed'))
-              throw settingsRejection(value);
-            if (record(value) && Array.isArray(value.results)) {
-              const rejected = value.results.filter(
-                (result) => record(result) && result.kind === 'rejected',
-              );
-              if (rejected.length)
-                throw new Error(rejected.map((result) => result.reason).join('\n'));
-            }
-            continue;
-          }
-          if (original.endpoint === 'agent' && original.method === 'updateGlobalInstructions') {
-            // File CAS outcomes belong to the instruction editor, which preserves
-            // an unsaved draft when the original receipt reports a conflict.
-            await afterKnown(original, value);
-            continue;
-          }
-          if (
-            original.endpoint === 'management' ||
-            (original.endpoint === 'settings' && original.method === 'updateWorkspaceLocations')
-          ) {
-            if (!record(value) || value.status !== 'committed') {
-              if (record(value) && value.status === 'conflict')
-                throw new UiError('These settings changed elsewhere. Reload before saving again.');
-              if (record(value) && typeof value.diagnostic === 'string')
-                throw new Error(value.diagnostic);
-              throw new UiError('The Host rejected this service change. Reload and review it.');
-            }
-          } else {
-            const outcome = record(value) && value.kind === 'applied' ? value.result : value;
+          try {
+            const reply = await host.recoverSetting(original.id);
             if (
-              !record(outcome) ||
-              !['committed', 'saved', 'ready'].some((kind) => kind === outcome.kind)
+              record(reply) &&
+              record(reply.receipt) &&
+              reply.receipt.kind === 'recorded' &&
+              record(reply.receipt.outcome) &&
+              reply.receipt.outcome.kind === 'unresolved'
             )
-              throw settingsRejection(outcome);
+              continue;
+            const value = settingsValue(reply);
+            if (!alive) return;
+            if (
+              original.endpoint === 'skills' ||
+              (original.endpoint === 'agent' &&
+                ['selectWorkspace', 'manageMcpServer'].includes(original.method))
+            ) {
+              await afterKnown(original, value);
+              if (record(value) && (value.kind === 'rejected' || value.kind === 'changed'))
+                throw settingsRejection(value);
+              if (record(value) && Array.isArray(value.results)) {
+                const rejected = value.results.filter(
+                  (result) => record(result) && result.kind === 'rejected',
+                );
+                if (rejected.length)
+                  throw new Error(rejected.map((result) => result.reason).join('\n'));
+              }
+              continue;
+            }
+            if (original.endpoint === 'agent' && original.method === 'updateGlobalInstructions') {
+              // File CAS outcomes belong to the instruction editor, which preserves
+              // an unsaved draft when the original receipt reports a conflict.
+              await afterKnown(original, value);
+              continue;
+            }
+            if (
+              original.endpoint === 'management' ||
+              (original.endpoint === 'settings' && original.method === 'updateWorkspaceLocations')
+            ) {
+              if (!record(value) || value.status !== 'committed') {
+                if (record(value) && value.status === 'conflict')
+                  throw new UiError(
+                    'These settings changed elsewhere. Reload before saving again.',
+                  );
+                if (record(value) && typeof value.diagnostic === 'string')
+                  throw new Error(value.diagnostic);
+                throw new UiError('The Host rejected this service change. Reload and review it.');
+              }
+            } else {
+              const outcome = record(value) && value.kind === 'applied' ? value.result : value;
+              if (
+                !record(outcome) ||
+                !['committed', 'saved', 'ready'].some((kind) => kind === outcome.kind)
+              )
+                throw settingsRejection(outcome);
+            }
+            await afterKnown(original, value);
+          } catch (reason) {
+            report(reason);
           }
-          await afterKnown(original, value);
         }
-        if (alive) notice.set(message('Original settings action receipts checked.'));
-      } catch (reason) {
-        report(reason);
-      } finally {
-        await refreshPending().catch(report);
-        complete();
-      }
-    })();
-  };
-  const abandon = (id: string) => {
-    if (!alive || busy()) return;
-    busy.set(true);
-    error.set('');
-    void (async () => {
-      try {
-        await host.abandonSetting(id);
       } catch (reason) {
         report(reason);
       } finally {
@@ -220,7 +215,6 @@ export function createSettingsOperations(host: Host) {
     mutate,
     run,
     recover,
-    abandon,
   };
 }
 export type SettingsOperations = ReturnType<typeof createSettingsOperations>;

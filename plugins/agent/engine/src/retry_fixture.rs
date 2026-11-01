@@ -69,7 +69,6 @@ pub async fn seed_due_model_retry(
         message,
         source_messages,
         tools: catalog,
-        allow_prior_unknown: false,
     } = work
     else {
         return Err(RunError::InvalidInput(

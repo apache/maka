@@ -53,37 +53,8 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
       <If when={owner.notice()}>
         <Text style={{ ...captionTextStyle, color: C.muted }}>{owner.notice()}</Text>
       </If>
-      <If when={!owner.pendingKnown() || owner.pending().length > 0}>
-        <Button
-          accessibilityLabel={tr('Check interface changes')}
-          disabled={owner.busy()}
-          onPress={owner.recover}
-          style={{ ...controlStyle, alignSelf: 'flex-start' }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Text style={{ ...captionTextStyle, color: C.warning }}>
-            {tr('Check interface changes')}
-          </Text>
-        </Button>
-        <Each of={owner.pending().filter((item) => !item.reference)} key={(item) => item.id}>
-          {(original) => (
-            <Button
-              accessibilityLabel={tr('Abandon unconfirmed interface change')}
-              disabled={owner.busy()}
-              onPress={inputAction(owner.abandon, original().id)}
-              style={{ ...controlStyle, alignSelf: 'flex-start' }}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-              disabledStyle={controlDisabledStyle}
-            >
-              <Text style={{ ...captionTextStyle, color: C.warning }}>
-                {tr('Abandon unconfirmed interface change')}
-              </Text>
-            </Button>
-          )}
-        </Each>
+      <If when={owner.pending().length > 0}>
+        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Checking action status…')}</Text>
       </If>
       <Popover
         open={open()}

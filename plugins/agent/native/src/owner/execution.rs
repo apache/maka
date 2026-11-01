@@ -222,9 +222,7 @@ impl Owner {
             Err(error) => {
                 if error.is_cleanup_unconfirmed() {
                     let mut runs = self.runs.lock().await;
-                    runs.quarantined.insert(execution.session_id);
-                    runs.closing = true;
-                    self.stop.cancel();
+                    runs.retained_cleanup.insert(execution.session_id);
                 }
                 Err(public_error(error))
             }
@@ -326,9 +324,7 @@ impl Owner {
             }
             Err(error) => {
                 if error.is_cleanup_unconfirmed() {
-                    runs.quarantined.insert(invocation.session_id.clone());
-                    runs.closing = true;
-                    self.stop.cancel();
+                    runs.retained_cleanup.insert(invocation.session_id.clone());
                 }
                 return Err(public_error(error));
             }
@@ -349,10 +345,8 @@ impl Owner {
             }
             Err(error) => {
                 if error.is_cleanup_unconfirmed() {
-                    runs.quarantined.insert(invocation.session_id.clone());
+                    runs.retained_cleanup.insert(invocation.session_id.clone());
                 }
-                runs.closing = true;
-                self.stop.cancel();
                 return Err(public_error(error));
             }
         };
@@ -364,7 +358,6 @@ impl Owner {
                 invocation: invocation.clone(),
                 basis,
                 cancellation: running.cancellation(),
-                failure: None,
             },
         );
         self.workers.spawn(self.clone().drive(running));
