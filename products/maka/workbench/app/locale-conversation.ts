@@ -1080,6 +1080,11 @@ export const conversationMessages = {
     ],
   'Terminal screen': ['Terminal screen', '终端屏幕', '終端畫面'],
   'Terminal scrollback': ['Terminal scrollback', '终端历史输出', '終端歷史輸出'],
+  'The Bot did not reply this time': [
+    'The Bot did not reply this time',
+    'Bot 这一轮没有回复',
+    'Bot 這一輪沒有回覆',
+  ],
   'The Host did not accept this queue change.': [
     'The Host did not accept this queue change.',
     'Host 未接受此次队列更改。',

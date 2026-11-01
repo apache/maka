@@ -90,8 +90,11 @@ import type {
   ModelDetails,
 } from '../../../../products/maka/workbench/app/modelSelection';
 import { CompactionDivider } from '../../../../products/maka/workbench/app/CompactionDivider';
-import { createBotTranscript } from '../../../../products/maka/workbench/app/botTranscript';
-import { BotReply, BotWorking } from '../../../../products/maka/workbench/app/BotReply';
+import {
+  botTurnEnding,
+  createBotTranscript,
+} from '../../../../products/maka/workbench/app/botTranscript';
+import { BotNote, BotReply, BotWorking } from '../../../../products/maka/workbench/app/BotReply';
 import {
   MessageRow,
   type MessageViewState,
@@ -502,6 +505,7 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'process'; key: string; group: ProcessGroup }
     | { kind: 'row'; key: string; rowId: string; repeats?: number }
     | { kind: 'bot'; key: string; turnId: string }
+    | { kind: 'botNote'; key: string; turnId: string }
     | { kind: 'botWorking'; key: string };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
@@ -534,8 +538,21 @@ export function Conversation(props: ConversationProps) {
     const speak = () => {
       if (openTurn !== undefined) {
         working(openTurn);
-        if (bot.forTurn(openTurn).length > 0)
-          result.push({ kind: 'bot', key: `bot/${openTurn}`, turnId: openTurn });
+        const sent = bot.forTurn(openTurn).length > 0;
+        if (sent) result.push({ kind: 'bot', key: `bot/${openTurn}`, turnId: openTurn });
+        // Silence is valid and gets no marker; a Turn that neither sent nor slept would
+        // look the same, so say so.
+        const turn = projection().turns.get(openTurn);
+        const finished = turn !== undefined && !turn.active && openTurn !== runTurn();
+        const turnId = openTurn;
+        const slept = [...projection().rowsById.values()].some(
+          (row) => row.turnId === turnId && row.tool?.call?.name === 'sleep',
+        );
+        if (
+          turn &&
+          botTurnEnding({ finished, outcome: turnOutcome(turn), sent, slept }) === 'unanswered'
+        )
+          result.push({ kind: 'botNote', key: `bot/${openTurn}/note`, turnId: openTurn });
       }
       openTurn = undefined;
     };
@@ -2744,6 +2761,8 @@ export function Conversation(props: ConversationProps) {
                             }}
                           />
                         );
+                      if (initial.kind === 'botNote')
+                        return <BotNote text={() => tr('The Bot did not reply this time')} />;
                       if (initial.kind === 'bot')
                         return (
                           <BotReply

@@ -176,3 +176,25 @@ export function createBotTranscriptCore(
     },
   };
 }
+
+/**
+ * How a finished Bot Turn ended, from what the user can see of it. Silence is a valid
+ * outcome and needs no marker: `quiet` is a Turn that chose to sleep without sending.
+ * `unanswered` is a Turn that ended with neither a `SendUser` message nor a `sleep`,
+ * so the user cannot tell it from a deliberate silence unless Chat says so.
+ */
+export type BotTurnEnding = 'running' | 'replied' | 'quiet' | 'unanswered' | 'other';
+export function botTurnEnding(turn: {
+  /** The Turn has finished and is not the one running now. */
+  finished: boolean;
+  /** `completed`, `failed`, `aborted`, ... or null while unknown. */
+  outcome: string | null;
+  sent: boolean;
+  slept: boolean;
+}): BotTurnEnding {
+  if (!turn.finished) return 'running';
+  if (turn.sent) return 'replied';
+  // A failure or a stop has its own row; only a completed Turn can be mistaken for silence.
+  if (turn.outcome !== 'completed') return 'other';
+  return turn.slept ? 'quiet' : 'unanswered';
+}

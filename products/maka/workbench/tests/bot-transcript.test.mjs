@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createBotTranscriptCore } from '../app/botTranscriptCore.ts';
+import { botTurnEnding, createBotTranscriptCore } from '../app/botTranscriptCore.ts';
 
 const SESSION = 'bot-session';
 const message = (sequence, turnId, text = `m${sequence}`) => ({
@@ -278,4 +278,22 @@ test('a late answer from the application starts the watch after every lookup fai
   assert.ok(state.lookups >= lookups, 'no lookup was lost');
   assert.equal(core.identity(), 'bot');
   core.close();
+});
+
+test('a finished Turn is told apart by what the user could see', () => {
+  const done = { finished: true, outcome: 'completed' };
+  assert.equal(botTurnEnding({ ...done, sent: true, slept: true }), 'replied');
+  assert.equal(botTurnEnding({ ...done, sent: true, slept: false }), 'replied');
+  // Deliberate silence: slept without sending. No marker is needed.
+  assert.equal(botTurnEnding({ ...done, sent: false, slept: true }), 'quiet');
+  // Neither sent nor slept: the user cannot tell this from silence.
+  assert.equal(botTurnEnding({ ...done, sent: false, slept: false }), 'unanswered');
+});
+
+test('a running, failed or stopped Turn is never reported as unanswered', () => {
+  const quiet = { sent: false, slept: false };
+  assert.equal(botTurnEnding({ finished: false, outcome: null, ...quiet }), 'running');
+  assert.equal(botTurnEnding({ finished: true, outcome: 'failed', ...quiet }), 'other');
+  assert.equal(botTurnEnding({ finished: true, outcome: 'aborted', ...quiet }), 'other');
+  assert.equal(botTurnEnding({ finished: true, outcome: null, ...quiet }), 'other');
 });

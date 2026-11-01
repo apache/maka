@@ -67,3 +67,12 @@ export function BotWorking(props: { detail: () => string }) {
     </View>
   );
 }
+
+/** Shown under a finished Turn that ended without a message and without going to sleep. */
+export function BotNote(props: { text: () => string }) {
+  return (
+    <View style={{ paddingVertical: 8 }}>
+      <Text style={{ ...captionTextStyle, color: C.muted }}>{props.text()}</Text>
+    </View>
+  );
+}
