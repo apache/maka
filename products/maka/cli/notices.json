@@ -1361,7 +1361,8 @@
     "cargo:zvariant_derive@5.15.1 registry+https://github.com/rust-lang/crates.io-index": "d2a1df59cf5f99d30e08bf03aa8a1a041b97fed9fce896bb5b5de40d616e434c",
     "cargo:zvariant_utils@4.2.0 registry+https://github.com/rust-lang/crates.io-index": "58641071a870aa97a0f38637179049eaf2ffaeeafbbb53e016c3d409411b9f88",
     "cargo:zvariant@5.15.1 registry+https://github.com/rust-lang/crates.io-index": "8606849c24d82d7d012980cba51a766abfe0307b48f936ec59e11b9a05b9c288",
-    "npm:ajv@8.20.0 https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==": "e0b7c0627c7c460c99e8d7b8ac586e4c975ea2a2fae3859fdc94e67ec3aa69cc"
+    "npm:ajv@8.20.0 https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==": "e0b7c0627c7c460c99e8d7b8ac586e4c975ea2a2fae3859fdc94e67ec3aa69cc",
+    "npm:pele@1.13.0 https://registry.npmjs.org/pele/-/pele-1.13.0.tgz sha512-Ie8UKY9x00MsuR3jO6AzUwzK2Z6MIV3Tf4EDdITiuk8Uaz8K7g0R082WqsqNaSU8DdgkrRvZThzhit83mi/uiw==": "4fa75f9a04ed6fb14b9abd85c484443e73dfb84762d829f77406ee9a1b31189b"
   },
-  "sha256": "2a8e8365e0236a46cd7803d0587ce9213331ac4e04638247254be779b4ce9e43"
+  "sha256": "a76b678c8246205d79f0febc6fdc4d825e323d7925f1180747b31e49d20d763f"
 }

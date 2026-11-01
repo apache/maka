@@ -26,3 +26,7 @@ Root installation applies these exact-version patches with `patch-package --erro
 Recursive schemas can retain their last parse context and input graph, and exceptional exits can leave entries on the allocation stack. The patch keeps memoization local to a parse and restores allocation state in `finally`, preserving cycles, aliases and reentrant parsing.
 
 When updating the dependency, verify its behavior before replacing or removing the patch. Keep the patched package version and the root lockfile synchronized.
+
+## `pele@1.13.0`
+
+The synchronous `render()` API works without a DOM, but the package's shared declarations also reference browser-only `HTMLElement` and `Node` types. The declaration-only patch resolves those types from `globalThis` when available, and to `never` otherwise. It does not add DOM globals, change runtime code, or relax the UI's library checks. Recheck native and browser type compatibility when upgrading Pele.

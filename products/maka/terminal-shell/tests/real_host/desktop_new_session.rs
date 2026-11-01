@@ -1431,6 +1431,61 @@ async fn desktop_settings_translate_subscription_sign_in_and_provider_search() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_mermaid_renders_in_the_real_conversation_and_keeps_source_available() {
+    let mut fixture = Fixture::open().await;
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+    )
+    .await;
+    desktop.new_draft().await;
+    desktop
+        .type_text("Show how Maka renders Mermaid diagrams locally.")
+        .await;
+    desktop.key("enter", false);
+    desktop.artifact("mermaid-submitted");
+    let mut reply = desktop.request(&mut fixture).await;
+    reply.delta("### Mermaid diagrams in Maka\n\nRendered locally, with Chinese labels and colors that follow the workbench theme.\n\n```mermaid\nflowchart LR\n  A[Mermaid 源码] --> B[Pele 渲染]\n  B --> C[字体转路径]\n  C --> D[NSH 显示]\n  style D fill:#1d745a,stroke:#24c483,color:#ffffff\n```\n").await;
+    reply.finish().await;
+    let sessions = desktop.sessions().await;
+    let session = sessions
+        .iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fixture.idle(&desktop.client, &session).await;
+    desktop.control("Show diagram source").await;
+    desktop
+        .until(
+            "the diagram's image never reached the desktop frame",
+            || {
+                let guard = desktop.frame.lock().unwrap();
+                let frame = guard.as_ref()?;
+                let filled = frame
+                    .pixels()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|pixel| pixel[..3] == [0x1d, 0x74, 0x5a])
+                    .count();
+                (filled > 500).then_some(())
+            },
+        )
+        .await;
+    desktop.artifact(&format!("mermaid-workbench-{theme}-{layout}"));
+    desktop.press("Show diagram source").await;
+    desktop.control("Hide diagram source").await;
+    desktop.artifact(&format!("mermaid-workbench-source-{theme}-{layout}"));
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_reasoning_and_tool_status_icons_share_the_activity_layout() {
     let fixture = Fixture::open().await;
     let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

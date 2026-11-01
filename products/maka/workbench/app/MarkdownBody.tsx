@@ -20,6 +20,7 @@
 import { cleanup, platform, signal, Text, View } from 'nsh';
 import { TextView } from 'nsh/base';
 import { hasTextPrefix, type Row } from './history';
+import { MermaidView, mermaidExtensions } from './MermaidView';
 import { MarkdownImageView } from './MarkdownImage';
 import { SourceText } from './SourceText';
 import { tr } from './locale';
@@ -52,6 +53,8 @@ export function MarkdownBody(props: {
       >
         <TextView
           markdown={props.row().text}
+          extensions={mermaidExtensions}
+          renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
           sourceId={props.sourceId}
           selectable
           contentStyle={{ rowGap: props.compact ? 6 : 16 }}
