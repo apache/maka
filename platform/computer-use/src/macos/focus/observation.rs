@@ -368,41 +368,38 @@ fn resolve_host(
     } else {
         None
     };
-    if let Some(focused) = provided.or(queried.as_ref()) {
-        if let Some(pid) = ordinary_pid(focused) {
-            if regular_application(pid) {
+    if let Some(focused) = provided.or(queried.as_ref())
+        && let Some(pid) = ordinary_pid(focused)
+    {
+        if regular_application(pid) {
+            return pid;
+        }
+        if let Some(app) = application_element(pid) {
+            if let Some(nested) = element_attribute(&app, "AXFocusedUIElement")
+                && let Some(pid) = ordinary_pid(&nested).filter(|pid| regular_application(*pid))
+            {
                 return pid;
             }
-            if let Some(app) = application_element(pid) {
-                if let Some(nested) = element_attribute(&app, "AXFocusedUIElement") {
-                    if let Some(pid) = ordinary_pid(&nested).filter(|pid| regular_application(*pid))
-                    {
-                        return pid;
-                    }
-                }
-                let window = element_attribute(&app, "AXFocusedWindow")
-                    .or_else(|| element_attribute(&app, "AXMainWindow"));
-                if let Some(pid) = window
-                    .as_ref()
-                    .and_then(ordinary_pid)
-                    .filter(|pid| regular_application(*pid))
-                {
-                    return pid;
-                }
+            let window = element_attribute(&app, "AXFocusedWindow")
+                .or_else(|| element_attribute(&app, "AXMainWindow"));
+            if let Some(pid) = window
+                .as_ref()
+                .and_then(ordinary_pid)
+                .filter(|pid| regular_application(*pid))
+            {
+                return pid;
             }
         }
     }
     // The source's saved w4==0 enables this branch. Auxiliary calls pass1
     // and skip it; nonauxiliary view services pass0 and may use it.
-    if matches!(named_fallback, NamedFallback::ApplicationName) {
-        if let Some(app) = application
+    if matches!(named_fallback, NamedFallback::ApplicationName)
+        && let Some(app) = application
             .and_then(ordinary_pid)
             .and_then(running_application)
-        {
-            if let Some(pid) = named_host(&app) {
-                return pid;
-            }
-        }
+        && let Some(pid) = named_host(&app)
+    {
+        return pid;
     }
     actual_foreground_pid().unwrap_or(0)
 }

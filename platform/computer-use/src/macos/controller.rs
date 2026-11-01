@@ -876,7 +876,8 @@ impl Controller {
                 }
             }
         };
-        let pending = match action {
+
+        match action {
             CloseAction::Observe(pending) => pending,
             CloseAction::Start {
                 owner,
@@ -908,8 +909,7 @@ impl Controller {
                 });
                 pending
             }
-        };
-        pending
+        }
     }
 }
 

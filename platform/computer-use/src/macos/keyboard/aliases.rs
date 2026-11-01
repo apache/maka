@@ -209,12 +209,12 @@ fn parse(input: &str) -> Result<Vec<ParsedKeyPress>, ParseError<'_>> {
                 .into_iter()
                 .map(|token| {
                     if token.is_ascii() {
-                        lookup(token).ok_or(ParseError::UnknownAlias { token: token })
+                        lookup(token).ok_or(ParseError::UnknownAlias { token })
                     } else {
                         let normalized = NSString::from_str(token)
                             .precomposedStringWithCanonicalMapping()
                             .to_string();
-                        lookup(&normalized).ok_or(ParseError::UnknownAlias { token: token })
+                        lookup(&normalized).ok_or(ParseError::UnknownAlias { token })
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;

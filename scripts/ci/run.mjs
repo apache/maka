@@ -69,8 +69,7 @@ export function executor(root, worker = {}) {
         '--test',
         ...globSync(
           [
-            'scripts/*.test.mjs',
-            'scripts/rust/*.test.mjs',
+            'scripts/**/*.test.mjs',
             'products/maka/workbench/tests/*.test.mjs',
             'packages/cli/tests/*.test.mjs',
           ],
@@ -97,14 +96,7 @@ export function executor(root, worker = {}) {
       copyFileSync(join(target, 'debug/maka'), join(target, 'ci/maka-bridge'));
       await nextest(id, true);
     } else if (id === 'clippy') {
-      await cargo([
-        'clippy',
-        '--config',
-        'build.warnings="deny"',
-        '--locked',
-        '--workspace',
-        '--all-targets',
-      ]);
+      await cargo(['clippy', '--locked', '--workspace', '--all-targets', '--', '-D', 'warnings']);
     } else if (id === 'native-build') {
       await node(['scripts/rust/build-cli.mjs']);
       await run(join(target, 'debug/maka'), ['--version']);
