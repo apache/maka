@@ -121,12 +121,45 @@ impl ProductHost {
     }
 }
 
+/// launchd starts Dock apps with a soft limit of 256 descriptors, which an idle
+/// Host nearly fills; a store that then fails to open a file stops the Host.
+#[cfg(unix)]
+fn raise_open_file_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a valid rlimit for the duration of the call.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        eprintln!(
+            "open file limit unchanged: {}",
+            std::io::Error::last_os_error()
+        );
+        return;
+    }
+    let mut wanted = limit.rlim_max.min(1 << 16);
+    // macOS refuses a limit above kern.maxfilesperproc, even within the hard limit.
+    while wanted > limit.rlim_cur {
+        let raised = libc::rlimit {
+            rlim_cur: wanted,
+            rlim_max: limit.rlim_max,
+        };
+        // SAFETY: `raised` is a valid rlimit for the duration of the call.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } == 0 {
+            return;
+        }
+        wanted /= 2;
+    }
+}
+
 pub(crate) async fn open_host(
     owner: RootOwner,
     options: Options,
     roots: Roots,
     catalog_transport: Option<Arc<dyn maka_agent_ports::model::Transport>>,
 ) -> Result<ProductHost, HostError> {
+    #[cfg(unix)]
+    raise_open_file_limit();
     let store = Arc::new(maka_transport::open_store(Arc::new(owner)).await?);
     let catalog = async {
         let configuration = maka_config::ConfigurationStore::for_root(store.owned_root()?).await?;
@@ -578,6 +611,52 @@ async fn replace_workspace_locations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_low_open_file_limit_is_raised_within_the_hard_limit() {
+        const CHILD: &str = "MAKA_OPEN_FILE_LIMIT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "application::product::headless::tests::a_low_open_file_limit_is_raised_within_the_hard_limit",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated open file limit test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        // This exact-test subprocess owns its limit.
+        let read = || {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: `limit` is a valid rlimit for the duration of the call.
+            assert_eq!(
+                unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+                0
+            );
+            limit
+        };
+        let hard = read().rlim_max.min(200);
+        let low = libc::rlimit {
+            rlim_cur: hard.min(64),
+            rlim_max: hard,
+        };
+        // SAFETY: `low` is a valid rlimit for the duration of the call.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &low) }, 0);
+        raise_open_file_limit();
+        assert_eq!(read().rlim_cur, hard);
+    }
 
     #[tokio::test]
     async fn explicit_update_previews_and_applies_launch_drift_with_current_packages() {
