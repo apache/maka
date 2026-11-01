@@ -1021,43 +1021,50 @@ impl Handler for Agent {
                     let mut queue_revision = None;
                     let mut interactions_delivered = None;
                     let mut computer_apps_delivered = None;
+                    // Previews live in memory: the store is read only for a commit
+                    // notice or for committed events not delivered yet.
+                    let mut stale = true;
                     loop {
                         if context.scope().cancellation.is_cancelled() {
                             return Err("agent_observation_cancelled".into());
                         }
-                        // Queue edits need not advance the transcript cursor. Deliver
-                        // them fairly even while catching up a growing transcript.
-                        let revision = owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .message_queue_revision(&input.session_id)
-                            .await
-                            .map_err(|_| "agent_queue_unavailable")?;
-                        if queue_revision != Some(revision) {
-                            let queue = owner.queue(&input.session_id).await?;
-                            queue_revision = Some(queue.revision);
-                            let update = encode(DeliveryPage::Queue { queue })?;
-                            maka_plugin_core::json::exact_numbers(&update)
+                        if stale {
+                            // Queue edits need not advance the transcript cursor. Deliver
+                            // them fairly even while catching up a growing transcript.
+                            let revision = owner
+                                .scoped_store(context.scope(), &input.session_id)
+                                .await?
+                                .message_queue_revision(&input.session_id)
+                                .await
                                 .map_err(|_| "agent_queue_unavailable")?;
-                            context.emit(update).await?;
+                            if queue_revision != Some(revision) {
+                                let queue = owner.queue(&input.session_id).await?;
+                                queue_revision = Some(queue.revision);
+                                let update = encode(DeliveryPage::Queue { queue })?;
+                                maka_plugin_core::json::exact_numbers(&update)
+                                    .map_err(|_| "agent_queue_unavailable")?;
+                                context.emit(update).await?;
+                            }
+                            let pending = owner.pending_interactions(&input.session_id).await?;
+                            if interactions_delivered.as_ref() != Some(&pending) {
+                                context
+                                    .emit(encode(DeliveryPage::Interactions {
+                                        pending: pending.clone(),
+                                    })?)
+                                    .await?;
+                                interactions_delivered = Some(pending);
+                            }
+                            let apps = owner.computer_apps(&input.session_id).await?;
+                            if computer_apps_delivered.as_ref() != Some(&apps) {
+                                context
+                                    .emit(encode(DeliveryPage::ComputerApps {
+                                        apps: apps.clone(),
+                                    })?)
+                                    .await?;
+                                computer_apps_delivered = Some(apps);
+                            }
+                            owner.require_session(&input.session_id).await?;
                         }
-                        let pending = owner.pending_interactions(&input.session_id).await?;
-                        if interactions_delivered.as_ref() != Some(&pending) {
-                            context
-                                .emit(encode(DeliveryPage::Interactions {
-                                    pending: pending.clone(),
-                                })?)
-                                .await?;
-                            interactions_delivered = Some(pending);
-                        }
-                        let apps = owner.computer_apps(&input.session_id).await?;
-                        if computer_apps_delivered.as_ref() != Some(&apps) {
-                            context
-                                .emit(encode(DeliveryPage::ComputerApps { apps: apps.clone() })?)
-                                .await?;
-                            computer_apps_delivered = Some(apps);
-                        }
-                        owner.require_session(&input.session_id).await?;
                         let mut reader = owner.preview_reader(&input.session_id).await;
                         let current = reader
                             .as_mut()
@@ -1069,46 +1076,57 @@ impl Handler for Agent {
                         {
                             reader = None;
                         }
-                        let through = owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .committed_sequence()
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        if after > through {
-                            return Err("agent_cursor_invalid".into());
+                        if stale {
+                            let committed = owner
+                                .scoped_store(context.scope(), &input.session_id)
+                                .await?
+                                .committed_sequence()
+                                .await
+                                .map_err(|error| error.to_string())?;
+                            if after > committed {
+                                return Err("agent_cursor_invalid".into());
+                            }
+                            let through = preview
+                                .initial_fence()
+                                .map_or(committed, |fence| committed.min(fence.max(after)));
+                            let page = owner
+                                .scoped_store(context.scope(), &input.session_id)
+                                .await?
+                                .session_stream_events(
+                                    &input.session_id,
+                                    after,
+                                    through,
+                                    32,
+                                    48 * 1024,
+                                )
+                                .await
+                                .map_err(|_| "agent_observation_unavailable")?;
+                            preview.committed(&page.events);
+                            after = page.next_after.unwrap_or(page.through_sequence);
+                            stale = page.next_after.is_some() || through < committed;
+                            context
+                                .emit(encode(DeliveryPage::Events {
+                                    through: page.through_sequence,
+                                    next_after: after,
+                                    events: page.events.into_iter().map(delivery).collect(),
+                                })?)
+                                .await?;
                         }
-                        let through = preview
-                            .initial_fence()
-                            .map_or(through, |fence| through.min(fence.max(after)));
-                        let page = owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .session_stream_events(&input.session_id, after, through, 32, 48 * 1024)
-                            .await
-                            .map_err(|_| "agent_observation_unavailable")?;
-                        preview.committed(&page.events);
-                        after = page.next_after.unwrap_or(page.through_sequence);
-                        context
-                            .emit(encode(DeliveryPage::Events {
-                                through: page.through_sequence,
-                                next_after: after,
-                                events: page.events.into_iter().map(delivery).collect(),
-                            })?)
-                            .await?;
+                        let mut ready = stale;
                         if let Some(update) = preview.next(after)? {
                             context
                                 .emit(encode(DeliveryPage::Preview { page: update })?)
                                 .await?;
-                            continue;
-                        }
-                        if page.next_after.is_some() {
-                            continue;
+                            ready = true;
                         }
                         tokio::select! {
                             biased;
                             _ = context.scope().cancellation.cancelled() => return Err("agent_observation_cancelled".into()),
-                            result = commits.changed() => result.map_err(|_| "agent_observation_closed")?,
+                            result = commits.changed() => {
+                                result.map_err(|_| "agent_observation_closed")?;
+                                stale = true;
+                            },
+                            () = std::future::ready(()), if ready => {},
                             _ = async {
                                 match reader.as_mut() {
                                     Some(reader) => { let _ = reader.changed().await; },
