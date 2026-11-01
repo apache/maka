@@ -164,6 +164,7 @@ pub(crate) fn providers(input: Value, snapshot: Arc<Snapshot>) -> Result<Value, 
         let provider = definition(&identity, snapshot.clone())?;
         let descriptor = provider.descriptor();
         let summary = ProviderSummary {
+            custom_endpoint: descriptor.custom_endpoint,
             identity,
             label: descriptor.label.clone(),
             authentication: descriptor

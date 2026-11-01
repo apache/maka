@@ -50,6 +50,7 @@ struct Desktop {
     window: WindowHandle<AppView>,
     client: Client,
     bindings: Bindings,
+    outcome: Arc<Mutex<Value>>,
     _foreground: watch::Sender<bool>,
     wake: Arc<Notify>,
     errors: Rc<RefCell<Option<String>>>,
@@ -72,6 +73,16 @@ impl Desktop {
         dimensions: gpui::Size<gpui::DevicePixels>,
         appearance: nsh_core::platform::Appearance,
     ) -> Self {
+        Self::open_config(fixture, address, dimensions, appearance, None).await
+    }
+
+    async fn open_config(
+        fixture: &Fixture,
+        address: &Path,
+        dimensions: gpui::Size<gpui::DevicePixels>,
+        appearance: nsh_core::platform::Appearance,
+        preview: Option<(String, &str)>,
+    ) -> Self {
         let client = fixture.client_at(address).await;
         let bindings = Bindings::new(client.clone(), tokio::runtime::Handle::current());
         let mut config = maka_workbench::configuration(
@@ -80,6 +91,32 @@ impl Desktop {
         );
         config.assets = Some(bindings.assets());
         config.chunk_loader = Some(bindings.chunk_loader());
+        let previewing = preview.is_some();
+        let close_label = match preview.as_ref().map(|(_, locale)| *locale) {
+            Some("zh-CN") => "关闭设置",
+            Some("zh-TW") => "關閉設定",
+            _ => "Close settings",
+        };
+        if let Some((source, locale)) = preview {
+            config
+                .host
+                .set_params(json!({"locale":locale}).as_object().unwrap().clone());
+            let mut capabilities = nsh_engine::Capabilities::all();
+            capabilities.host = vec!["*".into()];
+            config.app = nsh_engine::Bundle::source(source)
+                .with_policy(nsh_engine::Policy {
+                    declared: Some(capabilities),
+                    ..nsh_engine::Policy::development()
+                })
+                .into();
+            config.host.handle_open_url(|request| request.handled());
+        }
+        let outcome = Arc::new(Mutex::new(Value::Null));
+        let observed = outcome.clone();
+        config.host.handle("fixture.outcome", move |mut call| {
+            *observed.lock().unwrap() = call.take_data();
+            call.resolve(Value::Null);
+        });
         let (foreground, receiver) = watch::channel(true);
         config.context = config
             .context
@@ -124,6 +161,7 @@ impl Desktop {
                         cx.new(|cx| {
                             let view = AppView::new(
                                 AppOptions {
+                                    host: config.host.clone(),
                                     terminal_keyboard: true,
                                     ..Default::default()
                                 },
@@ -151,12 +189,43 @@ impl Desktop {
             window,
             client,
             bindings,
+            outcome,
             _foreground: foreground,
             wake,
             errors,
         };
-        desktop.target_after(None).await;
+        if previewing {
+            desktop.control(close_label).await;
+        } else {
+            desktop.target_after(None).await;
+        }
         desktop
+    }
+
+    fn event(&self, name: &str, value: Value) {
+        self.app.update(|cx| {
+            self.window
+                .update(cx, |view, _, _| view.host().send(name, value).unwrap())
+                .unwrap();
+        });
+    }
+
+    fn artifact(&self, name: &str) {
+        let Some(directory) = std::env::var_os("MAKA_UI_ARTIFACT_DIR") else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        self.app.update(|cx| cx.refresh_windows());
+        self.pump();
+        let guard = self.frame.lock().unwrap();
+        let frame = guard.as_ref().unwrap();
+        let size = frame.size();
+        let mut ppm = format!("P6\n{} {}\n255\n", size.width.0, size.height.0).into_bytes();
+        for pixel in frame.pixels().chunks_exact(4) {
+            ppm.extend_from_slice(&pixel[..3]);
+        }
+        std::fs::write(directory.join(format!("{name}.ppm")), ppm).unwrap();
     }
 
     fn pump(&self) {
@@ -179,7 +248,10 @@ impl Desktop {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("{stage}"))
+        .unwrap_or_else(|_| {
+            self.artifact("failure");
+            panic!("{stage}; observed: {:?}", self.outcome.lock().unwrap());
+        })
     }
 
     async fn wait<T>(&self, stage: &str, future: impl Future<Output = T>) -> T {
@@ -194,7 +266,10 @@ impl Desktop {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("{stage}"))
+        .unwrap_or_else(|_| {
+            self.artifact("failure");
+            panic!("{stage}; observed: {:?}", self.outcome.lock().unwrap());
+        })
     }
 
     fn key(&self, name: &str, control: bool) {
@@ -1068,5 +1143,301 @@ async fn desktop_unknown_control_can_be_dismissed_and_feedback_expires() {
     client.close().await.unwrap();
     desktop.close().await;
     drop(create);
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/model_settings_preview.tsx");
+    let output = fixture.directory.path().join("settings-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+        Some((source, "en")),
+    )
+    .await;
+    desktop.press("Edit connection ChatGPT Subscription").await;
+    let reload = desktop.control("Reload connection").await;
+    let delete = desktop.control("Delete connection").await;
+    assert_eq!(
+        reload.center().y,
+        delete.center().y,
+        "connection actions must share one baseline"
+    );
+    assert!(reload.bottom() <= px(height as f32) && reload.bottom() > px(height as f32 - 128.0));
+    desktop.artifact(&format!("connection-before-login-{theme}-{layout}"));
+    desktop.press("Sign in with ChatGPT").await;
+    desktop.control("Copy sign-in code").await;
+    desktop.artifact(&format!("connection-signing-in-{theme}-{layout}"));
+    desktop.press("Copy sign-in code").await;
+    let copied = desktop
+        .until("the sign-in code was not copied", || {
+            desktop
+                .platform
+                .take_clipboard_write()
+                .and_then(|item| item.text())
+        })
+        .await;
+    assert_eq!(copied, "ABCD-EFGH");
+    desktop.event("fixture.finishLogin", json!({"result":"saved"}));
+    desktop.control("Sign in again").await;
+    desktop.control("Fetch models").await;
+    assert_eq!(
+        desktop.outcome.lock().unwrap()["configured"],
+        true,
+        "model discovery failure must not undo a completed sign-in"
+    );
+    desktop.artifact(&format!("connection-model-retry-{theme}-{layout}"));
+    desktop.press("Fetch models").await;
+    desktop.control("Manage models").await;
+    {
+        let outcome = desktop.outcome.lock().unwrap();
+        assert_eq!(
+            outcome["signIns"], 1,
+            "retrying discovery must not repeat provider sign-in"
+        );
+        assert_eq!(outcome["discoveries"], 2);
+    }
+    desktop.artifact(&format!("connection-ready-{theme}-{layout}"));
+    desktop.press("Manage models").await;
+    desktop.control("Edit model gpt-4.1").await;
+    desktop.press("Set default gpt-4.1").await;
+    desktop
+        .until("the selected default was not saved", || {
+            (desktop.outcome.lock().unwrap()["defaultTarget"]["modelId"] == "gpt-4.1").then_some(())
+        })
+        .await;
+    desktop.control("Set default gpt-4.1").await;
+    desktop.artifact(&format!("connection-models-{theme}-{layout}"));
+    desktop.press("Edit model gpt-4.1").await;
+    let associate = desktop.control("Associate catalog model").await;
+    desktop.artifact(&format!("connection-model-editor-{theme}-{layout}"));
+    desktop.press("Associate catalog model").await;
+    desktop.control("openai / gpt-4.1").await;
+    desktop.artifact(&format!("connection-model-catalog-{theme}-{layout}"));
+    desktop.press("openai / gpt-4.1").await;
+    let save = desktop.control("Save model").await;
+    assert_eq!(
+        associate.right(),
+        save.right(),
+        "model controls must share the reading edge"
+    );
+    desktop.press("Back").await;
+    desktop.control("Keep editing").await;
+    desktop.artifact(&format!("connection-unsaved-model-{theme}-{layout}"));
+    desktop.press("Keep editing").await;
+    desktop.press("Save model").await;
+    desktop.control("Edit model gpt-4.1").await;
+    assert_eq!(
+        desktop.outcome.lock().unwrap()["overrides"]["gpt-4.1"]["catalogModel"]["modelId"],
+        "gpt-4.1"
+    );
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/model_settings_preview.tsx");
+    let output = fixture.directory.path().join("settings-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+        Some((source, "en")),
+    )
+    .await;
+    desktop.press("Add connection").await;
+    desktop.target_after(None).await;
+    desktop.control("Connect ChatGPT Subscription").await;
+    desktop.artifact(&format!("provider-picker-{theme}-{layout}"));
+    desktop.type_text("alibaba china").await;
+    desktop
+        .until("search retained unrelated providers", || {
+            desktop
+                .controls("Connect ChatGPT Subscription")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    let first = desktop.control("Connect Alibaba (China)").await;
+    let second = desktop.control("Connect Alibaba Coding Plan (China)").await;
+    assert_eq!(first.left(), second.left());
+    assert_eq!(first.right(), second.right());
+    assert_eq!(first.size.height, px(40.));
+    assert_eq!(second.top() - first.top(), px(40.));
+    desktop.artifact(&format!("provider-search-{theme}-{layout}"));
+    desktop.key("down", false);
+    desktop.key("enter", false);
+    desktop.control("Save connection").await;
+    assert_eq!(
+        desktop.outcome.lock().unwrap()["selectedProviders"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap(),
+        "alibaba-coding-plan-cn"
+    );
+    desktop.press("Back").await;
+    desktop.control("Clear provider search").await;
+    desktop.expect_text("alibaba china").await;
+    desktop.artifact(&format!("provider-back-{theme}-{layout}"));
+    desktop.type_text("no-such-provider-1793500567423").await;
+    desktop.key("enter", false);
+    desktop.control("Clear provider search").await;
+    assert!(desktop.controls("Connect Alibaba (China)").is_empty());
+    desktop.artifact(&format!("provider-empty-{theme}-{layout}"));
+    desktop.key("escape", false);
+    desktop.control("Connect ChatGPT Subscription").await;
+    assert!(desktop.controls("Clear provider search").is_empty());
+    desktop.key("escape", false);
+    desktop.control("Add connection").await;
+    desktop.event("fixture.failProviders", Value::Null);
+    desktop.press("Add connection").await;
+    desktop.control("Retry loading providers").await;
+    desktop.artifact(&format!("provider-error-{theme}-{layout}"));
+    desktop.press("Retry loading providers").await;
+    desktop.control("Connect ChatGPT Subscription").await;
+    desktop.type_text("responses").await;
+    desktop.control("Connect Responses").await;
+    desktop.artifact(&format!("provider-custom-{theme}-{layout}"));
+    desktop.event("fixture.failProvider", Value::Null);
+    desktop.key("enter", false);
+    desktop.control("Retry opening provider").await;
+    desktop.artifact(&format!("provider-opening-error-{theme}-{layout}"));
+    desktop.press("Retry opening provider").await;
+    desktop.control("Save connection").await;
+    assert_eq!(
+        desktop.outcome.lock().unwrap()["selectedProviders"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap(),
+        "openai-responses-compatible"
+    );
+    desktop.press("Back").await;
+    desktop.target_after(None).await;
+    desktop.type_text("chatgpt").await;
+    desktop.event("fixture.holdProvider", Value::Null);
+    desktop.key("enter", false);
+    desktop
+        .until("provider read did not start", || {
+            (desktop.outcome.lock().unwrap()["selectedProviders"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()
+                == "chatgpt")
+                .then_some(())
+        })
+        .await;
+    desktop
+        .until("the opening provider remained actionable", || {
+            desktop
+                .controls("Connect ChatGPT Subscription")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    desktop.artifact(&format!("provider-opening-{theme}-{layout}"));
+    desktop.press("Back").await;
+    desktop.event("fixture.releaseProvider", Value::Null);
+    desktop.control("Add connection").await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_settings_translate_subscription_sign_in_and_provider_search() {
+    let traditional = std::env::var("MAKA_UI_LOCALE").as_deref() == Ok("zh-TW");
+    let (locale, edit, sign_in, copy, cancel, add, search, connect, compatibility) = if traditional
+    {
+        (
+            "zh-TW",
+            "編輯連線 ChatGPT Subscription",
+            "使用 ChatGPT 登入",
+            "複製登入代碼",
+            "取消供應商登入",
+            "新增連線",
+            "訂閱",
+            "連線至 ChatGPT 訂閱",
+            "連線至 Responses 相容介面",
+        )
+    } else {
+        (
+            "zh-CN",
+            "编辑连接 ChatGPT Subscription",
+            "使用 ChatGPT 登录",
+            "复制登录代码",
+            "取消提供商登录",
+            "添加连接",
+            "订阅",
+            "连接 ChatGPT 订阅",
+            "连接 Responses 兼容接口",
+        )
+    };
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/model_settings_preview.tsx");
+    let output = fixture.directory.path().join("settings-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+        Some((source, locale)),
+    )
+    .await;
+    desktop.press(edit).await;
+    desktop.control(sign_in).await;
+    desktop.artifact(&format!("connection-localized-{locale}-{theme}-{layout}"));
+    desktop.press(sign_in).await;
+    desktop.control(copy).await;
+    desktop.artifact(&format!("sign-in-localized-{locale}-{theme}-{layout}"));
+    desktop.press(cancel).await;
+    desktop.control(sign_in).await;
+    desktop.press("返回").await;
+    desktop.press(add).await;
+    desktop.target_after(None).await;
+    desktop.type_text(search).await;
+    desktop.control(connect).await;
+    desktop.artifact(&format!("provider-localized-{locale}-{theme}-{layout}"));
+    desktop
+        .type_text(if traditional {
+            "相容介面"
+        } else {
+            "兼容接口"
+        })
+        .await;
+    desktop.control(compatibility).await;
+    desktop.close().await;
     fixture.finish().await;
 }
