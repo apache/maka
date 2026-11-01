@@ -225,10 +225,13 @@ export function Icon(props: { name: keyof typeof glyphs; color: string; size?: n
             cx.closePath();
             break;
           case 'refresh':
-            cx.arc(8, 8.75, 5, -0.7, Math.PI * 1.7);
-            cx.moveTo(12, 2.25);
-            cx.lineTo(12.5, 5.75);
-            cx.lineTo(9, 5.25);
+            // Three quarters of a turn and on toward the arrowhead, so the gap
+            // at the top right stays open and the arrow sits clear of it.
+            cx.arc(8, 8, 5.5, 0, Math.PI * 1.75);
+            cx.lineTo(12.75, 5);
+            cx.moveTo(12.75, 2);
+            cx.lineTo(12.75, 5);
+            cx.lineTo(9.75, 5);
             break;
           case 'file':
             cx.moveTo(3, 1.5);
