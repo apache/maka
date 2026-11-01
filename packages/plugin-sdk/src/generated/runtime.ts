@@ -4080,6 +4080,23 @@ export type HistoryField = 'thinking' | 'body';
  * windows carry tool metadata only, keeping large results out of chat paging.
  */
 export type HistoryView = 'text' | 'conversation';
+/**
+ * Trusted producer attribution, preserved independently of editable content.
+ */
+export type MessageOrigin =
+  | {
+      kind: 'workhub_task';
+      taskId: string;
+    }
+  | {
+      kind: 'workhub_graph';
+      graphId: string;
+    }
+  | {
+      kind: 'plan';
+      executionId: string;
+      title: string;
+    };
 export type AgentDeliveryPage =
   | {
       kind: 'events';
@@ -4133,18 +4150,6 @@ export type AgentPreviewField =
       toolUseId: string;
       name: string;
       providerExecuted: boolean;
-    };
-/**
- * Trusted producer attribution, preserved independently of editable content.
- */
-export type MessageOrigin =
-  | {
-      kind: 'workhub_task';
-      taskId: string;
-    }
-  | {
-      kind: 'workhub_graph';
-      graphId: string;
     };
 export type AgentQueueKind = 'in_flight' | 'steering' | 'followup';
 export type AgentQueueMessageResult =
@@ -8457,6 +8462,10 @@ export interface AgentHistoryLandmark {
   position: HistoryRowPosition;
   lastPosition: HistoryRowPosition;
   label: string;
+  /**
+   * The Host's attribution of the Turn's opening message, when it generated it.
+   */
+  origin?: MessageOrigin | null;
 }
 export interface AgentHistoryPromptRead {
   sessionId: string;

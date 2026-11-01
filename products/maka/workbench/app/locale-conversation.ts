@@ -493,6 +493,7 @@ export const conversationMessages = {
   'Enter text.': ['Enter text.', '请输入文本。', '請輸入文字。'],
   Error: ['Error', '错误', '錯誤'],
   'Expand session browser': ['Expand session browser', '展开对话侧栏', '展開對話側欄'],
+  'Executing plan: {title}': ['Executing plan: {title}', '执行计划：{title}', '執行計劃：{title}'],
   'Exit {code}': ['Exit {code}', '退出码 {code}', '結束碼 {code}'],
   'Failed {count} times': ['Failed {count} times', '共失败 {count} 次', '共失敗 {count} 次'],
   File: msg_toolFilePath,
