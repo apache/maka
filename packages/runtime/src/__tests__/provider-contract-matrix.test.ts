@@ -152,8 +152,8 @@ async function runGeneratedDiscovery(
     discovery: NonNullable<ProviderContractGeneratedCell['discovery']>;
   },
 ): Promise<void> {
-  const sample = row.sampleModelId;
   const discovery = cell.discovery;
+  const sample = row.sampleModelId;
   // `array-or-data` (mistral) means the same endpoint may answer either
   // `{data:[...]}` or a bare array; both fixtures must parse to the exact id.
   const payloadShapes: ReadonlyArray<'data-object' | 'bare-array'> =
@@ -176,7 +176,13 @@ async function runGeneratedDiscovery(
         respondJson(
           response,
           200,
-          discoveryPayload(discovery.protocol, sample, discovery.filter, shape),
+          discoveryPayload(
+            discovery.protocol,
+            sample,
+            discovery.filter,
+            discovery.excludeModelIdPrefixes,
+            shape,
+          ),
         );
       });
       const connection = baseConnection(row, server.url);
@@ -281,6 +287,7 @@ function discoveryPayload(
   protocol: string,
   sample: string,
   filter: string | undefined,
+  excludeModelIdPrefixes: readonly string[] | undefined,
   shape: 'data-object' | 'bare-array',
 ): unknown {
   if (protocol === 'anthropic') return { data: [{ id: sample }] };
@@ -308,6 +315,15 @@ function discoveryPayload(
     return {
       object: 'list',
       data: [{ id: sample }, { id: 'contract-decoy-not-in-fallback' }],
+    };
+  }
+  if (excludeModelIdPrefixes?.length) {
+    return {
+      object: 'list',
+      data: [
+        { id: sample },
+        ...excludeModelIdPrefixes.map((prefix) => ({ id: `${prefix}contract-decoy` })),
+      ],
     };
   }
   if (shape === 'bare-array') return [{ id: sample }];
