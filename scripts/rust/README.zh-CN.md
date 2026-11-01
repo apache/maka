@@ -42,6 +42,8 @@ node scripts/rust/notices.mjs check
 
 检查生成的清单和许可证文本。[notices-sources.json](notices-sources.json)记录已审查的上游例外。发布组装还包含实际 V8 构建与 Rust 标准库的 notices。TSV 清单不能替代完整许可证文本。
 
+`notices.json` 记录已审核的组件身份、来源和许可证资料摘要。`notices check` 解析 Rust 依赖闭包，并构建临时产品 bundle 来识别内嵌 JavaScript 包；不会下载许可证文本。仅修改第一方业务源码不会使覆盖检查失效，但从已有 lockfile 中新引入未审核的包会被拒绝。原生打包在构建后、打包前核对当前目标的组件及 Cargo 实际生成的 bundle 输入，复用本次构建而不再次打包 JavaScript。审核清单可以覆盖额外平台。
+
 终端行为使用 [terminal-shell 测试](../../products/maka/terminal-shell/tests/real_host/mod.rs)。通过 `cargo nextest run -p maka-cli --test integration -E 'test(terminal::)'` 运行当前组件和产品交互检查。渲染性能另用固定终端协议、视口和负载的 release 产物比较。
 
 长历史性能使用保留的 [Engine 夹具](../../plugins/agent/engine/tests/integration/long_task_perf.rs)。构建 release 测试程序，比较相同夹具源码和依赖 feature：
