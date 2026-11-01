@@ -441,14 +441,25 @@ export function Icon(props: { name: keyof typeof glyphs; color: string; size?: n
             cx.lineTo(11, 7);
             break;
           case 'thinking':
-            cx.roundRect(2, 2, 12, 9, 4);
-            cx.moveTo(5, 11);
-            cx.lineTo(4, 14);
-            cx.lineTo(8, 11);
-            for (const x of [5, 8, 11]) {
-              cx.moveTo(x + 0.5, 6.5);
-              cx.arc(x, 6.5, 0.5, 0, Math.PI * 2);
+            for (const side of [-1, 1]) {
+              const x = (offset: number) => 8 + side * offset;
+              cx.moveTo(8, 3.1);
+              cx.bezierCurveTo(x(0.2), 1.1, x(2.7), 1.1, x(3.5), 3);
+              cx.bezierCurveTo(x(5.4), 2.9, x(6.4), 4.6, x(5.6), 6);
+              cx.bezierCurveTo(x(7), 7, x(7), 9, x(5.7), 10);
+              cx.bezierCurveTo(x(6.3), 12, x(4.8), 13.5, x(3.2), 13);
+              cx.bezierCurveTo(x(2.4), 14.8, 8, 14.7, 8, 12.7);
+              cx.moveTo(x(3.5), 3);
+              cx.bezierCurveTo(x(3.2), 4.4, x(2.6), 5.2, x(1.4), 5.3);
+              cx.moveTo(x(5.6), 6);
+              cx.bezierCurveTo(x(4.2), 5.7, x(2.9), 6.8, x(3.5), 8.3);
+              cx.moveTo(x(5.7), 10);
+              cx.bezierCurveTo(x(4.2), 10.4, x(2.8), 9.5, x(2.4), 8.8);
+              cx.moveTo(x(3.2), 13);
+              cx.bezierCurveTo(x(3.8), 11.8, x(3.2), 10.9, x(2), 10.3);
             }
+            cx.moveTo(8, 3.1);
+            cx.lineTo(8, 12.7);
             break;
           case 'activity':
             cx.arc(8, 8, 6, 0, Math.PI * 2);
