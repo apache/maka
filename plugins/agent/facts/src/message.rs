@@ -34,10 +34,16 @@ use std::collections::HashSet;
     deny_unknown_fields
 )]
 pub enum MessageOrigin {
-    WorkhubTask { task_id: String },
-    WorkhubGraph { graph_id: String },
+    WorkhubTask {
+        task_id: String,
+    },
+    WorkhubGraph {
+        graph_id: String,
+    },
     /// A worker conversation created by the Bot finished a run.
-    BotWorker { session_id: String },
+    BotWorker {
+        session_id: String,
+    },
 }
 impl MessageOrigin {
     pub fn validate(&self) -> Result<(), &'static str> {
