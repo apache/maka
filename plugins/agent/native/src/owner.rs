@@ -1323,6 +1323,7 @@ impl Owner {
                     .await?,
                 &snapshot,
                 language,
+                session.configuration.tools.as_deref(),
             ),
             model,
             executor,
