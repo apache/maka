@@ -48,6 +48,8 @@ export type Row = {
   timestamp?: number;
   timing?: HistoryTurnTiming;
   model?: HistoryModel;
+  /** Who produced this message when it did not come from the user. */
+  origin?: { kind: string };
   finalOutput?: boolean;
   compaction?: HistoryCompaction;
   metadataThrough?: number;
@@ -128,6 +130,7 @@ export function historyMetadata(chunk: any, through: number, previous?: Row) {
     model: chunk.model,
     modelPart: chunk.modelPart,
     finalOutput: chunk.finalOutput,
+    ...(chunk.origin ? { origin: chunk.origin } : {}),
     compaction: chunk.compaction,
     tool: chunk.tool,
     metadataThrough: through,

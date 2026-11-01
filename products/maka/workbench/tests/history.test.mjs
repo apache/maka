@@ -236,3 +236,22 @@ test('early open model text retains its ordinal seat across later canonical tool
     ['user', 'early', 'tool', 'later'],
   );
 });
+
+test('a message the Host wrote keeps its origin so the Bot Chat can tell it from the user', () => {
+  const chunk = (origin) => ({
+    position: { sourceSequence: 1, itemIndex: 0 },
+    field: 'body',
+    role: 'user',
+    offset: 0,
+    text: 'The conversation you delegated to finished.',
+    messageId: 'm_1',
+    turnId: 't_1',
+    timestamp: 1,
+    totalBytes: 42,
+    origin,
+  });
+  const [wake] = mergeChunks([], [chunk({ kind: 'bot_worker', sessionId: 'ma_worker' })], false, 1);
+  assert.deepEqual(wake.origin, { kind: 'bot_worker', sessionId: 'ma_worker' });
+  const [typed] = mergeChunks([], [chunk(null)], false, 1);
+  assert.equal('origin' in typed, false);
+});
