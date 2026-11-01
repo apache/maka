@@ -155,7 +155,7 @@ function CatalogModelPicker(props: {
       if (!alive || request !== generation) return;
       models.set(more ? [...models(), ...result.models] : result.models);
       after.set(result.after);
-      if (!more) list?.scrollToIndex({ index: 0, animated: false });
+      if (!more && result.models.length) list?.scrollToIndex({ index: 0, animated: false });
     } catch (reason) {
       if (alive && request === generation) failure.set(renderText(errorText(reason)));
     } finally {

@@ -62,6 +62,7 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
           <View style={{ gap: 16 }}>
             <SettingsField
               label={tr('Model ID')}
+              autoFocus={model().originalId === null}
               value={model().id}
               readonly={model().originalId !== null}
               disabled={disabled()}

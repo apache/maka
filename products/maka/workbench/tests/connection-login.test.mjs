@@ -297,6 +297,7 @@ function connectionEditor({ wrongProvider = false, failDiscovery = false, existi
     owner,
     operations,
     calls,
+    api,
     provider,
     changeElsewhere() {
       version++;
@@ -447,4 +448,45 @@ test('back navigation offers a way to keep unsaved connection edits', async () =
   owner.back();
   owner.discardEdits(owner.action());
   assert.equal(owner.page(), 'connections');
+});
+
+test('a new connection returns to its provider search without treating its suggested unique ID as an edit', async () => {
+  const { owner, provider } = connectionEditor();
+  owner.connections.set([{ slug: 'chatgpt' }, { slug: 'chatgpt-2' }]);
+  owner.newConnection();
+  owner.searchProviders('chatgpt');
+  await owner.chooseProvider(provider);
+  assert.equal(owner.editor().slug, 'chatgpt-3');
+  owner.back();
+  assert.equal(owner.discardTarget(), null);
+  assert.equal(owner.page(), 'providers');
+  assert.equal(owner.providerQuery(), 'chatgpt');
+  assert.deepEqual(owner.selectedProvider(), provider);
+  owner.cancel();
+  assert.equal(owner.providerQuery(), '');
+  assert.equal(owner.page(), 'providers');
+  owner.back();
+  assert.equal(owner.page(), 'connections');
+});
+
+test('returning while a provider is opening discards its late reply and allows choosing again', async () => {
+  const { owner, api, provider } = connectionEditor();
+  const queried = api.query.bind(api);
+  const release = Promise.withResolvers();
+  api.query = async (endpoint, method, input) => {
+    if (method === 'provider') await release.promise;
+    return queried(endpoint, method, input);
+  };
+  owner.newConnection();
+  const opening = owner.chooseProvider(provider);
+  assert.deepEqual(owner.openingProvider(), provider);
+  owner.back();
+  release.resolve();
+  await opening;
+  assert.equal(owner.page(), 'connections');
+  assert.equal(owner.editor(), null);
+  assert.equal(owner.openingProvider(), null);
+  owner.newConnection();
+  await owner.chooseProvider(provider);
+  assert.equal(owner.page(), 'connection');
 });

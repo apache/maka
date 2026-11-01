@@ -59,6 +59,15 @@ import {
 } from '../../../../plugins/shared/tui-messages.js';
 
 export const settingsMessages = {
+  'Retry opening provider': ['Retry opening provider', '重试打开提供商', '重試開啟提供商'],
+  'Account sign-in': ['Account sign-in', '账号登录', '帳號登入'],
+  'Custom endpoints': ['Custom endpoints', '自定义接口', '自訂介面'],
+  'API providers': ['API providers', 'API 提供商', 'API 提供商'],
+  'Clear provider search': ['Clear provider search', '清除提供商搜索', '清除提供商搜尋'],
+  'Retry loading providers': ['Retry loading providers', '重试加载提供商', '重試載入提供商'],
+  'Loading providers…': ['Loading providers…', '正在加载提供商…', '正在載入提供商…'],
+  'Opening…': ['Opening…', '正在打开…', '正在開啟…'],
+
   'Clear default selection': ['Clear default selection', '清除默认选择', '清除預設選擇'],
   'Discard unsaved changes?': [
     'Discard unsaved changes?',

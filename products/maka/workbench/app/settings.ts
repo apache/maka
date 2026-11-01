@@ -169,6 +169,9 @@ export function createModelSettings(
   const connectionQuery = signal(restored?.connectionQuery ?? '');
   const providerQuery = signal(restored?.providerQuery ?? '');
   const modelQuery = signal(restored?.modelQuery ?? '');
+  const openingProvider = signal<SettingsProviderSummary['identity'] | null>(null);
+  const selectedProvider = signal<SettingsProviderSummary['identity'] | null>(null);
+  const failedProvider = signal<SettingsProviderSummary['identity'] | null>(null);
   const revision = signal<number | null>(restored?.revision ?? null);
   const defaultTarget = signal<{
     connectionId: string;
@@ -271,6 +274,7 @@ export function createModelSettings(
     read += 1;
     loading.set(false);
     modelLoading.set(false);
+    openingProvider.set(null);
   };
   const loadConnections = async (more = false) => {
     if (!alive || !active() || loading() || (more && next() === null)) return;
@@ -329,6 +333,7 @@ export function createModelSettings(
     const generation = ++read;
     loading.set(true);
     error.set('');
+    failedProvider.set(null);
     try {
       let rows = more ? providers() : [];
       for (;;) {
@@ -361,6 +366,8 @@ export function createModelSettings(
   const newConnection = () => {
     if (busy()) return;
     editor.set(null);
+    providerQuery.set('');
+    selectedProvider.set(null);
     discovery.set('idle');
     model.set(null);
     modelQuery.set('');
@@ -371,11 +378,25 @@ export function createModelSettings(
     page.set('providers');
     void loadProviders();
   };
+  const suggestedSlug = (identity: SettingsProviderSummary['identity']) => {
+    const base =
+      identity.name
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'connection';
+    const used = new Set(connections().map((connection) => connection.slug));
+    let slug = base;
+    for (let suffix = 2; used.has(slug); suffix++) slug = `${base}-${suffix}`;
+    return slug;
+  };
   const chooseProvider = async (identity: SettingsProviderSummary['identity']) => {
-    if (!alive || !active() || busy() || page() !== 'providers') return;
+    if (!alive || !active() || busy() || openingProvider() || page() !== 'providers') return;
+    selectedProvider.set(identity);
+    openingProvider.set(identity);
     const generation = ++read;
     loading.set(true);
     error.set('');
+    failedProvider.set(null);
     try {
       const provider: SettingsProvider = await host.query('authentication', 'provider', identity);
       if (!alive || !active() || generation !== read) return;
@@ -392,11 +413,7 @@ export function createModelSettings(
         string,
         unknown
       > | null;
-      const slug =
-        provider.identity.name
-          .toLowerCase()
-          .replace(/[^a-z0-9_-]+/g, '-')
-          .replace(/^-+|-+$/g, '') || 'connection';
+      const slug = suggestedSlug(provider.identity);
       editor.set({
         instance: ++editorInstance,
         baseline: null,
@@ -412,9 +429,15 @@ export function createModelSettings(
       discovery.set('idle');
       page.set('connection');
     } catch (reason) {
-      if (generation === read) report(reason);
+      if (generation === read) {
+        failedProvider.set(identity);
+        report(reason);
+      }
     } finally {
-      if (alive && generation === read) loading.set(false);
+      if (alive && generation === read) {
+        loading.set(false);
+        openingProvider.set(null);
+      }
     }
   };
   const readDetail = async (target: ConnectionVersionBasis, afterCredential = false) => {
@@ -1097,6 +1120,17 @@ export function createModelSettings(
     page.set('connections');
     void loadConnections();
   };
+  const leaveEditor = () => {
+    if (editor()?.baseline) leaveConnection();
+    else {
+      cancelRead();
+      editor.set(null);
+      confirmation.set(null);
+      page.set('providers');
+      error.set('');
+      notice.set('');
+    }
+  };
   const connectionEdited = () => {
     const form = editor();
     if (!form) return false;
@@ -1105,11 +1139,7 @@ export function createModelSettings(
       string,
       unknown
     > | null;
-    const slug =
-      form.provider.identity.name
-        .toLowerCase()
-        .replace(/[^a-z0-9_-]+/g, '-')
-        .replace(/^-+|-+$/g, '') || 'connection';
+    const slug = suggestedSlug(form.provider.identity);
     return (
       !!form.apiKey ||
       form.name !== form.provider.descriptor.label ||
@@ -1147,7 +1177,8 @@ export function createModelSettings(
         discardTarget.set('connection');
         return false;
       }
-      leaveConnection();
+      if (page() === 'connection') leaveEditor();
+      else leaveConnection();
       return false;
     }
     return true;
@@ -1228,6 +1259,9 @@ export function createModelSettings(
     providers,
     connectionQuery,
     providerQuery,
+    openingProvider,
+    selectedProvider,
+    failedProvider,
     modelQuery,
     filteredConnections,
     filteredProviders,
@@ -1256,7 +1290,7 @@ export function createModelSettings(
       if (target === 'model') {
         model.set(null);
         page.set('models');
-      } else if (target === 'connection') leaveConnection();
+      } else if (target === 'connection') leaveEditor();
     },
     keepEditing() {
       discardTarget.set(null);
@@ -1321,6 +1355,14 @@ export function createModelSettings(
     activate,
     deactivate,
     reset,
+    cancel() {
+      if (page() === 'providers' && providerQuery() && !openingProvider()) {
+        searchProviders('');
+        selectedProvider.set(null);
+        return false;
+      }
+      return back();
+    },
     back,
   };
 }

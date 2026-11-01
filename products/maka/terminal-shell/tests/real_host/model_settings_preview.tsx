@@ -25,6 +25,7 @@ import { ConnectionSettings } from '../../../workbench/app/ConnectionSettings';
 import { createModelSettings } from '../../../workbench/app/settings';
 import { createSettingsOperations } from '../../../workbench/app/settingsOperations';
 import { HostProvider, type Host } from '../../../workbench/app/host';
+import { host as native } from 'maka/host';
 import { currentLocale, tr } from '../../../workbench/app/locale';
 
 // The provider boundary is controlled by the test; every displayed control is production UI.
@@ -59,6 +60,32 @@ function Preview() {
   let finishLogin: ((value: string) => void) | null = null;
   let signIns = 0;
   let discoveries = 0;
+  let failProviders = false;
+  let failProvider = false;
+  cleanup(
+    events.on('fixture.failProvider', () => {
+      failProvider = true;
+    }),
+  );
+  let holdProvider = false;
+  let releaseProvider: (() => void) | null = null;
+  const selectedProviders: string[] = [];
+  cleanup(
+    events.on('fixture.failProviders', () => {
+      failProviders = true;
+    }),
+  );
+  cleanup(
+    events.on('fixture.holdProvider', () => {
+      holdProvider = true;
+    }),
+  );
+  cleanup(
+    events.on('fixture.releaseProvider', () => {
+      holdProvider = false;
+      releaseProvider?.();
+    }),
+  );
   const report = () =>
     void events.call('fixture.outcome', {
       configured,
@@ -68,6 +95,7 @@ function Preview() {
       modelIds,
       overrides,
       defaultTarget,
+      selectedProviders,
     });
   cleanup(
     events.on<{ result: string }>('fixture.finishLogin', ({ result }) => finishLogin?.(result)),
@@ -115,12 +143,26 @@ function Preview() {
             },
           ],
         };
-      if (method === 'providers')
-        return {
-          providers: [{ identity: provider, label: definition.descriptor.label }],
-          next: null,
-        };
-      if (method === 'provider') return definition;
+      if (method === 'providers') {
+        if (failProviders) {
+          failProviders = false;
+          throw new Error('Provider catalog temporarily unavailable.');
+        }
+        return native.query('settings', 'providers', input);
+      }
+      if (method === 'provider') {
+        selectedProviders.push(input.name);
+        report();
+        if (failProvider) {
+          failProvider = false;
+          throw new Error('Provider temporarily unavailable.');
+        }
+        if (holdProvider)
+          await new Promise<void>((resolve) => {
+            releaseProvider = resolve;
+          });
+        return native.query('authentication', 'provider', input);
+      }
       if (method === 'connection')
         return input.revision === revision ? detail() : { kind: 'stale', actual: basis() };
       if (method === 'credentialStatus')
@@ -273,9 +315,11 @@ function Preview() {
         title: () =>
           owner.page() === 'connection'
             ? tr('Connection settings')
-            : owner.page() === 'model'
-              ? tr('Model settings')
-              : tr('Connections & models'),
+            : owner.page() === 'providers'
+              ? tr('Add connection')
+              : owner.page() === 'model'
+                ? tr('Model settings')
+                : tr('Connections & models'),
         nested: () => owner.page() !== 'connections',
         navigation: owner.navigation,
         back: owner.back,

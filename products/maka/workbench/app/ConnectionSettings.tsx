@@ -24,6 +24,7 @@ import type { ListRef } from 'nsh';
 import { Button } from 'nsh/base';
 import type { ModelSettingsOwner } from './settings';
 import { ConnectionForm } from './ConnectionForm';
+import { ProviderPicker } from './ProviderPicker';
 import { ConnectionModel } from './ConnectionModel';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { Icon } from './Icon';
@@ -55,7 +56,6 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
       ? owner.model()?.label.trim() || owner.model()?.originalId || ''
       : owner.editor()?.name || '';
   let connectionsList: ListRef | undefined;
-  let providersList: ListRef | undefined;
   let modelsList: ListRef | undefined;
   return (
     <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
@@ -294,89 +294,7 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
           </List>
         </If>
         <If when={owner.page() === 'providers'}>
-          <Search
-            label={tr('Search providers')}
-            placeholder={tr('Search providers…')}
-            value={owner.providerQuery}
-            change={(text) => {
-              owner.searchProviders(text);
-              if (owner.filteredProviders().length)
-                providersList?.scrollToIndex({ index: 0, animated: false });
-            }}
-          />
-          <List
-            ref={(node) => {
-              providersList = node;
-            }}
-            each={owner.filteredProviders()}
-            keyExtractor={(item) =>
-              JSON.stringify([
-                item.identity.packageId,
-                item.identity.entryId,
-                item.identity.scope,
-                item.identity.name,
-              ])
-            }
-            estimatedItemSize={48}
-            onLoadMore={() => {
-              if (!owner.error()) void owner.loadProviders(true);
-            }}
-            empty={
-              <If when={!owner.loading() && !owner.error()}>
-                <Text style={{ ...bodyTextStyle, color: C.muted }}>
-                  {owner.providerQuery().trim()
-                    ? tr('No matching providers.')
-                    : tr('No providers available.')}
-                </Text>
-              </If>
-            }
-            style={{ flex: 1, minHeight: 0 }}
-          >
-            {(item) => (
-              <Button
-                disabled={unavailable()}
-                accessibilityLabel={tr('Connect {name}', { name: item().label })}
-                onPress={inputAction(owner.chooseProvider, item().identity)}
-                style={{
-                  height: 48,
-                  padding: 12,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 12,
-                  justifyContent: 'center',
-                  borderRadius: 8,
-                  backgroundColor: C.background,
-                }}
-                focusStyle={controlFocusStyle()}
-                hoverStyle={controlHoverStyle()}
-                activeStyle={{ backgroundColor: C.line }}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Text
-                  style={[
-                    { ...captionTextStyle, color: C.text, flex: 1 },
-                    { numberOfLines: 1, textOverflow: 'ellipsis' },
-                  ]}
-                >
-                  {item().label}
-                </Text>
-                <Icon name="right" color={C.muted} />
-              </Button>
-            )}
-          </List>
-          <If when={owner.error()}>
-            <Button
-              disabled={owner.loading() || owner.busy()}
-              onPress={inputAction(owner.loadProviders, false)}
-              style={{ ...controlStyle, alignSelf: 'flex-start' }}
-              hoverStyle={controlHoverStyle()}
-              activeStyle={{ backgroundColor: C.line }}
-              focusStyle={controlFocusStyle()}
-              disabledStyle={controlDisabledStyle}
-            >
-              <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Retry')}</Text>
-            </Button>
-          </If>
+          <ProviderPicker owner={owner} />
         </If>
         <If when={owner.page() === 'connection' && owner.editor()}>
           <ConnectionForm settings={owner} />
@@ -556,11 +474,13 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
           </List>
         </If>
       </If>
-      <View style={{ minHeight: captionTextStyle.lineHeight }}>
-        <If when={owner.loading()}>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Loading settings…')}</Text>
-        </If>
-      </View>
+      <If when={owner.page() !== 'providers'}>
+        <View style={{ minHeight: captionTextStyle.lineHeight }}>
+          <If when={owner.loading()}>
+            <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Loading settings…')}</Text>
+          </If>
+        </View>
+      </If>
     </View>
   );
 }
@@ -577,6 +497,9 @@ function Search(props: {
       value={props.value()}
       onChange={({ value }) => props.change(value)}
       placeholder={props.placeholder}
+      autoCapitalize="none"
+      autoCorrect={false}
+      submitBehavior="submit"
       style={{
         ...inputTextStyle,
         color: C.text,

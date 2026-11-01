@@ -54,3 +54,7 @@ Only skills installed through Maka have an update button. Updating replaces thei
 **Settings → MCP servers** manages the four corresponding `mcp.json` files through command/HTTP forms. It preserves other entries and custom fields. Selecting a project does not create a conversation. Downloads, file changes and registrations run on the connected Host; saving a project MCP file does not grant it trust.
 
 **Settings → Connections & models** keeps provider sign-in, connection details and the model list together. A new or edited connection can be saved and signed in with one action. Device sign-in opens the browser and keeps the code, copy controls and cancellation available in the dialog. Model discovery can be retried independently after successful sign-in. Advanced connection and model options stay behind disclosures; saved connections can be reloaded after external changes, and Back asks before discarding edits.
+
+The provider picker separates account sign-in, custom endpoints and named API services, with alphabetical choices within each section. Search accepts multiple terms, supports arrow keys and Enter, and Escape clears the query before returning. Returning from a new connection preserves the provider search and selection; adding another connection suggests an unused ID among the loaded connections.
+
+![Provider picker, rendered in the desktop test fixture against the built-in catalog.](screenshots/provider-picker-light.png)

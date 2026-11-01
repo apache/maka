@@ -208,6 +208,8 @@ impl Desktop {
         };
         let directory = std::path::PathBuf::from(directory);
         std::fs::create_dir_all(&directory).unwrap();
+        self.app.update(|cx| cx.refresh_windows());
+        self.pump();
         let guard = self.frame.lock().unwrap();
         let frame = guard.as_ref().unwrap();
         let size = frame.size();
@@ -1233,6 +1235,127 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
         desktop.outcome.lock().unwrap()["overrides"]["gpt-4.1"]["catalogModel"]["modelId"],
         "gpt-4.1"
     );
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/model_settings_preview.tsx");
+    let output = fixture.directory.path().join("settings-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+        Some(source),
+    )
+    .await;
+    desktop.press("Add connection").await;
+    desktop.target_after(None).await;
+    desktop.control("Connect ChatGPT Subscription").await;
+    desktop.artifact(&format!("provider-picker-{theme}-{layout}"));
+    desktop.type_text("alibaba china").await;
+    desktop
+        .until("search retained unrelated providers", || {
+            desktop
+                .controls("Connect ChatGPT Subscription")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    let first = desktop.control("Connect Alibaba (China)").await;
+    let second = desktop.control("Connect Alibaba Coding Plan (China)").await;
+    assert_eq!(first.left(), second.left());
+    assert_eq!(first.right(), second.right());
+    assert_eq!(first.size.height, px(40.));
+    assert_eq!(second.top() - first.top(), px(40.));
+    desktop.artifact(&format!("provider-search-{theme}-{layout}"));
+    desktop.key("down", false);
+    desktop.key("enter", false);
+    desktop.control("Save connection").await;
+    assert_eq!(
+        desktop.outcome.lock().unwrap()["selectedProviders"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap(),
+        "alibaba-coding-plan-cn"
+    );
+    desktop.press("Back").await;
+    desktop.control("Clear provider search").await;
+    desktop.expect_text("alibaba china").await;
+    desktop.artifact(&format!("provider-back-{theme}-{layout}"));
+    desktop.type_text("no-such-provider-1793500567423").await;
+    desktop.key("enter", false);
+    desktop.control("Clear provider search").await;
+    assert!(desktop.controls("Connect Alibaba (China)").is_empty());
+    desktop.artifact(&format!("provider-empty-{theme}-{layout}"));
+    desktop.key("escape", false);
+    desktop.control("Connect ChatGPT Subscription").await;
+    assert!(desktop.controls("Clear provider search").is_empty());
+    desktop.key("escape", false);
+    desktop.control("Add connection").await;
+    desktop.event("fixture.failProviders", Value::Null);
+    desktop.press("Add connection").await;
+    desktop.control("Retry loading providers").await;
+    desktop.artifact(&format!("provider-error-{theme}-{layout}"));
+    desktop.press("Retry loading providers").await;
+    desktop.control("Connect ChatGPT Subscription").await;
+    desktop.type_text("responses").await;
+    desktop.control("Connect Responses").await;
+    desktop.artifact(&format!("provider-custom-{theme}-{layout}"));
+    desktop.event("fixture.failProvider", Value::Null);
+    desktop.key("enter", false);
+    desktop.control("Retry opening provider").await;
+    desktop.artifact(&format!("provider-opening-error-{theme}-{layout}"));
+    desktop.press("Retry opening provider").await;
+    desktop.control("Save connection").await;
+    assert_eq!(
+        desktop.outcome.lock().unwrap()["selectedProviders"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap(),
+        "openai-responses-compatible"
+    );
+    desktop.press("Back").await;
+    desktop.target_after(None).await;
+    desktop.type_text("chatgpt").await;
+    desktop.event("fixture.holdProvider", Value::Null);
+    desktop.key("enter", false);
+    desktop
+        .until("provider read did not start", || {
+            (desktop.outcome.lock().unwrap()["selectedProviders"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()
+                == "chatgpt")
+                .then_some(())
+        })
+        .await;
+    desktop
+        .until("the opening provider remained actionable", || {
+            desktop
+                .controls("Connect ChatGPT Subscription")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    desktop.artifact(&format!("provider-opening-{theme}-{layout}"));
+    desktop.press("Back").await;
+    desktop.event("fixture.releaseProvider", Value::Null);
+    desktop.control("Add connection").await;
     desktop.close().await;
     fixture.finish().await;
 }
