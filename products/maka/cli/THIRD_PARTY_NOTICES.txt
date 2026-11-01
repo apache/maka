@@ -9936,7 +9936,7 @@ Apache License
 
 clipboard-rs@0.3.5 (MIT); authors declared by package: ChurchTao <swkzymlyy@gmail.com>
 
-git+https://github.com/maka-agent/cua?rev=9e385e6671acb9b985bc88257e94357db39d21ac#9e385e6671acb9b985bc88257e94357db39d21ac :: LICENSE
+git+https://github.com/maka-agent/cua?rev=aa8748ea2636dcd1aee0096bee7391526653c89b#aa8748ea2636dcd1aee0096bee7391526653c89b :: LICENSE
 https://crates.io/api/v1/crates/clipboard-rs/0.3.5/download :: LICENSE
 
 MIT License
@@ -9977,7 +9977,7 @@ platform-windows@0.38.0 (MIT)
 zbus@5.19.0 (MIT); authors declared by package: Zeeshan Ali Khan <zeeshanak@gnome.org>
 
 git+https://github.com/maka-agent/cua?rev=23221967ce6044c1fed303701f43fa54564f0f53#23221967ce6044c1fed303701f43fa54564f0f53
-git+https://github.com/maka-agent/cua?rev=9e385e6671acb9b985bc88257e94357db39d21ac#9e385e6671acb9b985bc88257e94357db39d21ac
+git+https://github.com/maka-agent/cua?rev=aa8748ea2636dcd1aee0096bee7391526653c89b#aa8748ea2636dcd1aee0096bee7391526653c89b
 
 Cua Driver Rust SDK and its workspace crates
 Source: https://github.com/trycua/cua
@@ -13312,7 +13312,7 @@ DEALINGS IN THE SOFTWARE.
 
 cua-cursor-motion@0.38.0 (MIT); authors declared by package: trycua
 
-git+https://github.com/maka-agent/cua?rev=9e385e6671acb9b985bc88257e94357db39d21ac#9e385e6671acb9b985bc88257e94357db39d21ac :: LICENSE
+git+https://github.com/maka-agent/cua?rev=aa8748ea2636dcd1aee0096bee7391526653c89b#aa8748ea2636dcd1aee0096bee7391526653c89b :: LICENSE
 
 MIT License
 
@@ -13340,7 +13340,7 @@ SOFTWARE.
 
 cua-driver-core@0.38.0 (MIT AND Apache-2.0)
 
-git+https://github.com/maka-agent/cua?rev=9e385e6671acb9b985bc88257e94357db39d21ac#9e385e6671acb9b985bc88257e94357db39d21ac :: src/browser/extension_assets/maka-ui/LICENSE
+git+https://github.com/maka-agent/cua?rev=aa8748ea2636dcd1aee0096bee7391526653c89b#aa8748ea2636dcd1aee0096bee7391526653c89b :: src/browser/extension_assets/maka-ui/LICENSE
 
 Apache License
                            Version 2.0, January 2004
@@ -13714,7 +13714,7 @@ third-party/gix-discover/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
 
 cua-driver-core@0.38.0 (MIT AND Apache-2.0)
 
-git+https://github.com/maka-agent/cua?rev=9e385e6671acb9b985bc88257e94357db39d21ac#9e385e6671acb9b985bc88257e94357db39d21ac :: src/browser/extension_assets/maka-ui/NOTICE
+git+https://github.com/maka-agent/cua?rev=aa8748ea2636dcd1aee0096bee7391526653c89b#aa8748ea2636dcd1aee0096bee7391526653c89b :: src/browser/extension_assets/maka-ui/NOTICE
 
 Apache Maka (incubating)
 Copyright 2026 The Apache Software Foundation
@@ -49499,7 +49499,7 @@ zbus_xml@5.2.1 (MIT); authors declared by package: Zeeshan Ali Khan <zeeshanak@g
 zvariant@5.15.1 (MIT); authors declared by package: Zeeshan Ali Khan <zeeshanak@gnome.org>
 zvariant_derive@5.15.1 (MIT); authors declared by package: Zeeshan Ali Khan <zeeshanak@gnome.org>
 
-git+https://github.com/maka-agent/cua?rev=9e385e6671acb9b985bc88257e94357db39d21ac#9e385e6671acb9b985bc88257e94357db39d21ac :: LICENSE
+git+https://github.com/maka-agent/cua?rev=aa8748ea2636dcd1aee0096bee7391526653c89b#aa8748ea2636dcd1aee0096bee7391526653c89b :: LICENSE
 https://crates.io/api/v1/crates/zbus_macros/5.19.0/download :: LICENSE
 https://crates.io/api/v1/crates/zbus_names/4.3.5/download :: LICENSE
 https://crates.io/api/v1/crates/zbus_xml/5.2.1/download :: LICENSE
