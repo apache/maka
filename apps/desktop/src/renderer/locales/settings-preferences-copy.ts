@@ -256,7 +256,7 @@ export type SettingsPreferencesCopy = {
     updateFetchingHint: (version: string) => string;
     updateDownloadedHint: (version: string) => string;
     updateInstallingHint: (version: string) => string;
-    updateFailed: Record<'check' | 'download' | 'install', string>;
+    updateFailed: Record<'check' | 'download' | 'verify' | 'install', string>;
     /** Provenance in one line: project, foundation status, licence. */
     openSourceSummary: string;
     sourceCode: string;
@@ -373,7 +373,12 @@ const settingsPreferencesCopyByLocaleZhCn: SettingsPreferencesCopy = {
       updateFetchingHint: (version) => `v${version}，完成后可在这里重启安装。`,
       updateDownloadedHint: (version) => `v${version}，重启 Maka 即可完成安装。`,
       updateInstallingHint: (version) => `v${version}，请稍候。`,
-      updateFailed: { check: '检查更新失败', download: '下载更新失败', install: '安装更新失败' },
+      updateFailed: {
+        check: '检查更新失败',
+        download: '下载更新失败',
+        verify: '验证更新失败',
+        install: '安装更新失败',
+      },
       openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
       sourceCode: '源码', releaseNotes: '发行说明',
     },
@@ -471,7 +476,12 @@ const settingsPreferencesCopyByLocaleZhTw: SettingsPreferencesCopy = {
       updateFetchingHint: (version) => `v${version}，完成後可在這裡重新啟動安裝。`,
       updateDownloadedHint: (version) => `v${version}，重新啟動 Maka 即可完成安裝。`,
       updateInstallingHint: (version) => `v${version}，請稍候。`,
-      updateFailed: { check: '檢查更新失敗', download: '下載更新失敗', install: '安裝更新失敗' },
+      updateFailed: {
+        check: '檢查更新失敗',
+        download: '下載更新失敗',
+        verify: '驗證更新失敗',
+        install: '安裝更新失敗',
+      },
       openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
       sourceCode: '原始碼', releaseNotes: '發行說明',
     },
@@ -540,7 +550,12 @@ const settingsPreferencesCopyByLocaleEn: SettingsPreferencesCopy = {
       updateFetchingHint: (version) => `v${version}; restart from here once it finishes.`,
       updateDownloadedHint: (version) => `v${version}; restart Maka to finish installing.`,
       updateInstallingHint: (version) => `v${version}; this takes a moment.`,
-      updateFailed: { check: 'Could not check for updates', download: 'Could not download the update', install: 'Could not install the update' },
+      updateFailed: {
+        check: 'Could not check for updates',
+        download: 'Could not download the update',
+        verify: 'Could not verify the update',
+        install: 'Could not install the update',
+      },
       openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
       sourceCode: 'Source code', releaseNotes: 'Release notes',
     },
