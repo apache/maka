@@ -120,6 +120,42 @@ impl Owner {
         }
     }
 
+    /// A worker runs on the model the Bot itself is running on. A model selection
+    /// carries the connection's revision, which the Bot cannot know, so whatever
+    /// it supplied is replaced with the current selection of its own model. When
+    /// that cannot be resolved the supplied value is left for normal validation.
+    pub(crate) async fn use_bot_model(
+        &self,
+        scope: &maka_capabilities::call::Scope,
+        model: &mut crate::contract::ModelSelection,
+    ) {
+        let Some(source) = scope.identity.agent() else {
+            return;
+        };
+        if !self.bot.is(&source.session_id) {
+            return;
+        }
+        let Ok(route) = self.return_route(source).await else {
+            return;
+        };
+        let binding = route.binding_model();
+        let Ok(catalog) = self.configuration.catalog().await else {
+            return;
+        };
+        if let Some(entry) = catalog
+            .connections
+            .iter()
+            .find(|entry| entry.connection_id == binding.connection_id)
+            .filter(|entry| entry.enabled_model_ids.contains(&binding.model))
+        {
+            *model = crate::contract::ModelSelection {
+                connection_id: entry.connection_id.clone(),
+                revision: entry.revision,
+                model_id: binding.model.clone(),
+            };
+        }
+    }
+
     pub(in crate::owner) fn start_bot_wake(self: &Arc<Self>) {
         if !self.settings.bot {
             return;

@@ -916,8 +916,9 @@ impl Handler for Agent {
                     Ok(result)
                 }
                 "send" => {
-                    let input: Send = decode(input)?;
+                    let mut input: Send = decode(input)?;
                     let operation = context.operation().ok_or("agent_mutation_required")?;
+                    owner.use_bot_model(context.scope(), &mut input.model).await;
                     if !owner
                         .may_control(context.scope(), &input.session_id)
                         .await?
