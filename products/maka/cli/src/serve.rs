@@ -182,7 +182,8 @@ mod tests {
             self.0.lock().unwrap().take().unwrap().send(()).unwrap();
         }
         fn close(&self) -> futures_util::future::BoxFuture<'static, Result<(), String>> {
-            Box::pin(async {
+            let fail = std::env::var("MAKA_LISTEN_CLEANUP_TEST_FAIL").as_deref() == Ok("1");
+            Box::pin(async move {
                 tokio::task::spawn_blocking(|| {
                     println!("{CLOSING}");
                     std::io::stdout().flush().unwrap();
@@ -191,7 +192,12 @@ mod tests {
                     assert_eq!(release, [1]);
                 })
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string())?;
+                if fail {
+                    Err("original close failed".into())
+                } else {
+                    Ok(())
+                }
             })
         }
     }
@@ -334,56 +340,66 @@ mod tests {
             return;
         }
 
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root");
-        let mut child = ChildGuard(
-            Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "serve::tests::listen_keeps_root_until_blocking_cleanup_finishes",
-                    "--nocapture",
-                ])
-                .env(CHILD_ROOT, &root)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .unwrap(),
-        );
-        let output = child.0.stdout.take().unwrap();
-        let (closing, ready) = std::sync::mpsc::channel();
-        let reader = std::thread::spawn(move || {
-            for line in std::io::BufReader::new(output).lines() {
-                if line.unwrap() == CLOSING {
-                    closing.send(()).unwrap();
+        for fail in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().join("root");
+            let mut child = ChildGuard(
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "serve::tests::listen_keeps_root_until_blocking_cleanup_finishes",
+                        "--nocapture",
+                    ])
+                    .env(CHILD_ROOT, &root)
+                    .env(
+                        "MAKA_LISTEN_CLEANUP_TEST_FAIL",
+                        if fail { "1" } else { "0" },
+                    )
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+                    .unwrap(),
+            );
+            let output = child.0.stdout.take().unwrap();
+            let (closing, ready) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                for line in std::io::BufReader::new(output).lines() {
+                    if line.unwrap() == CLOSING {
+                        closing.send(()).unwrap();
+                    }
                 }
-            }
-        });
-        ready
-            .recv_timeout(Duration::from_secs(20))
-            .expect("real listener did not reach original blocking cleanup");
-        // Surviving the former ten-second process deadline is the regression target.
-        std::thread::sleep(Duration::from_secs(11));
-        assert!(
-            child.0.try_wait().unwrap().is_none(),
-            "listener must leave forced termination to its process owner"
-        );
-        let namespaces = RootNamespaces::for_current_account().unwrap();
-        let unavailable = RootOwner::open(&root, &namespaces)
-            .err()
-            .expect("original blocking cleanup must retain Root");
-        assert_eq!(unavailable.kind(), std::io::ErrorKind::WouldBlock);
-        child.0.stdin.take().unwrap().write_all(&[1]).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(15);
-        let status = loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                break status;
-            }
-            assert!(Instant::now() < deadline, "released cleanup did not finish");
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        assert!(status.success(), "released listener exited with {status}");
-        reader.join().unwrap();
-        drop(RootOwner::open(&root, &namespaces).unwrap());
+            });
+            ready
+                .recv_timeout(Duration::from_secs(20))
+                .expect("real listener did not reach original blocking cleanup");
+            // Surviving the former ten-second process deadline is the regression target.
+            std::thread::sleep(Duration::from_secs(11));
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "listener must leave forced termination to its process owner"
+            );
+            let namespaces = RootNamespaces::for_current_account().unwrap();
+            let unavailable = RootOwner::open(&root, &namespaces)
+                .err()
+                .expect("original blocking cleanup must retain Root");
+            assert_eq!(unavailable.kind(), std::io::ErrorKind::WouldBlock);
+            child.0.stdin.take().unwrap().write_all(&[1]).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let status = loop {
+                if let Some(status) = child.0.try_wait().unwrap() {
+                    break status;
+                }
+                assert!(Instant::now() < deadline, "released cleanup did not finish");
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            assert_eq!(
+                status.success(),
+                !fail,
+                "released listener exited with {status}"
+            );
+            reader.join().unwrap();
+            drop(RootOwner::open(&root, &namespaces).unwrap());
+        }
     }
 }

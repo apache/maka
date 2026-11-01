@@ -1331,7 +1331,12 @@ async fn javascript_cannot_catch_away_native_resource_cleanup_failure_or_release
             small_weak.upgrade().is_none(),
             "unrelated module in shared worker stays healthy"
         );
-        assert!(app.shutdown().await.is_err());
+        assert!(app.shutdown_if_idle().await.is_err());
+        assert!(client.snapshot().shutdown_complete);
+        assert!(
+            !client.snapshot().closed,
+            "failed cleanup is not a successful cleanup receipt"
+        );
         drop(client);
         assert!(
             weak.upgrade().is_some(),
@@ -1340,6 +1345,110 @@ async fn javascript_cannot_catch_away_native_resource_cleanup_failure_or_release
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn cleanup_failure_does_not_prevent_idle_shutdown_or_skip_a_running_close() {
+    struct GatedClose {
+        started: Arc<Semaphore>,
+        release: Arc<Semaphore>,
+        fail_close: bool,
+    }
+    impl Handler for GatedClose {
+        fn call(
+            &self,
+            _: String,
+            input: Value,
+            context: Context,
+        ) -> BoxFuture<'static, Result<Value>> {
+            Box::pin(async move {
+                if input == json!("fail") {
+                    let mut ticket = context.scope().resources.reserve().unwrap();
+                    ticket.start();
+                    ticket.complete(Err("original cleanup failed".into()));
+                }
+                Ok(input)
+            })
+        }
+    }
+    impl NativeOwner for GatedClose {
+        fn prepare_retirement(
+            &self,
+        ) -> Option<Box<dyn maka_host_runtime::application::NativeRetirement>> {
+            Some(Box::new(()))
+        }
+        fn close(&self) -> BoxFuture<'static, Result<()>> {
+            let started = self.started.clone();
+            let release = self.release.clone();
+            let fail_close = self.fail_close;
+            Box::pin(async move {
+                started.add_permits(1);
+                permit(&release).await;
+                if fail_close {
+                    Err("original close failed".into())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(15), async {
+        for retired_first in [false, true] {
+        let started = Arc::new(Semaphore::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let owner = Arc::new(GatedClose { started: started.clone(), release: release.clone(), fail_close: retired_first });
+        let mut native = NativeRegistry::default();
+        native.insert("native.echo".into(), Arc::new(move |_, _| {
+            let owner = owner.clone();
+            Box::pin(async move {
+                NativeActivation {
+                    exports: Ok(BTreeMap::from([("echo".into(), Published {
+                        contract: contract(MethodMode::Query), value: owner.clone() as Arc<dyn Handler>,
+                    })])),
+                    owner,
+                }
+            })
+        })).unwrap();
+        let provider = native_package();
+        let consumer = consumer();
+        let issuer = Issuer::default();
+        let app = Application::start(input(&provider, &consumer), vec![provider, consumer], native,
+            issuer.clone(), Arc::new(Grant(issuer.clone())), Some(maka_host_js::factory(Limits::default()))).unwrap();
+        app.ready().await.unwrap();
+        let client = app.client();
+        let binding = client.bind(client.activation(&id(2)).unwrap(), "echo".into()).await.unwrap().pop().unwrap();
+        let failed = client.start(binding.clone(), "echo".into(), json!("fail"), scope(&issuer, true), Default::default()).await.unwrap().result().await;
+        assert_eq!(failed.unwrap(), json!("fail"));
+        assert!(client.snapshot().cleanup_error.as_deref().unwrap().contains("original cleanup failed"));
+        let healthy = client.start(binding, "echo".into(), json!("healthy"), scope(&issuer, true), Default::default()).await.unwrap().result().await;
+        assert_eq!(healthy.unwrap(), json!("healthy"));
+        if retired_first {
+            client.retire(client.activation(&id(1)).unwrap()).await.unwrap();
+            permit(&started).await;
+            assert!(!app.shutdown_if_idle().await.unwrap(), "an executing close keeps the Host busy");
+            release.add_permits(1);
+            loop {
+                if client.snapshot().instances.iter().any(|status| status.failures.iter().any(|error| error.contains("original close failed"))) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert!(app.shutdown_if_idle().await.unwrap_err().contains("original cleanup failed"));
+        } else {
+        let shutdown = app.shutdown_if_idle();
+        tokio::pin!(shutdown);
+        tokio::select! {
+            () = permit(&started) => {},
+            result = &mut shutdown => panic!("idle shutdown skipped the original close: {result:?}"),
+        }
+        assert!(futures_util::poll!(&mut shutdown).is_pending(), "historical error cannot acknowledge an active close");
+        release.add_permits(1);
+        assert!(shutdown.await.unwrap_err().contains("original cleanup failed"));
+        }
+        assert!(client.snapshot().shutdown_complete);
+        assert!(!client.snapshot().closed);
+        }
+    }).await.unwrap();
 }
 
 fn wrapper_entry(implementation: Implementation) -> EntryDeclaration {
@@ -1601,10 +1710,9 @@ async fn javascript_catch_cannot_acknowledge_child_cleanup_or_release_parent_and
                 state.calls, 1,
                 "both actual child and parent keep their core work"
             );
-            assert_eq!(state.phase, Phase::Retiring);
+            assert_eq!(state.phase, Phase::Active);
         }
-        // Use a real binding captured before retirement: input preparation runs
-        // before final admission, so this proves both actual 32 MiB charges remain.
+        // Failed cleanup retains both actual 32 MiB charges without retiring the providers.
         let (attachments, rejected) = bytes(5);
         assert!(
             client

@@ -449,6 +449,8 @@ pub struct Snapshot {
     pub initialization_failures: BTreeSet<InstanceId>,
     pub closing: bool,
     pub closed: bool,
+    /// All shutdown attempts completed; cleanup_error may still retain failed custody.
+    pub shutdown_complete: bool,
     pub cleanup_error: Option<String>,
     pub instances: Vec<Status>,
 }
@@ -893,11 +895,8 @@ impl Application {
         let mut updates = self.client.updates.clone();
         loop {
             let snapshot = updates.borrow().clone();
-            if let Some(error) = snapshot.cleanup_error {
-                return Err(error);
-            }
-            if snapshot.closed {
-                return Ok(());
+            if snapshot.shutdown_complete {
+                return snapshot.cleanup_error.map_or(Ok(()), Err);
             }
             updates
                 .changed()

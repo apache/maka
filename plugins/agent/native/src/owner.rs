@@ -1484,9 +1484,8 @@ impl Owner {
         let runs = self.runs.clone().try_lock_owned().ok()?;
         if !runs.controls.is_empty()
             || !runs.preparing.is_empty()
-            || !runs.retained_cleanup.is_empty()
             || !self.workers.is_empty()
-            || !self.auxiliary.resources.is_idle()
+            || self.auxiliary.resources.has_pending()
             || self.goals.keeps_host_awake()
             || self.plans.keeps_host_awake()
             || self

@@ -2580,6 +2580,7 @@ impl Host {
             .ok_or_else(|| failed("extension provider required"))?;
         let browser = BrowserIdentity::of(provider, &extension.identity().generation)?;
         self.known(&browser)?;
+        self.check_extension_binding(&browser.tab(target))?;
         self.check_owned_input(&browser.tab(target))?;
         let Some(lease) = self.tabs.get_mut(&browser.tab(target)) else {
             return Ok(false);
@@ -2833,6 +2834,7 @@ impl Host {
         let browser = BrowserIdentity::of(provider, &extension.identity().generation)?;
         self.known(&browser)?;
         let identity = browser.tab(target);
+        self.check_extension_binding(&identity)?;
         if let Some(lease) = self.tabs.get(&identity) {
             if lease.handoff_transfer.is_some() {
                 return Err(ToolError::CleanupUnconfirmed(
