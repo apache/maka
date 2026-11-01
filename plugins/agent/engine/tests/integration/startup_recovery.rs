@@ -70,7 +70,7 @@ async fn unknown_dispatch_survives_reopen_and_the_next_message_continues_without
             .await
             .unwrap(),
     );
-    assert_eq!(log.root().recover_invocations().await.unwrap(), 1);
+    assert_eq!(log.root().recover_invocations().await.unwrap(), 0);
     let prefix = log.prefix(100, 128 * 1024).await.unwrap();
     assert_eq!(prefix.events.len(), 5);
     assert!(

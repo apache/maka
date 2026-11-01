@@ -50,6 +50,15 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "workhub_tasks",
     "Skill",
     "SkillSearch",
+    // Reading the user's conversations is open to the Bot. Tools that change or
+    // message a conversation are deliberately absent until their confirmation
+    // tiers and ownership checks exist.
+    "SessionList",
+    "SessionRead",
+    "SessionHistory",
+    "SessionQueue",
+    "SessionWork",
+    "SessionExecution",
 ];
 const PAGE: usize = 100;
 const RECORD_KEY: &str = "bot";
@@ -891,6 +900,19 @@ const ABILITIES: &[Ability] = &[
         "workhub_tasks（把具体工作委派给后台任务）",
         "workhub_tasks（把具體工作委派給背景任務）",
         "workhub_tasks (delegate hands-on work to background tasks)",
+    ),
+    (
+        &[
+            "SessionList",
+            "SessionRead",
+            "SessionHistory",
+            "SessionQueue",
+            "SessionWork",
+            "SessionExecution",
+        ],
+        "{}（只读地查看用户的会话）",
+        "{}（唯讀地查看使用者的會話）",
+        "{} (read the user's conversations, read-only)",
     ),
     (
         &["Skill", "SkillSearch"],

@@ -376,7 +376,7 @@ impl Fixture {
         assert!(self.provider.await.unwrap_err().is_cancelled());
     }
 }
-async fn configure(owner: Arc<RootOwner>, base: &str, vision: bool) -> Value {
+pub(crate) async fn configure(owner: Arc<RootOwner>, base: &str, vision: bool) -> Value {
     use maka_agent_facts::configuration::CatalogMutationResult;
     let config = Arc::new(
         maka_config::ConfigurationStore::for_root(owner)
@@ -459,7 +459,11 @@ fn model_http_error(body: Value) -> Response<ModelBody> {
 }
 
 impl ModelRequest {
-    async fn serve(socket: TcpStream, requests: mpsc::Sender<Self>, count: Arc<AtomicUsize>) {
+    pub(crate) async fn serve(
+        socket: TcpStream,
+        requests: mpsc::Sender<Self>,
+        count: Arc<AtomicUsize>,
+    ) {
         let completed = Arc::new(Notify::new());
         let notification = completed.clone();
         let service = service_fn(move |request: Request<Incoming>| {

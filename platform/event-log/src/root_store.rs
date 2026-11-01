@@ -223,10 +223,20 @@ impl RootStore {
             // observer before recovery can retain a failed SQL job or stage.
             store.recover_creations().await?;
             store.recover_checkpoints().await?;
-            // No admission or retirement can observe abandoned cross-partition
-            // auxiliary work as live after a process restart.
+            // No admission or retirement can observe work abandoned by the
+            // previous owner as live after a process restart.
             store.recover_host_effects().await?;
             store.recover_auxiliary_models().await?;
+            store
+                .recover_invocations()
+                .await
+                .map_err(|error| match error {
+                    crate::recovery::RecoveryError::Store(error) => error,
+                    error => StoreError::InvalidTransition(error.to_string()),
+                })?;
+            store
+                .recover_shell_runs(crate::native_approvals::now_millis()?)
+                .await?;
             store
                 .lifecycle
                 .as_mut()

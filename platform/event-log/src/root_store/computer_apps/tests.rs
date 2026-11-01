@@ -667,9 +667,16 @@ async fn always_belongs_to_selected_root_profile_across_workspaces_and_restart()
     drop(root);
     let reopened = RootStore::open(owner).await.unwrap();
     let other = reopened.session("other").await.unwrap();
+    let next = Invocation {
+        turn_id: "next-turn".into(),
+        run_id: "next-run".into(),
+        invocation_id: "next-invocation".into(),
+        ..other_invocation.clone()
+    };
+    open(&other, &next).await;
     assert!(
         other
-            .computer_app_granted(&other_invocation, "post-restart-effect", &app, &other_basis)
+            .computer_app_granted(&next, "post-restart-effect", &app, &other_basis)
             .await
             .unwrap()
     );

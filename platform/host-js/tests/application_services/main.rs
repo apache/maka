@@ -1651,7 +1651,7 @@ async fn javascript_forwarding_uses_exact_local_imports_original_evidence_and_ac
     .unwrap();
 }
 #[tokio::test]
-async fn javascript_catch_retains_child_cleanup_custody_without_retiring_healthy_providers() {
+async fn javascript_caught_child_cleanup_retains_custody_without_poisoning_the_caller() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let (provider, consumer) = attached_packages();
         let wrapper = script_forwarder(Realm::Dedicated);
@@ -1690,7 +1690,7 @@ async fn javascript_catch_retains_child_cleanup_custody_without_retiring_healthy
         assert_eq!(
             client
                 .start(
-                    binding,
+                    binding.clone(),
                     "echo".into(),
                     json!("fail-cleanup-error"),
                     scope(&issuer, true),
@@ -1706,23 +1706,24 @@ async fn javascript_catch_retains_child_cleanup_custody_without_retiring_healthy
         assert!(weak.upgrade().is_some());
         let snapshot = client.snapshot();
         assert!(snapshot.cleanup_error.unwrap().contains("unconfirmed"));
-        for instance in [id(1), id(4)] {
+        for (instance, failed) in [(id(1), true), (id(4), false)] {
             let state = snapshot
                 .instances
                 .iter()
                 .find(|s| s.activation.instance() == &instance)
                 .unwrap();
             assert_eq!(state.phase, Phase::Active);
+            assert_eq!(state.failures.is_empty(), !failed);
         }
-        let (attachments, small) = bytes(5);
+        let (attachments, released) = bytes(5);
         assert_eq!(
             client
                 .start(
-                    sibling.clone(),
+                    binding,
                     "echo".into(),
                     json!("healthy"),
                     scope(&issuer, true),
-                    attachments.into()
+                    attachments.into(),
                 )
                 .await
                 .unwrap()
@@ -1731,8 +1732,9 @@ async fn javascript_catch_retains_child_cleanup_custody_without_retiring_healthy
                 .unwrap(),
             json!("xxxxx")
         );
-        assert!(small.upgrade().is_none());
-        let (attachments, rejected) = bytes(64 * 1024 * 1024);
+        assert!(released.upgrade().is_none());
+        // The failed leaf still holds half of the 64 MiB Host window.
+        let (attachments, rejected) = bytes(32 * 1024 * 1024 + 1);
         assert!(
             client
                 .start(

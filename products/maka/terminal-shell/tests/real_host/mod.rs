@@ -26,7 +26,7 @@ mod desktop_new_session;
 mod keyboard;
 mod resumable;
 mod send_hold;
-mod support;
+pub(crate) mod support;
 mod ui_plugins;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};

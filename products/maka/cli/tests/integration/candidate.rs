@@ -28,6 +28,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(unix)]
+mod crash;
 mod owned;
 mod startup;
 
