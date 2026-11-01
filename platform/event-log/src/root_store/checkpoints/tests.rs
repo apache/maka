@@ -25,6 +25,8 @@ use std::{
 };
 use uuid::Uuid;
 
+mod body;
+
 fn namespaces(path: &Path) -> root::RootNamespaces {
     root::RootNamespaces {
         ownership: path.join("ownership"),

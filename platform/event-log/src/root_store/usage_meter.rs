@@ -115,8 +115,8 @@ async fn observed(
     step: &str,
 ) -> Result<ModelUsage, StoreError> {
     let usage: Option<String> = sqlx::query_scalar("SELECT accounting_usage FROM event_log INDEXED BY model_usage_observation
-        WHERE kind='model_observed' AND json_extract(COALESCE(event_json,retained_json),'$.fact.event.kind')='finished'
-        AND invocation_id=? AND json_extract(COALESCE(event_json,retained_json),'$.fact.step_id')=?
+        WHERE kind='model_observed' AND json_extract(COALESCE(event_header,retained_json),'$.fact.event.kind')='finished'
+        AND invocation_id=? AND json_extract(COALESCE(event_header,retained_json),'$.fact.step_id')=?
         ORDER BY sequence DESC LIMIT 1")
         .bind(invocation).bind(step).fetch_optional(db).await?;
     Ok(usage
@@ -175,12 +175,12 @@ pub(crate) async fn settle_auxiliary(
     db: &mut SqliteConnection,
     request: uuid::Uuid,
 ) -> Result<(), StoreError> {
-    let session: Option<String> = sqlx::query_scalar("SELECT json_extract(event_json,'$.session_id') FROM event_log WHERE event_id=? AND kind='auxiliary_model_started'")
+    let session: Option<String> = sqlx::query_scalar("SELECT json_extract(event_header,'$.session_id') FROM event_log WHERE event_id=? AND kind='auxiliary_model_started'")
         .bind(request.to_string()).fetch_one(&mut *db).await?;
     let Some(session) = session else {
         return Ok(());
     };
-    let usage: Option<String> = sqlx::query_scalar("SELECT accounting_usage FROM event_log INDEXED BY auxiliary_usage_meter_observation WHERE kind='auxiliary_model_usage' AND json_extract(COALESCE(event_json,retained_json),'$.request_id')=?")
+    let usage: Option<String> = sqlx::query_scalar("SELECT accounting_usage FROM event_log INDEXED BY auxiliary_usage_meter_observation WHERE kind='auxiliary_model_usage' AND json_extract(COALESCE(event_header,retained_json),'$.request_id')=?")
         .bind(request.to_string()).fetch_optional(&mut *db).await?;
     let usage = usage
         .map(|json| serde_json::from_str(&json))

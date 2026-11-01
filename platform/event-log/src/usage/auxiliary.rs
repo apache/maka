@@ -145,7 +145,7 @@ impl EventLog {
                         if local_session { crate::sessions::removal::require_accepting(&mut tx, &session).await?; }
                         let used: bool = sqlx::query_scalar(
                             "SELECT EXISTS(SELECT 1 FROM event_log WHERE kind='auxiliary_model_started'
-                             AND json_extract(event_json, '$.source') = json(?))"
+                             AND json_extract(event_header, '$.source') = json(?))"
                         ).bind(serde_json::to_string(&source)?).fetch_one(&mut *tx).await?;
                         if used { return Err(invalid("Application operation already attempted its auxiliary model")); }
                         (binding, Some(session))
@@ -248,7 +248,7 @@ impl EventLog {
                     "SELECT event_id FROM event_log started
                      WHERE kind = 'auxiliary_model_started' AND NOT EXISTS (
                         SELECT 1 FROM event_log settled WHERE settled.kind = 'auxiliary_model_settled'
-                        AND json_extract(settled.event_json, '$.request_id') = started.event_id)
+                        AND json_extract(settled.event_header, '$.request_id') = started.event_id)
                      ORDER BY sequence LIMIT 128"
                 ).fetch_all(&mut *tx).await?;
                 let mut last = None;
@@ -289,8 +289,8 @@ async fn binding(
             }
             let used: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM event_log WHERE kind='auxiliary_model_started'
-                 AND json_extract(event_json,'$.source.kind')='session_title'
-                 AND json_extract(event_json,'$.source.invocation.session_id')=?)",
+                 AND json_extract(event_header,'$.source.kind')='session_title'
+                 AND json_extract(event_header,'$.source.invocation.session_id')=?)",
             )
             .bind(&invocation.session_id)
             .fetch_one(&mut *connection)
@@ -308,12 +308,12 @@ async fn binding(
             operation_id,
         } => {
             let raw: Option<String> = sqlx::query_scalar(
-                "SELECT opening.event_json FROM runtime_events opening
+                "SELECT opening.event_header FROM runtime_events opening
                  JOIN runtime_events dispatch ON dispatch.invocation_id = opening.invocation_id
                  WHERE opening.kind = 'invocation_opened' AND opening.invocation_id = ?1
                  AND dispatch.kind = 'tool_dispatched' AND dispatch.operation_id = ?2
-                 AND json_extract(dispatch.event_json, '$.fact.name') = 'llm.generate'
-                 AND json_extract(dispatch.event_json, '$.fact.call.origin.kind') = 'host_sdk'
+                 AND json_extract(dispatch.event_header, '$.fact.name') = 'llm.generate'
+                 AND json_extract(dispatch.event_header, '$.fact.call.origin.kind') = 'host_sdk'
                  AND NOT EXISTS (SELECT 1 FROM runtime_events settled
                     WHERE (settled.kind = 'tool_settled' AND settled.operation_id = ?2)
                        OR (settled.kind = 'invocation_ended' AND settled.invocation_id = ?1))",
@@ -371,11 +371,11 @@ async fn require_pending(
     // Membership and pending status are checked together, in the same transaction
     // that observes/settles this private source admission.
     let session: Option<Option<String>> = sqlx::query_scalar(
-        "SELECT json_extract(event_json, '$.session_id') FROM event_log
+        "SELECT json_extract(event_header, '$.session_id') FROM event_log
          WHERE event_id = ?1 AND kind = 'auxiliary_model_started'
-         AND (?2 IS NULL OR json_extract(event_json, '$.session_id') = ?2)
+         AND (?2 IS NULL OR json_extract(event_header, '$.session_id') = ?2)
          AND NOT EXISTS(SELECT 1 FROM event_log WHERE kind = 'auxiliary_model_settled'
-             AND json_extract(event_json, '$.request_id') = ?1)",
+             AND json_extract(event_header, '$.request_id') = ?1)",
     )
     .bind(id.to_string())
     .bind(expected_session)

@@ -20,9 +20,11 @@
 pub(crate) mod native_computer;
 
 use crate::desktop::{NativeCleanup, NativeEpochId, observe_retirement};
+#[cfg(test)]
+use cua_driver_sdk::TrustedSessionOptions;
 use cua_driver_sdk::{
-    ConfiguredDriverOptions, CuaDriver, CuaDriverSession, DriverError, RuntimeAuthorizationOptions,
-    SessionPermissionMode, TrustedSessionOptions, worker::ActionCompletion,
+    ConfiguredDriverOptions, CuaDriver, CuaDriverSession, DriverError, HostSessionOptions,
+    RuntimeAuthorizationOptions, SessionPermissionMode, worker::ActionCompletion,
 };
 use futures_util::future::BoxFuture;
 use maka_agent_facts::capability::CallResult;
@@ -62,6 +64,8 @@ enum State {
 pub struct Driver {
     state: State,
     pub(crate) audio_enabled: bool,
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    native_input: Arc<Mutex<Option<native_computer::ActiveInput>>>,
     sessions: std::collections::HashMap<NativeEpochId, Arc<BoundSession>>,
     #[cfg(target_os = "windows")]
     native_owner: crate::desktop::worker::native_owner::NativeOwner,
@@ -581,7 +585,16 @@ impl Driver {
     ) -> BoxFuture<'static, Result<(), ToolError>> {
         self.reap_retired_epochs();
         if let Some(retirement) = self.retiring_epochs.get(&epoch) {
-            return Box::pin(observe_retirement(retirement.pending.clone()));
+            let pending = retirement.pending.clone();
+            #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+            let failed = matches!(*pending.borrow(), Some(Err(_)));
+            #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+            let pending = if failed {
+                self.retry_failed_raw_retirement(epoch)
+            } else {
+                pending
+            };
+            return Box::pin(observe_retirement(pending));
         }
         let bound = self.sessions.remove(&epoch);
         let session = bound.as_ref().map(|bound| bound.session.clone());
@@ -651,8 +664,8 @@ impl Driver {
         Box::pin(observe_retirement(pending))
     }
 
-    // Terminal Host cleanup only. A new attempt releases the original fixed
-    // resources; it cannot resume the old user action or change its receipt.
+    // Retry only the original resources after a terminal cleanup failure.
+    // The old user action and its receipt are never replayed.
     #[cfg(all(target_os = "linux", not(target_env = "musl")))]
     fn retry_failed_raw_retirement(&mut self, epoch: NativeEpochId) -> NativeCleanup {
         let retirement = self
@@ -1127,15 +1140,12 @@ impl Driver {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let session = driver
-                    .create_trusted_session(TrustedSessionOptions {
+                    .create_host_session(HostSessionOptions {
                         // SDK lifecycle tombstones belong to their original transport.
                         // A reset owns a fresh episode, never revives an old lease's ID.
                         public_session: format!("maka-{}", uuid::Uuid::new_v4()),
                         mode: SessionPermissionMode::Standard,
-                        ttl_seconds: 86400,
-                        idle_ttl_seconds: 86400,
                         capability_manifest_path: None,
-                        bounded_manifest_path: None,
                     })
                     .map_err(|error| native_error(error, language))?;
                 entry.insert(Arc::new(BoundSession {
@@ -1202,6 +1212,8 @@ impl Driver {
         }
         self.sessions.clear();
         self.retiring_epochs.clear();
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        self.native_input.lock().await.take();
         #[cfg(target_os = "macos")]
         self.mac_controllers.clear();
         self.state = State::Closed;
@@ -1594,9 +1606,9 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(before.session, other.session);
-        assert!(
-            before.expires_in_seconds > 300,
-            "bound lifecycle must use its explicit idle lease"
+        assert_eq!(
+            before.expires_in_seconds, None,
+            "bound lifecycle must follow its host owner"
         );
         driver.release_epoch(a_epoch).await.unwrap();
         assert!(

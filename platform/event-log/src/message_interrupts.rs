@@ -99,9 +99,9 @@ impl EventLog {
             let active = if let Some(owner) = owner.as_ref().filter(|_| matches_owner) {
                 sqlx::query_scalar::<_, bool>(
                     "SELECT EXISTS(SELECT 1 FROM local_runtime_events o WHERE o.kind = 'invocation_opened'
-                     AND o.invocation_id = ? AND json_extract(o.event_json, '$.invocation') = json(?)
+                     AND o.invocation_id = ? AND json_extract(o.event_header, '$.invocation') = json(?)
                      AND o.sequence = (SELECT MAX(n.sequence) FROM local_runtime_events n
-                         WHERE n.kind = 'invocation_opened' AND json_extract(n.event_json, '$.invocation.session_id') = ?))"
+                         WHERE n.kind = 'invocation_opened' AND json_extract(n.event_header, '$.invocation.session_id') = ?))"
                 ).bind(&owner.invocation_id).bind(serde_json::to_string(owner)?)
                     .bind(&owner.session_id).fetch_one(&mut *tx).await?
             } else { false };

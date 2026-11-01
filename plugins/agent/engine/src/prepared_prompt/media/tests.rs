@@ -484,6 +484,87 @@ async fn request_size(prompt: &PreparedPrompt, provider: &ProviderConfig) -> u64
 }
 
 #[tokio::test]
+async fn canonical_tool_artifact_tokens_require_complete_original_json_strings() {
+    use maka_agent_facts::model::prompt_source::source::ChargedBuffer;
+    use maka_event_log::context::semantic::{
+        ArtifactIdentityValidity, ArtifactLookup, ArtifactLookupResult, PayloadEncoding,
+        SourcePosition,
+    };
+    let fixture = Fixture::new(true, 8, 8).await;
+    {
+        let source = fixture
+            .log
+            .capture_source(fixture.selection.clone())
+            .await
+            .unwrap();
+        let mut page = source
+            .directory_page(None, ChargedBuffer::new(vec![0; 4096], ()))
+            .await
+            .unwrap();
+        let mut payload = None;
+        while let Some(record) = page.next_row().unwrap() {
+            if record.row.id.source_sequence == fixture.selection.through {
+                payload = source.describe_payload(&record.row).unwrap();
+                break;
+            }
+        }
+        let payload = payload.expect("canonical tool artifact projection");
+        assert_eq!(payload.encoding(), PayloadEncoding::CanonicalProjection);
+        let mut chunk = source
+            .read_chunk(
+                &payload,
+                SourcePosition::default(),
+                ChargedBuffer::new(vec![0; 4096], ()),
+            )
+            .await
+            .unwrap();
+        let json = std::str::from_utf8(&chunk.buffer.as_mut()[..chunk.bytes_read]).unwrap();
+        let token = |literal: &str| {
+            let start = json.find(literal).expect("original identity token") as u64;
+            start..start + literal.len() as u64
+        };
+        let session = token("\"session\"");
+        let artifact = token("\"source-image\"");
+        let lookup = |artifact| {
+            ArtifactLookup::new(
+                payload.clone(),
+                session.clone(),
+                artifact,
+                ChargedBuffer::new(vec![0; 64], ()),
+            )
+            .unwrap()
+        };
+        let found = source
+            .with_artifact_capture(lookup(artifact.clone()), |_, _, reader| {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(reader, &mut bytes)?;
+                Ok(bytes)
+            })
+            .await
+            .unwrap();
+        match found {
+            ArtifactLookupResult::Captured(bytes) => assert_eq!(bytes, fixture.original),
+            _ => panic!("original canonical identity must resolve its artifact"),
+        }
+        let truncated = artifact.start..artifact.end - 1;
+        assert!(
+            source
+                .with_artifact_capture(lookup(truncated), |_, _, _| Ok(()))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            source
+                .validate_artifact_identity(lookup(artifact))
+                .await
+                .unwrap(),
+            ArtifactIdentityValidity::Valid
+        );
+    }
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn captured_user_and_tool_images_share_one_whole_view_across_protocols_and_replay() {
     let mut expected = None;
     for tool in [false, true] {

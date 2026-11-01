@@ -99,7 +99,7 @@ async fn read(
     message: &str,
 ) -> Result<Option<DeliveryOwner>, StoreError> {
     let json: Option<String> = sqlx::query_scalar(
-        "SELECT e.event_json
+        "SELECT e.event_header
          FROM message_sources s JOIN runtime_events e ON e.event_id = s.event_id
          WHERE s.session_id = ? AND s.message_id = ?",
     )
@@ -159,7 +159,7 @@ pub(crate) async fn lineage(
             return Err(invalid("Message owner continuation cycle"));
         }
         let opening: Option<String> = sqlx::query_scalar(
-            "SELECT event_json
+            "SELECT event_header
              FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_opened'",
         )
         .bind(&current.invocation_id)
@@ -171,13 +171,13 @@ pub(crate) async fn lineage(
             return Err(invalid("Message owner identity changed"));
         }
         let successors: Vec<String> = sqlx::query_scalar(
-            "SELECT event_json
+            "SELECT event_header
              FROM event_log INDEXED BY continuation_source_boundary
-             WHERE invocation_id IS NOT NULL AND event_json IS NOT NULL
+             WHERE invocation_id IS NOT NULL AND event_header IS NOT NULL
              AND kind = 'invocation_opened'
-             AND json_extract(event_json, '$.fact.input.kind') IN ('continuation', 'handoff')
-             AND json_extract(event_json, '$.invocation.session_id') = ?
-             AND json_extract(event_json, '$.fact.input.claim.source.invocation.run_id') = ?
+             AND json_extract(event_header, '$.fact.input.kind') IN ('continuation', 'handoff')
+             AND json_extract(event_header, '$.invocation.session_id') = ?
+             AND json_extract(event_header, '$.fact.input.claim.source.invocation.run_id') = ?
              LIMIT 2",
         )
         .bind(&current.session_id)

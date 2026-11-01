@@ -68,8 +68,13 @@ impl BrowserAuthorization for SiteAuthority {
             if cancellation.is_cancelled() {
                 return Err(ToolError::Failed("fixture cancelled".into()));
             }
-            if !allowed || access.origin()?.as_deref() != Some(expected.as_str()) {
-                return Err(ToolError::Failed("fixture site denied".into()));
+            if !allowed
+                || (!matches!(access, BrowserAccess::Metadata { .. })
+                    && access.origin()?.as_deref() != Some(expected.as_str()))
+            {
+                return Err(ToolError::Failed(format!(
+                    "fixture site denied: expected {expected}, access {access:?}"
+                )));
             }
             Ok(())
         })

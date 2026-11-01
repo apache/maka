@@ -72,7 +72,7 @@ impl EventLog {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
             let session: Option<String> = sqlx::query_scalar(
                 "SELECT DISTINCT e.event_session FROM event_log e INDEXED BY event_material_owner
-                 WHERE e.event_json IS NOT NULL AND e.event_session IS NOT NULL
+                 WHERE e.event_header IS NOT NULL AND e.event_session IS NOT NULL
                  AND (?1 IS NULL OR e.event_session>?1) AND (
                    EXISTS(SELECT 1 FROM session_retirements r WHERE r.session_id=e.event_session
                      AND r.remove_session=1 AND r.completed=1)
@@ -94,7 +94,7 @@ impl EventLog {
             let released: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM context_source_prefixes p
                  JOIN event_log e ON e.sequence=p.sequence
-                 WHERE p.kind='session' AND p.owner=? AND e.event_json IS NULL)"
+                 WHERE p.kind='session' AND p.owner=? AND e.event_header IS NULL)"
             ).bind(&session).fetch_one(&mut *tx).await?;
             if !released && sqlx::query_scalar::<_, bool>(RETAINED)
                 .bind(&session).fetch_one(&mut *tx).await?
@@ -105,11 +105,14 @@ impl EventLog {
             // remain the material-collection authority; descendants were checked above.
             // Also covers imported owners that never had a local retirement.
             crate::context::semantic::gc::retire_owner(&mut tx,&session).await?;
-            let rows: Vec<(i64, String, String)> = sqlx::query_as(
-                "SELECT sequence,event_id,event_json FROM event_log WHERE event_session=?
-                 AND event_json IS NOT NULL ORDER BY sequence LIMIT 8"
-            ).bind(&session).fetch_all(&mut *tx).await?;
-            for (sequence,id,body) in rows {
+            let rows=sqlx::query(sqlx::AssertSqlSafe(format!(
+                "SELECT e.sequence,e.event_id,e.event_header,{columns} FROM event_log e {joins} WHERE e.event_session=?
+                 AND e.event_header IS NOT NULL ORDER BY e.sequence LIMIT 8",columns=crate::canonical::COLUMNS,joins=crate::canonical::JOINS,
+            ))).bind(&session).fetch_all(&mut *tx).await?;
+            for row in rows {
+                use sqlx::Row;
+                let sequence:i64=row.try_get(0)?;let id:String=row.try_get(1)?;
+                let body=crate::canonical::json(&row)?;
                 let event: RuntimeEvent = serde_json::from_str(&body)?;
                 let proof = retained(&event);
                 crate::context::semantic::gc::collect_event(&mut tx,crate::sequence_number(sequence)?).await?;
@@ -125,7 +128,7 @@ impl EventLog {
                         AND NOT EXISTS (SELECT 1 FROM model_request_compositions WHERE digest=?1)")
                         .bind(surface).execute(&mut *tx).await?;
                 }
-                sqlx::query("UPDATE event_log SET retained_json=?, body_digest=?, event_json=NULL WHERE event_id=?")
+                sqlx::query("UPDATE event_log SET retained_json=?, body_digest=?, event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL WHERE event_id=?")
                     .bind(serde_json::to_string(&proof)?).bind(content_digest(body.as_bytes()))
                     .bind(&id).execute(&mut *tx).await?;
             }
@@ -288,7 +291,7 @@ mod cursor_tests {
         let proof = serde_json::to_string(&retained(&ended)).unwrap();
         let digest = content_digest(serde_json::to_string(&ended).unwrap().as_bytes());
         log.connection.run(move |db| Box::pin(async move {
-            sqlx::query("UPDATE event_log SET retained_json=?,body_digest=?,event_json=NULL WHERE sequence=2")
+            sqlx::query("UPDATE event_log SET retained_json=?,body_digest=?,event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL WHERE sequence=2")
                 .bind(proof).bind(digest).execute(&mut *db).await?;
             let publication: (f64, String) = sqlx::query_as("SELECT accounting_at,event_session FROM event_log WHERE sequence=2")
                 .fetch_one(&mut *db).await?;
@@ -379,7 +382,8 @@ mod cursor_tests {
             .into_iter()
             .filter_map(|statement| statement.sql)
             .filter(|sql| {
-                (sql.contains("context_source_prefixes p") && sql.contains("e.event_json IS NULL"))
+                (sql.contains("context_source_prefixes p")
+                    && sql.contains("e.event_header IS NULL"))
                     || sql.contains("event_log INDEXED BY invocation_sequence")
             })
             .collect();

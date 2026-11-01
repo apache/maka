@@ -185,13 +185,13 @@ async fn fragment(
         flushed?;
     }
     let (directory, payload_bytes) = super::directory::prepare_fragment(db, fragment.key, source)?;
-    sqlx::query("INSERT INTO context_semantic_fragments(source_sequence,source_index,storage_kind,byte_offset,byte_len,directory_json,payload_bytes) VALUES(?,?,?,?,?,?,?)")
+    sqlx::query("INSERT INTO context_semantic_fragments(source_sequence,source_index,storage_kind,byte_offset,byte_len,directory_bytes,payload_bytes) VALUES(?,?,?,?,?,?,?)")
         .bind(fragment.key.source_sequence as i64)
         .bind(fragment.key.item_index as i64)
         .bind(storage_kind)
         .bind(offset)
         .bind(len)
-        .bind(json(&directory)?)
+        .bind(super::directory::codec::encode(&directory)?)
         .bind(i64::try_from(payload_bytes).map_err(|_|invalid("payload length exceeds SQLite range"))?)
         .execute(&mut *db).await?;
     Ok(())
@@ -266,7 +266,7 @@ async fn save_row_mode(
     }
     let encoded_row = json(row)?;
     let row_directory = super::directory::row(&encoded_row)?;
-    sqlx::query("INSERT INTO context_semantic_rows(owner_session_id,source_sequence,source_index,revision,order_sequence,order_index,invocation_id,revision_invocation,event_id,kind,archived,inherited,visible,unknown_only,row_json,directory_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    sqlx::query("INSERT INTO context_semantic_rows(owner_session_id,source_sequence,source_index,revision,order_sequence,order_index,invocation_id,revision_invocation,event_id,kind,archived,inherited,visible,unknown_only,row_json,directory_bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
         .bind(owner)
         .bind(row.id.source_sequence as i64)
         .bind(row.id.item_index as i64)
@@ -282,7 +282,7 @@ async fn save_row_mode(
         .bind(visible)
         .bind(unknown_only)
         .bind(encoded_row)
-        .bind(json(&row_directory)?)
+        .bind(super::directory::codec::encode(&row_directory)?)
         .execute(&mut *db)
         .await?;
     Ok(())

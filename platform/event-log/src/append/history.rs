@@ -79,7 +79,7 @@ async fn identity(
         return Err(StoreError::Sealed);
     }
     let opening: Option<String> = sqlx::query_scalar(
-        "SELECT json_extract(event_json, '$.invocation') FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'",
+        "SELECT json_extract(event_header, '$.invocation') FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'",
     )
     .bind(id)
     .fetch_optional(connection)
@@ -117,7 +117,7 @@ async fn outcomes(
     | Fact::ModelObserved { step_id, .. } = &event.fact
     {
         let summary: Option<bool> = sqlx::query_scalar(
-            "SELECT json_extract(event_json,'$.fact.purpose')='summary' FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='model_requested'",
+            "SELECT json_extract(event_header,'$.fact.purpose')='summary' FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='model_requested'",
         ).bind(id).bind(step_id).fetch_optional(&mut *connection).await?;
         let summary = summary.ok_or_else(|| invalid("model output without request"))?;
         if summary

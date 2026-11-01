@@ -78,7 +78,10 @@ impl TurnCleanup {
         work: impl std::future::Future<Output = Result<(), ToolError>> + Send + 'static,
     ) -> Retirement {
         let mut pending = self.pending.lock().unwrap();
-        if let Some(pending) = pending.as_ref() {
+        if let Some(pending) = pending
+            .as_ref()
+            .filter(|pending| !matches!(pending.peek(), Some(Err(_))))
+        {
             return pending.clone();
         }
         let (completed, result) = tokio::sync::oneshot::channel();
@@ -310,6 +313,7 @@ pub(super) struct Epoch {
     turns: Arc<Mutex<BTreeMap<String, Arc<TurnCleanup>>>>,
     pub(super) effects_changed: Arc<tokio::sync::Notify>,
     retirement: Mutex<Option<Retirement>>,
+    vm_joined: std::sync::atomic::AtomicBool,
 }
 struct BrowserPreparationReceipt {
     basis: PermissionBasis,
@@ -369,11 +373,6 @@ impl Sessions {
             } else {
                 Ok(existing.clone())
             };
-        }
-        if entries.len() >= 16 {
-            return Err(failed(
-                "Computer Use session capacity reached; retire an unused Session",
-            ));
         }
         let interaction = Arc::new(Interaction {
             kernel: Default::default(),
@@ -453,7 +452,6 @@ pub(super) async fn watch_turn(
     let session = invocation.session_id.clone();
     let turn = invocation.turn_id.clone();
     let stopping = owner.stopping.clone();
-    let weak = Arc::downgrade(owner);
     owner.tasks.spawn(async move {
         let observed = async {
             loop {
@@ -480,12 +478,6 @@ pub(super) async fn watch_turn(
             .finish_turn(&turn_cleanup, &session, &turn, language)
             .await;
         let result = observed.and(cleanup);
-        if result.is_err() {
-            entry.retiring.cancel();
-            if let Some(owner) = weak.upgrade() {
-                owner.stopping.cancel();
-            }
-        }
         entry.release_turn(&turn, &turn_cleanup, &result);
         ticket.complete(result.map_err(message));
     });
@@ -517,10 +509,6 @@ pub(super) async fn drain_ended_turns(
         if turn_ended(&store, session, &turn).await? {
             let result = entry.finish_turn(&cleanup, session, &turn, language).await;
             entry.release_turn(&turn, &cleanup, &result);
-            if result.is_err() {
-                entry.retiring.cancel();
-                owner.stopping.cancel();
-            }
             result?;
         }
     }
@@ -710,6 +698,9 @@ impl Kernel {
         {
             failures.push(format!("JavaScript runtime cleanup failed: {error}"));
         }
+        self.epoch
+            .vm_joined
+            .store(true, std::sync::atomic::Ordering::Release);
         if let Err(error) = self.epoch.settle_audio(&closing).await {
             failures.push(format!("Computer audio cleanup failed: {error}"));
         }
@@ -745,6 +736,7 @@ impl Interaction {
             turns: self.turns.clone(),
             effects_changed: self.effects_changed.clone(),
             retirement: Default::default(),
+            vm_joined: std::sync::atomic::AtomicBool::new(false),
         });
         epochs.push(epoch.clone());
         Ok(Kernel {
@@ -784,7 +776,6 @@ impl Interaction {
         kernel.admission.close_admission();
         ticket.start();
         let entry = Arc::downgrade(self);
-        let weak = Arc::downgrade(owner);
         let retired = epoch.clone();
         let task = owner.tasks.spawn(async move {
             let result = AssertUnwindSafe(kernel.close(closing))
@@ -802,13 +793,6 @@ impl Interaction {
                         .lock()
                         .unwrap()
                         .retain(|current| !Arc::ptr_eq(current, &retired));
-                }
-            } else {
-                if let Some(entry) = entry.upgrade() {
-                    entry.retiring.cancel();
-                }
-                if let Some(owner) = weak.upgrade() {
-                    owner.stopping.cancel();
                 }
             }
             ticket.complete(result.clone().map_err(message));
@@ -829,7 +813,10 @@ impl Interaction {
         self.retiring.cancel();
         let closing = {
             let mut closed = self.closed.lock().unwrap();
-            if let Some(closing) = closed.as_ref() {
+            if let Some(closing) = closed
+                .as_ref()
+                .filter(|closing| !matches!(closing.peek(), Some(Err(_))))
+            {
                 closing.clone()
             } else {
                 let entry = self.clone();
@@ -937,7 +924,10 @@ impl Interaction {
             .observation
             .lock()
             .expect("Browser cleanup observation lock poisoned");
-        if observation.is_some() {
+        if observation
+            .as_ref()
+            .is_some_and(|original| !matches!(original.peek(), Some(Err(_))))
+        {
             return Ok(());
         }
         let mut ticket = owner.resources.reserve().map_err(failed)?;
@@ -968,25 +958,70 @@ impl Interaction {
                     "Browser preparation cleanup observer panicked".into(),
                 ))
             });
-            if result.is_err() {
-                entry.retiring.cancel();
-                owner.stopping.cancel();
-            }
             ticket.complete(result.clone().map_err(message));
             result
         });
-        *observation = Some(
-            async move {
-                task.await.map_err(|error| {
-                    ToolError::CleanupUnconfirmed(format!(
-                        "Browser cleanup observer disappeared: {error}",
-                    ))
-                })?
-            }
-            .boxed()
-            .shared(),
-        );
+        let result = async move {
+            task.await.map_err(|error| {
+                ToolError::CleanupUnconfirmed(format!(
+                    "Browser cleanup observer disappeared: {error}"
+                ))
+            })?
+        }
+        .boxed()
+        .shared();
+        tasks.spawn(result.clone());
+        *observation = Some(result);
         Ok(())
+    }
+
+    async fn settle_epoch(self: &Arc<Self>, epoch: &Arc<Epoch>) -> Result<(), ToolError> {
+        let retirement = {
+            let mut pending = epoch
+                .retirement
+                .lock()
+                .expect("Computer epoch retirement lock poisoned");
+            if let Some(original) = pending
+                .as_ref()
+                .filter(|original| !matches!(original.peek(), Some(Err(_))))
+            {
+                original.clone()
+            } else {
+                if !epoch.vm_joined.load(std::sync::atomic::Ordering::Acquire) {
+                    return Err(ToolError::CleanupUnconfirmed(
+                        "Computer VM termination remains unconfirmed".into(),
+                    ));
+                }
+                let epoch = epoch.clone();
+                let entry = Arc::downgrade(self);
+                let task = self.tasks.spawn(async move {
+                    let result = epoch.close_native().await;
+                    if result.is_ok() {
+                        epoch.clear_audio();
+                        if let Some(entry) = entry.upgrade() {
+                            entry
+                                .epochs
+                                .lock()
+                                .unwrap()
+                                .retain(|current| !Arc::ptr_eq(current, &epoch));
+                        }
+                    }
+                    result
+                });
+                let result = async move {
+                    task.await.map_err(|error| {
+                        ToolError::CleanupUnconfirmed(format!(
+                            "Computer epoch cleanup worker disappeared: {error}"
+                        ))
+                    })?
+                }
+                .boxed()
+                .shared();
+                *pending = Some(result.clone());
+                result
+            }
+        };
+        retirement.await
     }
 
     async fn retire_prepared_epoch(
@@ -999,8 +1034,8 @@ impl Interaction {
             .lock()
             .expect("Computer epoch retirement lock poisoned")
             .clone();
-        if let Some(retirement) = retirement {
-            return retirement.await;
+        if retirement.is_some() {
+            return self.settle_epoch(epoch).await;
         }
         if self.retiring.is_cancelled() {
             return self.close().await;
@@ -1011,9 +1046,9 @@ impl Interaction {
             .lock()
             .expect("Computer epoch retirement lock poisoned")
             .clone();
-        if let Some(retirement) = retirement {
+        if retirement.is_some() {
             drop(current);
-            return retirement.await;
+            return self.settle_epoch(epoch).await;
         }
         if self.retiring.is_cancelled() {
             drop(current);
@@ -1039,7 +1074,7 @@ impl Interaction {
         retirement.await
     }
 
-    async fn close_owned(&self) -> Result<(), ToolError> {
+    async fn close_owned(self: &Arc<Self>) -> Result<(), ToolError> {
         self.retiring.cancel();
         let current = self.kernel.lock().await.take();
         let mut failures = Vec::new();
@@ -1058,22 +1093,8 @@ impl Interaction {
         // the caller. Only these exact epoch workers belong to this close.
         let epochs = self.epochs.lock().unwrap().clone();
         for epoch in epochs {
-            let retirement = epoch.retirement.lock().unwrap().clone();
-            if let Some(retirement) = retirement {
-                if let Err(error) = retirement.await {
-                    failures.push(message(error));
-                }
-            } else {
-                match epoch.close_native().await {
-                    Ok(()) => {
-                        epoch.clear_audio();
-                        self.epochs
-                            .lock()
-                            .unwrap()
-                            .retain(|current| !Arc::ptr_eq(current, &epoch));
-                    }
-                    Err(error) => failures.push(message(error)),
-                }
+            if let Err(error) = self.settle_epoch(&epoch).await {
+                failures.push(message(error));
             }
         }
         if let Err(error) = self.native_owner.close().await {
@@ -1184,21 +1205,19 @@ fn watch_scanned(owner: &Arc<Computer>, scanned: impl Fn() + Send + 'static) {
                     )
                 }
                 .await;
-                if !matches!(valid, Ok(true)) {
+                if let Err(error) = &valid {
+                    eprintln!("Computer catalog observation failed for {id}: {error}");
+                }
+                if matches!(valid, Ok(false)) {
                     let Ok(mut ticket) = owner.resources.reserve() else {
                         return;
                     };
                     ticket.start();
                     let result = owner.sessions.retire(&id, &entry).await.map_err(message);
-                    let failed = result.is_err();
-                    if failed {
-                        entry.retiring.cancel();
-                        owner.stopping.cancel();
+                    if let Err(error) = &result {
+                        eprintln!("Computer Session cleanup failed for {id}: {error}");
                     }
                     ticket.complete(result);
-                    if failed {
-                        return;
-                    }
                     continue;
                 }
                 let epochs = entry.epochs.lock().unwrap().clone();
@@ -1214,13 +1233,12 @@ fn watch_scanned(owner: &Arc<Computer>, scanned: impl Fn() + Send + 'static) {
                         if matches!(observed, Ok(PreparationAuthority::Current)) {
                             continue;
                         }
-                        if entry
-                            .observe_browser_cleanup(&owner, &id, &epoch, &receipt, observed)
-                            .is_err()
+                        if let Err(error) =
+                            entry.observe_browser_cleanup(&owner, &id, &epoch, &receipt, observed)
                         {
-                            entry.retiring.cancel();
-                            owner.stopping.cancel();
-                            return;
+                            eprintln!(
+                                "Computer browser cleanup observation failed for {id}: {error}"
+                            );
                         }
                     }
                     let receipt = epoch.audio.lock().unwrap().clone();
@@ -1240,15 +1258,10 @@ fn watch_scanned(owner: &Arc<Computer>, scanned: impl Fn() + Send + 'static) {
                         Ok(true) => observed.map(|_| ()).map_err(message),
                         Err(error) => Err(message(error)),
                     };
-                    let failed = result.is_err();
-                    if failed {
-                        entry.retiring.cancel();
-                        owner.stopping.cancel();
+                    if let Err(error) = &result {
+                        eprintln!("Computer audio cleanup failed for {id}: {error}");
                     }
                     ticket.complete(result);
-                    if failed {
-                        return;
-                    }
                 }
             }
             drop(owner);
@@ -1315,6 +1328,36 @@ mod tests {
         );
         sessions.close().await.unwrap();
         assert!(current.audio.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cleanup_retries_after_failure_and_joins_an_inflight_retry() {
+        let tasks = tokio_util::task::TaskTracker::new();
+        let cleanup = TurnCleanup::default();
+        assert!(
+            cleanup
+                .start(&tasks, async {
+                    Err(ToolError::CleanupUnconfirmed(
+                        "temporary transport loss".into(),
+                    ))
+                })
+                .await
+                .is_err()
+        );
+        let (release, released) = tokio::sync::oneshot::channel();
+        let retry = cleanup.start(&tasks, async move {
+            released.await.expect("original cleanup release");
+            Ok(())
+        });
+        let joined = cleanup.start(&tasks, async {
+            panic!("pending cleanup must be joined rather than replaced");
+        });
+        assert!(futures_util::poll!(Box::pin(retry.clone())).is_pending());
+        release.send(()).unwrap();
+        retry.await.unwrap();
+        joined.await.unwrap();
+        tasks.close();
+        tasks.wait().await;
     }
 
     struct PreparedBrowserFixture {

@@ -18,6 +18,10 @@
  */
 
 //! Closed semantic schema positions and leaf commitments in actual stored bytes.
+//!
+//! Serde variant order, field order and attributes form the persisted directory
+//! schema, including `RowPosition`, `TextKind` and the leaf measure types. Changes
+//! require a storage migration or an explicit rebuild decision.
 use super::super::RowPosition;
 use crate::model::{
     TextKind,

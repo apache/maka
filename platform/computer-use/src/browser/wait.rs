@@ -99,14 +99,8 @@ pub(super) fn js_string(value: &Value) -> String {
         _ => value.to_string(),
     }
 }
-fn timeout(value: Option<&Value>) -> Duration {
-    Duration::from_secs_f64(
-        value
-            .and_then(Value::as_f64)
-            .unwrap_or(3000.0)
-            .clamp(0.0, 3000.0)
-            / 1000.0,
-    )
+fn timeout(value: Option<&Value>) -> Result<Duration, ToolError> {
+    crate::protocol::timeout_duration(value.and_then(Value::as_f64).unwrap_or(3000.0))
 }
 
 struct Glob(regex::Regex);
@@ -176,7 +170,7 @@ impl Plan {
                 Self::Locator {
                     locator,
                     state,
-                    timeout: timeout(timeout_ms.as_ref()),
+                    timeout: timeout(timeout_ms.as_ref())?,
                 }
             }
             BrowserWaitOperation::Url {
@@ -199,12 +193,12 @@ impl Plan {
                     matcher: Glob::new(&pattern)?,
                     pattern,
                     until,
-                    timeout: timeout(timeout_ms.as_ref()),
+                    timeout: timeout(timeout_ms.as_ref())?,
                 }
             }
             BrowserWaitOperation::LoadState { state, timeout_ms } => Self::Load {
                 state: LoadState::from_value(state.as_ref()),
-                timeout: timeout(timeout_ms.as_ref()),
+                timeout: timeout(timeout_ms.as_ref())?,
             },
             BrowserWaitOperation::Timeout { timeout_ms } => {
                 let value = timeout_ms
@@ -213,13 +207,7 @@ impl Plan {
                     .ok_or_else(|| {
                         failed("playwright.waitForTimeout requires a non-negative integer")
                     })?;
-                // The selected Node runtime's setTimeout treats zero and overflow as 1ms.
-                let millis = if !(1.0..=2_147_483_647.0).contains(&value) {
-                    1
-                } else {
-                    value as u64
-                };
-                Self::Delay(Duration::from_millis(millis))
+                Self::Delay(crate::protocol::timeout_duration(value)?)
             }
         })
     }

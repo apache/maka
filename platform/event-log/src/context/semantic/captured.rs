@@ -19,9 +19,11 @@
 
 //! Frozen semantic sources retain the original execution guards, never a new admission.
 mod artifact_identity;
+mod canonical;
 mod locator;
 use super::{SemanticCursor, SemanticSelection, available_at, invalid, rows_query};
 use crate::{EventLog, StoreError};
+use canonical::CanonicalRead;
 mod directory;
 pub use directory::{CapturedDirectoryRow, ChildPage, DirectoryPage};
 use maka_agent_facts::history::RowPosition;
@@ -631,8 +633,16 @@ impl CapturedSource {
                     let mut tx = db.begin().await?;
                     let result = crate::connection::worker_query(&mut tx, move |worker| {
                         Box::pin(async move {
+                            let canonical = CanonicalRead::load(worker, &backing).await?;
                             with_raw(worker, |raw| {
-                                read_chunk(raw, &backing, position, buffer, None)
+                                read_chunk(
+                                    raw,
+                                    &backing,
+                                    position,
+                                    buffer,
+                                    None,
+                                    canonical.as_ref(),
+                                )
                             })
                         })
                     })
@@ -659,6 +669,7 @@ impl CapturedSource {
                     let mut tx = db.begin().await?;
                     let result = crate::connection::worker_query(&mut tx, move |worker| {
                         Box::pin(async move {
+                            let canonical = CanonicalRead::load(worker, &backing).await?;
                             with_raw(worker, |raw| match backing {
                                 Backing::Row { rowid, bytes } => with_blob(
                                     raw,
@@ -669,18 +680,12 @@ impl CapturedSource {
                                     bytes,
                                     consume,
                                 ),
-                                Backing::Canonical { key, offset, bytes } => {
-                                    check_canonical(raw, key, offset, bytes)?;
-                                    with_blob(
-                                        raw,
-                                        "event_log",
-                                        "event_json",
-                                        key.source_sequence as i64,
-                                        offset,
-                                        bytes,
-                                        consume,
-                                    )
-                                }
+                                Backing::Canonical { bytes, .. } => canonical
+                                    .as_ref()
+                                    .ok_or_else(|| {
+                                        invalid("canonical source metadata was not resolved")
+                                    })?
+                                    .with_range(raw, 0, bytes, consume),
                                 Backing::Pieces { key, .. } => {
                                     check_pieces(raw, key)?;
                                     let mut reader = PieceReader {
@@ -767,19 +772,19 @@ pub(super) fn with_fragment_reader<T>(
     consume: impl FnOnce(&mut dyn Read) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
     match source {
-        super::source::SemanticPayloadSource::CanonicalToolProjection(span) => with_blob(
-            raw,
-            "event_log",
-            "event_json",
-            key.source_sequence as i64,
-            span.offset() as u64,
-            span.len() as u64,
-            consume,
-        ),
+        super::source::SemanticPayloadSource::CanonicalToolProjection(span) => {
+            crate::canonical::with_span(
+                raw,
+                key.source_sequence as i64,
+                span.offset() as u64,
+                span.len() as u64,
+                consume,
+            )
+        }
         super::source::SemanticPayloadSource::CanonicalModelPart(span) => with_blob(
             raw,
             "event_log",
-            "event_json",
+            "event_header",
             key.source_sequence as i64,
             span.offset() as u64,
             span.len() as u64,
@@ -815,15 +820,25 @@ fn fragment_backing(raw: &RawConnection, key: RowPosition) -> Result<Backing, St
                 bytes: bytes as u64,
             })
         }
-        Some((kind, Some(offset), Some(bytes)))
-            if ((kind == "canonical_tool_projection" && key.item_index == 0)
-                || kind == "canonical_model_part")
-                && offset >= 0
-                && bytes > 0
-                && offset
-                    .checked_add(bytes)
-                    .is_some_and(|end| end <= i64::from(i32::MAX)) =>
-        {
+        Some((kind, offset, bytes)) => {
+            let source = super::source::SemanticPayloadSource::from_metadata(
+                key.source_sequence as i64,
+                key.item_index as i64,
+                &kind,
+                offset,
+                bytes,
+            )?;
+            let (offset, bytes) = match source {
+                super::source::SemanticPayloadSource::CanonicalToolProjection(span) => {
+                    (span.offset(), span.len())
+                }
+                super::source::SemanticPayloadSource::CanonicalModelPart(span) => {
+                    (span.offset(), span.len())
+                }
+                super::source::SemanticPayloadSource::Pieces => {
+                    return Err(invalid("invalid captured pieces"));
+                }
+            };
             Ok(Backing::Canonical {
                 key,
                 offset: offset as u64,
@@ -831,21 +846,6 @@ fn fragment_backing(raw: &RawConnection, key: RowPosition) -> Result<Backing, St
             })
         }
         _ => Err(invalid("captured semantic fragment is missing or invalid")),
-    }
-}
-fn check_canonical(
-    raw: &RawConnection,
-    key: RowPosition,
-    offset: u64,
-    bytes: u64,
-) -> Result<(), StoreError> {
-    match fragment_backing(raw, key)? {
-        Backing::Canonical {
-            offset: actual,
-            bytes: length,
-            ..
-        } if actual == offset && length == bytes => Ok(()),
-        _ => Err(invalid("captured canonical source changed")),
     }
 }
 fn check_pieces(raw: &RawConnection, key: RowPosition) -> Result<(), StoreError> {
@@ -953,6 +953,7 @@ fn read_chunk<B: SourceBuffer>(
     position: SourcePosition,
     mut buffer: B,
     limit: Option<usize>,
+    canonical: Option<&CanonicalRead>,
 ) -> Result<SourceChunk<B>, StoreError> {
     let output = buffer.as_mut();
     let output_len = output.len().min(limit.unwrap_or(output.len()));
@@ -988,16 +989,18 @@ fn read_chunk<B: SourceBuffer>(
                 }),
             )
         }
-        Backing::Canonical { key, offset, bytes } => {
-            check_canonical(raw, key, offset, bytes)?;
-            let (count, end) = read_blob(
-                raw,
-                ("event_log", "event_json", key.source_sequence as i64),
-                offset,
-                bytes,
-                position.offset,
-                output,
-            )?;
+        Backing::Canonical { key, bytes, .. } => {
+            if position.offset > bytes {
+                return Err(invalid("captured source position exceeds its span"));
+            }
+            let count = (bytes - position.offset).min(output.len() as u64) as usize;
+            canonical
+                .ok_or_else(|| invalid("canonical source metadata was not resolved"))?
+                .with_range(raw, position.offset, count as u64, |reader| {
+                    reader.read_exact(&mut output[..count])?;
+                    Ok(())
+                })?;
+            let end = position.offset + count as u64 == bytes;
             (
                 count,
                 Some(key),
@@ -1236,6 +1239,7 @@ impl ByteCursor for CapturedByteCursor {
                         let mut tx = db.begin().await?;
                         let result = crate::connection::worker_query(&mut tx, move |worker| {
                             Box::pin(async move {
+                                let canonical = CanonicalRead::load(worker, &backing).await?;
                                 with_raw(worker, |raw| {
                                     read_chunk(
                                         raw,
@@ -1243,6 +1247,7 @@ impl ByteCursor for CapturedByteCursor {
                                         cursor,
                                         buffer,
                                         Some(usize::try_from(remaining).unwrap_or(usize::MAX)),
+                                        canonical.as_ref(),
                                     )
                                 })
                             })

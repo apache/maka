@@ -32,7 +32,8 @@ export async function cargoBuild(args, { cwd, env }) {
     child.once('error', reject);
     child.once('exit', (code, signal) => resolveRun({ code, signal }));
   });
-  const executables = new Map();
+  const artifacts = new Map();
+  const buildScripts = new Map();
   try {
     const [result] = await Promise.all([
       completed,
@@ -41,16 +42,29 @@ export async function cargoBuild(args, { cwd, env }) {
           const message = JSON.parse(line);
           if (message.reason === 'compiler-message' && message.message.rendered)
             process.stderr.write(message.message.rendered);
+          if (message.reason === 'build-script-executed')
+            buildScripts.set(message.package_id, resolve(cwd, message.out_dir));
           if (
             message.reason === 'compiler-artifact' &&
             message.target.kind.includes('bin') &&
             message.executable
           )
-            executables.set(message.target.name, resolve(cwd, message.executable));
+            artifacts.set(message.target.name, message);
         }
       })(),
     ]);
-    return { ...result, executables };
+    return {
+      ...result,
+      executables: new Map(
+        [...artifacts].map(([name, artifact]) => [
+          name,
+          {
+            path: resolve(cwd, artifact.executable),
+            outDir: buildScripts.get(artifact.package_id),
+          },
+        ]),
+      ),
+    };
   } catch (error) {
     child.kill();
     throw error;

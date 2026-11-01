@@ -49,7 +49,6 @@ type AudioObservations = FuturesUnordered<BoxFuture<'static, (u64, Result<(), Fa
 struct PendingInvocations {
     replies: FuturesUnordered<BoxFuture<'static, (u64, Result<Value, ToolError>)>>,
     identities: HashMap<u64, (String, CancellationToken)>,
-    cleanup: Option<ToolError>,
 }
 impl PendingInvocations {
     fn insert(
@@ -81,14 +80,6 @@ impl PendingInvocations {
             self.identities
                 .remove(&id)
                 .expect("parked completion retains its original request identity");
-            if let Err(
-                error @ (ToolError::CleanupUnconfirmed(_)
-                | ToolError::OperationCleanupUnconfirmed { .. }
-                | ToolError::Persistence(_)),
-            ) = &result
-            {
-                self.cleanup.get_or_insert(error.clone());
-            }
             let _ = events.send(Event::Response {
                 id,
                 result: result.map_err(Failure::from),
@@ -108,7 +99,7 @@ impl PendingInvocations {
         {
             self.forward_next(events).await;
         }
-        self.cleanup.clone().map_or(Ok(()), Err)
+        Ok(())
     }
 }
 fn epoch_cleanup(
@@ -152,10 +143,14 @@ enum Epoch {
     Closed(NativeCleanup),
 }
 
+type EpochTask = futures_util::future::Shared<
+    BoxFuture<'static, Result<Arc<Mutex<crate::session::Session>>, String>>,
+>;
+
 struct EpochWorker {
     session: String,
     queue: mpsc::UnboundedSender<Operation>,
-    task: Option<JoinHandle<crate::session::Session>>,
+    task: EpochTask,
     closing: Option<NativeCleanup>,
 }
 
@@ -627,9 +622,12 @@ impl EpochWorker {
                         pending.cancel(None);
                         let pending_cleanup = pending.drain(None, &events).await;
                         let native_cleanup = settle(local.close_native(), &disconnected).await;
-                        let _ = reply
-                            .send_replace(Some(epoch_cleanup(pending_cleanup, native_cleanup)));
-                        break;
+                        let result = epoch_cleanup(pending_cleanup, native_cleanup);
+                        let closed = result.is_ok();
+                        let _ = reply.send_replace(Some(result));
+                        if closed {
+                            break;
+                        }
                     }
                 }
             }
@@ -637,15 +635,30 @@ impl EpochWorker {
             let _ = pending.drain(None, &events).await;
             local
         });
+        let task = async move {
+            task.await
+                .map(|local| Arc::new(Mutex::new(local)))
+                .map_err(|error| error.to_string())
+        }
+        .boxed()
+        .shared();
+        tokio::spawn(task.clone());
         Self {
             session,
             queue,
-            task: Some(task),
+            task,
             closing: None,
         }
     }
 
     fn close(&mut self) -> NativeCleanup {
+        if self
+            .closing
+            .as_ref()
+            .is_some_and(|pending| matches!(*pending.borrow(), Some(Err(_))))
+        {
+            self.closing = None;
+        }
         self.closing
             .get_or_insert_with(|| {
                 let (reply, observation) = watch::channel(None);
@@ -730,9 +743,9 @@ impl Epoch {
         })
     }
 
-    fn take_task(&mut self) -> Option<JoinHandle<crate::session::Session>> {
+    fn task(&self) -> Option<EpochTask> {
         match self {
-            Self::Open(worker) => worker.task.take(),
+            Self::Open(worker) => Some(worker.task.clone()),
             Self::Closed(_) => None,
         }
     }
@@ -748,8 +761,7 @@ impl Epoch {
         let completed = match self {
             Self::Open(worker) => worker.closing.as_ref().and_then(|result| {
                 let confirmed = matches!(result.borrow().as_ref(), Some(Ok(())));
-                (confirmed && worker.task.as_ref().is_some_and(JoinHandle::is_finished))
-                    .then(|| result.clone())
+                (confirmed && matches!(worker.task.peek(), Some(Ok(_)))).then(|| result.clone())
             }),
             Self::Closed(_) => None,
         };
@@ -772,13 +784,19 @@ impl Owner {
     }
 
     fn close(&mut self) -> NativeCleanup {
+        if self
+            .closing
+            .as_ref()
+            .is_some_and(|pending| matches!(*pending.borrow(), Some(Err(_))))
+        {
+            self.closing = None;
+        }
         self.closing
             .get_or_insert_with(|| {
-                let observations: Vec<_> = self.epochs.values_mut().map(Epoch::close).collect();
-                let tasks: Vec<_> = self
+                let epochs: Vec<_> = self
                     .epochs
                     .values_mut()
-                    .filter_map(Epoch::take_task)
+                    .map(|epoch| (epoch.close(), epoch.task()))
                     .collect();
                 let shared = std::mem::take(&mut self.shared);
                 let resources = self.resources.clone();
@@ -793,18 +811,27 @@ impl Owner {
                             ));
                         }
                     }
-                    for observation in observations {
-                        if let Err(error) = observe_retirement(observation).await {
-                            failures.push(error.to_string());
+                    let mut retained = Vec::new();
+                    for (observation, task) in epochs {
+                        match observe_retirement(observation).await {
+                            Err(error) => failures.push(error.to_string()),
+                            Ok(()) => {
+                                if let Some(task) = task {
+                                    match task.await {
+                                        Ok(local) => retained.push(local),
+                                        Err(error) => failures.push(format!(
+                                            "Windows native epoch worker failed: {error}"
+                                        )),
+                                    }
+                                }
+                            }
                         }
                     }
-                    let mut retained = Vec::new();
-                    for task in tasks {
-                        match task.await {
-                            Ok(local) => retained.push(local),
-                            Err(error) => failures
-                                .push(format!("Windows native epoch worker failed: {error}")),
-                        }
+                    if !failures.is_empty() {
+                        let _ = reply.send_replace(Some(Err(ToolError::CleanupUnconfirmed(
+                            failures.join("; "),
+                        ))));
+                        return;
                     }
                     if let Err(error) = settle(resources.close(), &disconnected).await {
                         failures.push(error.to_string());
@@ -1985,31 +2012,6 @@ mod tests {
             matches!(responses.recv().await.unwrap(), Event::Response { id: 12, result: Err(Failure::Failed(message)), audio: None } if message == "fresh wait cancelled")
         );
         assert!(pending.is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_forwarded_deferred_cleanup_failure_remains_in_epoch_close_custody() {
-        let (events, mut responses) = mpsc::unbounded_channel();
-        let mut pending = PendingInvocations::default();
-        pending.insert(
-            13,
-            "turn".into(),
-            CancellationToken::new(),
-            Box::pin(async {
-                Err(ToolError::CleanupUnconfirmed(
-                    "original Fetch disable reply was lost".into(),
-                ))
-            }),
-        );
-        pending.forward_next(&events).await;
-        assert!(
-            matches!(responses.recv().await.unwrap(), Event::Response { id: 13, result: Err(Failure::CleanupUnconfirmed(message)), .. } if message == "original Fetch disable reply was lost")
-        );
-        assert!(pending.is_empty());
-        let result = epoch_cleanup(pending.drain(None, &events).await, Ok(()));
-        assert!(
-            matches!(result, Err(ToolError::CleanupUnconfirmed(message)) if message == "original Fetch disable reply was lost")
-        );
     }
 
     fn preparation_identity() -> ScopeIdentity {

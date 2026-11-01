@@ -114,7 +114,7 @@ pub(crate) async fn permission_current(
     tx: &mut SqliteConnection,
     invocation: &Invocation,
 ) -> Result<bool, StoreError> {
-    let (binding,boundary):(Option<String>,Option<i64>)=sqlx::query_as("SELECT json_extract(event_json,'$.fact.configuration.workspace_binding'),json_extract(event_json,'$.fact.configuration.boundary_revision') FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'").bind(&invocation.invocation_id).fetch_one(&mut *tx).await?;
+    let (binding,boundary):(Option<String>,Option<i64>)=sqlx::query_as("SELECT json_extract(event_header,'$.fact.configuration.workspace_binding'),json_extract(event_header,'$.fact.configuration.boundary_revision') FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'").bind(&invocation.invocation_id).fetch_one(&mut *tx).await?;
     let expected = binding
         .map(|json| -> Result<_, StoreError> {
             Ok(maka_agent_facts::workspace::PermissionBasis {
@@ -167,7 +167,7 @@ async fn frontier(
         {
             return Ok(false);
         }
-        let row:Option<(i64,String)>=sqlx::query_as("SELECT sequence,event_json FROM runtime_events WHERE event_id=? AND invocation_id=? AND operation_id=? AND kind='tool_dispatched'")
+        let row:Option<(i64,String)>=sqlx::query_as("SELECT sequence,event_header FROM runtime_events WHERE event_id=? AND invocation_id=? AND operation_id=? AND kind='tool_dispatched'")
            .bind(&item.dispatch.event_id).bind(&invocation.invocation_id).bind(&item.operation_id).fetch_optional(&mut *tx).await?;
         let Some((sequence, json)) = row else {
             return Ok(false);
@@ -526,7 +526,7 @@ impl EventLog {
         self.check_bound_session(&pending.invocation.session_id)?;
         let pending = pending.clone();
         self.connection.read(move |db|Box::pin(async move {
-            let (sequence,json):(i64,String)=sqlx::query_as("SELECT sequence,event_json FROM runtime_events WHERE event_id=? AND invocation_id=? AND operation_id=? AND kind='tool_dispatched'").bind(&pending.dispatch.event_id).bind(&pending.invocation.invocation_id).bind(&pending.operation_id).fetch_one(db).await?;
+            let (sequence,json):(i64,String)=sqlx::query_as("SELECT sequence,event_header FROM runtime_events WHERE event_id=? AND invocation_id=? AND operation_id=? AND kind='tool_dispatched'").bind(&pending.dispatch.event_id).bind(&pending.invocation.invocation_id).bind(&pending.operation_id).fetch_one(db).await?;
             let event:RuntimeEvent=serde_json::from_str(&json)?;
             if event.invocation!=pending.invocation || crate::sequence_number(sequence)?!=pending.dispatch.sequence {return Err(StoreError::EventConflict)}
             Ok(StoredEvent{sequence:pending.dispatch.sequence,event})

@@ -112,7 +112,7 @@ LEFT JOIN context_execution_work call ON call.invocation_id=w.invocation_id
     AND call.call_id='' AND call.call_name=''
 LEFT JOIN runtime_events source ON w.kind='call' AND source.sequence=w.opened_at
 LEFT JOIN context_execution_steps step ON step.invocation_id=w.invocation_id
-    AND step.operation_id=json_extract(source.event_json,'$.fact.step_id')
+    AND step.operation_id=json_extract(source.event_header,'$.fact.step_id')
 WHERE w.invocation_id=?1 AND w.closed_at IS NULL
     AND w.kind IN ('call','tool','executor_tool')
     AND (w.kind!='call' OR (step.purpose='main'
@@ -121,10 +121,10 @@ WHERE w.invocation_id=?1 AND w.closed_at IS NULL
 
 const PROVIDER_PARTS: &str = r#"
 SELECT p.source_sequence,p.step_id,
-    json_extract(e.event_json,'$.fact.event.data.part.kind')='tool_result' AS settled,
-    CASE json_extract(e.event_json,'$.fact.event.data.part.kind')
-        WHEN 'tool_call' THEN json_extract(e.event_json,'$.fact.event.data.part.call.id')
-        ELSE json_extract(e.event_json,'$.fact.event.data.part.id') END AS call_id
+    json_extract(e.event_header,'$.fact.event.data.part.kind')='tool_result' AS settled,
+    CASE json_extract(e.event_header,'$.fact.event.data.part.kind')
+        WHEN 'tool_call' THEN json_extract(e.event_header,'$.fact.event.data.part.call.id')
+        ELSE json_extract(e.event_header,'$.fact.event.data.part.id') END AS call_id
 FROM context_execution_work w INDEXED BY context_execution_live
 CROSS JOIN context_execution_steps step ON step.invocation_id=w.invocation_id
     AND step.operation_id=w.operation_id AND step.purpose='main'
@@ -132,9 +132,9 @@ CROSS JOIN model_part_records p ON p.invocation_id=w.invocation_id AND p.step_id
     AND p.record_kind='part'
 CROSS JOIN runtime_events e ON e.sequence=p.source_sequence AND e.kind='model_observed'
 WHERE w.invocation_id=?1 AND w.kind='model' AND w.closed_at IS NULL
-    AND (json_extract(e.event_json,'$.fact.event.data.part.kind')='tool_result'
-        OR (json_extract(e.event_json,'$.fact.event.data.part.kind')='tool_call'
-            AND json_extract(e.event_json,'$.fact.event.data.part.call.provider_executed')=1))
+    AND (json_extract(e.event_header,'$.fact.event.data.part.kind')='tool_result'
+        OR (json_extract(e.event_header,'$.fact.event.data.part.kind')='tool_call'
+            AND json_extract(e.event_header,'$.fact.event.data.part.call.provider_executed')=1))
 "#;
 
 #[cfg(test)]

@@ -188,7 +188,7 @@ async fn append(
         let json = serde_json::to_string(&event)?;
         if replay {
             let prior: (Option<String>, Option<String>) =
-                sqlx::query_as("SELECT event_json,body_digest FROM event_log WHERE event_id=?")
+                sqlx::query_as("SELECT event_header,body_digest FROM event_log WHERE event_id=?")
                     .bind(event_id)
                     .fetch_one(&mut *connection)
                     .await?;

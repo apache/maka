@@ -71,7 +71,7 @@ impl EventLog {
             if !exists { return Ok(resolutions); }
             for message_id in messages {
                 let owner: Option<String> = sqlx::query_scalar(
-                    "SELECT json_extract(e.event_json, '$.invocation')
+                    "SELECT json_extract(e.event_header, '$.invocation')
                      FROM message_sources s JOIN runtime_events e ON e.event_id = s.event_id
                      WHERE s.session_id = ? AND s.message_id = ?"
                 ).bind(&session).bind(&message_id).fetch_optional(&mut *tx).await?;

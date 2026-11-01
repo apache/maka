@@ -60,7 +60,7 @@ pub(crate) async fn mark_unread(
          SELECT id, 1, NULL FROM session_control WHERE id = ?1
          AND NOT EXISTS (SELECT 1 FROM runtime_events
              WHERE invocation_id = ?2 AND kind = 'invocation_opened'
-             AND json_extract(event_json, '$.fact.input.kind') = 'context_compact')
+             AND json_extract(event_header, '$.fact.input.kind') = 'context_compact')
          ON CONFLICT(session_id) DO UPDATE SET has_unread = 1",
     )
     .bind(id)

@@ -25,9 +25,7 @@ use maka_agent_facts::{
     tool_output::ToolContent,
 };
 use maka_code_runtime::CellOutput;
-use maka_tools::request::{BindingRequest, BoundTool, RequestBinding};
-use maka_workspace_api::computer::{ReplState, ResultValue};
-use std::collections::BTreeMap;
+use maka_workspace_api::computer::ResultValue;
 
 pub(super) fn title(method: &str, input: &Value) -> maka_agent_facts::display::Text {
     use maka_agent_facts::display::Text;
@@ -42,99 +40,6 @@ pub(super) fn title(method: &str, input: &Value) -> maka_agent_facts::display::T
         return title;
     }
     Text::localized("Use computer", "操作电脑", "操作電腦")
-}
-
-pub(super) struct Binding {
-    pub services: Vec<Service>,
-    pub workers: tokio_util::task::TaskTracker,
-}
-impl RequestBinding for Binding {
-    fn bind(
-        &self,
-        input: BindingRequest,
-    ) -> futures_util::future::BoxFuture<'static, Result<BTreeMap<String, BoundTool>, ToolError>>
-    {
-        let services: Vec<_> = self
-            .services
-            .iter()
-            .filter(|service| input.tools.contains(&service.selection.name))
-            .cloned()
-            .collect();
-        let service = services
-            .first()
-            .expect("selected request binding group")
-            .clone();
-        let workers = self.workers.clone();
-        Box::pin(async move {
-            let request = service
-                .services
-                .request_with_execution(
-                    Identity::Agent {
-                        invocation: input.invocation,
-                        operation_id: None,
-                    },
-                    input.cancellation.clone(),
-                    input.execution.ok_or_else(|| {
-                        ToolError::Persistence("Execution custody unavailable".into())
-                    })?,
-                )
-                .map_err(ToolError::Failed)?;
-            let target = service.selection.target.clone();
-            let state = workers
-                .spawn(async move {
-                    let result = AssertUnwindSafe(async {
-                        request
-                            .call_target(
-                                &target,
-                                "state".into(),
-                                serde_json::json!({}),
-                                Attachments::default(),
-                            )?
-                            .await
-                    })
-                    .catch_unwind()
-                    .await;
-                    request
-                        .finish()
-                        .await
-                        .map_err(ToolError::CleanupUnconfirmed)?;
-                    result
-                        .map_err(|_| ToolError::Failed("Computer state capture panicked".into()))?
-                        .map_err(ToolError::Failed)
-                })
-                .await
-                .map_err(|_| {
-                    ToolError::CleanupUnconfirmed("Computer state worker disappeared".into())
-                })??;
-            let state: ReplState = serde_json::from_value(state)
-                .map_err(|_| ToolError::Failed("Computer state invalid".into()))?;
-            let hint = match state {
-                ReplState::Fresh => {
-                    "Current REPL state: fresh. Earlier transcript variables and target bindings are unavailable."
-                }
-                ReplState::Ready => {
-                    "Current REPL state: ready. Existing variables and target bindings are retained in this Host process."
-                }
-                ReplState::ResetRequired => {
-                    "Current REPL state: reset_required. Call cua_reset and rebind targets. Dispatched input may already have taken effect."
-                }
-            };
-            Ok(services
-                .into_iter()
-                .map(|service| {
-                    let name = service.selection.name.clone();
-                    let description = format!("{}\n{}", service.selection.description, hint);
-                    (
-                        name,
-                        BoundTool::Described {
-                            handler: Arc::new(service),
-                            description,
-                        },
-                    )
-                })
-                .collect())
-        })
-    }
 }
 
 pub(super) async fn project(
@@ -189,7 +94,6 @@ async fn parts(
                         if record.source != ArtifactSource::SessionEffect
                             || record.kind != ArtifactKind::File
                             || record.mime_type.as_deref() != Some("application/json")
-                            || record.size_bytes > 50 * 1024 * 1024
                         {
                             return Err(ToolError::Failed(
                                 "Computer output does not belong to the original invocation".into(),
