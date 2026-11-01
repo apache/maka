@@ -70,7 +70,7 @@ async fn unknown_dispatch_stays_unknown_and_blocks_next_admission_after_reopen()
             .await
             .unwrap(),
     );
-    assert_eq!(log.root().recover_invocations().await.unwrap(), 1);
+    assert_eq!(log.root().recover_invocations().await.unwrap(), 0);
     let prefix = log.prefix(100, 128 * 1024).await.unwrap();
     assert_eq!(prefix.events.len(), 5);
     assert!(

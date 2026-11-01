@@ -1440,7 +1440,10 @@ impl Owner {
                         });
                     }
                     Err(maka_event_log::StoreError::RevisionConflict { .. }) => continue,
-                    Err(_) => return Err("agent_admission_failed".into()),
+                    Err(error) => {
+                        tracing::warn!(%error, "queued message admission failed");
+                        return Err("agent_admission_failed".into());
+                    }
                 }
             }
         }
@@ -1454,7 +1457,10 @@ impl Owner {
             .map_err(|error| error.to_string())?
             .admit_message(pending)
             .await
-            .map_err(|_| "agent_admission_failed")?;
+            .map_err(|error| {
+                tracing::warn!(%error, "message admission failed");
+                "agent_admission_failed"
+            })?;
         let cancellation = self.stop.child_token();
         let running = match self.start(input, cancellation.clone()).await {
             Ok(running) => running,

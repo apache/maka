@@ -194,7 +194,7 @@ async fn user_messages_after_abandoned_tool_dispatch_preserve_unknown_without_re
             db.execute_batch("DROP TRIGGER reject_settlement").unwrap();
             drop(db);
             // Root recovery runs only after every physical worker has stopped.
-            maka_host_runtime::recovery::recover(&f.store).await.unwrap();
+            f.store.recover_invocations().await.unwrap();
             assert!(f.session(&session).await.check_manual_message_history(&session).await.unwrap());
             reopen(&mut f).await;
             f.mutation(2, "send", json!({"sessionId":session,"message":"What happened to the checklist?","model":f.selection().await}), Uuid::new_v4()).await.unwrap();
@@ -205,7 +205,7 @@ async fn user_messages_after_abandoned_tool_dispatch_preserve_unknown_without_re
             while !f.query("observe", json!({"sessionId":session})).await.unwrap()["run"].is_null() { tokio::task::yield_now().await; }
             assert!(f.session(&session).await.pending_messages(&session).await.unwrap().is_empty());
             f.app.shutdown().await.unwrap();
-            maka_host_runtime::recovery::recover(&f.store).await.unwrap();
+            f.store.recover_invocations().await.unwrap();
             reopen(&mut f).await;
             f.send(&session).await.unwrap();
             let (mut socket, _) = listener.accept().await.unwrap();
