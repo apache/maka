@@ -264,3 +264,42 @@ test('context-offload page reclamation lane runs with bounded batches', async (t
   assert.equal(reclaimCalls, 2);
   await maintenance.close();
 });
+
+test('runtime page reclamation lane starts after Ready and idles when drained', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let calls = 0;
+  const maintenance = new HostStorageMaintenance({
+    artifacts: {
+      reclaimUpgradeResidue: async () => ({
+        nextAfter: null,
+        processedPaths: 0,
+        failedPaths: 0,
+      }),
+    },
+    runtimePageReclamation: {
+      reclaimFreePages: async ({ maxPages }) => {
+        assert.equal(maxPages, 64);
+        calls += 1;
+        return { reclaimedPages: calls === 1 ? 64 : 0, hasMore: calls === 1 };
+      },
+    },
+    onError: assert.fail,
+  });
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(calls, 0);
+  maintenance.start();
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(calls, 1);
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(calls, 2);
+  t.mock.timers.tick(59_999);
+  await settle();
+  assert.equal(calls, 2);
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(calls, 3);
+  await maintenance.close();
+});
