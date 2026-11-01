@@ -786,14 +786,14 @@ impl Interaction {
                         "Computer epoch retirement worker panicked".into(),
                     ))
                 });
-            if result.is_ok() {
-                if let Some(entry) = entry.upgrade() {
-                    entry
-                        .epochs
-                        .lock()
-                        .unwrap()
-                        .retain(|current| !Arc::ptr_eq(current, &retired));
-                }
+            if result.is_ok()
+                && let Some(entry) = entry.upgrade()
+            {
+                entry
+                    .epochs
+                    .lock()
+                    .unwrap()
+                    .retain(|current| !Arc::ptr_eq(current, &retired));
             }
             ticket.complete(result.clone().map_err(message));
             result
