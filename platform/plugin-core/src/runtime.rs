@@ -725,6 +725,16 @@ impl<T> Runtime<T> {
         Ok(self.owner(activation)?.phase)
     }
 
+    /// Calls still executing, excluding completed calls retained after cleanup failure.
+    pub fn pending_calls(&self, activation: &Activation) -> Result<usize, Error> {
+        Ok(self
+            .owner(activation)?
+            .calls
+            .values()
+            .filter(|work| work.failure.is_none())
+            .count())
+    }
+
     pub fn status(&self, activation: &Activation) -> Result<Status, Error> {
         let live = self.owner(activation)?;
         Ok(Status {

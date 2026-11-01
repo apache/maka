@@ -84,6 +84,10 @@ impl Fixture {
     }
 
     async fn open_adapter(adapter: &str, lifecycle: &str) -> Self {
+        Self::open_preparation(adapter, lifecycle, "unknown").await
+    }
+
+    async fn open_preparation(adapter: &str, lifecycle: &str, preparation: &str) -> Self {
         // Canonical /tmp remains short on supported Unix hosts and avoids a
         // symlink component (notably /tmp -> /private/tmp on macOS).
         let directory = tempfile::Builder::new()
@@ -104,6 +108,7 @@ impl Fixture {
             "hostPid":std::process::id(),
             "capabilities":{
                 "attachmentPreparation":"metadata_only",
+                "sessionPreparation":preparation,
                 "userTabsOrder":"provider",
                 "headerScope":"session",
                 "createdPresentationOwner":"provider",
@@ -155,6 +160,33 @@ impl Fixture {
             server,
             _directory: directory,
         }
+    }
+
+    async fn connect_again(&self) -> (ExtensionBrowserProvider, UnixStream) {
+        let private = std::fs::canonicalize(self._directory.path()).unwrap();
+        let generation = &self.extension.identity().generation;
+        let descriptor = private.join(format!("{generation}.json"));
+        let value: Value = serde_json::from_slice(&std::fs::read(&descriptor).unwrap()).unwrap();
+        let socket = private.join(format!("{generation}.sock"));
+        std::fs::remove_file(&socket).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, Permissions::from_mode(0o600)).unwrap();
+        let endpoint =
+            ValidatedExtensionEndpoint::load(&descriptor, &self.extension.identity().adapter)
+                .unwrap();
+        let accept = async {
+            let (mut server, _) = listener.accept().await.unwrap();
+            let hello = read_frame(&mut server).await;
+            assert_eq!(hello["kind"], "hello");
+            write_frame(&mut server, json!({
+                "kind":"welcome","protocol":1,"generation":generation,"identity":value["identity"]
+            })).await;
+            server
+        };
+        let (provider, server) =
+            bounded(async { tokio::join!(ExtensionBrowserProvider::connect(endpoint), accept) })
+                .await;
+        (provider.unwrap(), server)
     }
 
     fn provider(&self) -> Provider {
@@ -931,5 +963,203 @@ async fn revoked_tab_retires_its_old_claim_and_can_be_explicitly_claimed_again()
         ledger.reconcile_provider(owner, &provider).await.unwrap();
         ledger.extension.clear();
     }
+    fixture.assert_no_frame_and_close().await;
+}
+
+#[tokio::test]
+async fn reconnect_to_the_same_native_host_recovers_inventory_and_claim_without_losing_old_custody()
+{
+    let mut fixture =
+        Fixture::open_preparation("com.openai.codexextension", "provider", "provider_session")
+            .await;
+    let previous = fixture.provider();
+    let owner = uuid::Uuid::new_v4();
+    let old_identity = browser(&previous).tab("17");
+    let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
+    register(&host, owner, &previous).await.unwrap();
+    let old_call = {
+        let mut ledger = host.lock().await;
+        ledger
+            .extension_reserve(
+                owner,
+                &previous,
+                "inventory-turn",
+                "17",
+                Origin::UserClaimed,
+            )
+            .unwrap();
+        let call = scope(&mut ledger, owner, &previous);
+        ledger
+            .tabs
+            .get_mut(&old_identity)
+            .unwrap()
+            .extension
+            .as_mut()
+            .unwrap()
+            .user_preparation = UserPreparation::Pending(call.context.clone());
+        call
+    };
+    let disconnect = async {
+        let frame = read_frame(&mut fixture.server).await;
+        assert_eq!(frame["request"]["method"], "prepareUserTab");
+        assert_eq!(frame["request"]["takeover"], true);
+        fixture.server.shutdown().await.unwrap();
+    };
+    let (failed, ()) = bounded(async {
+        tokio::join!(
+            async {
+                let result = old_call.dispatch(old_call.control.take_over_session_tab(17)).await;
+                assert!(matches!(&result, Err(error) if matches!(**error, ExtensionProviderError::OutcomeUnknown { .. })), "expected a dispatched transport failure: {result:?}");
+                result
+            },
+            disconnect
+        )
+    })
+    .await;
+    let error = failed.unwrap_err();
+    assert!(matches!(
+        *error,
+        ExtensionProviderError::OutcomeUnknown { .. }
+    ));
+    host.lock()
+        .await
+        .extension_preparation_failed(&old_identity, &old_call.context, false, &error);
+    assert!(fixture.extension.is_closed());
+    let (extension, mut server) = fixture.connect_again().await;
+    let current = Provider::Extension {
+        id: previous.id().into(),
+        connection: Arc::new(extension.clone()),
+    };
+    let identity = browser(&current).tab("17");
+    assert_ne!(identity, old_identity);
+    assert_eq!(extension.identity(), fixture.extension.identity());
+    register(&host, owner, &current).await.unwrap();
+    let call = scope(&mut *host.lock().await, owner, &current);
+    let respond = async {
+        let frame = read_frame(&mut server).await;
+        assert_eq!(frame["request"]["method"], "inventory");
+        result(
+            &mut server,
+            frame["request"]["id"].as_u64().unwrap(),
+            json!({"tabs":[{"id":17,"title":"Inbox"}],"sessionOnly":true}),
+        )
+        .await;
+    };
+    let (inventory, ()) = bounded(async {
+        tokio::join!(
+            call.dispatch(call.control.list_session_tabs(&[17])),
+            respond
+        )
+    })
+    .await;
+    assert_eq!(inventory.unwrap()[0].id, 17);
+    {
+        let mut ledger = host.lock().await;
+        ledger.reconcile_provider(owner, &current).await.unwrap();
+        assert!(ledger.visible(&identity, owner));
+        ledger
+            .extension_reserve(owner, &current, "inventory-turn", "17", Origin::UserClaimed)
+            .unwrap();
+        assert!(matches!(
+            ledger.tabs[&old_identity]
+                .extension
+                .as_ref()
+                .unwrap()
+                .user_preparation,
+            UserPreparation::Unknown(_)
+        ));
+        assert!(matches!(
+            ledger.tabs[&identity]
+                .extension
+                .as_ref()
+                .unwrap()
+                .user_preparation,
+            UserPreparation::NotAttempted
+        ));
+        ledger.extension_preparation_failed(&old_identity, &old_call.context, false, &error);
+        assert!(
+            matches!(
+                ledger.tabs[&identity]
+                    .extension
+                    .as_ref()
+                    .unwrap()
+                    .user_preparation,
+                UserPreparation::NotAttempted
+            ),
+            "late old failure must not poison the new claim"
+        );
+    }
+    let claim = {
+        let mut ledger = host.lock().await;
+        ledger
+            .extension_context(
+                owner,
+                &current,
+                context_operation("inventory-turn"),
+                crate::desktop::NativeEpochId::new(),
+                CallTarget::Tab {
+                    origin: Origin::UserClaimed,
+                    tab: Some("17".into()),
+                },
+                true,
+            )
+            .unwrap()
+    };
+    let respond = async {
+        let frame = read_frame(&mut server).await;
+        assert_eq!(frame["request"]["method"], "prepareUserTab");
+        assert_eq!(frame["request"]["takeover"], true);
+        result(
+            &mut server,
+            frame["request"]["id"].as_u64().unwrap(),
+            json!({"sessionOnly":true,"tab":{"id":17,"title":"Inbox"}}),
+        )
+        .await;
+    };
+    let (prepared, ()) = bounded(async {
+        tokio::join!(
+            claim.dispatch(claim.control.take_over_session_tab(17)),
+            respond
+        )
+    })
+    .await;
+    assert_eq!(prepared.unwrap().tab.id, 17);
+    let mut ledger = host.lock().await;
+    ledger.reconcile_provider(owner, &current).await.unwrap();
+    assert!(ledger.acquisition(owner, &identity).is_some());
+    assert!(matches!(
+        ledger.tabs[&old_identity]
+            .extension
+            .as_ref()
+            .unwrap()
+            .user_preparation,
+        UserPreparation::Unknown(_)
+    ));
+    ledger.extension.clear();
+    drop(ledger);
+    extension.close().await;
+}
+
+#[tokio::test]
+async fn separate_live_connections_cannot_bypass_physical_tab_ownership() {
+    let mut fixture = Fixture::open().await;
+    let previous = fixture.provider();
+    let (extension, _server) = fixture.connect_again().await;
+    let current = Provider::Extension {
+        id: previous.id().into(),
+        connection: Arc::new(extension.clone()),
+    };
+    let owner = uuid::Uuid::new_v4();
+    let foreign = uuid::Uuid::new_v4();
+    let identity = browser(&current).tab("17");
+    let mut ledger = Host::default();
+    ledger
+        .extension_reserve(owner, &previous, "old", "17", Origin::UserClaimed)
+        .unwrap();
+    assert!(!ledger.visible(&identity, foreign));
+    assert!(
+        matches!(ledger.extension_reserve(foreign, &current, "new", "17", Origin::UserClaimed), Err(ToolError::Failed(reason)) if reason == "tab_owned_by_another_session")
+    );
+    extension.close().await;
     fixture.assert_no_frame_and_close().await;
 }

@@ -421,7 +421,7 @@ async fn execute_retry_chain(
                 consumption.take(),
             )
             .await;
-            let (plan, durable) = match &result {
+            let (plan, durable, clock) = match &result {
                 Err(RunError::Model(maka_model::ModelError::Provider(failure)))
                     if failure.replay_safe() || (progressed && failure.retained_output_safe()) =>
                 {
@@ -467,7 +467,12 @@ async fn execute_retry_chain(
                         && failure.retry_at_unix_ms().is_some()
                         && plan.not_before_unix_ms.saturating_sub(now)
                             > ordinary_retry_horizon_ms();
-                    (plan, durable)
+                    let clock = if failure.retry_at_unix_ms().is_some() {
+                        RetryClock::ProviderDeadline
+                    } else {
+                        RetryClock::Monotonic
+                    };
+                    (plan, durable, clock)
                 }
                 _ => return result.map(Outcome::from),
             };
@@ -502,7 +507,7 @@ async fn execute_retry_chain(
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(RunError::Cancelled),
-                waited = wait_retry_plan(&plan) => { waited?; }
+                waited = wait_retry_plan(&plan, clock) => { waited?; }
             }
         }
     }
@@ -563,13 +568,24 @@ fn retry_plan(
     })
 }
 
-async fn wait_retry_plan(plan: &maka_agent_facts::model_retry::RetryPlan) -> Result<(), RunError> {
+enum RetryClock {
+    Monotonic,
+    ProviderDeadline,
+}
+
+async fn wait_retry_plan(
+    plan: &maka_agent_facts::model_retry::RetryPlan,
+    clock: RetryClock,
+) -> Result<(), RunError> {
     loop {
         let now = retry_now()?;
         let Some(remaining) = plan.not_before_unix_ms.checked_sub(now).filter(|n| *n > 0) else {
             return Ok(());
         };
         wait_retry(std::time::Duration::from_millis(remaining)).await;
+        if matches!(clock, RetryClock::Monotonic) {
+            return Ok(());
+        }
     }
 }
 
@@ -2166,6 +2182,48 @@ mod retry_timing_tests {
             )
             .is_err()
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ordinary_backoff_finishes_after_elapsed_time_without_waiting_for_wall_clock() {
+        let failure = maka_model::ProviderFailure::new(
+            maka_model::ProviderFailureReason::Network,
+            "transport unavailable",
+            true,
+            None,
+        );
+        let plan = retry_plan(
+            "failure".into(),
+            &failure,
+            Duration::from_secs(60),
+            retry_now().unwrap(),
+            1,
+            maka_agent_facts::model::retry_transport::RetryTransportPhase::Primary,
+        )
+        .unwrap();
+        let wait = wait_retry_plan(&plan, RetryClock::Monotonic);
+        tokio::pin!(wait);
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        tokio::time::advance(Duration::from_secs(60)).await;
+        assert!(matches!(
+            futures_util::poll!(&mut wait),
+            std::task::Poll::Ready(Ok(()))
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn provider_deadline_still_waits_for_wall_clock_after_monotonic_wakeup() {
+        let plan = maka_agent_facts::model_retry::RetryPlan {
+            failure_event_id: "failure".into(),
+            not_before_unix_ms: retry_now().unwrap() + 3_600_000,
+            failures: 1,
+            transport_phase: maka_agent_facts::model::retry_transport::RetryTransportPhase::Primary,
+        };
+        let wait = wait_retry_plan(&plan, RetryClock::ProviderDeadline);
+        tokio::pin!(wait);
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        tokio::time::advance(Duration::from_secs(3600)).await;
+        assert!(futures_util::poll!(&mut wait).is_pending());
     }
 
     #[tokio::test(start_paused = true)]

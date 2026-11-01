@@ -1261,7 +1261,12 @@ async fn cleanup_case(panic: bool) {
     );
     assert!(!fixture.owner.stop.is_cancelled());
 
-    let close = fixture.app.shutdown().await;
+    let close = loop {
+        match fixture.app.shutdown_if_idle().await {
+            Ok(false) => tokio::task::yield_now().await,
+            result => break result,
+        }
+    };
 
     assert_eq!(close.is_err(), panic);
     fixture.config.shutdown().await.unwrap();

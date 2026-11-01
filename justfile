@@ -41,7 +41,7 @@ build *args: setup
 product *args: setup
     npm --workspace @maka-agent/product run build -- "$@"
 
-# Check all maintained source and behavior; setup runs once for the dependency graph.
+# Check the root workspace, product, tooling and terminal; setup runs once.
 [group('Checks')]
 check: setup fmt-check lint typecheck test-js test test-termina licenses
 

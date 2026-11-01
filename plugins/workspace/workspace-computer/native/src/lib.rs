@@ -236,7 +236,7 @@ impl NativeOwner for Service {
     fn prepare_retirement(
         &self,
     ) -> Option<Box<dyn maka_host_runtime::application::NativeRetirement>> {
-        self.0.resources.is_idle().then(|| Box::new(()) as _)
+        (!self.0.resources.has_pending()).then(|| Box::new(()) as _)
     }
     fn close(&self) -> BoxFuture<'static, Result<(), String>> {
         let owner = self.0.clone();

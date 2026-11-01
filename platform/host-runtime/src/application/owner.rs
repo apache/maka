@@ -155,6 +155,7 @@ pub(super) struct Owner {
     closing: bool,
     closing_vms: bool,
     closed: bool,
+    shutdown_complete: bool,
 }
 impl Owner {
     // These are independently owned deployment dependencies, not a new config
@@ -213,6 +214,7 @@ impl Owner {
             closing: false,
             closing_vms: false,
             closed: false,
+            shutdown_complete: false,
         }
     }
     pub async fn run(
@@ -453,25 +455,18 @@ impl Owner {
         if self.starting
             || self.loading_adoption.is_some()
             || !self.jobs.is_empty()
-            || !self.failed.is_empty()
-            || self.cleanup_error.is_some()
-            || self
-                .owned
-                .values()
-                .any(|owned| owned.initializing || owned.closing)
+            || self.owned.values().any(|owned| owned.initializing)
             || self.activations.values().any(|activation| {
                 !self
                     .runtime
-                    .status(activation)
-                    .is_ok_and(|status| status.calls == 0)
+                    .pending_calls(activation)
+                    .is_ok_and(|calls| calls == 0)
             })
         {
             let reason = if self.starting || self.loading_adoption.is_some() {
                 "startup"
             } else if !self.jobs.is_empty() {
                 "jobs"
-            } else if !self.failed.is_empty() || self.cleanup_error.is_some() {
-                "cleanup"
             } else {
                 "activation"
             };
@@ -690,7 +685,11 @@ impl Owner {
             if self
                 .runtime
                 .status(activation)
-                .is_ok_and(|s| s.phase == Phase::Retiring && s.calls == 0)
+                .is_ok_and(|s| s.phase == Phase::Retiring)
+                && self
+                    .runtime
+                    .pending_calls(activation)
+                    .is_ok_and(|calls| calls == 0)
                 && let Some(owned) = self.owned.get_mut(id)
                 && !owned.initializing
                 && !owned.closing
@@ -737,7 +736,18 @@ impl Owner {
             self.drive();
             return;
         }
-        if self.closing && self.activations.is_empty() && self.jobs.is_empty() && !self.closing_vms
+        if self.closing
+            && self.jobs.is_empty()
+            && !self.closing_vms
+            && self
+                .owned
+                .values()
+                .all(|owned| !owned.initializing && owned.close.is_none())
+            && self.activations.values().all(|activation| {
+                self.runtime
+                    .pending_calls(activation)
+                    .is_ok_and(|calls| calls == 0)
+            })
         {
             self.closing_vms = true;
             self.terminals.clear();
@@ -1936,7 +1946,10 @@ impl Owner {
                     self.owned.remove(activation.instance());
                 }
             }
-            Done::VmsClosed => self.closed = true,
+            Done::VmsClosed => {
+                self.shutdown_complete = true;
+                self.closed = self.cleanup_error.is_none();
+            }
         }
     }
     fn snapshot(&self) -> Snapshot {
@@ -1952,6 +1965,7 @@ impl Owner {
             initialization_failures: self.initialization_failures.clone(),
             closing: self.closing,
             closed: self.closed,
+            shutdown_complete: self.shutdown_complete,
             cleanup_error: self.cleanup_error.clone(),
             instances: self
                 .activations

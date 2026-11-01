@@ -509,7 +509,18 @@ pub(super) async fn drain_ended_turns(
         if turn_ended(&store, session, &turn).await? {
             let result = entry.finish_turn(&cleanup, session, &turn, language).await;
             entry.release_turn(&turn, &cleanup, &result);
-            result?;
+            match result {
+                Ok(()) => {}
+                Err(ToolError::CleanupUnconfirmed(error)) => {
+                    tracing::warn!(
+                        session,
+                        turn,
+                        error,
+                        "Retained cleanup from an ended Computer turn"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
     Ok(())

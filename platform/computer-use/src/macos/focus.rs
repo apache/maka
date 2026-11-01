@@ -534,30 +534,28 @@ impl Enforcer {
                 return Ok(());
             };
             let weak = Arc::downgrade(self);
-            let prepared = (|| {
-                Ok(Tap::global(2, 0, 1, 1 << 1, move |event| {
-                    let Some(enforcer) = weak.upgrade() else {
-                        return Disposition::Keep;
-                    };
-                    if event.integer_value_field(41) == i64::from(std::process::id())
-                        || event.integer_value_field(40) == i64::from(enforcer.pid)
-                    {
-                        return Disposition::Keep;
-                    }
-                    let Ok(window) = u32::try_from(event.integer_value_field(51)) else {
-                        return Disposition::Keep;
-                    };
-                    if observation::owner_pid(window) != Some(enforcer.pid) {
-                        return Disposition::Keep;
-                    }
-                    if let Some((_resource, permit)) = enforcer.active_use() {
-                        observation::activate(enforcer.pid);
-                        permit.complete(Ok(()));
-                    }
-                    Disposition::Keep
-                })
-                .map_err(failed)?)
-            })();
+            let prepared = Tap::global(2, 0, 1, 1 << 1, move |event| {
+                let Some(enforcer) = weak.upgrade() else {
+                    return Disposition::Keep;
+                };
+                if event.integer_value_field(41) == i64::from(std::process::id())
+                    || event.integer_value_field(40) == i64::from(enforcer.pid)
+                {
+                    return Disposition::Keep;
+                }
+                let Ok(window) = u32::try_from(event.integer_value_field(51)) else {
+                    return Disposition::Keep;
+                };
+                if observation::owner_pid(window) != Some(enforcer.pid) {
+                    return Disposition::Keep;
+                }
+                if let Some((_resource, permit)) = enforcer.active_use() {
+                    observation::activate(enforcer.pid);
+                    permit.complete(Ok(()));
+                }
+                Disposition::Keep
+            })
+            .map_err(failed);
             permit.complete(prepared.as_ref().map(|_| ()).map_err(Clone::clone));
             *click = Some(prepared?);
         } else if !listen && let Some(tap) = click.as_mut() {
@@ -749,12 +747,11 @@ impl Runtime {
                                     let _ = reply.send(());
                                 }
                                 Work::Focus(enforcer, focused) => {
-                                    if let Some(enforcer) = enforcer.upgrade() {
-                                        if let Err(error) =
+                                    if let Some(enforcer) = enforcer.upgrade()
+                                        && let Err(error) =
                                             enforcer.mutate(|state| state.believes_focus = focused)
-                                        {
-                                            enforcer.record_failure(error);
-                                        }
+                                    {
+                                        enforcer.record_failure(error);
                                     }
                                 }
                                 Work::Activated(pid) => runtime.activated(pid),
@@ -1177,20 +1174,18 @@ impl Runtime {
             .lock()
             .expect("native global tap owner poisoned")
             .as_mut()
+            && let Err(error) = tap.stop_and_join()
         {
-            if let Err(error) = tap.stop_and_join() {
-                failures.push(error.to_string());
-            }
+            failures.push(error.to_string());
         }
         if let Some(observer) = self
             .activation
             .lock()
             .expect("native activation owner poisoned")
             .as_mut()
+            && let Err(error) = observer.stop_and_join()
         {
-            if let Err(error) = observer.stop_and_join() {
-                failures.push(error.to_string());
-            }
+            failures.push(error.to_string());
         }
         if let Some(worker) = self
             .worker

@@ -32,6 +32,7 @@ pub(super) enum BrowserIdentity {
         instance: String,
         generation: String,
         host_pid: u32,
+        binding: uuid::Uuid,
     },
 }
 impl BrowserIdentity {
@@ -59,6 +60,7 @@ impl BrowserIdentity {
                     instance: actual.instance_id.clone(),
                     generation: actual.generation.clone(),
                     host_pid: actual.host_pid,
+                    binding: connection.binding_id(),
                 })
             }
         }
@@ -68,6 +70,9 @@ impl BrowserIdentity {
             (Self::Extension { adapter, extension, instance, .. },
              Self::Extension { adapter: other_adapter, extension: other_extension, instance: other_instance, .. })
             if adapter == other_adapter && extension == other_extension && instance == other_instance)
+    }
+    fn same_browser(&self, other: &Self) -> bool {
+        self == other || self.same_extension_instance(other)
     }
     pub(super) fn tab(&self, id: &str) -> TabIdentity {
         TabIdentity {
@@ -218,10 +223,39 @@ impl Host {
     }
 
     pub(super) fn visible(&self, tab: &TabIdentity, owner: uuid::Uuid) -> bool {
-        self.tabs.get(tab).is_none_or(|lease| {
+        self.tabs.iter().all(|(identity, lease)| {
+            if identity.target != tab.target || !identity.browser.same_browser(&tab.browser) {
+                return true;
+            }
+            if identity != tab
+                && lease
+                    .creator
+                    .provider
+                    .extension()
+                    .is_some_and(|connection| connection.is_closed())
+            {
+                return true;
+            }
             lease.handoff_transfer.is_none()
                 && (lease.creator.owner == owner || matches!(lease.retention, Retention::Handoff))
         })
+    }
+
+    pub(super) fn check_extension_binding(&self, tab: &TabIdentity) -> Result<(), ToolError> {
+        if self.tabs.iter().any(|(identity, lease)| {
+            identity != tab
+                && identity.target == tab.target
+                && identity.browser.same_browser(&tab.browser)
+                && !matches!(lease.disposition, Disposition::Parked)
+                && lease
+                    .creator
+                    .provider
+                    .extension()
+                    .is_some_and(|connection| !connection.is_closed())
+        }) {
+            return Err(failed("tab_owned_by_another_session"));
+        }
+        Ok(())
     }
 
     pub(super) fn use_tab(

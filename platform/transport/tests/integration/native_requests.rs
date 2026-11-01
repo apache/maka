@@ -536,6 +536,7 @@ async fn native_requests_preserve_unknown_receipts_and_independent_failed_cleanu
             job.finish().await.unwrap();
             assert!(app.shutdown().await.is_err());
             let snapshot = app.client().snapshot();
+            assert!(snapshot.shutdown_complete);
             assert!(!snapshot.closed);
             assert!(snapshot.cleanup_error.is_some());
             assert_eq!(effects.load(std::sync::atomic::Ordering::SeqCst), 1);
