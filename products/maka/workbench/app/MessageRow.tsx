@@ -22,6 +22,8 @@ import { CompactionDivider } from './CompactionDivider';
 import { computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
 import { platform } from 'nsh';
+import { TextView, type TextViewDocument } from 'nsh/base';
+import { Icon } from './Icon';
 import { messageKey, type Row } from './history';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
@@ -34,6 +36,7 @@ import {
   IconButton,
 } from './ui';
 import { HistoryAttachments } from './Attachments';
+import type { ToolActivity } from './toolActivity';
 import { ToolCard } from './ToolCard';
 import { MessageCopy } from './MessageCopy';
 import type { ImagePreview } from './ImageThumbnail';
@@ -60,6 +63,7 @@ export function MessageRow({
   onExpand,
   ownerKey,
   toolMaxHeight,
+  toolProgress,
   onToolReading,
   finalActions,
   editMessage,
@@ -77,6 +81,7 @@ export function MessageRow({
   onExpand?(key: string): void;
   ownerKey?: () => string;
   toolMaxHeight: () => number;
+  toolProgress?(id: string): ToolActivity['phase'] | null;
   onToolReading?(key: string): void;
   finalActions?(row: () => Row, ownerKey: () => string): JSX.Element;
   /** An action on a user message, beside its copy button. */
@@ -124,8 +129,32 @@ export function MessageRow({
         const actionRow = () => platform.isTerminal || row().finalOutput || sourceMode();
         const sourceId = () => `${sessionId}/${row().messageId}/${row().field}`;
         const text = computed(() => row().text);
-        const preview = computed(() => /\S[^\r\n]*/.exec(text())?.[0].trim() ?? '');
         const thinking = () => row().field === 'thinking' || row().role === 'thinking';
+        const previewLine = computed(() =>
+          thinking() ? (/\S[^\r\n]*/.exec(text())?.[0] ?? '') : '',
+        );
+        const previewDocument = computed<TextViewDocument>(() => {
+          const document = TextView.parse(previewLine(), { streaming: true });
+          const first = document.blocks[0];
+          if (first?.type === 'paragraph') return { blocks: [first] };
+          if (first?.type === 'heading')
+            return {
+              blocks: [
+                { type: 'paragraph', content: [{ type: 'strong', content: first.content }] },
+              ],
+            };
+          return {
+            blocks: [
+              {
+                type: 'paragraph',
+                content: [{ type: 'text', text: TextView.plainText(document) }],
+              },
+            ],
+          };
+        });
+        const preview = computed(() =>
+          TextView.plainText(previewDocument()).replace(/\s+/g, ' ').trim(),
+        );
         const isTool = () =>
           row().tool != null || row().role === 'tool_call' || row().role === 'tool_result';
         const compact = () => thinking() || isTool();
@@ -239,6 +268,7 @@ export function MessageRow({
                       <View>
                         <Disclosure
                           label={summary()}
+                          tooltip={summary()}
                           open={expanded()}
                           onPress={inputAction(setExpanded, {
                             sessionId,
@@ -264,14 +294,26 @@ export function MessageRow({
                             </If>
                           }
                         >
-                          <Text
-                            style={[
-                              { ...disclosureTitleStyle, color: C.muted },
-                              { numberOfLines: 1, textOverflow: 'ellipsis' },
-                            ]}
+                          <Icon name="thinking" color={C.muted} />
+                          <View
+                            accessibilityElementsHidden
+                            style={{ flex: 1, minWidth: 0, pointerEvents: 'none' }}
                           >
-                            {summary()}
-                          </Text>
+                            <TextView
+                              document={previewDocument()}
+                              style={{ width: '100%', minWidth: 0 }}
+                              contentStyle={{ rowGap: 0 }}
+                              styles={{
+                                paragraph: {
+                                  ...disclosureTitleStyle,
+                                  color: C.muted,
+                                  numberOfLines: 1,
+                                  textOverflow: 'ellipsis',
+                                },
+                                link: { color: C.muted, textDecorationLine: 'none' },
+                              }}
+                            />
+                          </View>
                         </Disclosure>
                         <If when={expanded()}>
                           <View
@@ -309,6 +351,7 @@ export function MessageRow({
                   >
                     <ToolCard
                       row={row}
+                      progress={() => toolProgress?.(row().tool?.toolUseId ?? '') ?? null}
                       sessionId={sessionId}
                       through={through}
                       ownerKey={() => rowKey(row())}

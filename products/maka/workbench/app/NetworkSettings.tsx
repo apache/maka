@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { LoadingState } from './Loading';
 import { inputAction, Scroll, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { tr } from './locale';
@@ -42,8 +43,8 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
   const protocols: ProxyProtocol[] = ['http', 'https', 'socks5'];
   return (
     <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
-      <If when={owner.loading()}>
-        <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('Loading network settings…')}</Text>
+      <If when={owner.loading() && !owner.snapshot()}>
+        <LoadingState label={tr('Loading network settings…')} />
       </If>
       <If when={owner.draft() && owner.snapshot()}>
         <Scroll style={{ flex: 1, minHeight: 0 }}>

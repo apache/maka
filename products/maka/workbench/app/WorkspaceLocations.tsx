@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { LoadingIndicator } from './Loading';
 import { cleanup, inputAction, List, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import { Button } from 'nsh/base';
@@ -167,7 +168,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
         </Text>
       </If>
       <If when={reading()}>
-        <Text style={{ color: C.muted, fontSize: 13 }}>{tr('Loading locations…')}</Text>
+        <LoadingIndicator label={tr('Loading locations…')} />
       </If>
       <If when={operations.pending().length > 0}>
         <Text style={{ color: C.muted, fontSize: 13 }}>{tr('Checking action status…')}</Text>

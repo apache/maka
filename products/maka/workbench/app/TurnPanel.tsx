@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { LoadingIndicator } from './Loading';
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
 import { cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
@@ -153,6 +154,7 @@ function stableActivityTitle(desiredTitle: () => string, active: () => boolean) 
 
 function ActivityLog(props: {
   group: () => ProcessGroup;
+  toolProgress(id: string): ToolActivity['phase'] | null;
   row(id: string): Row | undefined;
   rowState(id: string): MessageViewState;
   state: GroupViewState;
@@ -347,6 +349,7 @@ function ActivityLog(props: {
                       ownerKey={ownedId}
                       viewState={props.rowState(ownedId())}
                       toolMaxHeight={bodyMaxHeight}
+                      toolProgress={props.toolProgress}
                       onToolReading={(key) => {
                         if (
                           !alive ||
@@ -394,6 +397,7 @@ function ActivityLog(props: {
 
 export function TurnPanel(props: {
   group: () => ProcessGroup;
+  toolProgress(id: string): ToolActivity['phase'] | null;
   turn: () => TurnPresentation;
   toolActivity: () => ToolActivity | undefined;
   state: GroupViewState;
@@ -484,6 +488,9 @@ export function TurnPanel(props: {
           open: !props.state.open(),
         })}
       >
+        <If when={active()}>
+          <LoadingIndicator label={stableTitle()} />
+        </If>
         <Text
           style={[
             { ...disclosureTitleStyle, color: active() ? C.secondary : C.muted },

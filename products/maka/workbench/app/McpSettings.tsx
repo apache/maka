@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { LoadingIndicator } from './Loading';
 import { List, Scroll, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import type { McpSettingsOwner, McpEditor } from './mcpSettingsState';
@@ -383,7 +384,7 @@ export function McpSettings(props: { owner: McpSettingsOwner }) {
         </View>
       </If>
       <If when={owner.loading()}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Loading…')}</Text>
+        <LoadingIndicator />
       </If>
     </View>
   );

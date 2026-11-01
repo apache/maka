@@ -51,6 +51,7 @@ pub enum PreviewPart {
         provider_part_id: String,
         text_kind: TextKind,
         text: TextBody,
+        provider_options: Option<Arc<Value>>,
         recorded: Option<PartReceipt>,
     },
     ToolInput(ToolInputView),
@@ -490,7 +491,7 @@ impl AttemptWriter {
             for (index, slot) in self.builder.parts.iter().enumerate() {
                 let identity = &self.identities[index];
                 let receipt = self.recorded.get(&(index as u64));
-                let (text_kind, text) = match slot {
+                let (text_kind, text, provider_options) = match slot {
                     PartSlot::Text {
                         text_kind,
                         text,
@@ -504,7 +505,15 @@ impl AttemptWriter {
                             text: text.clone(),
                             options: options.clone(),
                         });
-                        (*text_kind, text)
+                        (
+                            *text_kind,
+                            text,
+                            if *text_kind == TextKind::Thinking {
+                                super::merged_options(options)
+                            } else {
+                                None
+                            },
+                        )
                     }
                     PartSlot::Closed(part) => {
                         if !(self.item_acceptance && receipt.is_some()) {
@@ -514,12 +523,22 @@ impl AttemptWriter {
                             )));
                         }
                         let ModelPart::Text {
-                            text_kind, text, ..
+                            text_kind,
+                            text,
+                            provider_options,
                         } = part.as_ref()
                         else {
                             continue;
                         };
-                        (*text_kind, text.clone())
+                        (
+                            *text_kind,
+                            text.clone(),
+                            if *text_kind == TextKind::Thinking {
+                                provider_options.clone()
+                            } else {
+                                None
+                            },
+                        )
                     }
                 };
                 parts.push(PreviewPart::Text {
@@ -532,6 +551,7 @@ impl AttemptWriter {
                         .expect("text identity has provider part"),
                     text_kind,
                     text,
+                    provider_options,
                     recorded: receipt.cloned(),
                 });
             }

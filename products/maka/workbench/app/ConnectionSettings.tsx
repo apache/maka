@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { LoadingIndicator } from './Loading';
 import { textTooltip } from './ui';
 import { inputAction, Text, View, List } from 'nsh';
 import { Input } from 'nsh/base';
@@ -477,7 +478,7 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
       <If when={owner.page() !== 'providers'}>
         <View style={{ minHeight: captionTextStyle.lineHeight }}>
           <If when={owner.loading()}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Loading settings…')}</Text>
+            <LoadingIndicator label={tr('Loading settings…')} />
           </If>
         </View>
       </If>

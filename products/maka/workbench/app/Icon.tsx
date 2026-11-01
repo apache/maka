@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Canvas, Text } from 'nsh';
+import { Canvas, Path2D, Text } from 'nsh';
 import { platform } from 'nsh';
 
 const glyphs = {
@@ -61,7 +61,45 @@ const glyphs = {
   shield: '◇',
   lock: '▣',
   activity: '◌',
+  thinking: '◌',
+  statusRecorded: '●',
+  statusSuccess: '✓',
+  statusError: '×',
+  statusUnknown: '?',
+  statusStopped: 'Ⅱ',
+  statusDispatched: '↑',
+  statusPending: '○',
+  loader: '◌',
   unread: '●',
+};
+
+// Lucide source geometry on its original 24-point grid; upstream notices in LICENSE.
+const circlePath = new Path2D('M22 12a10 10 0 1 1 -20 0a10 10 0 1 1 20 0Z');
+const lucidePaths: Partial<Record<keyof typeof glyphs, readonly Path2D[]>> = {
+  thinking: [
+    new Path2D(
+      'M12 18V5 ' +
+        'M15 13a4.17 4.17 0 01-3-4 4.17 4.17 0 01-3 4 ' +
+        'M17.707 6.294A3 3 0 1012 5a3 3 0 10-5.707 1.294 ' +
+        'M17.996 5.125a4 4 0 012.526 5.77 ' +
+        'M18 18a4 4 0 002-7.465 ' +
+        'M19.967 17.482a4 4 0 11-7.967.517 4 4 0 11-7.967-.517 ' +
+        'M6 18a4 4 0 01-2-7.465 ' +
+        'M6.004 5.125a4 4 0 00-2.526 5.77',
+    ),
+  ],
+  statusRecorded: [circlePath, new Path2D('M13 12a1 1 0 1 1 -2 0a1 1 0 1 1 2 0Z')],
+  statusSuccess: [circlePath, new Path2D('m16 9-5.5 5.5L8 12')],
+  statusError: [circlePath, new Path2D('m15 9-6 6'), new Path2D('m9 9 6 6')],
+  statusUnknown: [
+    circlePath,
+    new Path2D('M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3'),
+    new Path2D('M12 17h.01'),
+  ],
+  statusStopped: [circlePath, new Path2D('M10 15L10 9'), new Path2D('M14 15L14 9')],
+  statusDispatched: [circlePath, new Path2D('m16 12-4-4-4 4'), new Path2D('M12 16V8')],
+  statusPending: [circlePath],
+  loader: [new Path2D('M21 12a9 9 0 1 1-6.219-8.56')],
 };
 
 export function Icon(props: { name: keyof typeof glyphs; color: string; size?: number }) {
@@ -100,6 +138,13 @@ export function Icon(props: { name: keyof typeof glyphs; color: string; size?: n
         cx.lineWidth = scale === 1 ? 1.5 : 2 / scale;
         cx.lineCap = 'round';
         cx.lineJoin = 'round';
+        const paths = lucidePaths[props.name];
+        if (paths) {
+          cx.scale(16 / 24, 16 / 24);
+          cx.lineWidth = 2;
+          for (const path of paths) cx.stroke(path);
+          return;
+        }
         cx.beginPath();
         switch (props.name) {
           case 'sidebar':
