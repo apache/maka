@@ -117,7 +117,7 @@ runs:
           ${{ steps.keys.outputs.downloads_prefix }}-
     - uses: actions/cache/restore@v6
       id: compiled
-      if: inputs.compile == 'true' && inputs.role != 'clippy'
+      if: inputs.compile == 'true' && inputs.role != 'clippy' && inputs.role != 'product'
       with:
         path: target
         key: ${{ steps.keys.outputs.compiled }}
