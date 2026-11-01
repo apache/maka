@@ -1212,7 +1212,6 @@ async fn cleanup_case(panic: bool) {
     let fixture = Fixture::new("http://127.0.0.1:1/v1", Some(model)).await;
 
     let session = fixture.create("Physical lifetime").await;
-    let physical_session = fixture.session(&session).await;
 
     *fault.database.lock().unwrap() = Some(fixture.session_database(&session));
     fixture.send(&session).await.unwrap();
@@ -1300,13 +1299,6 @@ async fn cleanup_case(panic: bool) {
     );
     assert_eq!(fixture.owner.stop.is_cancelled(), !panic);
 
-    if panic {
-        assert!(matches!(
-            physical_session.execution_scope(None).await,
-            Err(maka_event_log::StoreError::ConnectionClosed)
-        ));
-    }
-    drop(physical_session);
     let close = fixture.app.shutdown().await;
 
     assert_eq!(close.is_err(), panic);

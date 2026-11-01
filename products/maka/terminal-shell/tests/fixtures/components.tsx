@@ -208,6 +208,7 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
   const selection = { connectionId: 'original-route', revision: 1, modelId: 'fixture-model' };
   const owner: ComposerSession<JSX.Element> = {
     sessionId: 'original-session',
+    connected: () => true,
     draft,
     changeDraft: (text) => draft.set(text),
     editable: () => true,
@@ -595,6 +596,7 @@ function WorkspacePages(props: { busy: boolean }) {
       <WorkspaceBrowser
         browsing={browsing}
         docked={() => false}
+        connectionLost={() => false}
         selected={() => null}
         switching={() => false}
         focusRequest={() => false}
