@@ -32,23 +32,31 @@ import {
   type ConversationSessionInput,
   type ConversationPreviewInput,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
-import { createConversationUi } from './SessionSurface';
+import { createConversationUi, type ConversationWindow } from './SessionSurface';
+import { invokeFocusedConversation } from '../../../../products/maka/workbench/app/conversationCommands';
+import type { WorkspaceViewHandle } from '../../../../packages/plugin-sdk/src/workspace-view.js';
 import { createHost, HostProvider } from '../../../../products/maka/workbench/app/host';
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const host = createHost(context.application);
-  const views = createConversationUi(context, host);
-  type Views = typeof views;
-  // A pane the shell opens beside the main one gets its own conversation UI
-  // for as long as the pane is mounted.
-  const sides = signal<Views[]>([]);
+  const sides = signal<ReturnType<typeof createConversationUi>[]>([]);
+  const window: ConversationWindow = {
+    workspace: signal<WorkspaceViewHandle | null>(null),
+    sessions: () =>
+      [views, ...sides()].flatMap((pane) => {
+        const id = pane.sessionId();
+        return id === null ? [] : [id];
+      }),
+    command: (id) => invokeFocusedConversation([views, ...sides()], id),
+  };
+  const views = createConversationUi(context, host, window);
   const owner = (sessionId: string | null) =>
     [views, ...sides()].find((pane) => pane.sessionId() === sessionId);
   const Navigation = (props: { input: ConversationNavigationInput }) =>
     views.navigation(props.input);
   const Session = (props: { input: ConversationSessionInput }) => {
     if (!props.input.shell.closePane) return views.session(props.input);
-    const side = createConversationUi(context, host, { browsing: views.browsing });
+    const side = createConversationUi(context, host, window, { browsing: views.browsing });
     sides.set([...sides(), side]);
     cleanup(() => sides.set(sides().filter((pane) => pane !== side)));
     return side.session(props.input);

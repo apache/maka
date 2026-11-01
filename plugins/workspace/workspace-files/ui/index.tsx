@@ -112,7 +112,7 @@ export function activate(context: UiContext<UiHost, JSX.Element>): UiActivation<
   effect(() => currentLocale.set(context.locale()));
   const input = signal<WorkspaceViewInput | null>(null);
   const resources = createResources(host, {
-    selected: () => input()?.selected() ?? null,
+    sessions: () => input()?.sessions() ?? [],
     blocked: () => input()?.blocked() ?? true,
     report: (reason) => input()?.report(reason),
   });
@@ -145,9 +145,16 @@ export function activate(context: UiContext<UiHost, JSX.Element>): UiActivation<
           if (next.surface === 'pane')
             return (
               <HostProvider value={host}>
-                <If when={resources.shown() && resources.sessionId() !== null}>
-                  <ResourcePane resources={resources} docked={next.docked} />
-                </If>
+                <Each
+                  of={
+                    resources.shown() && resources.sessionId() !== null
+                      ? [resources.instance()]
+                      : []
+                  }
+                  key={(instance) => instance}
+                >
+                  {() => <ResourcePane resources={resources} docked={next.docked} />}
+                </Each>
               </HostProvider>
             );
           return (

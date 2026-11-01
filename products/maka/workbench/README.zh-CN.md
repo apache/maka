@@ -25,6 +25,8 @@ Mermaid 围栏代码块通过 Pele 在本地绘制。Markdown 仍由 `TextView` 
 
 crate 只打包通用加载器 `app/Bootstrap.tsx`。shell 连接 Host，用 `host::admit` 接入，为该连接创建 `bindings::Bindings`，通过 `configuration` 提供视口、环境和数据目录。bootstrap 加载部署来源通过 `ui: { path, id }` 选择的完整 UI。默认产品选择 Maka 根界面，使用其他 UI 插件共用的不可变包构建流程，将它编译为包中的 `app/App.js`。自定义根界面拥有自己的导航、布局和交互；缺少根入口时不会加载 Maka。[终端 shell](../terminal-shell/README.zh-CN.md) 和[桌面 shell](../desktop-shell/README.zh-CN.md) 使用相同的加载器与原生运行时。在图形桌面上，默认根界面使用 `app/chrome.ts` 让顶部栏充当标题栏，并设置应用菜单。
 
+侧边会话保留各自的模型、草稿和工作区。会话级菜单操作与快捷键一样，作用于原生键盘焦点所在的会话面板。文件和图片请求携带来源会话，交给窗口共用的工作区预览区；从另一会话打开资源时，会替换预览区的标签页，不会切换任何会话。外部 URL 不改变预览区。工作区视图使用 `maka.workspace.preview.v2` 契约，输入明确列出已挂载会话，不再隐式选中主会话。
+
 已安装 UI 作为可信代码运行在共享 NSH VM 中，可使用动态 JavaScript 求值与原型扩展，以及 NSH 支持的 HTTP 方法、WebSocket、剪贴板、文件选择器、打开 URL、已注册的 Host 函数、完整 Maka 原生客户端和声明的服务。原始 TCP、进程、文件系统和环境访问遵循 NSH 原生 API 的规则。
 
 在新目录中生成当前 NSH 和原生 Host 的声明，然后用 TypeScript 检查实际应用：
