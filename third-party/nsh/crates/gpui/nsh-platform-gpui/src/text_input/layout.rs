@@ -117,7 +117,9 @@ pub(crate) struct Layout {
 impl Layout {
     /// The line showing `pos`: at a soft wrap, the line it starts.
     fn line_of(&self, pos: u32) -> usize {
-        self.lines.iter().rposition(|l| l.start <= pos).unwrap_or(0)
+        self.lines
+            .partition_point(|l| l.start <= pos)
+            .saturating_sub(1)
     }
 
     /// The line was wrapped (not ended by a line break or the text's end).
@@ -137,39 +139,52 @@ impl Layout {
     pub(crate) fn hit(&self, x: f32, y: f32, allowed: impl Fn(u32) -> bool) -> u32 {
         let i = self
             .lines
-            .iter()
-            .position(|l| y < l.y + l.height)
-            .unwrap_or(self.lines.len() - 1);
-        let nearest = |i: usize| {
+            .partition_point(|l| y >= l.y + l.height)
+            .min(self.lines.len() - 1);
+        let stops = |i: usize| {
             let l = &self.lines[i];
             // A wrapped line's end is the next line's start: shown there.
-            let stops = if self.soft(i) && l.stops.len() > 1 {
+            if self.soft(i) && l.stops.len() > 1 {
                 &l.stops[..l.stops.len() - 1]
             } else {
                 &l.stops[..]
-            };
-            stops
-                .iter()
-                .filter(|s| allowed(s.0))
-                .min_by(|a, b| (l.x + a.1 - x).abs().total_cmp(&(l.x + b.1 - x).abs()))
-                .copied()
+            }
         };
-        if let Some(stop) = nearest(i) {
-            return stop.0;
-        }
-        // An atom can cover an entire wrapped line. Its caret must land
-        // at an actual endpoint on another line, never inside the atom.
-        self.lines
+        let line = &self.lines[i];
+        let at = stops(i)
             .iter()
-            .enumerate()
-            .filter_map(|(i, l)| {
-                let (offset, sx) = nearest(i)?;
-                let dy = (l.y - y).max(y - l.y - l.height).max(0.0);
-                let dx = l.x + sx - x;
-                Some((offset, dy * dy + dx * dx))
+            .min_by(|a, b| {
+                (line.x + a.1 - x)
+                    .abs()
+                    .total_cmp(&(line.x + b.1 - x).abs())
             })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map_or(0, |s| s.0)
+            .expect("input line has caret stops")
+            .0;
+        if allowed(at) {
+            return at;
+        }
+        // Stay at the clicked atom's endpoints, even when it wraps across lines.
+        let before = self.lines[..=i]
+            .iter()
+            .rev()
+            .flat_map(|line| line.stops.iter().rev())
+            .find(|&&(pos, _)| pos < at && allowed(pos))
+            .map(|stop| stop.0);
+        let after = self.lines[i..]
+            .iter()
+            .flat_map(|line| line.stops.iter())
+            .find(|&&(pos, _)| pos > at && allowed(pos))
+            .map(|stop| stop.0);
+        let distance = |pos| {
+            let (sx, sy, height) = self.caret(pos);
+            let dy = (sy - y).max(y - sy - height).max(0.0);
+            (sx - x).powi(2) + dy * dy
+        };
+        before
+            .into_iter()
+            .chain(after)
+            .min_by(|&a, &b| distance(a).total_cmp(&distance(b)))
+            .unwrap_or(0)
     }
 
     /// The start and end of the line showing `pos` (the end of a wrapped
