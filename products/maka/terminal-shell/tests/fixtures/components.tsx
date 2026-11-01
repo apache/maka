@@ -20,6 +20,7 @@
 import { mount, platform, signal, Text, View, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import { Composer } from '../../../../../plugins/agent/composer/ui/Composer';
+import { ContextGaugePreview } from './ContextGaugePreview';
 import { MessageRow } from '../../../workbench/app/MessageRow';
 import type { ComposerSession } from '../../../../../packages/plugin-sdk/src/composer-view.js';
 import { host as nativeHost } from 'maka/host';
@@ -676,7 +677,9 @@ function ToolStatuses() {
 
 const scenario = (nativeHost as unknown as { scenario: string }).scenario;
 mount(() =>
-  scenario === 'tool-statuses' ? (
+  scenario === 'context-gauge' ? (
+    <ContextGaugePreview />
+  ) : scenario === 'tool-statuses' ? (
     <ToolStatuses />
   ) : scenario === 'thinking-markdown' ? (
     <HostProvider value={{} as Host}>

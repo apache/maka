@@ -228,7 +228,6 @@ async fn released_request_rehydration(with_image: bool) {
         &inner.shared.model,
         &input,
         &view,
-        None,
     )
     .unwrap();
     let mut prompt = model_attempt::prompt(

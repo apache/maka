@@ -372,3 +372,21 @@ async fn tool_status_icons_keep_accessible_meanings_without_inline_labels() {
         "unknown results need the question-mark icon"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_statistics_keep_output_speed_including_zero_when_metrics_update() {
+    let mut view = component("context-gauge").await;
+    wait_view_state(&mut view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Context ≈584.3k / 500.0k · 117% · 100.5 tok/s")
+    })
+    .await;
+    support::click_button(&mut view, "Update output speed").await;
+    wait_view_state(&mut view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Context ≈584.3k / 500.0k · 117% · 0.0 tok/s")
+    })
+    .await;
+}

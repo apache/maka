@@ -61,8 +61,7 @@ async fn observe(log: &EventLog, step: &str, ordinal: u64, part: ModelPart) -> R
 }
 
 #[tokio::test]
-async fn interrupted_history_preserves_provider_effect_uncertainty_without_rejecting_known_partial()
-{
+async fn interrupted_provider_history_can_be_compacted_after_reopen() {
     for case in ["missing", "settled", "text", "other-step"] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("history.sqlite");
@@ -155,29 +154,14 @@ async fn interrupted_history_preserves_provider_effect_uncertainty_without_rejec
         .unwrap();
         log.close().await.unwrap();
         let log = EventLog::open(&path).await.unwrap();
-        let allowed = matches!(case, "settled" | "text");
-        let read = log
-            .capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
-            .await;
-        assert_eq!(read.is_ok(), allowed, "{case}: {read:?}");
-        let prepared = log
-            .capture_compaction_context(
-                "session",
-                None,
-                &CheckpointMode::Standalone,
-                100_000,
-                64 * 1024 * 1024,
-            )
-            .await;
-        assert_eq!(prepared.is_ok(), allowed, "{case}: {prepared:?}");
-        if !allowed {
-            assert!(
-                prepared
-                    .unwrap_err()
-                    .to_string()
-                    .contains("provider tool effect")
-            );
-        }
+        let pair = fixtures::prepared(&log, "compact").await;
+        log.append_batch(&pair).await.unwrap();
+        let view = log.read_model_view("session", None).await.unwrap();
+        assert_eq!(
+            view.baseline.unwrap().checkpoint.summary.text,
+            fixtures::SUMMARY,
+            "{case}"
+        );
         log.close().await.unwrap();
     }
 }

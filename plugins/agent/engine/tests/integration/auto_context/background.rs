@@ -412,3 +412,174 @@ async fn rejected_local_summary_preserves_main_tool_context_and_next_turn() {
         assert_eq!(count.load(Ordering::SeqCst), 2, "reopening and a new turn never replay prior tool calls");
     }).await.expect("a rejected local Summary must permit Main progress and a later turn");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn historical_unknown_tool_does_not_disable_automatic_compaction_or_pin_old_context() {
+    use maka_agent_facts::{
+        event::{EventWrite, InvocationInput, RuntimeEvent},
+        tool_call::ToolCallIdentity,
+    };
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let directory = tempfile::tempdir().unwrap();
+        let log = Arc::new(
+            SessionFixture::open(&directory.path().join("events.sqlite"))
+                .await
+                .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let observed = log.clone();
+        let server = tokio::spawn(async move {
+            let (mut old, _) = listener.accept().await.unwrap();
+            fixture::read_request(&mut old).await;
+            fixture::respond(&mut old, "old-answer", "stop").await;
+            let mut summary = None;
+            let mut main = None;
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = fixture::read_request(&mut socket).await;
+                assert!(request["messages"].as_array().unwrap().iter().any(|message|
+                    message["role"] == "tool" && message["tool_call_id"] == "legacy-browser-call"
+                        && message["content"].as_str().is_some_and(|text| text.to_lowercase().contains("unknown"))));
+                if request["messages"].to_string().contains(
+                    maka_agent_facts::context::default_compaction_prompt(
+                        maka_agent_facts::language::Language::En,
+                    ).lines().next().unwrap(),
+                ) {
+                    summary = Some(socket);
+                } else {
+                    main = Some(socket);
+                }
+            }
+            let mut commits = observed.subscribe_commits();
+            fixture::respond(summary.as_mut().unwrap(), fixture::SUMMARY, "stop").await;
+            loop {
+                let prefix = observed.prefix(200, 512 * 1024).await.unwrap();
+                let step = prefix
+                    .events
+                    .iter()
+                    .find_map(|event| match &event.event.fact {
+                        Fact::ModelRequested {
+                            purpose: ModelPurpose::Summary,
+                            step_id,
+                            ..
+                        } => Some(step_id),
+                        _ => None,
+                    });
+                if prefix.events.iter().any(|event| {
+                    matches!(&event.event.fact,
+                    Fact::ModelCompleted { step_id, .. } if Some(step_id) == step)
+                }) {
+                    break;
+                }
+                commits.changed().await.unwrap();
+            }
+            let mut calls = 1;
+            respond_tail_call(main.as_mut().unwrap(), "new-call-1", 41).await;
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = fixture::read_request(&mut socket).await;
+                let messages = request["messages"].to_string();
+                if messages.contains("summary-marker") {
+                    assert!(!messages.contains("legacy-browser-call"));
+                    assert!(!messages.contains("legacy-browser-operation"));
+                    fixture::respond(&mut socket, "done after compaction", "stop").await;
+                    return calls;
+                }
+                calls += 1;
+                respond_tail_call(&mut socket, &format!("new-call-{calls}"), 41).await;
+            }
+        });
+        let worker = engine();
+        let legacy = fixture::input(&base, "legacy", false).invocation;
+        for fact in [
+            Fact::InvocationOpened {
+                configuration: None,
+                input: InvocationInput::Message {
+                    content: "old browser work".into(),
+                    source_messages: Vec::new(),
+                    request_fingerprint: None,
+                },
+            },
+            Fact::ModelRequested {
+                source_capture: maka_agent_facts::event::SourceCapture { publication_watermark: 0, prior_unknown: false },
+                item_acceptance: false, step_id: "legacy-step".into(), model_id: "test".into(),
+                purpose: ModelPurpose::Main, context: None, context_breakdown: None,
+                source_scope: maka_agent_facts::event::LogScope::Session { id: "session".into() }, source_high_water: 1,
+                source_digest: "fixture".into(), input_digest: "fixture".into(), route_identity: "fixture".into(),
+                checkpoint_event_id: None, effective_source_digest: None,
+            },
+            Fact::ModelCompleted {
+                step_id: "legacy-step".into(),
+                output: crate::support::model_records::completion(legacy.clone(), "legacy-step", vec![
+                    maka_agent_facts::model::ModelPart::ToolCall { call: maka_agent_facts::model::ModelToolCall {
+                        id: "legacy-browser-call".into(), name: "legacy-browser".into(), input: json!({}).into(),
+                        provider_options: None, provider_executed: false,
+                    } },
+                ], maka_agent_facts::model::ModelFinishReason::ToolCalls),
+            },
+            Fact::ToolDispatched {
+                presentation: None,
+                title: None,
+                operation_id: "legacy-step:legacy-browser-call".into(),
+                call: ToolCallIdentity::provider("legacy-step".into(), "legacy-browser-call".into()),
+                name: "legacy-browser".into(),
+                input: json!({}),
+            },
+            Fact::InvocationEnded {
+                outcome: InvocationOutcome::Failed {
+                    class: "outcome_unknown".into(),
+                    message: None,
+                    model_failure: None,
+                },
+            },
+        ] {
+            log.append(&EventWrite::plain(RuntimeEvent::new(legacy.clone(), fact)).unwrap())
+                .await
+                .unwrap();
+        }
+        let mut old = fixture::input(&base, "old", false);
+        old.context = context(None);
+        worker
+            .run(log.store(), old, CancellationToken::new())
+            .await
+            .unwrap();
+        let effects = Arc::new(AtomicUsize::new(0));
+        let mut next = agent_loop::input(
+            &base,
+            "next",
+            Arc::new(agent_loop::Effect {
+                log: log.clone(),
+                count: effects.clone(),
+            }),
+        );
+        next.configuration.model = fixture::input(&base, "unused", false).configuration.model;
+        next.provider.auth = maka_model::ProviderAuth::ApiKey("fixture".into());
+        next.context = context(Some(70));
+        let outcome = worker
+            .run(log.store(), next, CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, maka_agent_engine::ActivationExit::Terminal(_)));
+        worker.drain().await;
+        assert_eq!(effects.load(Ordering::SeqCst), server.await.unwrap());
+        let view = log.read_model_view("session", None).await.unwrap();
+        assert!(
+            view.baseline
+                .unwrap()
+                .checkpoint
+                .summary
+                .text
+                .contains("summary-marker")
+        );
+        let history = log.prefix(200, 512 * 1024).await.unwrap();
+        assert!(history.events.iter().any(|stored|
+            stored.event.invocation.invocation_id == "invocation-next" && matches!(&stored.event.fact,
+                Fact::InvocationEnded { outcome: InvocationOutcome::Completed })));
+        assert!(history.events.iter().any(|stored| matches!(&stored.event.fact,
+            Fact::ToolDispatched { operation_id, .. } if operation_id == "legacy-step:legacy-browser-call")));
+        Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
+    })
+    .await
+    .expect("historical unknown effects must not disable compaction");
+}

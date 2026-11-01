@@ -1513,3 +1513,43 @@ async fn desktop_reasoning_and_tool_status_icons_share_the_activity_layout() {
     desktop.close().await;
     fixture.finish().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_context_tooltip_includes_output_speed() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/context_gauge_preview.tsx");
+    let output = fixture.directory.path().join("context-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(1120), gpui::DevicePixels(800)),
+        nsh_core::platform::Appearance::Dark,
+        Some((source, "en", "Update output speed")),
+    )
+    .await;
+    let above = Bounds::new(point(px(0.), px(0.)), size(px(1120.), px(390.)));
+    let before = desktop.pixels(above).unwrap();
+    desktop
+        .platform
+        .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
+            position: point(px(560.), px(400.)),
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+    desktop
+        .until("context tooltip did not appear", || {
+            (desktop.pixels(above)? != before).then_some(())
+        })
+        .await;
+    desktop.artifact("context-tooltip-output-speed");
+    desktop.close().await;
+    fixture.finish().await;
+}
