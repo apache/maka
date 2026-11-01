@@ -4145,6 +4145,10 @@ export type MessageOrigin =
   | {
       kind: 'workhub_graph';
       graphId: string;
+    }
+  | {
+      kind: 'bot_worker';
+      sessionId: string;
     };
 export type AgentQueueKind = 'in_flight' | 'steering' | 'followup';
 export type AgentQueueMessageResult =

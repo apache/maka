@@ -114,6 +114,8 @@ fn message_key(session: &str, sequence: u64) -> String {
     format!("{}{sequence:020}", messages_prefix(session))
 }
 
+mod wake;
+
 pub(super) struct Bot {
     storage: Arc<maka_host_runtime::storage::Storage>,
     owner: OnceLock<Weak<Owner>>,
@@ -1011,7 +1013,7 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 ""
             });
             if sessions {
-                text.push_str("需要动手做的事，用 SessionCreate 新建一个会话，再用 SessionSend 把任务交给它；同一件事可以并行开多个。它做完不会自动通知你，需要时用会话读取工具查看进度，不要假装它已经做完。");
+                text.push_str("需要动手做的事，用 SessionCreate 新建一个会话，再用 SessionSend 把任务交给它；同一件事可以并行开多个。它每做完一轮都会叫醒你；醒来后先用会话读取工具看它的实际结果，再决定告诉用户还是继续派活，不要假装它已经做完。");
             }
             if skills {
                 text.push_str("技能只是说明文档，其中需要上述被禁止能力的步骤你不能自己执行，不要把技能清单当作你自己的能力介绍给用户。");
@@ -1038,7 +1040,7 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 ""
             });
             if sessions {
-                text.push_str("需要動手做的事，用 SessionCreate 新建一個會話，再用 SessionSend 把任務交給它；同一件事可以平行開多個。它做完不會自動通知你，需要時用會話讀取工具查看進度，不要假裝它已經做完。");
+                text.push_str("需要動手做的事，用 SessionCreate 新建一個會話，再用 SessionSend 把任務交給它；同一件事可以平行開多個。它每做完一輪都會叫醒你；醒來後先用會話讀取工具看它的實際結果，再決定告訴使用者還是繼續派活，不要假裝它已經做完。");
             }
             if skills {
                 text.push_str("技能只是說明文件，其中需要上述被禁止能力的步驟你不能自己執行，不要把技能清單當作你自己的能力介紹給使用者。");
@@ -1065,7 +1067,7 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 ""
             });
             if sessions {
-                text.push_str("Hands-on work goes to a new conversation: create it with SessionCreate and give it the task with SessionSend; independent pieces can run in parallel. A finished worker does not notify you, so read its progress with the conversation read tools when you need it, and never claim it is done before you have seen that. ");
+                text.push_str("Hands-on work goes to a new conversation: create it with SessionCreate and give it the task with SessionSend; independent pieces can run in parallel. Each time a worker finishes a run it wakes you; then read its actual result with the conversation read tools before deciding whether to tell the user or hand out more work, and never claim it is done before you have seen that. ");
             }
             if skills {
                 text.push_str("Skills are only documents: steps in them that need the abilities you lack are not yours to run, and the skill list is not a description of what you can do, so do not present it to the user as your abilities. ");

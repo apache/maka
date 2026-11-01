@@ -36,12 +36,15 @@ use std::collections::HashSet;
 pub enum MessageOrigin {
     WorkhubTask { task_id: String },
     WorkhubGraph { graph_id: String },
+    /// A worker conversation created by the Bot finished a run.
+    BotWorker { session_id: String },
 }
 impl MessageOrigin {
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
             Self::WorkhubTask { task_id } => crate::interaction::entity_id(task_id),
             Self::WorkhubGraph { graph_id } => crate::interaction::entity_id(graph_id),
+            Self::BotWorker { session_id } => crate::interaction::entity_id(session_id),
         }
     }
 }

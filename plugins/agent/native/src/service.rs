@@ -362,7 +362,11 @@ impl Handler for Agent {
                 "create" => {
                     let input: Create = decode(input)?;
                     let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.create(input, operation, context.scope()).await?)
+                    let created = owner.create(input, operation, context.scope()).await?;
+                    if let Created::Created { session } = &created {
+                        owner.bot_watch(context.scope(), &session.id).await;
+                    }
+                    encode(created)
                 }
                 "fork" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
@@ -922,7 +926,12 @@ impl Handler for Agent {
                             session_id: input.session_id,
                         });
                     }
-                    encode(owner.send(input, operation, context.scope()).await?)
+                    let worker = input.session_id.clone();
+                    let sent = owner.send(input, operation, context.scope()).await?;
+                    if matches!(sent, SendResult::Started { .. } | SendResult::Queued { .. }) {
+                        owner.bot_watch(context.scope(), &worker).await;
+                    }
+                    encode(sent)
                 }
                 "executorSetup" => owner.executor_setup(decode(input)?, context).await,
                 "executors" => {
