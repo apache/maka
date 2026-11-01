@@ -40,6 +40,7 @@ env:
   MBX_GC_AUTO: "1"
   MBX_TARGET_VIEWS: "0"
   MBX_CACHE_LINKS: "0"
+  MBX_SHARE_OUT_DIR: "0"
 
 jobs:
   plan:
