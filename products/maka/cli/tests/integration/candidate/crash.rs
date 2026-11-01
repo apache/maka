@@ -22,8 +22,16 @@ use crate::terminal::support::{ModelRequest, configure, mutate};
 use maka_app_client::{Client as AppClient, Journal};
 use maka_host_runtime::application::host::startup;
 use serde_json::json;
-use std::sync::{Arc, atomic::AtomicUsize};
-use tokio::{net::TcpListener, sync::mpsc};
+use std::{
+    os::unix::process::ExitStatusExt,
+    process::Stdio,
+    sync::{Arc, atomic::AtomicUsize},
+};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    net::TcpListener,
+    sync::mpsc,
+};
 
 async fn activity(client: &AppClient, session: &str) -> Value {
     client
@@ -60,7 +68,23 @@ async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
         }
     });
     tokio::time::timeout(Duration::from_secs(90), async {
-        let host = startup::connect_root(executable, &root).await.unwrap();
+        let mut first_host = tokio::process::Command::new(executable)
+            .args(["host", "serve", "--root"])
+            .arg(&root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        BufReader::new(first_host.stdout.take().unwrap())
+            .read_line(&mut ready).await.unwrap();
+        let ready: Value = serde_json::from_str(&ready).unwrap();
+        let first_epoch = uuid::Uuid::parse_str(ready["hostEpoch"].as_str().unwrap()).unwrap();
+        let host = Client::connect(
+            Path::new(ready["socketPath"].as_str().unwrap()), Some(first_epoch),
+        ).await.unwrap();
         let client = AppClient::new(
             host,
             Journal::open(&journal).await.unwrap(),
@@ -77,13 +101,16 @@ async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
         let held = requests.recv().await.unwrap();
         assert_ne!(activity(&client, &session).await, "idle");
 
-        let pid = discovery::read(&root).unwrap().pid.get();
-        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) }, 0);
+        assert_eq!(discovery::read(&root).unwrap().pid.get(), first_host.id().unwrap());
+        first_host.start_kill().unwrap();
+        assert_eq!(first_host.wait().await.unwrap().signal(), Some(libc::SIGKILL));
         drop(held);
         drop(client);
 
+        fixture.begin_admission();
         let host = startup::connect_root(executable, &root).await.unwrap();
-        assert_ne!(discovery::read(&root).unwrap().pid.get(), pid);
+        fixture.adopt();
+        assert_ne!(host.epoch(), first_epoch);
         let client = AppClient::new(
             host,
             Journal::open(&journal).await.unwrap(),
