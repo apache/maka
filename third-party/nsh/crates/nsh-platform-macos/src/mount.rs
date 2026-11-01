@@ -223,6 +223,7 @@ impl Mounter {
                 match view.kind() {
                     ViewKind::Stack => crate::navigation::stack_resized(surface, view),
                     ViewKind::Canvas => view.changed(),
+                    ViewKind::Scroll => crate::scroll::resized(surface, view),
                     _ => crate::shader::resized(surface, view),
                 }
             }
