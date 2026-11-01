@@ -21,6 +21,7 @@ import { cleanup, computed, signal } from 'nsh';
 import type { Host } from './host';
 import { message, UiError } from './text';
 import { sameValue } from '../../../../plugins/shared/value';
+import { providerLabel } from './settingsLabels';
 import type {
   CatalogModelReference,
   CatalogMutationResult,
@@ -207,7 +208,13 @@ export function createModelSettings(
   const providerIndex = computed(() =>
     providers().map((item) => ({
       item,
-      text: [item.label, item.identity.name, item.identity.packageId, item.identity.entryId]
+      text: [
+        item.label,
+        providerLabel(item.label),
+        item.identity.name,
+        item.identity.packageId,
+        item.identity.entryId,
+      ]
         .join('\n')
         .toLowerCase(),
     })),

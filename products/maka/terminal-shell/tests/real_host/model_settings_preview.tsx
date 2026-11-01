@@ -30,7 +30,7 @@ import { currentLocale, tr } from '../../../workbench/app/locale';
 
 // The provider boundary is controlled by the test; every displayed control is production UI.
 function Preview() {
-  currentLocale.set('en');
+  currentLocale.set(typeof events.params.locale === 'string' ? events.params.locale : 'en');
   const provider = {
     entryId: 'maka.codex',
     name: 'chatgpt',
@@ -306,7 +306,10 @@ function Preview() {
     instance: { instance, path: instance },
     declaration: {
       kind: 'settings',
-      title: { fallback: 'Connections & models', translations: {} },
+      title: {
+        fallback: 'Connections & models',
+        translations: { 'zh-CN': '连接与模型', 'zh-TW': '連線與模型' },
+      },
     },
   };
   function Page(props: { input: SettingsPageInput }) {

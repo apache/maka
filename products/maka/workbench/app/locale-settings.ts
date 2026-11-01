@@ -59,6 +59,19 @@ import {
 } from '../../../../plugins/shared/tui-messages.js';
 
 export const settingsMessages = {
+  'ChatGPT Subscription': ['ChatGPT Subscription', 'ChatGPT 订阅', 'ChatGPT 訂閱'],
+  'Chat Completions': [
+    'Chat Completions',
+    'Chat Completions 兼容接口',
+    'Chat Completions 相容介面',
+  ],
+  Responses: ['Responses', 'Responses 兼容接口', 'Responses 相容介面'],
+  'Anthropic Messages': [
+    'Anthropic Messages',
+    'Anthropic Messages 兼容接口',
+    'Anthropic Messages 相容介面',
+  ],
+  '{provider} (China)': ['{provider} (China)', '{provider}（中国站）', '{provider}（中國站）'],
   'Retry opening provider': ['Retry opening provider', '重试打开提供商', '重試開啟提供商'],
   'Account sign-in': ['Account sign-in', '账号登录', '帳號登入'],
   'Custom endpoints': ['Custom endpoints', '自定义接口', '自訂介面'],

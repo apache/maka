@@ -58,3 +58,5 @@ Only skills installed through Maka have an update button. Updating replaces thei
 The provider picker separates account sign-in, custom endpoints and named API services, with alphabetical choices within each section. Search accepts multiple terms, supports arrow keys and Enter, and Escape clears the query before returning. Returning from a new connection preserves the provider search and selection; adding another connection suggests an unused ID among the loaded connections.
 
 ![Provider picker, rendered in the desktop test fixture against the built-in catalog.](screenshots/provider-picker-light.png)
+
+Built-in subscription, compatible-endpoint and region labels follow the interface language. Provider search matches both the original and localized labels. Saved connection names, brand names, model IDs and reasoning-effort values keep their original spelling.

@@ -58,3 +58,7 @@ MAKA_NSH_EVIDENCE=/tmp/maka-nsh-evidence cargo nextest run --locked --workspace 
 提供商列表按账号登录、自定义接口和命名 API 服务分组，组内按名称排序。搜索支持多个词、方向键和 Enter，Esc 先清空搜索再返回。从新连接返回时保留搜索和选择；再次添加连接时，会在已加载的连接中避开重复标识。
 
 ![提供商列表：桌面测试使用实际内置目录渲染。](screenshots/provider-picker-dark.png)
+
+内置订阅、兼容接口和地区标签随界面语言显示；提供商搜索同时匹配原文和译文。已保存的连接名称、品牌名、模型 ID 和推理档位保留原样。
+
+![简体中文订阅登录界面，来自桌面测试。](screenshots/subscription-sign-in-zh-CN.png)

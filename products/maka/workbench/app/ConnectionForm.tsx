@@ -25,6 +25,7 @@ import { ConnectionLogin } from './ConnectionLogin';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { Icon } from './Icon';
 import { tr } from './locale';
+import { providerLabel } from './settingsLabels';
 import {
   C,
   Disclosure,
@@ -61,7 +62,7 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
       >
         <View style={{ paddingVertical: 16, gap: 24 }}>
           <Text style={{ ...captionTextStyle, color: C.muted }}>
-            {form().provider.descriptor.label}
+            {providerLabel(form().provider.descriptor.label)}
           </Text>
           <ConnectionLogin owner={owner} disabled={disabled()} />
           <If when={keyed()}>

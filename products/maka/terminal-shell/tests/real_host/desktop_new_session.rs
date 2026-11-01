@@ -81,7 +81,7 @@ impl Desktop {
         address: &Path,
         dimensions: gpui::Size<gpui::DevicePixels>,
         appearance: nsh_core::platform::Appearance,
-        preview: Option<String>,
+        preview: Option<(String, &str)>,
     ) -> Self {
         let client = fixture.client_at(address).await;
         let bindings = Bindings::new(client.clone(), tokio::runtime::Handle::current());
@@ -92,7 +92,15 @@ impl Desktop {
         config.assets = Some(bindings.assets());
         config.chunk_loader = Some(bindings.chunk_loader());
         let previewing = preview.is_some();
-        if let Some(source) = preview {
+        let close_label = match preview.as_ref().map(|(_, locale)| *locale) {
+            Some("zh-CN") => "关闭设置",
+            Some("zh-TW") => "關閉設定",
+            _ => "Close settings",
+        };
+        if let Some((source, locale)) = preview {
+            config
+                .host
+                .set_params(json!({"locale":locale}).as_object().unwrap().clone());
             let mut capabilities = nsh_engine::Capabilities::all();
             capabilities.host = vec!["*".into()];
             config.app = nsh_engine::Bundle::source(source)
@@ -187,7 +195,7 @@ impl Desktop {
             errors,
         };
         if previewing {
-            desktop.control("Close settings").await;
+            desktop.control(close_label).await;
         } else {
             desktop.target_after(None).await;
         }
@@ -1156,7 +1164,7 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
         &fixture.address,
         size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
         appearance,
-        Some(source),
+        Some((source, "en")),
     )
     .await;
     desktop.press("Edit connection ChatGPT Subscription").await;
@@ -1257,7 +1265,7 @@ async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection()
         &fixture.address,
         size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
         appearance,
-        Some(source),
+        Some((source, "en")),
     )
     .await;
     desktop.press("Add connection").await;
@@ -1356,6 +1364,80 @@ async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection()
     desktop.press("Back").await;
     desktop.event("fixture.releaseProvider", Value::Null);
     desktop.control("Add connection").await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_settings_translate_subscription_sign_in_and_provider_search() {
+    let traditional = std::env::var("MAKA_UI_LOCALE").as_deref() == Ok("zh-TW");
+    let (locale, edit, sign_in, copy, cancel, add, search, connect, compatibility) = if traditional
+    {
+        (
+            "zh-TW",
+            "編輯連線 ChatGPT Subscription",
+            "使用 ChatGPT 登入",
+            "複製登入代碼",
+            "取消供應商登入",
+            "新增連線",
+            "訂閱",
+            "連線至 ChatGPT 訂閱",
+            "連線至 Responses 相容介面",
+        )
+    } else {
+        (
+            "zh-CN",
+            "编辑连接 ChatGPT Subscription",
+            "使用 ChatGPT 登录",
+            "复制登录代码",
+            "取消提供商登录",
+            "添加连接",
+            "订阅",
+            "连接 ChatGPT 订阅",
+            "连接 Responses 兼容接口",
+        )
+    };
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/model_settings_preview.tsx");
+    let output = fixture.directory.path().join("settings-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+        Some((source, locale)),
+    )
+    .await;
+    desktop.press(edit).await;
+    desktop.control(sign_in).await;
+    desktop.artifact(&format!("connection-localized-{locale}-{theme}-{layout}"));
+    desktop.press(sign_in).await;
+    desktop.control(copy).await;
+    desktop.artifact(&format!("sign-in-localized-{locale}-{theme}-{layout}"));
+    desktop.press(cancel).await;
+    desktop.control(sign_in).await;
+    desktop.press("返回").await;
+    desktop.press(add).await;
+    desktop.target_after(None).await;
+    desktop.type_text(search).await;
+    desktop.control(connect).await;
+    desktop.artifact(&format!("provider-localized-{locale}-{theme}-{layout}"));
+    desktop
+        .type_text(if traditional {
+            "相容介面"
+        } else {
+            "兼容接口"
+        })
+        .await;
+    desktop.control(compatibility).await;
     desktop.close().await;
     fixture.finish().await;
 }

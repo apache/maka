@@ -34,7 +34,8 @@ import { Button, Input } from 'nsh/base';
 import type { SettingsProviderSummary } from '../../../../packages/plugin-sdk/src/index';
 import type { ModelSettingsOwner } from './settings';
 import { Icon } from './Icon';
-import { tr } from './locale';
+import { tr, currentLocale } from './locale';
+import { providerLabel } from './settingsLabels';
 import {
   C,
   captionTextStyle,
@@ -71,7 +72,9 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
     owner.openingProvider() !== null;
   const rows = computed<Row[]>(() => {
     const providers = [...owner.filteredProviders()].sort(
-      (a, b) => a.label.localeCompare(b.label) || identityKey(a).localeCompare(identityKey(b)),
+      (a, b) =>
+        providerLabel(a.label).localeCompare(providerLabel(b.label), currentLocale()) ||
+        identityKey(a).localeCompare(identityKey(b)),
     );
     const groups = [
       {
@@ -309,8 +312,8 @@ function ProviderOption(props: {
   const opening = () => sameValue(props.provider.identity, props.owner.openingProvider());
   return (
     <Button
-      accessibilityLabel={tr('Connect {name}', { name: props.provider.label })}
-      tooltip={textTooltip(() => props.provider.label)}
+      accessibilityLabel={tr('Connect {name}', { name: providerLabel(props.provider.label) })}
+      tooltip={textTooltip(() => providerLabel(props.provider.label))}
       selected={sameValue(props.provider.identity, props.owner.selectedProvider())}
       disabled={props.disabled}
       onPress={inputAction(props.owner.chooseProvider, props.provider.identity)}
@@ -334,7 +337,7 @@ function ProviderOption(props: {
           { numberOfLines: 1, textOverflow: 'ellipsis' },
         ]}
       >
-        {props.provider.label}
+        {providerLabel(props.provider.label)}
       </Text>
       <If when={opening()} else={<Icon name="right" color={C.muted} />}>
         <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Opening…')}</Text>
