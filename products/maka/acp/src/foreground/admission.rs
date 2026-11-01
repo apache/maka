@@ -54,7 +54,9 @@ impl Foreground {
                 },
                 Some(message_id),
             ),
-            SendResult::Rejected { .. } => return Err("Host rejected Agent input".into()),
+            SendResult::Rejected { .. } | SendResult::NotYourWorker { .. } => {
+                return Err("Host rejected Agent input".into());
+            }
         };
         let mut foreground = Self {
             client,

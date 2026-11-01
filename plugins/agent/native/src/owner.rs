@@ -767,6 +767,13 @@ impl Owner {
                 });
             }
         }
+        // A Session the Bot creates follows the ordinary creation rules and is only
+        // recorded under the Bot as its parent. The Bot's own tool list says what it
+        // may call itself; it is not the ceiling for the workers it delegates to.
+        let bot_caller = scope
+            .identity
+            .agent()
+            .is_some_and(|source| self.bot.is(&source.session_id));
         let selected = match input.workspace {
             WorkspaceSelection::IsolatedGit { selection } => {
                 let Some(workspace) = self.isolated_workspace(selection, operation, scope).await?
@@ -834,6 +841,7 @@ impl Owner {
                 // User creation reuses a workspace; Agent derivation also
                 // inherits the parent's tool ceiling.
                 if scope.identity.agent().is_some()
+                    && !bot_caller
                     && let Some(parent) = session.configuration.tools
                 {
                     tools = Some(match tools {

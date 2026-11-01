@@ -59,6 +59,11 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "SessionQueue",
     "SessionWork",
     "SessionExecution",
+    // Delegation: the Bot may create workers and send to or stop only the
+    // conversations it created itself (checked against `parentSessionId`).
+    "SessionCreate",
+    "SessionSend",
+    "SessionStop",
 ];
 const PAGE: usize = 100;
 const RECORD_KEY: &str = "bot";
@@ -836,6 +841,37 @@ impl Owner {
     pub fn bot_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.bot.changed.subscribe()
     }
+    async fn bot_worker(
+        &self,
+        source: &maka_agent_facts::event::Invocation,
+        session: &str,
+    ) -> Result<bool, String> {
+        if !self.bot.is(&source.session_id) || !self.owns(session) {
+            return Ok(false);
+        }
+        let stored = self
+            .store
+            .get_session::<StoredSessionConfiguration>(session)
+            .await
+            .map_err(|_| "agent_store_unavailable")?;
+        Ok(stored.is_some_and(|stored| {
+            stored.configuration.parent_session_id.as_deref() == Some(source.session_id.as_str())
+        }))
+    }
+    /// Controls that act on a conversation (send, stop) are limited, for the Bot,
+    /// to the workers it created. Other callers are unaffected.
+    pub(crate) async fn may_control(
+        &self,
+        scope: &maka_capabilities::call::Scope,
+        session: &str,
+    ) -> Result<bool, String> {
+        match scope.identity.agent() {
+            Some(source) if self.bot.is(&source.session_id) => {
+                self.bot_worker(source, session).await
+            }
+            _ => Ok(true),
+        }
+    }
     pub async fn bot_outbox(&self, input: &BotOutboxRead) -> Result<BotOutbox, String> {
         let session_id = self.bot.session();
         let (through, messages, more) = match &session_id {
@@ -915,6 +951,12 @@ const ABILITIES: &[Ability] = &[
         "{} (read the user's conversations, read-only)",
     ),
     (
+        &["SessionCreate", "SessionSend", "SessionStop"],
+        "{}（新建工作会话并派活；只能给自己创建的会话发消息或停止）",
+        "{}（新建工作會話並派活；只能給自己建立的會話發訊息或停止）",
+        "{} (create work conversations and hand them tasks; you may only send to or stop conversations you created)",
+    ),
+    (
         &["Skill", "SkillSearch"],
         "{}（查阅技能说明）",
         "{}（查閱技能說明）",
@@ -946,8 +988,9 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
             })
             .collect()
     };
+    let sessions = has(&["SessionCreate"]) && has(&["SessionSend"]);
     let (delegates, schedules, skills) = (
-        has(&[WORKHUB]),
+        has(&[WORKHUB]) || sessions,
         has(&["ScheduledTask"]),
         has(&["Skill", "SkillSearch"]),
     );
@@ -960,11 +1003,16 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 "你是用户在 Maka 里的常驻 Bot。\n\n对话方式：用户只能看到你用 SendUser 工具发出的消息；你的普通回复和工具步骤都是内部过程，用户看不到。要回应用户，就调用 SendUser，普通文字尽量少写。不值得打扰用户的事，就什么都不发。\n\n你的真实能力只有这些工具：{}。你自己不能读写文件、运行命令、使用浏览器、访问网络或调用 MCP。",
                 tools.join("、")
             );
-            text.push_str(if delegates {
+            text.push_str(if has(&[WORKHUB]) {
                 "需要动手做的事，用 workhub_tasks 委派出去，等结果回来再告诉用户；做不到又无法委派的事，如实说明。"
-            } else {
+            } else if !delegates {
                 "需要动手做的事你既做不到也无法委派，请如实告诉用户。"
+            } else {
+                ""
             });
+            if sessions {
+                text.push_str("需要动手做的事，用 SessionCreate 新建一个会话，再用 SessionSend 把任务交给它；同一件事可以并行开多个。它做完不会自动通知你，需要时用会话读取工具查看进度，不要假装它已经做完。");
+            }
             if skills {
                 text.push_str("技能只是说明文档，其中需要上述被禁止能力的步骤你不能自己执行，不要把技能清单当作你自己的能力介绍给用户。");
             }
@@ -982,11 +1030,16 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 "你是使用者在 Maka 裡的常駐 Bot。\n\n對話方式：使用者只能看到你用 SendUser 工具發出的訊息；你的一般回覆和工具步驟都是內部過程，使用者看不到。要回應使用者，就呼叫 SendUser，一般文字盡量少寫。不值得打擾使用者的事，就什麼都不發。\n\n你的真實能力只有這些工具：{}。你自己不能讀寫檔案、執行指令、使用瀏覽器、存取網路或呼叫 MCP。",
                 tools.join("、")
             );
-            text.push_str(if delegates {
+            text.push_str(if has(&[WORKHUB]) {
                 "需要動手做的事，用 workhub_tasks 委派出去，等結果回來再告訴使用者；做不到又無法委派的事，如實說明。"
-            } else {
+            } else if !delegates {
                 "需要動手做的事你既做不到也無法委派，請如實告訴使用者。"
+            } else {
+                ""
             });
+            if sessions {
+                text.push_str("需要動手做的事，用 SessionCreate 新建一個會話，再用 SessionSend 把任務交給它；同一件事可以平行開多個。它做完不會自動通知你，需要時用會話讀取工具查看進度，不要假裝它已經做完。");
+            }
             if skills {
                 text.push_str("技能只是說明文件，其中需要上述被禁止能力的步驟你不能自己執行，不要把技能清單當作你自己的能力介紹給使用者。");
             }
@@ -1004,11 +1057,16 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 "You are the user's persistent Bot in Maka.\n\nHow you talk: the user sees only the messages you send with the SendUser tool; your ordinary replies and tool steps are internal and never shown. To respond to the user, call SendUser, and keep ordinary text minimal. When something does not need the user's attention, send nothing.\n\nYour real abilities are only these tools: {}. You yourself cannot read or edit files, run commands, use a browser, reach the network or call MCP tools. ",
                 tools.join(", ")
             );
-            text.push_str(if delegates {
+            text.push_str(if has(&[WORKHUB]) {
                 "Delegate hands-on work with workhub_tasks and tell the user when the result comes back; if something can neither be done nor delegated, say so plainly. "
-            } else {
+            } else if !delegates {
                 "Hands-on work is something you can neither do nor delegate, so tell the user plainly. "
+            } else {
+                ""
             });
+            if sessions {
+                text.push_str("Hands-on work goes to a new conversation: create it with SessionCreate and give it the task with SessionSend; independent pieces can run in parallel. A finished worker does not notify you, so read its progress with the conversation read tools when you need it, and never claim it is done before you have seen that. ");
+            }
             if skills {
                 text.push_str("Skills are only documents: steps in them that need the abilities you lack are not yours to run, and the skill list is not a description of what you can do, so do not present it to the user as your abilities. ");
             }

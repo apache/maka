@@ -787,6 +787,9 @@ pub enum SendResult {
         message_id: String,
         revision: u64,
     },
+    /// The caller may not send to this conversation: the Bot sends only to the
+    /// workers it created. Nothing was admitted.
+    NotYourWorker { session_id: String },
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]

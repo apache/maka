@@ -854,6 +854,23 @@ fn the_instructions_name_only_the_tools_the_bot_holds() {
             !reads.contains("SessionSend") && !reads.contains("SessionHistory"),
             "{language:?}: {reads}"
         );
+        let sessions = bot_prompt(
+            language,
+            &held(&["SessionCreate", "SessionSend", "SessionRead"]),
+        );
+        assert!(
+            sessions.contains("SessionCreate / SessionSend")
+                && !sessions.contains("SessionStop")
+                && !sessions.contains("workhub_tasks"),
+            "{language:?}: {sessions}"
+        );
+        // With delegation held, the Bot is not told it cannot delegate.
+        assert!(
+            !sessions.contains("neither do nor delegate")
+                && !sessions.contains("既做不到也無法委派")
+                && !sessions.contains("既做不到也无法委派"),
+            "{language:?}: {sessions}"
+        );
         let hub = bot_prompt(language, &held(&["workhub_tasks"]));
         assert!(hub.contains("workhub_tasks"), "{language:?}: {hub}");
     }
@@ -948,10 +965,8 @@ async fn the_bot_can_read_conversations_but_is_not_given_tools_that_change_them(
         assert!(held.iter().any(|name| name == "SessionList"), "{held:?}");
         assert!(held.iter().any(|name| name == "SessionRead"), "{held:?}");
         assert!(
-            !held
-                .iter()
-                .any(|name| name == "SessionSend" || name == "SessionChange"),
-            "tools that change or message a conversation are not granted: {held:?}"
+            !held.iter().any(|name| name == "SessionChange"),
+            "tools that change a conversation are not granted: {held:?}"
         );
 
         // The Bot sees the user's conversation through SessionList.
@@ -961,7 +976,7 @@ async fn the_bot_can_read_conversations_but_is_not_given_tools_that_change_them(
         let sent = request(&mut socket).await;
         let names = tool_names(&sent);
         assert!(names.contains(&"SessionList".to_owned()), "{names:?}");
-        assert!(!names.contains(&"SessionSend".to_owned()), "{names:?}");
+        assert!(!names.contains(&"SessionChange".to_owned()), "{names:?}");
         service_tools::named_tool_response(
             &mut socket,
             "SessionList",
@@ -977,6 +992,118 @@ async fn the_bot_can_read_conversations_but_is_not_given_tools_that_change_them(
         );
         response(&mut socket).await;
         idle(&f, &bot).await;
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            None,
+            |settings| {
+                settings.bot = true;
+                settings.tools = vec![
+                    session_tool("list", "SessionList"),
+                    session_tool("observe", "SessionRead"),
+                    session_tool("create", "SessionCreate"),
+                    session_tool("send", "SessionSend"),
+                    session_tool("stop", "SessionStop"),
+                    session_tool("changeSession", "SessionChange"),
+                ];
+            },
+        )
+        .await;
+        let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        let ordinary = f.create("The user's own conversation").await;
+        f.send(&bot).await.unwrap();
+
+        // The Bot creates a worker in its own workspace.
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        service_tools::named_tool_response(
+            &mut socket,
+            "SessionCreate",
+            json!({"title":"Worker","labels":[],"workspace":{"kind":"session","sessionId":bot}}),
+        )
+        .await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        let created: Value = serde_json::from_str(&last_tool_result(&sent)).unwrap();
+        let created = match created {
+            Value::String(text) => serde_json::from_str(&text).unwrap(),
+            other => other,
+        };
+        assert_eq!(created["session"]["parentSessionId"], bot.as_str(), "{created}");
+        let worker = created["session"]["id"].as_str().unwrap().to_owned();
+        // Omitted tools follow the ordinary rule: nothing narrows the worker, and
+        // it does not become a Bot.
+        assert!(created["session"]["tools"].is_null(), "{created}");
+
+        // Sending to a conversation the Bot did not create is refused.
+        service_tools::named_tool_response(
+            &mut socket,
+            "SessionSend",
+            json!({"sessionId":ordinary,"message":"hello","model":f.selection().await}),
+        )
+        .await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert!(last_tool_result(&sent).contains("not_your_worker"), "{}", last_tool_result(&sent));
+
+        // Explicit tools are not intersected with the Bot's own list: the Bot does
+        // not hold SessionChange, its worker may.
+        service_tools::named_tool_response(
+            &mut socket,
+            "SessionCreate",
+            json!({"title":"Narrow","labels":[],"tools":["SessionChange"],"workspace":{"kind":"session","sessionId":bot}}),
+        )
+        .await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert!(last_tool_result(&sent).contains("SessionChange"), "{}", last_tool_result(&sent));
+        // SendUser and sleep still follow Bot identity alone.
+        service_tools::named_tool_response(
+            &mut socket,
+            "SessionCreate",
+            json!({"title":"Voice","labels":[],"tools":["SendUser"],"workspace":{"kind":"session","sessionId":bot}}),
+        )
+        .await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert!(last_tool_result(&sent).contains("tools_unavailable"), "{}", last_tool_result(&sent));
+
+        // Its own worker can be sent to; the worker starts its admitted message.
+        service_tools::named_tool_response(
+            &mut socket,
+            "SessionSend",
+            json!({"sessionId":worker,"message":"Do the task","model":f.selection().await}),
+        )
+        .await;
+        let mut worker_socket = None;
+        let mut bot_socket = None;
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let sent = request(&mut socket).await;
+            if sent["messages"].as_array().unwrap().iter().any(|message| message["role"] == "tool") {
+                assert!(sent["messages"].to_string().contains("started"));
+                bot_socket = Some(socket);
+            } else {
+                assert!(sent["messages"].to_string().contains("Do the task"));
+                worker_socket = Some(socket);
+            }
+        }
+        response(&mut bot_socket.expect("the Bot resumes")).await;
+        response(&mut worker_socket.expect("the worker runs")).await;
+        idle(&f, &bot).await;
+        idle(&f, &worker).await;
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })

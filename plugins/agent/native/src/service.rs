@@ -914,6 +914,14 @@ impl Handler for Agent {
                 "send" => {
                     let input: Send = decode(input)?;
                     let operation = context.operation().ok_or("agent_mutation_required")?;
+                    if !owner
+                        .may_control(context.scope(), &input.session_id)
+                        .await?
+                    {
+                        return encode(crate::contract::SendResult::NotYourWorker {
+                            session_id: input.session_id,
+                        });
+                    }
                     encode(owner.send(input, operation, context.scope()).await?)
                 }
                 "executorSetup" => owner.executor_setup(decode(input)?, context).await,
@@ -961,6 +969,12 @@ impl Handler for Agent {
                 "stop" => {
                     let input: Stop = decode(input)?;
                     let operation = context.operation().ok_or("agent_mutation_required")?;
+                    if !owner
+                        .may_control(context.scope(), &input.session_id)
+                        .await?
+                    {
+                        return encode(Stopped { requested: false });
+                    }
                     encode(Stopped {
                         requested: owner
                             .stop_run(&input.session_id, &input.invocation_id, operation)
