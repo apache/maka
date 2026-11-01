@@ -861,6 +861,15 @@ fn the_instructions_name_only_the_tools_the_bot_holds() {
             todo_write.contains("todo_write") && !todo_write.contains("todo_read"),
             "{language:?}: {todo_write}"
         );
+        let reads = bot_prompt(language, &held(&["SessionList", "SessionRead"]));
+        assert!(
+            reads.contains("SessionList / SessionRead"),
+            "{language:?}: {reads}"
+        );
+        assert!(
+            !reads.contains("SessionSend") && !reads.contains("SessionHistory"),
+            "{language:?}: {reads}"
+        );
         let hub = bot_prompt(language, &held(&["workhub_tasks"]));
         assert!(hub.contains("workhub_tasks"), "{language:?}: {hub}");
     }
@@ -899,6 +908,91 @@ async fn the_bot_opens_without_naming_a_workspace() {
             json!({"kind":"opened","sessionId":bot,"created":false})
         );
         assert!(sees_send_user(&f, &listener, &bot).await);
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+fn session_tool(method: &str, name: &str) -> contract::ServiceTool {
+    contract::ServiceTool {
+        nestable: false,
+        input: contract::ToolInput::Json,
+        presentation: None,
+        title: None,
+        result: contract::ToolResult::Json,
+        confirmation: contract::ToolConfirmation::Preapproved,
+        name: name.into(),
+        description: "Read a conversation.".into(),
+        target: maka_host_runtime::application::ServiceTarget::Export {
+            name: "agent".into(),
+        },
+        method: method.into(),
+    }
+}
+
+#[tokio::test]
+async fn the_bot_can_read_conversations_but_is_not_given_tools_that_change_them() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            None,
+            |settings| {
+                settings.bot = true;
+                settings.tools = vec![
+                    session_tool("list", "SessionList"),
+                    session_tool("observe", "SessionRead"),
+                    session_tool("send", "SessionSend"),
+                    session_tool("changeSession", "SessionChange"),
+                ];
+            },
+        )
+        .await;
+        let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        let held = f
+            .owner
+            .session(&bot)
+            .await
+            .unwrap()
+            .configuration
+            .tools
+            .unwrap();
+        assert!(held.iter().any(|name| name == "SessionList"), "{held:?}");
+        assert!(held.iter().any(|name| name == "SessionRead"), "{held:?}");
+        assert!(
+            !held
+                .iter()
+                .any(|name| name == "SessionSend" || name == "SessionChange"),
+            "tools that change or message a conversation are not granted: {held:?}"
+        );
+
+        // The Bot sees the user's conversation through SessionList.
+        let ordinary = f.create("Quarterly planning").await;
+        f.send(&bot).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        let names = tool_names(&sent);
+        assert!(names.contains(&"SessionList".to_owned()), "{names:?}");
+        assert!(!names.contains(&"SessionSend".to_owned()), "{names:?}");
+        service_tools::named_tool_response(
+            &mut socket,
+            "SessionList",
+            json!({"filter":"all","position":{"kind":"start"}}),
+        )
+        .await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        let result = last_tool_result(&sent);
+        assert!(
+            result.contains("Quarterly planning") && result.contains(&ordinary),
+            "{result}"
+        );
+        response(&mut socket).await;
+        idle(&f, &bot).await;
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })
