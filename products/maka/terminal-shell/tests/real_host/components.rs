@@ -203,6 +203,12 @@ async fn compaction_waiting_keeps_background_elapsed_time_and_completion_uses_re
             .iter()
             .any(|node| node.label == "Copy user message")
     );
+    support::click_button(&mut view, "Use Chinese").await;
+    wait_view(&mut view, |screen| {
+        screen.contains("执行计划：FIXTURE_PLAN")
+    })
+    .await;
+    assert!(!view.snapshot().contains("Executing plan:"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

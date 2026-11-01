@@ -100,8 +100,8 @@ export function MessageRow({
           );
         // The Host wrote this message to start an approved Plan; the model keeps
         // the full request, and the conversation names the Plan it ran.
-        const note = row().role === 'user' ? originLabel(row().origin) : null;
-        if (note) return <NoteDivider label={note} />;
+        const note = () => (row().role === 'user' ? originLabel(row().origin) : null);
+        if (note()) return <NoteDivider label={note()!} />;
         // A failure is a notice about the run, not an answer: one quiet line, with
         // no source view since its source is the same text.
         if (row().role === 'failure')

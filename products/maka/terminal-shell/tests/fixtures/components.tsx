@@ -25,6 +25,7 @@ import { host as nativeHost } from 'maka/host';
 import { SessionPermissionsSelect } from '../../../workbench/app/SessionPermissionsSelect';
 import { InteractionComposer } from '../../../workbench/app/InteractionComposer';
 import { CompactionDivider } from '../../../workbench/app/CompactionDivider';
+import { currentLocale } from '../../../workbench/app/locale';
 import { MessageRow } from '../../../workbench/app/MessageRow';
 import type { Row } from '../../../workbench/app/history';
 import { WorkspaceBrowser } from '../../../workbench/app/WorkspaceBrowser';
@@ -507,6 +508,13 @@ function Compaction() {
         onPress={() => state.set('completed')}
       >
         <Text>Complete compaction</Text>
+      </Button>
+      <Button
+        accessibilityLabel="Use Chinese"
+        style={{ height: 32, flexShrink: 0 }}
+        onPress={() => currentLocale.set('zh-CN')}
+      >
+        <Text>Use Chinese</Text>
       </Button>
       <Each of={state() === 'background' ? [] : [state()]} key={(value) => value}>
         {(value) =>

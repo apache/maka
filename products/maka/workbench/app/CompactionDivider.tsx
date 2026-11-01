@@ -56,9 +56,10 @@ export function CompactionDivider(props: CompactionDividerProps) {
 export function NoteDivider(props: { label: string }) {
   // The terminal draws a border as a line of cells; the desktop paints no
   // zero-height border, so there the line is a filled point.
-  const lineStyle = platform.isTerminal
-    ? { flex: 1, borderTopWidth: 1, borderTopColor: C.line }
-    : { flex: 1, height: 1, backgroundColor: C.line };
+  const lineStyle = () =>
+    platform.isTerminal
+      ? { flex: 1, borderTopWidth: 1, borderTopColor: C.line }
+      : { flex: 1, height: 1, backgroundColor: C.line };
   return (
     <View
       style={{
@@ -70,7 +71,7 @@ export function NoteDivider(props: { label: string }) {
         flexShrink: 0,
       }}
     >
-      <View style={lineStyle} />
+      <View style={lineStyle()} />
       <Text
         style={[
           { color: C.muted, ...captionTextStyle, flexShrink: 1 },
@@ -79,7 +80,7 @@ export function NoteDivider(props: { label: string }) {
       >
         {props.label}
       </Text>
-      <View style={lineStyle} />
+      <View style={lineStyle()} />
     </View>
   );
 }

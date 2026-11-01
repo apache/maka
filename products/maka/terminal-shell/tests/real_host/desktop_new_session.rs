@@ -899,11 +899,14 @@ async fn desktop_plans_first_then_runs_the_approved_plan() {
     // The Host wrote the execution's opening message: the conversation names the
     // Plan there, and only the message the user typed can be copied or edited.
     desktop
-        .until("the Plan execution message offered the user's actions", || {
-            (desktop.controls("Copy user message").len() == 1
-                && desktop.controls("Edit and resend in a fork").len() == 1)
-                .then_some(())
-        })
+        .until(
+            "the Plan execution message offered the user's actions",
+            || {
+                (desktop.controls("Copy user message").len() == 1
+                    && desktop.controls("Edit and resend in a fork").len() == 1)
+                    .then_some(())
+            },
+        )
         .await;
     desktop.artifact("plan-execution");
     // Approving runs the Plan without leaving planning mode.
