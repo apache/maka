@@ -23,7 +23,7 @@ use maka_agent_facts::model::recorded::{CompletionPart, ModelPartRecord};
 use maka_agent_facts::model::{ModelPart, TextKind};
 use std::collections::BTreeMap;
 
-mod reasoning;
+pub(crate) mod reasoning;
 
 pub(super) struct Step {
     id: String,
@@ -107,7 +107,12 @@ impl Step {
         let options = provider_options.as_deref().cloned();
         let interrupted =
             failed && !(*text_kind == TextKind::Thinking && reasoning::finalized(options.as_ref()));
-        let body = text.chunks().collect();
+        let body = match text_kind {
+            TextKind::Thinking => reasoning::display_text(text, options.as_ref()),
+            TextKind::Text => text.clone(),
+        }
+        .chunks()
+        .collect();
         let (text, thinking) = match text_kind {
             TextKind::Text => (body, None),
             TextKind::Thinking => (

@@ -712,3 +712,45 @@ fn tool_acceptance_preserves_call_result_identity_and_original_positions() {
         assert!(usage.position < execution.position);
     }
 }
+
+#[test]
+fn reasoning_summary_items_are_paragraphs_in_history_without_changing_model_text() {
+    for options in [
+        json!({"openai":{"responsesReplay":{"textField":"summary","parts":[
+            {"bytes":14}, {"bytes":0}, {"bytes":9}
+        ]}}}),
+        json!({"makaResponses":{"summaryPartLengths":[8,0,9]}}),
+    ] {
+        let original = std::sync::Arc::new(ModelPart::Text {
+            text_kind: TextKind::Thinking,
+            text: "**检查🙂****Build**".into(),
+            provider_options: Some(options.into()),
+        });
+        let mut facts = events(InvocationOutcome::Completed);
+        let Fact::ModelCompleted { output, .. } = &mut facts[2].event.fact else {
+            unreachable!()
+        };
+        let CompletionPart::Own(record) = &mut output.parts[0] else {
+            unreachable!()
+        };
+        record.part = original.clone();
+        let mut view = InvocationView::new();
+        let mut displayed = Vec::new();
+        for fact in facts {
+            for row in view.push(&fact).unwrap() {
+                if let Content::Assistant {
+                    thinking: Some(thinking),
+                    ..
+                } = row.message.content
+                {
+                    displayed.push(thinking.text);
+                }
+            }
+        }
+        assert_eq!(displayed, ["**检查🙂**\n\n**Build**"]);
+        let ModelPart::Text { text, .. } = original.as_ref() else {
+            unreachable!()
+        };
+        assert_eq!(text.to_string(), "**检查🙂****Build**");
+    }
+}

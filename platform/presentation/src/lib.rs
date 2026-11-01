@@ -26,6 +26,7 @@ mod message;
 pub mod navigation;
 pub mod shell;
 mod step;
+pub use step::reasoning::display_text as reasoning_text;
 mod tools;
 pub use tools::project_tool_boundary;
 mod user;

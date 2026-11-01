@@ -146,11 +146,11 @@ async fn thinking_disclosure_renders_inline_markdown_and_keeps_formatted_body() 
     assert!(!screen.contains("Thinking ·"));
     assert!(!screen.contains("**Opening Reddit homepage**"));
     support::click_button(&mut view, title).await;
-    let screen = wait_view(&mut view, |screen| {
+    wait_view(&mut view, |screen| {
         screen.contains("Checking local models and AI coding.")
+            && !screen.contains("**Opening Reddit homepage**")
     })
     .await;
-    assert!(!screen.contains("**Opening Reddit homepage**"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

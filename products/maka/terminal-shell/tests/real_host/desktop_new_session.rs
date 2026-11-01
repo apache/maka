@@ -81,7 +81,7 @@ impl Desktop {
         address: &Path,
         dimensions: gpui::Size<gpui::DevicePixels>,
         appearance: nsh_core::platform::Appearance,
-        preview: Option<(String, &str)>,
+        preview: Option<(String, &str, &str)>,
     ) -> Self {
         let client = fixture.client_at(address).await;
         let bindings = Bindings::new(client.clone(), tokio::runtime::Handle::current());
@@ -91,13 +91,8 @@ impl Desktop {
         );
         config.assets = Some(bindings.assets());
         config.chunk_loader = Some(bindings.chunk_loader());
-        let previewing = preview.is_some();
-        let close_label = match preview.as_ref().map(|(_, locale)| *locale) {
-            Some("zh-CN") => "关闭设置",
-            Some("zh-TW") => "關閉設定",
-            _ => "Close settings",
-        };
-        if let Some((source, locale)) = preview {
+        let preview_ready = preview.as_ref().map(|(_, _, label)| *label);
+        if let Some((source, locale, _)) = preview {
             config
                 .host
                 .set_params(json!({"locale":locale}).as_object().unwrap().clone());
@@ -194,8 +189,8 @@ impl Desktop {
             wake,
             errors,
         };
-        if previewing {
-            desktop.control(close_label).await;
+        if let Some(label) = preview_ready {
+            desktop.control(label).await;
         } else {
             desktop.target_after(None).await;
         }
@@ -1149,7 +1144,7 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
         &fixture.address,
         size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
         appearance,
-        Some((source, "en")),
+        Some((source, "en", "Close settings")),
     )
     .await;
     desktop.press("Edit connection ChatGPT Subscription").await;
@@ -1250,7 +1245,7 @@ async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection()
         &fixture.address,
         size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
         appearance,
-        Some((source, "en")),
+        Some((source, "en", "Close settings")),
     )
     .await;
     desktop.press("Add connection").await;
@@ -1398,7 +1393,15 @@ async fn desktop_settings_translate_subscription_sign_in_and_provider_search() {
         &fixture.address,
         size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
         appearance,
-        Some((source, locale)),
+        Some((
+            source,
+            locale,
+            if locale == "zh-TW" {
+                "關閉設定"
+            } else {
+                "关闭设置"
+            },
+        )),
     )
     .await;
     desktop.press(edit).await;
@@ -1423,6 +1426,37 @@ async fn desktop_settings_translate_subscription_sign_in_and_provider_search() {
         })
         .await;
     desktop.control(compatibility).await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_reasoning_and_tool_status_icons_share_the_activity_layout() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/activity_preview.tsx");
+    let output = fixture.directory.path().join("activity-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(1120), gpui::DevicePixels(800)),
+        nsh_core::platform::Appearance::Dark,
+        Some((source, "en", "Thinking · Check browser connection")),
+    )
+    .await;
+    for index in 0..8 {
+        desktop.control(&format!("Toggle tool tool-{index}")).await;
+    }
+    desktop.artifact("activity-status-icons-collapsed");
+    desktop.press("Thinking · Check browser connection").await;
+    desktop.control("Show thinking source").await;
+    desktop.artifact("activity-status-icons-expanded");
     desktop.close().await;
     fixture.finish().await;
 }

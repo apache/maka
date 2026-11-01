@@ -393,3 +393,25 @@ https://github.com/GitoxideLabs/gitoxide at revision
 dd39fb66e3b1551c9fe849043e39b357a9799ca1. Original license texts,
 finite source hashes and the repository I/O error preservation are in
 third-party/gix-discover/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
+
+Lucide Brain icon (ISC)
+
+products/maka/workbench/app/Icon.tsx uses the Brain SVG paths from
+https://github.com/lucide-icons/lucide at revision
+a630cec77eac6568b989e87e4947a8bfe45caacd, icons/brain.svg.
+
+ISC License
+
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.

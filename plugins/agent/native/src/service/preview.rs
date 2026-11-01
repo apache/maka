@@ -198,7 +198,7 @@ impl Delivery {
             })
             .map_err(|error| error.to_string())?
             .len();
-            let (text, end) = body_piece(body, offset, PAGE_BYTES.saturating_sub(overhead))?;
+            let (text, end) = body_piece(&body, offset, PAGE_BYTES.saturating_sub(overhead))?;
             let PreviewPage::Cut { mut parts, .. } = base else {
                 unreachable!()
             };
@@ -253,11 +253,7 @@ fn page(
     }
 }
 
-fn descriptor<'a>(
-    part: &'a CutPart,
-    step: &str,
-    invocation: &str,
-) -> (PreviewPart, &'a TextBody, bool) {
+fn descriptor(part: &CutPart, step: &str, invocation: &str) -> (PreviewPart, TextBody, bool) {
     let (ordinal, message_id, provider_part_id, started_at, field, text, recorded) = match part {
         CutPart::Text {
             ordinal,
@@ -266,6 +262,7 @@ fn descriptor<'a>(
             provider_part_id,
             text_kind,
             text,
+            provider_options,
             recorded,
         } => (
             Some(*ordinal),
@@ -278,7 +275,11 @@ fn descriptor<'a>(
                     maka_agent_facts::model::TextKind::Thinking => ContentKind::Thinking,
                 },
             },
-            text,
+            if *text_kind == maka_agent_facts::model::TextKind::Thinking {
+                maka_presentation::reasoning_text(text, provider_options.as_deref())
+            } else {
+                text.clone()
+            },
             recorded.is_some(),
         ),
         CutPart::ToolInput(input) => (
@@ -294,7 +295,7 @@ fn descriptor<'a>(
                 name: input.name.clone(),
                 provider_executed: input.provider_executed,
             },
-            &input.text,
+            input.text.clone(),
             false,
         ),
     };
@@ -346,11 +347,19 @@ mod tests {
     use super::*;
 
     fn writer(text: &str, provider_id: &str) -> maka_agent_facts::model::assembly::AttemptWriter {
+        text_writer(text, provider_id, maka_agent_facts::model::TextKind::Text)
+    }
+
+    fn text_writer(
+        text: &str,
+        provider_id: &str,
+        kind: maka_agent_facts::model::TextKind,
+    ) -> maka_agent_facts::model::assembly::AttemptWriter {
         use maka_agent_facts::{
             context::ModelPurpose,
             event::Invocation,
             model::{
-                ModelEvent, TextKind,
+                ModelEvent,
                 assembly::{AttemptBinding, AttemptWriter},
             },
         };
@@ -372,7 +381,7 @@ mod tests {
             .push(
                 ModelEvent::PartStarted {
                     id: provider_id.into(),
-                    text_kind: TextKind::Text,
+                    text_kind: kind,
                     provider_options: None,
                 },
                 UNIX_EPOCH,
@@ -403,6 +412,67 @@ mod tests {
                 UNIX_EPOCH,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn reasoning_preview_delivers_summary_separators_as_an_append_and_matches_history() {
+        use maka_agent_facts::model::{ModelEvent, TextKind};
+        use serde_json::json;
+        let mut writer = text_writer("**检查🙂**", "reasoning", TextKind::Thinking);
+        let mut delivery = Delivery::new("epoch");
+        delivery.current(Some(writer.snapshot()));
+        let PreviewPage::Cut { parts, .. } = delivery.next(4).unwrap().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(parts[0].text, "**检查🙂**");
+        assert_eq!(parts[0].total_bytes, 14);
+
+        writer
+            .push(
+                ModelEvent::PartDelta {
+                    id: "reasoning".into(),
+                    text: "**Build**".into(),
+                    provider_options: Some(json!({"makaSummaryBreaks":[14]})),
+                },
+                UNIX_EPOCH,
+            )
+            .unwrap();
+        delivery.current(Some(writer.snapshot()));
+        let PreviewPage::Cut { parts, .. } = delivery.next(4).unwrap().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(parts[0].offset, 14);
+        assert_eq!(parts[0].text, "\n\n**Build**");
+        assert_eq!(parts[0].total_bytes, 25);
+
+        writer.push(ModelEvent::PartFinished {
+            id: "reasoning".into(), provider_options: Some(json!({
+                "openai":{"responsesReplay":{"textField":"summary","parts":[{"bytes":14},{"bytes":9}]}}
+            })),
+        }, UNIX_EPOCH).unwrap();
+        let snapshot = writer.snapshot();
+        let CutPart::Text {
+            text,
+            provider_options,
+            ..
+        } = &snapshot.parts[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!(text.to_string(), "**检查🙂****Build**");
+        assert_eq!(
+            maka_presentation::reasoning_text(text, provider_options.as_deref()).to_string(),
+            "**检查🙂**\n\n**Build**"
+        );
+        delivery.current(Some(snapshot));
+        let PreviewPage::Cut { parts, .. } = delivery.next(4).unwrap().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(
+            parts.len(),
+            0,
+            "finalized metadata must not duplicate the displayed suffix"
+        );
     }
 
     #[test]

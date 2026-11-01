@@ -111,10 +111,10 @@ impl Decoder {
                 },
                 provider_options: None,
             },
-            Event::PartDelta { id, text } => ModelEvent::PartDelta {
+            Event::PartDelta { id, text, summary_breaks } => ModelEvent::PartDelta {
                 id,
                 text,
-                provider_options: None,
+                provider_options: summary_breaks.map(|breaks| json!({"makaSummaryBreaks": breaks})),
             },
             Event::PartFinished { id, metadata } => ModelEvent::PartFinished {
                 id,

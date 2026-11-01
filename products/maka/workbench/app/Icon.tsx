@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Canvas, Text } from 'nsh';
+import { Canvas, Path2D, Text } from 'nsh';
 import { platform } from 'nsh';
 
 const glyphs = {
@@ -64,6 +64,18 @@ const glyphs = {
   thinking: '◌',
   unread: '●',
 };
+
+// Lucide Brain, used by AI Elements Reasoning. Original paths; ISC notice in LICENSE.
+const brainPath = new Path2D(
+  'M12 18V5 ' +
+    'M15 13a4.17 4.17 0 01-3-4 4.17 4.17 0 01-3 4 ' +
+    'M17.707 6.294A3 3 0 1012 5a3 3 0 10-5.707 1.294 ' +
+    'M17.996 5.125a4 4 0 012.526 5.77 ' +
+    'M18 18a4 4 0 002-7.465 ' +
+    'M19.967 17.482a4 4 0 11-7.967.517 4 4 0 11-7.967-.517 ' +
+    'M6 18a4 4 0 01-2-7.465 ' +
+    'M6.004 5.125a4 4 0 00-2.526 5.77',
+);
 
 export function Icon(props: { name: keyof typeof glyphs; color: string; size?: number }) {
   if (platform.isTerminal)
@@ -441,26 +453,10 @@ export function Icon(props: { name: keyof typeof glyphs; color: string; size?: n
             cx.lineTo(11, 7);
             break;
           case 'thinking':
-            for (const side of [-1, 1]) {
-              const x = (offset: number) => 8 + side * offset;
-              cx.moveTo(8, 3.1);
-              cx.bezierCurveTo(x(0.2), 1.1, x(2.7), 1.1, x(3.5), 3);
-              cx.bezierCurveTo(x(5.4), 2.9, x(6.4), 4.6, x(5.6), 6);
-              cx.bezierCurveTo(x(7), 7, x(7), 9, x(5.7), 10);
-              cx.bezierCurveTo(x(6.3), 12, x(4.8), 13.5, x(3.2), 13);
-              cx.bezierCurveTo(x(2.4), 14.8, 8, 14.7, 8, 12.7);
-              cx.moveTo(x(3.5), 3);
-              cx.bezierCurveTo(x(3.2), 4.4, x(2.6), 5.2, x(1.4), 5.3);
-              cx.moveTo(x(5.6), 6);
-              cx.bezierCurveTo(x(4.2), 5.7, x(2.9), 6.8, x(3.5), 8.3);
-              cx.moveTo(x(5.7), 10);
-              cx.bezierCurveTo(x(4.2), 10.4, x(2.8), 9.5, x(2.4), 8.8);
-              cx.moveTo(x(3.2), 13);
-              cx.bezierCurveTo(x(3.8), 11.8, x(3.2), 10.9, x(2), 10.3);
-            }
-            cx.moveTo(8, 3.1);
-            cx.lineTo(8, 12.7);
-            break;
+            cx.scale(16 / 24, 16 / 24);
+            cx.lineWidth = 2;
+            cx.stroke(brainPath);
+            return;
           case 'activity':
             cx.arc(8, 8, 6, 0, Math.PI * 2);
             cx.moveTo(8, 4);

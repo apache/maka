@@ -80,6 +80,7 @@ pub enum Event {
     PartDelta {
         id: String,
         text: String,
+        summary_breaks: Option<Vec<usize>>,
     },
     PartFinished {
         id: String,
