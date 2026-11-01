@@ -59,6 +59,19 @@ python3 scripts/rust/benchmark-long-task.py \
 
 更大历史使用一次性目录 `MAKA_ENGINE_PERF_FIXTURE_DIR` 和明确版本标签 `MAKA_ENGINE_PERF_FIXTURE_TAG`。关闭的快照按负载设置与夹具源码索引，对比保留产物时保持两者一致。造数据与请求耗时分开，前者可能长得多。测量时停止竞争编译，CPU 剖析另行采集。
 
+## CI
+
+[套件目录](../ci/suites.mjs)定义已维护的构建和测试范围，`just` 与 [workflow](../../.github/workflows/ci.yml)使用同一[执行入口](../ci.mjs)。执行 `just setup` 后，可以查看已提交改动的计划或复现套件：
+
+```sh
+node scripts/ci.mjs plan --base origin/rust-preview
+node scripts/ci.mjs run bridge
+```
+
+PR 根据 Cargo 反向依赖和声明的运行时输入选择范围；共享或无法归属的变更执行完整已维护套件。分支 push 和手动运行也执行全量。包级测试筛选保留各套件原有的 workspace/features 编译配方。GPUI 套件覆盖选定的无窗口 platform 和 terminal 测试，不包含独立 host 的 webview/video 配置。
+
+根 producer 生成包含运行时产品资源的 nextest 归档；测试 worker 执行同一产物的分片。最终 `test` 检查要求所有选中工作成功。Cargo 缓存用于加速构建，不代替测试产物。
+
 ## Windows State Root 所有权
 
 新 State Root 目录在创建时就明确指定当前账号为所有者，并设置私有 ACL。否则，提权后的 Windows 令牌可能默认将所有者设为 Administrators 组。已有目录在 Root 校验前保持原有权限；程序不会接管非空且无法识别的目录。
