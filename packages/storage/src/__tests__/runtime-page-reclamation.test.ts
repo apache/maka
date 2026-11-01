@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -118,6 +118,50 @@ test('runtime reclamation frees at most the page budget per tick and drains incr
       reclaimedPages: 0,
       hasMore: false,
     });
+  });
+});
+
+test('runtime reclamation retries a checkpoint after a pinned reader releases its snapshot', async () => {
+  await withRuntimeDatabase(false, async ({ root, database, reclaim }) => {
+    database.exec('CREATE TABLE reclaim_fixture (payload BLOB NOT NULL)');
+    const insert = database.prepare('INSERT INTO reclaim_fixture VALUES (?)');
+    database.exec('BEGIN');
+    try {
+      for (let index = 0; index < 120; index += 1) insert.run(Buffer.alloc(8192, index));
+      database.exec('COMMIT');
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
+    database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+
+    const path = join(root, 'runtime.sqlite');
+    const reader = new DatabaseSync(path);
+    try {
+      reader.exec('BEGIN');
+      assert.equal(
+        (reader.prepare('SELECT COUNT(*) AS count FROM reclaim_fixture').get() as { count: number })
+          .count,
+        120,
+      );
+      database.exec('DELETE FROM reclaim_fixture');
+      assert.ok(pragma(database, 'freelist_count') > 64);
+
+      for (let tick = 0; tick < 100 && pragma(database, 'freelist_count') > 0; tick += 1) {
+        await reclaim.reclaimFreePages({ maxPages: 64 });
+      }
+      assert.equal(pragma(database, 'freelist_count'), 0);
+      const pinnedSize = (await stat(path)).size;
+      reader.exec('COMMIT');
+
+      assert.deepEqual(await reclaim.reclaimFreePages({ maxPages: 64 }), {
+        reclaimedPages: 0,
+        hasMore: false,
+      });
+      assert.ok((await stat(path)).size < pinnedSize, 'the next idle tick checkpoints the shrink');
+    } finally {
+      reader.close();
+    }
   });
 });
 

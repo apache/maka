@@ -22,6 +22,7 @@ import {
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
 import { runWithStorageRootLease, type StorageRootLease } from './root-authority.js';
+import { SqliteReclamationCheckpoint } from './sqlite-reclamation-checkpoint.js';
 
 export interface RuntimePageReclamation {
   reclaimFreePages(input: { readonly maxPages: number }): Promise<{
@@ -34,6 +35,7 @@ export interface RuntimePageReclamation {
 export function openRuntimePageReclamation(
   rootLease: StorageRootLease<'interactive', 'write'>,
 ): RuntimePageReclamation {
+  const checkpoint = new SqliteReclamationCheckpoint();
   return Object.freeze({
     reclaimFreePages: ({ maxPages }: { readonly maxPages: number }) => {
       if (!Number.isSafeInteger(maxPages) || maxPages <= 0) {
@@ -44,7 +46,7 @@ export function openRuntimePageReclamation(
           schemaMigration: 'require_current',
         });
         try {
-          return reclaimFreePages(databaseLease, maxPages);
+          return reclaimFreePages(databaseLease, maxPages, checkpoint);
         } finally {
           databaseLease.close();
         }
@@ -56,14 +58,19 @@ export function openRuntimePageReclamation(
 function reclaimFreePages(
   lease: OperationalStateDatabaseLease,
   maxPages: number,
+  checkpoint: SqliteReclamationCheckpoint,
 ): { readonly reclaimedPages: number; readonly hasMore: boolean } {
   // An idle tick and an older NONE database must never acquire a write lock.
-  const eligible = lease.transaction('read', () => {
+  const probe = lease.transaction('read', () => {
     const mode = readPragma(lease, 'auto_vacuum');
-    if (mode !== 2) return false;
-    return readPragma(lease, 'freelist_count') > 0;
+    if (mode !== 2) return { incremental: false, hasFreePages: false };
+    return { incremental: true, hasFreePages: readPragma(lease, 'freelist_count') > 0 };
   });
-  if (!eligible) return { reclaimedPages: 0, hasMore: false };
+  if (!probe.incremental) return { reclaimedPages: 0, hasMore: false };
+  if (!probe.hasFreePages) {
+    checkpoint.run(lease.database, 0);
+    return { reclaimedPages: 0, hasMore: false };
+  }
 
   const result = lease.transaction('write', () => {
     const before = readPragma(lease, 'freelist_count');
@@ -73,8 +80,8 @@ function reclaimFreePages(
     const after = readPragma(lease, 'freelist_count');
     return { reclaimedPages: before - after, hasMore: after > 0 && after < before };
   });
-  // PASSIVE does not wait for other readers; it runs after the write commits.
-  if (result.reclaimedPages > 0) lease.database.exec('PRAGMA wal_checkpoint(PASSIVE)');
+  // PASSIVE runs after the write commits and may need a later idle retry.
+  checkpoint.run(lease.database, result.reclaimedPages);
   return result;
 }
 
