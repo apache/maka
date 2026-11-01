@@ -37,7 +37,6 @@ defaults:
 
 env:
   CARGO_INCREMENTAL: "0"
-  CARGO_LOG: cargo::compiler::fingerprint=info
   MBX_GC_AUTO: "1"
   MBX_TARGET_VIEWS: "0"
   MBX_CACHE_LINKS: "0"
