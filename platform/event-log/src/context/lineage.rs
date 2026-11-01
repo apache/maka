@@ -67,7 +67,7 @@ impl EventLog {
                     let selection = Selection::resolve(&mut tx, &scope).await?;
                     safety::closed_boundary(&mut tx, &invocation.session_id, through)
                         .await?;
-                    safety::require_safe_through(
+                    let prior_unknown = safety::require_safe_through(
                         &mut tx,
                         &invocation.session_id,
                         None,
@@ -79,7 +79,7 @@ impl EventLog {
                         &selection,
                         through,
                         through + 1,
-                        false,
+                        prior_unknown,
                     )
                     .await?;
                     tx.commit().await?;

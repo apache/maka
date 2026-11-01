@@ -149,7 +149,7 @@ pub(super) async fn capture(
         cancellation,
         continuation_base,
         &input.invocation.invocation_id,
-        false,
+        source.prior_unknown,
         surface.system(),
         maka_agent_facts::context::ModelPurpose::Summary,
     )

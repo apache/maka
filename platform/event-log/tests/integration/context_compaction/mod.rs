@@ -39,7 +39,7 @@ mod frozen;
 use fixtures::{SUMMARY, closed, prepared};
 
 #[tokio::test]
-async fn forged_summary_source_and_hidden_old_unknowns_never_become_a_baseline() {
+async fn forged_summary_source_is_rejected() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.sqlite");
     let log = EventLog::open(&path).await.unwrap();
@@ -62,17 +62,20 @@ async fn forged_summary_source_and_hidden_old_unknowns_never_become_a_baseline()
         );
     }
     log.append_batch(&pair).await.unwrap();
-    let invocation = Invocation {
-        session_id: "session".into(),
-        turn_id: "unknown".into(),
-        run_id: "unknown".into(),
-        invocation_id: "unknown".into(),
-    };
+    log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_tool_history_can_be_compacted_and_pruned_without_losing_uncertainty() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    closed(&log, "main", 32, 1).await;
     for fact in [
         Fact::InvocationOpened {
             configuration: None,
             input: InvocationInput::Message {
-                content: "new work".into(),
+                content: "inspect the browser".into(),
                 source_messages: Vec::new(),
                 request_fingerprint: None,
             },
@@ -80,11 +83,25 @@ async fn forged_summary_source_and_hidden_old_unknowns_never_become_a_baseline()
         Fact::ToolDispatched {
             presentation: None,
             title: None,
-            operation_id: "hidden".into(),
-            call: ToolCallIdentity::standalone("hidden-call".into()),
-            name: "write".into(),
+            operation_id: "browser-operation".into(),
+            call: ToolCallIdentity::standalone("browser-call".into()),
+            name: "browser".into(),
             input: json!({}),
         },
+    ] {
+        log.append(&fixtures::event("unknown", fact)).await.unwrap();
+    }
+    assert!(matches!(
+        log.prepare_compaction_view(
+            "session",
+            None,
+            &maka_agent_facts::context::CheckpointMode::Standalone
+        )
+        .await,
+        Err(StoreError::HistoryUnsettled)
+    ));
+    log.append(&fixtures::event(
+        "unknown",
         Fact::InvocationEnded {
             outcome: InvocationOutcome::Failed {
                 class: "outcome_unknown".into(),
@@ -92,26 +109,33 @@ async fn forged_summary_source_and_hidden_old_unknowns_never_become_a_baseline()
                 model_failure: None,
             },
         },
-    ] {
-        log.append(&EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap())
-            .await
-            .unwrap();
-    }
-    let error = log
-        .capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
+    ))
+    .await
+    .unwrap();
+    log.close().await.unwrap();
+
+    let log = EventLog::open(&path).await.unwrap();
+    let pair = prepared(&log, "compact").await;
+    log.append_batch(&pair).await.unwrap();
+    log.prepare_prune_candidates("session", None, 0, 0, None)
         .await
-        .unwrap_err();
-    assert!(error.to_string().contains("unresolved prior execution"));
+        .unwrap();
+    let view = log.read_model_view("session", None).await.unwrap();
+    assert_eq!(view.baseline.unwrap().checkpoint.summary.text, SUMMARY);
+    let history = log.prefix(100, 128 * 1024).await.unwrap();
     assert!(
-        log.capture_compaction_context(
-            "session",
-            None,
-            &maka_agent_facts::context::CheckpointMode::Standalone,
-            100_000,
-            64 * 1024 * 1024
-        )
-        .await
-        .is_err()
+        history
+            .events
+            .iter()
+            .any(|stored| matches!(&stored.event.fact,
+        Fact::ToolDispatched { operation_id, .. } if operation_id == "browser-operation"))
+    );
+    assert!(
+        !history
+            .events
+            .iter()
+            .any(|stored| matches!(&stored.event.fact,
+        Fact::ToolSettled { operation_id, .. } if operation_id == "browser-operation"))
     );
     log.close().await.unwrap();
 }

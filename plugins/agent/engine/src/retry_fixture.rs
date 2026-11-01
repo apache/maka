@@ -150,7 +150,7 @@ pub async fn seed_due_model_retry(
                 .await?,
         );
         let source = model_attempt::RequestSource::from(view.as_ref());
-        let surface = Surface::capture(&request_tools, &inner.shared.model, &input, &view, None)?;
+        let surface = Surface::capture(&request_tools, &inner.shared.model, &input, &view)?;
         retained_prompt = Some(
             model_attempt::prompt(
                 &inner,

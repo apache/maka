@@ -314,20 +314,6 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_inp
         assert_ne!(attempts[0].2, attempts[1].2, "each physical attempt has its own identity");
         assert_eq!(facts.events.iter().filter(|s| matches!(s.event.fact,
             Fact::ModelInterrupted { status: ModelInterruption::RetryableFailure, .. })).count(), 1);
-        for fact in [
-            opening("later unknown effect"),
-            Fact::ToolDispatched { presentation: None,
-        title: None, operation_id: "unknown".into(),
-                call: maka_agent_facts::tool_call::ToolCallIdentity::standalone("unknown-call".into()),
-                name: "write".into(), input: json!({}) },
-            Fact::InvocationEnded { outcome: InvocationOutcome::Failed { class: "outcome_unknown".into(), message: None, model_failure: None } },
-        ] {
-            log.append(&EventWrite::plain(RuntimeEvent::new(input(&base, "unknown").invocation, fact)).unwrap()).await.unwrap();
-        }
-        let unsafe_preview = worker.check_continuation(&log.store(), &continuation("unsafe-preview"), &CancellationToken::new()).await;
-        assert!(matches!(&unsafe_preview,
-            Err(RunError::Store(maka_event_log::StoreError::HistoryUnsettled))),
-            "a safe historical cut cannot hide a later unresolved Session effect: {unsafe_preview:?}");
     }).await.expect("continuation must settle");
 }
 

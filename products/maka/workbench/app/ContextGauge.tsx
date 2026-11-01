@@ -28,7 +28,10 @@ export function contextUsageText(usage: ComposerContextUsage): string {
   const share = usage.tokens / usage.window;
   const percent = share > 0 && share < 0.005 ? '<1%' : `${Math.round(share * 100)}%`;
   const tokens = `${usage.approximate ? '≈' : ''}${compact(usage.tokens)}`;
-  return `${tr('Context')} ${tokens} / ${compact(usage.window)} · ${percent}`;
+  const context = `${tr('Context')} ${tokens} / ${compact(usage.window)} · ${percent}`;
+  return usage.outputTokensPerSecond === null
+    ? context
+    : `${context} · ${tr('{speed} tok/s', { speed: usage.outputTokensPerSecond.toFixed(1) })}`;
 }
 
 // A ring for how much of the model's context the conversation uses; the

@@ -51,24 +51,10 @@ pub async fn run(
     if cancellation.is_cancelled() {
         return Err(RunError::Cancelled);
     }
-    let message = matches!(&input.work, RunWork::Message { .. });
     let prior_unknown = tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err(RunError::Cancelled),
-        result = async {
-            if message {
-                inner
-                    .log
-                    .check_manual_message_history(&input.invocation.session_id)
-                    .await
-            } else {
-                inner
-                    .log
-                    .prepare_prune_candidates(&input.invocation.session_id, None, 0, 0, None)
-                    .await
-                    .map(|_| false)
-            }
-        } => result,
+        result = inner.log.check_history(&input.invocation.session_id) => result,
     };
     let prior_unknown = match prior_unknown {
         Ok(value) => value,
@@ -190,9 +176,7 @@ pub async fn run(
     let _ = admitted.send(());
     let result = async {
         let mut inspected_through = 0;
-        if !prior_unknown {
-            prune::run(&inner, &input, &cancellation, &mut inspected_through).await?;
-        }
+        prune::run(&inner, &input, &cancellation, &mut inspected_through).await?;
         if let Some(work) = model_work {
             // Model steps include frozen retry preparation; keep that frame out of the runner.
             Box::pin(steps::run(

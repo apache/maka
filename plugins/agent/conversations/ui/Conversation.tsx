@@ -2078,6 +2078,7 @@ export function Conversation(props: ConversationProps) {
       if (!value?.contextTokens || !value.contextWindow) return null;
       return {
         tokens: value.contextTokens,
+        outputTokensPerSecond: value.outputTokensPerSecond ?? null,
         window: value.contextWindow,
         approximate: value.approximate || value.contextLastKnown,
       };
