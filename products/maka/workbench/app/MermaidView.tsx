@@ -48,6 +48,7 @@ export function MermaidView(props: { source(): string }) {
   const width = signal(0);
   const state = signal<Presentation>({ kind: 'loading' });
   const sourceShown = signal(false);
+  const sourceLabel = () => (sourceShown() ? tr('Hide diagram source') : tr('Show diagram source'));
   let alive = true;
   let generation = 0;
   let running = false;
@@ -137,14 +138,13 @@ export function MermaidView(props: { source(): string }) {
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
         <Text style={{ ...captionTextStyle, color: C.muted }}>Mermaid</Text>
         <Button
+          accessibilityLabel={sourceLabel()}
           style={{ padding: 4 }}
           hoverStyle={controlHoverStyle()}
           focusStyle={controlFocusStyle()}
           onPress={() => sourceShown.set(!sourceShown())}
         >
-          <Text style={{ ...captionTextStyle, color: C.secondary }}>
-            {sourceShown() ? tr('Hide diagram source') : tr('Show diagram source')}
-          </Text>
+          <Text style={{ ...captionTextStyle, color: C.secondary }}>{sourceLabel()}</Text>
         </Button>
       </View>
       <Each of={images()} key={(image) => image.uri}>
