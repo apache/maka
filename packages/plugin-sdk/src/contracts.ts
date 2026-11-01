@@ -40942,6 +40942,9 @@ export const contracts = {
               SettingsProviderSummary: {
                 type: 'object',
                 properties: {
+                  customEndpoint: {
+                    type: 'boolean',
+                  },
                   identity: {
                     $ref: '#/$defs/Identity',
                   },
@@ -40956,7 +40959,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['identity', 'label', 'authentication'],
+                required: ['customEndpoint', 'identity', 'label', 'authentication'],
               },
               Identity: {
                 description:

@@ -55,32 +55,42 @@ export function CatalogModelAssociation(props: {
   const reference = () => owner.model()?.catalogModel;
   return (
     <View style={{ gap: 8 }}>
-      <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Catalog model')}</Text>
-      <Text style={{ ...captionTextStyle, color: C.text }}>
-        {reference()
-          ? `${reference()!.provider} / ${reference()!.modelId}`
-          : tr('Automatic matching')}
+      <Text style={{ ...captionTextStyle, color: C.secondary, fontWeight: '500' }}>
+        {tr('Catalog model')}
       </Text>
-      <If when={owner.model()?.defaults?.catalogMatched === false}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {reference()
-            ? tr('Associated catalog model is unavailable.')
-            : tr('No catalog model matched.')}
-        </Text>
-      </If>
-      <View style={{ flexDirection: 'row', gap: 12 }}>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+        <View style={{ flex: 1, minWidth: 160, gap: 4 }}>
+          <Text
+            style={{
+              ...captionTextStyle,
+              color: C.text,
+              numberOfLines: 1,
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {reference()
+              ? `${reference()!.provider} / ${reference()!.modelId}`
+              : tr('Automatic matching')}
+          </Text>
+          <If when={owner.model()?.defaults?.catalogMatched === false}>
+            <Text style={{ ...captionTextStyle, color: C.muted }}>
+              {reference()
+                ? tr('Associated catalog model is unavailable.')
+                : tr('No catalog model matched.')}
+            </Text>
+          </If>
+        </View>
         <Button
           accessibilityLabel={tr('Associate catalog model')}
           disabled={props.disabled}
           onPress={inputAction((request: ModelAction) => opened.set(request), owner.modelAction())}
           style={controlStyle}
           hoverStyle={controlHoverStyle()}
+          activeStyle={{ backgroundColor: C.line }}
           focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
-          <Text style={{ ...captionTextStyle, color: C.text }}>
-            {tr('Associate catalog model')}
-          </Text>
+          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Choose model')}</Text>
         </Button>
         <If when={reference()}>
           <Button
@@ -92,11 +102,12 @@ export function CatalogModelAssociation(props: {
             })}
             style={controlStyle}
             hoverStyle={controlHoverStyle()}
+            activeStyle={{ backgroundColor: C.line }}
             focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
-            <Text style={{ ...captionTextStyle, color: C.text }}>
-              {tr('Clear catalog association')}
+            <Text style={{ ...captionTextStyle, color: C.secondary }}>
+              {tr('Automatic matching')}
             </Text>
           </Button>
         </If>
@@ -144,7 +155,7 @@ function CatalogModelPicker(props: {
       if (!alive || request !== generation) return;
       models.set(more ? [...models(), ...result.models] : result.models);
       after.set(result.after);
-      if (!more) list?.scrollToIndex({ index: 0, animated: false });
+      if (!more && result.models.length) list?.scrollToIndex({ index: 0, animated: false });
     } catch (reason) {
       if (alive && request === generation) failure.set(renderText(errorText(reason)));
     } finally {
@@ -157,6 +168,7 @@ function CatalogModelPicker(props: {
     props.close();
   };
   const move = (delta: number) => {
+    if (models().length === 0) return;
     const index = Math.max(0, Math.min(models().length - 1, selected() + delta));
     selected.set(index);
     list?.scrollToIndex({ index, animated: false, viewPosition: delta > 0 ? 1 : 0 });
@@ -179,14 +191,14 @@ function CatalogModelPicker(props: {
       <View
         style={{
           width: '100%',
-          maxWidth: 680,
+          maxWidth: 560,
           height: windowSize().height * 0.75,
           maxHeight: '100%',
           minHeight: 0,
           backgroundColor: C.surface,
           borderWidth: 1,
           borderColor: C.line,
-          borderRadius: 16,
+          borderRadius: 12,
           padding: 16,
           gap: 12,
         }}
@@ -202,6 +214,7 @@ function CatalogModelPicker(props: {
             onPress={props.close}
             style={controlStyle}
             hoverStyle={controlHoverStyle()}
+            activeStyle={{ backgroundColor: C.line }}
             focusStyle={controlFocusStyle()}
           >
             <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Close')}</Text>
@@ -210,6 +223,7 @@ function CatalogModelPicker(props: {
         <Input
           accessibilityLabel={tr('Search catalog models')}
           value={query()}
+          placeholder={tr('Search catalog models')}
           autoFocus
           onChange={({ value }) => {
             void search(value);
@@ -221,13 +235,13 @@ function CatalogModelPicker(props: {
           submitBehavior="submit"
           style={{
             color: C.text,
-            height: 40,
+            height: 32,
             backgroundColor: C.background,
             paddingHorizontal: 12,
             borderWidth: 1,
             borderColor: C.line,
             borderRadius: 8,
-            fontSize: 14,
+            ...captionTextStyle,
           }}
           focusStyle={{ borderColor: C.accent }}
           ref={(node) => {
@@ -267,7 +281,9 @@ function CatalogModelPicker(props: {
                 backgroundColor: selected() === index() ? C.raised : C.surface,
               }}
               hoverStyle={controlHoverStyle()}
+              activeStyle={{ backgroundColor: C.line }}
               focusStyle={controlFocusStyle()}
+              disabledStyle={controlDisabledStyle}
             >
               <Text
                 style={{
@@ -301,6 +317,7 @@ function CatalogModelPicker(props: {
             }}
             style={controlStyle}
             hoverStyle={controlHoverStyle()}
+            activeStyle={{ backgroundColor: C.line }}
             focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >

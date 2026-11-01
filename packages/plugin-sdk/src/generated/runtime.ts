@@ -6858,6 +6858,7 @@ export interface SettingsProvidersPage {
   next: number | null;
 }
 export interface SettingsProviderSummary {
+  customEndpoint: boolean;
   identity: Identity;
   label: string;
   authentication: SettingsProviderAuthenticationSummary[];

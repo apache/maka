@@ -20,6 +20,8 @@
 import { cleanup, computed, signal } from 'nsh';
 import type { Host } from './host';
 import { message, UiError } from './text';
+import { sameValue } from '../../../../plugins/shared/value';
+import { providerLabel } from './settingsLabels';
 import type {
   CatalogModelReference,
   CatalogMutationResult,
@@ -168,6 +170,9 @@ export function createModelSettings(
   const connectionQuery = signal(restored?.connectionQuery ?? '');
   const providerQuery = signal(restored?.providerQuery ?? '');
   const modelQuery = signal(restored?.modelQuery ?? '');
+  const openingProvider = signal<SettingsProviderSummary['identity'] | null>(null);
+  const selectedProvider = signal<SettingsProviderSummary['identity'] | null>(null);
+  const failedProvider = signal<SettingsProviderSummary['identity'] | null>(null);
   const revision = signal<number | null>(restored?.revision ?? null);
   const defaultTarget = signal<{
     connectionId: string;
@@ -184,6 +189,7 @@ export function createModelSettings(
   const confirmation = signal<'connection' | 'key' | 'model' | null>(
     restored?.confirmation ?? null,
   );
+  const discardTarget = signal<'connection' | 'model' | null>(null);
   const connectionIndex = computed(() =>
     connections().map((item) => ({
       item,
@@ -202,7 +208,13 @@ export function createModelSettings(
   const providerIndex = computed(() =>
     providers().map((item) => ({
       item,
-      text: [item.label, item.identity.name, item.identity.packageId, item.identity.entryId]
+      text: [
+        item.label,
+        providerLabel(item.label),
+        item.identity.name,
+        item.identity.packageId,
+        item.identity.entryId,
+      ]
         .join('\n')
         .toLowerCase(),
     })),
@@ -269,6 +281,7 @@ export function createModelSettings(
     read += 1;
     loading.set(false);
     modelLoading.set(false);
+    openingProvider.set(null);
   };
   const loadConnections = async (more = false) => {
     if (!alive || !active() || loading() || (more && next() === null)) return;
@@ -327,6 +340,7 @@ export function createModelSettings(
     const generation = ++read;
     loading.set(true);
     error.set('');
+    failedProvider.set(null);
     try {
       let rows = more ? providers() : [];
       for (;;) {
@@ -359,6 +373,8 @@ export function createModelSettings(
   const newConnection = () => {
     if (busy()) return;
     editor.set(null);
+    providerQuery.set('');
+    selectedProvider.set(null);
     discovery.set('idle');
     model.set(null);
     modelQuery.set('');
@@ -369,11 +385,25 @@ export function createModelSettings(
     page.set('providers');
     void loadProviders();
   };
+  const suggestedSlug = (identity: SettingsProviderSummary['identity']) => {
+    const base =
+      identity.name
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'connection';
+    const used = new Set(connections().map((connection) => connection.slug));
+    let slug = base;
+    for (let suffix = 2; used.has(slug); suffix++) slug = `${base}-${suffix}`;
+    return slug;
+  };
   const chooseProvider = async (identity: SettingsProviderSummary['identity']) => {
-    if (!alive || !active() || busy() || page() !== 'providers') return;
+    if (!alive || !active() || busy() || openingProvider() || page() !== 'providers') return;
+    selectedProvider.set(identity);
+    openingProvider.set(identity);
     const generation = ++read;
     loading.set(true);
     error.set('');
+    failedProvider.set(null);
     try {
       const provider: SettingsProvider = await host.query('authentication', 'provider', identity);
       if (!alive || !active() || generation !== read) return;
@@ -390,11 +420,7 @@ export function createModelSettings(
         string,
         unknown
       > | null;
-      const slug =
-        provider.identity.name
-          .toLowerCase()
-          .replace(/[^a-z0-9_-]+/g, '-')
-          .replace(/^-+|-+$/g, '') || 'connection';
+      const slug = suggestedSlug(provider.identity);
       editor.set({
         instance: ++editorInstance,
         baseline: null,
@@ -410,9 +436,15 @@ export function createModelSettings(
       discovery.set('idle');
       page.set('connection');
     } catch (reason) {
-      if (generation === read) report(reason);
+      if (generation === read) {
+        failedProvider.set(identity);
+        report(reason);
+      }
     } finally {
-      if (alive && generation === read) loading.set(false);
+      if (alive && generation === read) {
+        loading.set(false);
+        openingProvider.set(null);
+      }
     }
   };
   const readDetail = async (target: ConnectionVersionBasis, afterCredential = false) => {
@@ -509,10 +541,8 @@ export function createModelSettings(
         !!form.apiKey ||
         form.name !== form.baseline.name ||
         form.enabled !== form.baseline.enabled ||
-        JSON.stringify(configuration(form)) !==
-          JSON.stringify(form.baseline.target.configuration) ||
-        JSON.stringify(overlay(form.overlay)) !==
-          JSON.stringify(form.baseline.editing!.requestBodyOverlay)
+        !sameValue(configuration(form), form.baseline.target.configuration) ||
+        !sameValue(overlay(form.overlay), form.baseline.editing!.requestBodyOverlay)
       );
     } catch {
       return true;
@@ -571,9 +601,7 @@ export function createModelSettings(
       const body = overlay(form.overlay);
       const config = configuration(form);
       const refreshModels =
-        !form.baseline ||
-        !!form.apiKey ||
-        JSON.stringify(config) !== JSON.stringify(form.baseline.target.configuration);
+        !form.baseline || !!form.apiKey || !sameValue(config, form.baseline.target.configuration);
       let result: CatalogMutationResult | null = null;
       const original = form.baseline;
       const expectedCredential = credentialBasis(credential());
@@ -600,13 +628,13 @@ export function createModelSettings(
         const changes: Record<string, unknown> = {};
         if (form.name !== original.name) changes.name = form.name;
         if (form.enabled !== original.enabled) changes.enabled = form.enabled;
-        if (JSON.stringify(config) !== JSON.stringify(original.target.configuration)) {
+        if (!sameValue(config, original.target.configuration)) {
           changes.configuration = config;
           // A connection endpoint change resets discovery in Host. Preserve the
           // explicit per-model choices from the exact editing baseline.
           changes.modelOverrides = original.editing!.modelOverrides;
         }
-        if (JSON.stringify(body) !== JSON.stringify(original.editing!.requestBodyOverlay))
+        if (!sameValue(body, original.editing!.requestBodyOverlay))
           changes.requestBodyOverlay = body;
         if (Object.keys(changes).length)
           result = await mutate('settings', 'update', {
@@ -661,8 +689,7 @@ export function createModelSettings(
           revision: request.input.expected.revision,
         }) &&
         form.baseline.target.connectionId === request.input.expected.connectionId &&
-        JSON.stringify(credentialBasis(credential())) ===
-          JSON.stringify(request.input.expectedCredential) &&
+        sameValue(credentialBasis(credential()), request.input.expectedCredential) &&
         form.provider.descriptor.authentication.some(
           (method) => method.interactive && method.id === request.input.method,
         ) &&
@@ -674,7 +701,7 @@ export function createModelSettings(
       if (
         result.connection.connectionId !== target.connectionId ||
         result.connection.slug !== target.slug ||
-        JSON.stringify(result.connection.provider) !== JSON.stringify(target.provider)
+        !sameValue(result.connection.provider, target.provider)
       )
         throw new UiError(
           'The sign-in receipt refers to another connection. Reload before continuing.',
@@ -703,6 +730,24 @@ export function createModelSettings(
       method,
     },
   });
+  const signIn = async (request: ConnectionAction & { method: string }) => {
+    if (!current(request) || busy()) return;
+    if (!editor()?.baseline || dirty()) await saveConnection(request);
+    if (!alive || editor()?.instance !== request.editor || !editor()?.baseline || dirty()) return;
+    await login.start(loginAction(request.method));
+  };
+  const reloadConnection = (request: ConnectionAction) => {
+    if (!current(request) || !editor()?.baseline) return;
+    return run(async () => {
+      const form = editor()!;
+      const detail = await adopt(basis(form.baseline!), form.instance, 'committed');
+      if (!detail || !alive || editor()?.instance !== form.instance) return;
+      editor.set({ ...editor()!, apiKey: '' });
+      discovery.set('idle');
+      await loadConnections();
+      if (alive) notice.set(message('Connection reloaded.'));
+    });
+  };
   const toggleEnabled = (request: ConnectionAction & { enabled: boolean }) => {
     const form = editor();
     if (current(request) && form && !busy()) editor.set({ ...form, enabled: request.enabled });
@@ -818,6 +863,30 @@ export function createModelSettings(
       }
     }
     return { kind: 'valid', value };
+  };
+  const modelProblem = () => {
+    const value = model();
+    if (!value) return null;
+    const parsed = modelOverride(value);
+    return parsed.kind === 'invalid'
+      ? {
+          field: parsed.field,
+          text: message('{field} must be a positive whole number of tokens.', {
+            field: message(parsed.field),
+          }),
+        }
+      : null;
+  };
+  const modelDirty = () => {
+    const value = model();
+    if (!value) return false;
+    const parsed = modelOverride(value);
+    if (parsed.kind === 'invalid') return true;
+    if (value.originalId === null) return !!value.id.trim() || Object.keys(parsed.value).length > 0;
+    return !sameValue(
+      parsed.value,
+      editor()?.baseline?.editing?.modelOverrides?.[value.originalId] ?? {},
+    );
   };
   const loadModelMetadata = async (request: ModelAction) => {
     const connectionId = editor()!.baseline!.target.connectionId;
@@ -1051,13 +1120,57 @@ export function createModelSettings(
       changed();
     });
   };
+  const leaveConnection = () => {
+    cancelRead();
+    editor.set(null);
+    confirmation.set(null);
+    page.set('connections');
+    void loadConnections();
+  };
+  const leaveEditor = () => {
+    if (editor()?.baseline) leaveConnection();
+    else {
+      cancelRead();
+      editor.set(null);
+      confirmation.set(null);
+      page.set('providers');
+      error.set('');
+      notice.set('');
+    }
+  };
+  const connectionEdited = () => {
+    const form = editor();
+    if (!form) return false;
+    if (form.baseline) return dirty();
+    const defaults = form.provider.descriptor.configurationDefaults as Record<
+      string,
+      unknown
+    > | null;
+    const slug = suggestedSlug(form.provider.identity);
+    return (
+      !!form.apiKey ||
+      form.name !== form.provider.descriptor.label ||
+      form.slug !== slug ||
+      !form.enabled ||
+      form.overlay.trim() !== 'null' ||
+      form.baseUrl !== (defaults?.baseUrl ?? '')
+    );
+  };
   const back = () => {
     if (busy()) return false;
+    if (discardTarget()) {
+      discardTarget.set(null);
+      return false;
+    }
     if (confirmation()) {
       confirmation.set(null);
       return false;
     }
     if (page() === 'model') {
+      if (modelDirty()) {
+        discardTarget.set('model');
+        return false;
+      }
       model.set(null);
       page.set('models');
       return false;
@@ -1067,17 +1180,19 @@ export function createModelSettings(
       return false;
     }
     if (page() !== 'connections') {
-      cancelRead();
-      editor.set(null);
-      confirmation.set(null);
-      page.set('connections');
-      void loadConnections();
+      if (page() === 'connection' && connectionEdited()) {
+        discardTarget.set('connection');
+        return false;
+      }
+      if (page() === 'connection') leaveEditor();
+      else leaveConnection();
       return false;
     }
     return true;
   };
   const deactivate = () => {
     cancelRead();
+    discardTarget.set(null);
     if (editor()) editor.set({ ...editor()!, instance: ++editorInstance });
   };
   const activate = () => {
@@ -1151,6 +1266,9 @@ export function createModelSettings(
     providers,
     connectionQuery,
     providerQuery,
+    openingProvider,
+    selectedProvider,
+    failedProvider,
     modelQuery,
     filteredConnections,
     filteredProviders,
@@ -1171,13 +1289,30 @@ export function createModelSettings(
     pending,
     pendingKnown,
     confirmation,
+    discardTarget,
+    discardEdits(request: ConnectionAction) {
+      if (!current(request) || busy()) return;
+      const target = discardTarget();
+      discardTarget.set(null);
+      if (target === 'model') {
+        model.set(null);
+        page.set('models');
+      } else if (target === 'connection') leaveEditor();
+    },
+    keepEditing() {
+      discardTarget.set(null);
+    },
     dirty,
     action,
     login,
     loginAction,
+    signIn,
+    reloadConnection,
     editableBaseUrl: () =>
       !!editor()?.provider.descriptor.customEndpoint || 'baseUrl' in configuration(editor()!),
     modelAction,
+    modelDirty,
+    modelProblem,
     removalAction,
     loadConnections,
     loadProviders,
@@ -1227,6 +1362,14 @@ export function createModelSettings(
     activate,
     deactivate,
     reset,
+    cancel() {
+      if (page() === 'providers' && providerQuery() && !openingProvider()) {
+        searchProviders('');
+        selectedProvider.set(null);
+        return false;
+      }
+      return back();
+    },
     back,
   };
 }

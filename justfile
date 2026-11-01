@@ -79,7 +79,7 @@ test *args: setup
 # Check the vendored terminal input library with the shared Cargo artifacts.
 [group('Checks')]
 test-termina:
-    cargo test --locked --manifest-path third-party/termina/Cargo.toml --lib --target-dir "${CARGO_TARGET_DIR:-target}"
+    cargo nextest run --profile default --locked --manifest-path third-party/termina/Cargo.toml --lib --target-dir "${CARGO_TARGET_DIR:-target}"
 
 # Check tooling and the exported product; native CLI composition is a Rust integration test.
 [group('Checks')]
