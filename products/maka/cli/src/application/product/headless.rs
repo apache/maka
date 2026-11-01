@@ -137,18 +137,40 @@ fn raise_open_file_limit() {
         );
         return;
     }
-    let mut wanted = limit.rlim_max.min(1 << 16);
-    // macOS refuses a limit above kern.maxfilesperproc, even within the hard limit.
-    while wanted > limit.rlim_cur {
-        let raised = libc::rlimit {
-            rlim_cur: wanted,
-            rlim_max: limit.rlim_max,
-        };
-        // SAFETY: `raised` is a valid rlimit for the duration of the call.
-        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } == 0 {
+    let wanted = limit.rlim_max;
+    #[cfg(target_os = "macos")]
+    let wanted = {
+        let mut maximum: libc::c_int = 0;
+        let mut size = std::mem::size_of_val(&maximum);
+        // SAFETY: the named sysctl writes one c_int into `maximum`; no new value is supplied.
+        if unsafe {
+            libc::sysctlbyname(
+                c"kern.maxfilesperproc".as_ptr(),
+                (&raw mut maximum).cast(),
+                &raw mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        } != 0
+        {
+            eprintln!(
+                "open file limit unchanged: cannot read kern.maxfilesperproc: {}",
+                std::io::Error::last_os_error()
+            );
             return;
         }
-        wanted /= 2;
+        wanted.min(maximum as libc::rlim_t)
+    };
+    if wanted <= limit.rlim_cur {
+        return;
+    }
+    limit.rlim_cur = wanted;
+    // SAFETY: `limit` is a valid rlimit; its hard limit is unchanged.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
+        eprintln!(
+            "open file limit unchanged: cannot raise to {wanted}: {}",
+            std::io::Error::last_os_error()
+        );
     }
 }
 
@@ -647,7 +669,22 @@ mod tests {
             );
             limit
         };
-        let hard = read().rlim_max.min(200);
+        let original = read();
+        #[cfg(not(target_os = "macos"))]
+        {
+            let low = libc::rlimit {
+                rlim_cur: original.rlim_max.min(64),
+                rlim_max: original.rlim_max,
+            };
+            // SAFETY: only this subprocess's soft limit is lowered.
+            assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &low) }, 0);
+            raise_open_file_limit();
+            let raised = read();
+            assert_eq!(raised.rlim_cur, original.rlim_max);
+            assert_eq!(raised.rlim_max, original.rlim_max);
+        }
+
+        let hard = original.rlim_max.min(200);
         let low = libc::rlimit {
             rlim_cur: hard.min(64),
             rlim_max: hard,

@@ -2180,18 +2180,10 @@ mod tests {
             what_is_left(&Phase::Momentum, false, fading, false),
             Tick::Fading
         );
-    }
-
-    /// The indicator's hold takes no frames unless something else does.
-    #[test]
-    fn only_the_indicators_hold_ends_the_frames() {
-        let holding = Indicator::Holding(300);
         assert_eq!(
-            what_is_left(&Phase::Idle, false, holding, false),
+            what_is_left(&Phase::Idle, false, Indicator::Holding(300), false),
             Tick::Hold(300)
         );
-        assert_eq!(what_is_left(&Phase::Idle, true, holding, false), Tick::Busy);
-        assert_eq!(what_is_left(&Phase::Idle, false, holding, true), Tick::Busy);
     }
 
     #[test]

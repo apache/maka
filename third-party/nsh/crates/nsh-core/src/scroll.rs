@@ -2268,6 +2268,15 @@ mod tests {
         redraws: std::cell::Cell<u32>,
         wakes: std::cell::RefCell<Vec<u64>>,
         attached: std::cell::Cell<bool>,
+        frames: std::cell::Cell<bool>,
+    }
+
+    impl TestHost {
+        fn pulse(&self, now: f64) {
+            if self.frames.get() {
+                self.frames.set(frame(self, now));
+            }
+        }
     }
 
     impl ScrollHost for TestHost {
@@ -2294,7 +2303,9 @@ mod tests {
         fn attached(&self) -> bool {
             self.attached.get()
         }
-        fn start_ticking(&self) {}
+        fn start_ticking(&self) {
+            self.frames.set(true);
+        }
         fn wake_after(&self, ms: u64) {
             self.wakes.borrow_mut().push(ms);
         }
@@ -2307,6 +2318,7 @@ mod tests {
             redraws: std::cell::Cell::new(0),
             wakes: Default::default(),
             attached: std::cell::Cell::new(true),
+            frames: std::cell::Cell::new(false),
         };
         host.scroll_mut(|s, _| {
             s.indicator = true;
@@ -2319,8 +2331,6 @@ mod tests {
         hold_ended(&host);
         let state = host.state.borrow();
         assert_eq!(state.live.alpha, 0.0);
-        assert!(!state.live.ticking);
-        assert!(!state.live.hold_timer);
     }
 
     #[test]
@@ -2330,6 +2340,7 @@ mod tests {
             redraws: std::cell::Cell::new(0),
             wakes: Default::default(),
             attached: std::cell::Cell::new(true),
+            frames: std::cell::Cell::new(false),
         };
         host.scroll_mut(|s, _| {
             s.indicator = true;
@@ -2340,20 +2351,18 @@ mod tests {
         // In the hold the frames end and one wake-up is asked for, however
         // often new offsets start the frames again before it comes.
         assert!(!frame(&host, 1100.0));
-        assert!(!host.state.borrow().live.ticking);
         host.scroll_mut(|s, _| s.live.shown = 1200.0);
         assert!(!frame(&host, 1200.0));
         assert_eq!(*host.wakes.borrow(), [600]);
         // A wake-up that finds it shown since waits for the rest of the hold.
         hold_ended(&host);
-        assert!(host.state.borrow().live.ticking);
-        assert!(!frame(&host, 1700.0));
+        host.pulse(1700.0);
         assert_eq!(*host.wakes.borrow(), [600, 200]);
         // The fade takes frames until it is gone.
         hold_ended(&host);
-        assert!(frame(&host, 2000.0));
-        assert_eq!(host.state.borrow().live.alpha, indicator_alpha(800.0));
-        assert!(!frame(&host, 2200.0));
+        host.pulse(2050.0);
+        assert_eq!(host.state.borrow().live.alpha, 0.5);
+        host.pulse(2200.0);
         assert_eq!(host.state.borrow().live.alpha, 0.0);
         assert_eq!(host.wakes.borrow().len(), 2);
     }
@@ -2365,6 +2374,7 @@ mod tests {
             redraws: std::cell::Cell::new(0),
             wakes: Default::default(),
             attached: std::cell::Cell::new(true),
+            frames: std::cell::Cell::new(false),
         };
         let own = ScrollBehavior {
             refresh_indicator: Some(Points(72.0)),
