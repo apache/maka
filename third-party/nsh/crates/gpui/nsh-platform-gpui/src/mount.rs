@@ -116,6 +116,7 @@ impl Mounter {
                 if projected {
                     child.insert_before(parent, before);
                 }
+                crate::transition::resume(surface, child);
                 return;
             }
             ViewKind::InputAccessory => {
@@ -127,6 +128,8 @@ impl Mounter {
         child.insert_before(parent, before);
         if !crate::navigation::reinserted(surface, child) {
             crate::transition::inserted(surface, child, self.layout_animation.as_ref());
+        } else {
+            crate::transition::resume(surface, child);
         }
         if parent.kind() == ViewKind::Stack {
             crate::navigation::stack_changed(surface, parent, Some(child));
@@ -210,16 +213,10 @@ impl Mounter {
                     for view in &views {
                         crate::input::retire_focus_within(surface, view);
                     }
-                    let mut nodes = views.clone();
-                    let mut index = 0;
-                    while index < nodes.len() {
-                        for child in nodes[index].child_views() {
-                            if !nodes.contains(&child) {
-                                nodes.push(child);
-                            }
-                        }
-                        nodes[index].state_mut().live = None;
-                        index += 1;
+                    let mut pending = views.clone();
+                    while let Some(view) = pending.pop() {
+                        pending.extend(view.child_views());
+                        crate::transition::retired(&view);
                     }
                     crate::navigation::park(surface, &views);
                 }

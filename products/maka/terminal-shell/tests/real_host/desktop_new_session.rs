@@ -1621,3 +1621,79 @@ async fn desktop_context_tooltip_includes_output_speed() {
     desktop.close().await;
     fixture.finish().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_loading_indicator_keeps_rotating_after_scrolling_away_and_back() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/loading_preview.tsx");
+    let output = fixture.directory.path().join("loading-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(640), gpui::DevicePixels(400)),
+        nsh_core::platform::Appearance::Dark,
+        Some((source, "en", "Bottom")),
+    )
+    .await;
+    let icon = Bounds::new(point(px(0.), px(60.)), size(px(24.), px(24.)));
+    let painted = |pixels: &[u8]| pixels.chunks_exact(4).filter(|rgba| rgba[0] > 80).count() > 10;
+    let mut first = desktop
+        .until("initial loading indicator was not painted", || {
+            desktop.pixels(icon).filter(|pixels| painted(pixels))
+        })
+        .await;
+    for _ in 0..3 {
+        first = desktop
+            .until(
+                "loading indicator did not rotate on initial display",
+                || {
+                    desktop
+                        .pixels(icon)
+                        .filter(|pixels| painted(pixels) && *pixels != first)
+                },
+            )
+            .await;
+    }
+    desktop.press("Bottom").await;
+    desktop.control("Row 199").await;
+    desktop.press("Top").await;
+    desktop.control("Row 0").await;
+    let mut returned = desktop
+        .until("returned loading indicator was not painted", || {
+            desktop.pixels(icon).filter(|pixels| painted(pixels))
+        })
+        .await;
+    for _ in 0..3 {
+        returned = desktop
+            .until(
+                "loading indicator stopped after returning to its row",
+                || {
+                    desktop
+                        .pixels(icon)
+                        .filter(|pixels| painted(pixels) && *pixels != returned)
+                },
+            )
+            .await;
+    }
+    if std::env::var_os("MAKA_UI_ARTIFACT_DIR").is_some() {
+        for frame in 0..12 {
+            desktop
+                .wait(
+                    "loading animation recording",
+                    tokio::time::sleep(Duration::from_millis(80)),
+                )
+                .await;
+            desktop.artifact(&format!("loading-after-scroll-{frame:02}"));
+        }
+    }
+    desktop.artifact("loading-after-scroll");
+    desktop.close().await;
+    fixture.finish().await;
+}
