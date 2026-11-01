@@ -2217,6 +2217,33 @@ describe('builtin read tools path containment', () => {
       await rm(outside, { recursive: true, force: true });
     }
   });
+
+  test('Glob drops matches reached through a directory symlink that leaves the session cwd', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-glob-link-'));
+    const outside = await mkdtemp(join(tmpdir(), 'maka-glob-linkout-'));
+    try {
+      await mkdir(join(root, 'src'), { recursive: true });
+      await writeFile(join(root, 'src', 'inner.txt'), 'in', 'utf8');
+      await writeFile(join(outside, 'secret.txt'), 'out', 'utf8');
+      await symlink(outside, join(root, 'link-out'));
+      const glob = tool('Glob');
+
+      // `resolve()` normalizes the spelling but does not follow the directory
+      // symlink, so lexical containment admits `link-out/secret.txt` even
+      // though its real location is outside; containment must be decided in
+      // real-path space, matching the skills-discovery idiom.
+      const linked = await runTool(glob, { pattern: 'link-out/**/*.txt' }, root);
+      assert.deepStrictEqual((linked as { files: string[] }).files, []);
+
+      // A symlinked directory that stays inside the root keeps its matches.
+      await symlink(join(root, 'src'), join(root, 'alias'));
+      const contained = await runTool(glob, { pattern: 'alias/*.txt' }, root);
+      assert.deepStrictEqual((contained as { files: string[] }).files, ['alias/inner.txt']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('builtin write tools path containment', () => {

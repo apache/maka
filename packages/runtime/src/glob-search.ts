@@ -31,7 +31,10 @@ export async function globFiles(input: {
    * When set, matched paths that resolve outside this root are dropped. Glob
    * expands braces before walking, so a lexically clean pattern like
    * `{a,../*}` can still walk above its search root; the walk cannot be
-   * contained, but its results can.
+   * contained, but its results can. Matches are compared in real-path space:
+   * `resolve()` normalizes spellings but does not follow directory symlinks,
+   * so a pattern naming a `link -> ../outside` directory stays lexically
+   * inside while its real location escapes.
    */
   containmentRoot?: string;
 }): Promise<{ files: string[]; truncated: boolean }> {
@@ -41,6 +44,13 @@ export async function globFiles(input: {
   const limit = input.limit ?? 200;
   let probingOverflow = false;
   let probeIncomplete = false;
+  // Containment is decided on real paths (skills-discovery idiom: realpath
+  // both sides, then the pure predicate). Cost: one realpath for the root plus
+  // at most `limit` for the kept-or-dropped matches, on an interactive tool
+  // call. A root that cannot be realpath'd is an infrastructure failure and
+  // propagates; the walk cannot claim containment it cannot place.
+  const containmentReal =
+    input.containmentRoot !== undefined ? await fs.realpath(input.containmentRoot) : undefined;
   function record(error: NodeJS.ErrnoException, path: string): void {
     // Speculative literal components may miss. A directory already admitted by
     // cwd, stat, or enumeration disappearing instead makes this walk incomplete.
@@ -81,11 +91,19 @@ export async function globFiles(input: {
   })) {
     // Dropped escapes do not count toward the limit: the cap bounds returned
     // files, not walked ones.
-    if (
-      input.containmentRoot !== undefined &&
-      !isPathInside(input.containmentRoot, resolve(input.cwd, file))
-    )
-      continue;
+    if (containmentReal !== undefined) {
+      let matchReal: string;
+      try {
+        matchReal = await fs.realpath(resolve(input.cwd, file));
+      } catch {
+        // The match cannot be placed in the root's path space. Dropping it
+        // silently would read the walk as complete, so flag incompleteness
+        // the way vanished directories already do.
+        probeIncomplete = true;
+        continue;
+      }
+      if (!isPathInside(containmentReal, matchReal)) continue;
+    }
     if (files.length >= limit) {
       // One match past the cap is the only proof the pattern had more to give.
       truncated = true;
