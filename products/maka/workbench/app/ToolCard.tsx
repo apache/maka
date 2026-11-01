@@ -33,7 +33,10 @@ import {
   Disclosure,
   disclosureTitleStyle,
   IconButton,
+  textTooltip,
 } from './ui';
+import { LoadingIndicator } from './Loading';
+import type { ToolActivity } from './toolActivity';
 import { Icon } from './Icon';
 import { viewRuntimeContext } from './plugins/viewContext';
 import { PluginView } from './plugins/PluginView';
@@ -41,20 +44,101 @@ import { useHost } from './host';
 
 const detailsGap = 8;
 
-function Status(props: { label: string; success?: boolean; error?: boolean; warning?: boolean }) {
-  const color = () => (props.error ? C.danger : props.warning ? C.warning : C.muted);
+type StatusKind =
+  | 'recorded'
+  | 'success'
+  | 'error'
+  | 'unknown'
+  | 'rejected'
+  | 'stopped'
+  | 'dispatched'
+  | 'pending';
+
+function Status(props: { label: string; kind?: StatusKind }) {
+  const color = () =>
+    props.kind === 'error'
+      ? C.danger
+      : props.kind === 'unknown' || props.kind === 'rejected'
+        ? C.warning
+        : C.muted;
   return (
     <View
       accessible
       accessibilityLabel={props.label}
-      style={[
-        { flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 },
-        { pointerEvents: 'none' },
-      ]}
+      tooltip={textTooltip(() => props.label)}
+      style={{
+        width: 20,
+        height: 20,
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+      }}
     >
-      <Icon name={props.error ? 'close' : props.success ? 'check' : 'activity'} color={color()} />
-      <If when={!props.success}>
-        <Text style={{ ...captionTextStyle, color: color() }}>{props.label}</Text>
+      <If
+        when={platform.isTerminal}
+        else={
+          <View
+            style={{
+              width: 16,
+              height: 16,
+              borderRadius: 8,
+              borderWidth: 1,
+              borderColor: color(),
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <If when={props.kind === 'unknown'}>
+              <Text
+                accessibilityElementsHidden
+                style={{ color: color(), fontSize: 11, lineHeight: 14, fontWeight: '600' }}
+              >
+                ?
+              </Text>
+            </If>
+            <If
+              when={
+                props.kind === 'success' ||
+                props.kind === 'error' ||
+                props.kind === 'rejected' ||
+                props.kind === 'stopped' ||
+                props.kind === 'dispatched'
+              }
+            >
+              <Icon
+                name={
+                  props.kind === 'success'
+                    ? 'check'
+                    : props.kind === 'stopped'
+                      ? 'pause'
+                      : props.kind === 'dispatched'
+                        ? 'send'
+                        : 'close'
+                }
+                size={11}
+                color={color()}
+              />
+            </If>
+            <If when={props.kind === undefined || props.kind === 'recorded'}>
+              <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: color() }} />
+            </If>
+          </View>
+        }
+      >
+        <Text accessibilityElementsHidden style={{ color: color(), lineHeight: 16 }}>
+          {
+            {
+              recorded: '●',
+              success: '✓',
+              error: '×',
+              unknown: '?',
+              rejected: '×',
+              stopped: 'Ⅱ',
+              dispatched: '↑',
+              pending: '○',
+            }[props.kind ?? 'recorded']
+          }
+        </Text>
       </If>
     </View>
   );
@@ -115,9 +199,17 @@ function ProcessOutcome(props: { reference: ToolSourceRef; sessionId: string; th
           return (
             <Status
               label={`${label()}${typeof code() === 'number' ? ` · ${tr('Exit {code}', { code: String(code()) })}` : ''}`}
-              success={phase === 'completed' && !failed()}
-              error={phase !== 'cancelled' && failed()}
-              warning={phase === 'cancelled'}
+              kind={
+                phase === 'orphaned'
+                  ? 'unknown'
+                  : phase === 'cancelled'
+                    ? 'stopped'
+                    : failed()
+                      ? 'error'
+                      : phase === 'completed'
+                        ? 'success'
+                        : 'recorded'
+              }
             />
           );
         }}
@@ -136,13 +228,13 @@ function Outcome(props: { reference: ToolSourceRef; sessionId: string; through: 
         else={
           <Status
             label={kind.content() === 'failed' ? tr('Error') : tr('Recorded')}
-            error={kind.content() === 'failed'}
+            kind={kind.content() === 'failed' ? 'error' : 'recorded'}
           />
         }
       >
         <If
           when={processFamily(cardFamily(props.reference.presentation))}
-          else={<Status label={tr('Completed')} success />}
+          else={<Status label={tr('Completed')} kind="success" />}
         >
           <ProcessOutcome
             reference={props.reference}
@@ -220,6 +312,7 @@ function Field(props: {
 
 export function ToolCard(props: {
   row(): Row;
+  progress?(): ToolActivity['phase'] | null;
   sessionId: string;
   ownerKey(): string;
   through(): number;
@@ -275,22 +368,22 @@ export function ToolCard(props: {
         })
       : [];
   const result = () => (tool() ? reference(tool()!, 'result') : null);
-  const fallbackState = () => {
+  const fallbackState = (): { label: string; kind: StatusKind } => {
     const value = tool();
-    if (value?.result)
-      return value.result.settlement === 'unknown'
-        ? tr('Unknown')
-        : value.result.isError || value.result.settlement === 'failed'
-          ? tr('Error')
-          : value.result.settlement === 'rejected'
-            ? tr('Rejected')
-            : tr('Recorded');
+    if (value?.result) {
+      if (value.result.settlement === 'unknown') return { label: tr('Unknown'), kind: 'unknown' };
+      if (value.result.settlement === 'rejected')
+        return { label: tr('Rejected'), kind: 'rejected' };
+      if (value.result.isError || value.result.settlement === 'failed')
+        return { label: tr('Error'), kind: 'error' };
+      return { label: tr('Recorded'), kind: 'recorded' };
+    }
     // History references describe their fence, never current execution liveness.
     return value?.call
       ? value.call.dispatched
-        ? tr('Dispatched')
-        : tr('Input recorded')
-      : tr('Not completed');
+        ? { label: tr('Dispatched'), kind: 'dispatched' }
+        : { label: tr('Input recorded'), kind: 'pending' }
+      : { label: tr('Not completed'), kind: 'pending' };
   };
   return (
     <View style={{ width: '100%', minWidth: 0, gap: detailsGap }}>
@@ -333,29 +426,32 @@ export function ToolCard(props: {
           {title()}
         </Text>
         <If
-          when={
-            family() &&
-            result() &&
-            tool()?.result?.settlement === 'returned' &&
-            !tool()?.result?.isError
-          }
+          when={props.progress?.() != null}
           else={
-            <Status
-              label={fallbackState()}
-              error={fallbackState() === tr('Error')}
-              warning={fallbackState() === tr('Rejected') || fallbackState() === tr('Unknown')}
-            />
+            <If
+              when={
+                family() &&
+                result() &&
+                tool()?.result?.settlement === 'returned' &&
+                !tool()?.result?.isError
+              }
+              else={<Status label={fallbackState().label} kind={fallbackState().kind} />}
+            >
+              <Each of={result() ? [result()!] : []} key={(value) => value.key}>
+                {(value) => (
+                  <Outcome
+                    reference={value()}
+                    sessionId={props.sessionId}
+                    through={props.row().metadataThrough ?? props.through()}
+                  />
+                )}
+              </Each>
+            </If>
           }
         >
-          <Each of={result() ? [result()!] : []} key={(value) => value.key}>
-            {(value) => (
-              <Outcome
-                reference={value()}
-                sessionId={props.sessionId}
-                through={props.row().metadataThrough ?? props.through()}
-              />
-            )}
-          </Each>
+          <LoadingIndicator
+            label={props.progress?.() === 'preparing' ? tr('Preparing tool') : tr('Running tool')}
+          />
         </If>
       </Disclosure>
       <If when={props.expanded()}>

@@ -228,6 +228,23 @@ impl Desktop {
         std::fs::write(directory.join(format!("{name}.ppm")), ppm).unwrap();
     }
 
+    fn pixels(&self, bounds: Bounds<gpui::Pixels>) -> Option<Vec<u8>> {
+        let guard = self.frame.lock().unwrap();
+        let frame = guard.as_ref()?;
+        let stride = frame.size().width.0 as usize * 4;
+        let left = f32::from(bounds.left()) as usize * 4;
+        let right = f32::from(bounds.right()) as usize * 4;
+        Some(
+            (f32::from(bounds.top()) as usize..f32::from(bounds.bottom()) as usize)
+                .flat_map(|y| {
+                    frame.pixels()[y * stride + left..y * stride + right]
+                        .iter()
+                        .copied()
+                })
+                .collect(),
+        )
+    }
+
     fn pump(&self) {
         self.platform.pump();
         assert!(
@@ -814,7 +831,7 @@ async fn assert_composer_layout_while_sending(
     desktop.assert_composer_geometry().await;
     desktop.key("enter", false);
     let mut reply = desktop.request(&mut fixture).await;
-    reply.thinking("Thinking first.").await;
+    reply.thinking("**Opening Reddit homepage**").await;
     reply.delta("Done.").await;
     reply.finish().await;
     let session = desktop
@@ -832,6 +849,13 @@ async fn assert_composer_layout_while_sending(
             fixture.idle(&desktop.client, &session),
         )
         .await;
+    desktop.press("Turn work details").await;
+    desktop.press("Process group").await;
+    desktop.control("Thinking · Opening Reddit homepage").await;
+    desktop.artifact(&format!("thinking-inline-markdown-{case}"));
+    let previous = desktop.platform.text_input_target();
+    desktop.press("Focus message composer").await;
+    desktop.target_after(previous).await;
     desktop.type_text("COMPOSER_GEOMETRY_AGAIN").await;
     let card = desktop.assert_composer_geometry().await;
     // The card's border sits outside the backdrop the window reports, and icon
@@ -845,6 +869,7 @@ async fn assert_composer_layout_while_sending(
     assert_eq!(turn.left() + px(8.), left);
     assert_eq!(turn.right() - px(8.), right);
     desktop.artifact(&format!("composer-before-send-{case}"));
+    let send = desktop.control("Send message").await;
     gate.arm();
     desktop.key("enter", false);
     desktop
@@ -853,6 +878,15 @@ async fn assert_composer_layout_while_sending(
     let confirming = desktop.control("Focus message composer").await;
     desktop.artifact(&format!("composer-confirming-send-{case}"));
     assert_eq!(confirming, card, "composer moved while sending in {case}");
+    let mut previous = desktop.pixels(send).unwrap();
+    for _ in 0..2 {
+        desktop
+            .until("send progress did not animate", || {
+                (desktop.pixels(send)? != previous).then_some(())
+            })
+            .await;
+        previous = desktop.pixels(send).unwrap();
+    }
     gate.release();
     let mut reply = desktop.request(&mut fixture).await;
     reply.delta("Second reply.").await;

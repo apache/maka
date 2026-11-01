@@ -61,6 +61,7 @@ const glyphs = {
   shield: '◇',
   lock: '▣',
   activity: '◌',
+  thinking: '◌',
   unread: '●',
 };
 
@@ -438,6 +439,16 @@ export function Icon(props: { name: keyof typeof glyphs; color: string; size?: n
             cx.lineTo(5, 4.5);
             cx.arc(8, 4.5, 3, Math.PI, 0);
             cx.lineTo(11, 7);
+            break;
+          case 'thinking':
+            cx.roundRect(2, 2, 12, 9, 4);
+            cx.moveTo(5, 11);
+            cx.lineTo(4, 14);
+            cx.lineTo(8, 11);
+            for (const x of [5, 8, 11]) {
+              cx.moveTo(x + 0.5, 6.5);
+              cx.arc(x, 6.5, 0.5, 0, Math.PI * 2);
+            }
             break;
           case 'activity':
             cx.arc(8, 8, 6, 0, Math.PI * 2);

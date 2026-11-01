@@ -41,6 +41,7 @@ import {
   compact,
   controlStyle,
 } from '../../../../products/maka/workbench/app/ui';
+import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
 import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
@@ -138,7 +139,10 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   };
   const blocked = () => props.session()?.blockedReason() ?? '';
   const confirming = () =>
-    !!props.session()?.recovering() || !!props.session()?.resuming() || !!pending()?.sending();
+    !!props.session()?.loading() ||
+    !!props.session()?.recovering() ||
+    !!props.session()?.resuming() ||
+    !!pending()?.sending();
   const warning = () => (confirming() ? '' : blocked());
   const cannotSend = () =>
     props.blocked?.() ||
@@ -726,18 +730,15 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               activeStyle={{ backgroundColor: C.accent }}
               disabledStyle={{ backgroundColor: C.line }}
             >
-              <Icon
-                name={
-                  primaryStops()
-                    ? 'pause'
-                    : confirming()
-                      ? 'activity'
-                      : resumeSource()
-                        ? 'play'
-                        : 'send'
-                }
-                color={primaryDisabled() ? C.muted : C.background}
-              />
+              <If when={!primaryStops() && confirming()}>
+                <LoadingIndicator color={C.muted} />
+              </If>
+              <If when={primaryStops() || !confirming()}>
+                <Icon
+                  name={primaryStops() ? 'pause' : resumeSource() ? 'play' : 'send'}
+                  color={primaryDisabled() ? C.muted : C.background}
+                />
+              </If>
             </Button>
           </View>
           <If when={fileDragging()}>

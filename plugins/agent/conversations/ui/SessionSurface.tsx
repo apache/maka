@@ -2271,6 +2271,7 @@ function projectComposerSession(
     draft: owner.draft,
     previewImage: owner.previewImage,
     editable: owner.editable,
+    loading: owner.loading,
     blockedReason: owner.blockedReason,
     backend: owner.backend,
     modelDetails: owner.modelDetails,

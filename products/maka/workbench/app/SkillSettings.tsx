@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { LoadingIndicator } from './Loading';
 import { List, Scroll, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import type { SkillSettingsOwner } from './skillSettingsState';
@@ -344,7 +345,7 @@ export function SkillSettings(props: { owner: SkillSettingsOwner }) {
         }}
       </Each>
       <If when={owner.loading()}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Loading…')}</Text>
+        <LoadingIndicator />
       </If>
     </View>
   );

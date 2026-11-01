@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { LoadingState } from './Loading';
 import { cleanup, inputAction, signal, Text, View } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import type { ConversationHandle } from '../../../../plugins/agent/conversations/ui/Conversation';
@@ -107,7 +108,7 @@ export function CompactDialog(props: {
           {tr('Instructions for this compaction only')}
         </Text>
         <If when={state() === 'loading'}>
-          <Text style={{ color: C.muted }}>{tr('Loading…')}</Text>
+          <LoadingState />
         </If>
         <If when={state() === 'ready' || state() === 'submitting'}>
           <SettingsEditor

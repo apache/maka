@@ -137,6 +137,23 @@ async fn composer_slash_command_and_workspace_reference_edit_the_native_draft() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thinking_disclosure_renders_inline_markdown_and_keeps_formatted_body() {
+    let mut view = component("thinking-markdown").await;
+    let title = "Thinking · Opening Reddit homepage";
+    wait_enabled_node(&mut view, title).await;
+    let screen = view.snapshot();
+    assert!(screen.contains("Opening Reddit homepage"));
+    assert!(!screen.contains("Thinking ·"));
+    assert!(!screen.contains("**Opening Reddit homepage**"));
+    support::click_button(&mut view, title).await;
+    let screen = wait_view(&mut view, |screen| {
+        screen.contains("Checking local models and AI coding.")
+    })
+    .await;
+    assert!(!screen.contains("**Opening Reddit homepage**"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skill_completion_is_inserted_and_backspace_deletes_the_whole_native_chip() {
     let mut view = component("composer").await;
     wait_editable_composer(&mut view).await;
@@ -323,4 +340,35 @@ async fn plan_proposal_opens_for_approval_and_then_shows_its_progress() {
     })
     .await;
     assert!(!view.snapshot().contains('◌'), "{}", view.snapshot());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_status_icons_keep_accessible_meanings_without_inline_labels() {
+    let mut view = component("tool-statuses").await;
+    let labels = [
+        "Recorded",
+        "Unknown",
+        "Error",
+        "Rejected",
+        "Dispatched",
+        "Input recorded",
+        "Running tool",
+    ];
+    let screen = wait_view_state(&mut view, |view, _| {
+        let nodes = view.accessibility_snapshot();
+        labels
+            .iter()
+            .all(|label| nodes.iter().any(|node| node.label == *label))
+    })
+    .await;
+    for label in labels {
+        assert!(
+            !screen.contains(label),
+            "status should be an icon, not inline text: {label}"
+        );
+    }
+    assert!(
+        screen.contains('?'),
+        "unknown results need the question-mark icon"
+    );
 }
