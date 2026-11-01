@@ -178,3 +178,19 @@ test('the aggregate accepts only successful planned work, including every select
   const docs = fixture()(['docs/guide.md']);
   checkResults(docs, { plan: { result: 'success' }, tooling: { result: 'success' } });
 });
+
+test('Mermaid dependency patches, UI fixtures and outline font inputs reach their consumers', () => {
+  const plan = fixture();
+  for (const input of [
+    'patches/pele+1.13.0.patch',
+    'products/maka/workbench/tests/fixtures/mermaid-view.tsx',
+  ]) {
+    const selected = plan([input]);
+    assert(selected.suites.root, input);
+    assert(selected.suites.product, input);
+    assert(selected.suites.contracts, input);
+  }
+  assert(
+    plan(['third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf']).suites.root,
+  );
+});

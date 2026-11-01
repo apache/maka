@@ -36,6 +36,7 @@ export const productInputs = [
   ...bundledPackages,
   'products/maka/bundle',
   'packages/plugin-sdk',
+  'patches',
   'plugins/shared',
   'scripts/plugins',
   'scripts/rust/product.mjs',
@@ -53,7 +54,10 @@ export const suites = {
     packages: 'workspace',
     cargoArgs: ['--locked', '--workspace'],
     profile: 'ci',
-    extraInputs: embeddedInputs,
+    extraInputs: [
+      ...embeddedInputs,
+      'third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf',
+    ],
     affectedFilter: true,
   },
   bridge: {

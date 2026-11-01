@@ -20,6 +20,7 @@
 //! The application receives this already connected Host object; it cannot choose a Root.
 
 mod assets;
+mod diagrams;
 mod files;
 mod links;
 mod mutation;
@@ -346,6 +347,18 @@ impl ApplicationHost {
         target: String,
     ) -> Result<links::MarkdownImageSource, String> {
         links::markdown_image(&target)
+    }
+
+    /// Convert diagram labels to paths locally; NSH keeps its existing SVG loader.
+    pub async fn diagram_image(this: Instance<Self>, svg: String) -> Result<String, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, async move {
+            tokio::task::spawn_blocking(move || diagrams::image(&svg))
+                .await
+                .map_err(|error| format!("Diagram worker failed: {error}"))?
+        })
+        .await
     }
 
     /// Hand an HTTP(S) link to this client's system browser, or return an exact
