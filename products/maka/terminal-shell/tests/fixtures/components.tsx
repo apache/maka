@@ -28,7 +28,6 @@ import { SessionPermissionsSelect } from '../../../workbench/app/SessionPermissi
 import { InteractionComposer } from '../../../workbench/app/InteractionComposer';
 import { CompactionDivider } from '../../../workbench/app/CompactionDivider';
 import { currentLocale } from '../../../workbench/app/locale';
-import { MessageRow } from '../../../workbench/app/MessageRow';
 import type { Row } from '../../../workbench/app/history';
 import { WorkspaceBrowser } from '../../../workbench/app/WorkspaceBrowser';
 import type { Browsing, BrowserSession } from '../../../workbench/app/browsing';
