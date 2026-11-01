@@ -86,6 +86,11 @@ export const suites = {
     filter: 'test(terminal::desktop_new_session)',
     extraInputs: embeddedInputs,
   },
+  'native-build': {
+    workspace: 'root',
+    packages: ['maka-cli', 'maka-desktop-shell', 'maka-python-runtime'],
+    extraInputs: embeddedInputs,
+  },
   clippy: {
     workspace: 'root',
     packages: 'workspace',
@@ -173,7 +178,7 @@ export const suites = {
 export const workers = [
   {
     id: 'variants',
-    suites: ['bridge', 'desktop'],
+    suites: ['bridge', 'desktop', 'native-build'],
     runner: 'ubuntu-latest',
     workspace: 'root',
     dependencies: 'headless',

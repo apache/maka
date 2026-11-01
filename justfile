@@ -54,45 +54,39 @@ fmt: setup
 # Verify formatting without rewriting files.
 [group('Checks')]
 fmt-check: setup
-    cargo fmt --all -- --check
-    node node_modules/@biomejs/biome/bin/biome format .
+    node scripts/ci.mjs check format
 
 # Run strict Rust and JavaScript lint checks.
 [group('Checks')]
 lint: setup
-    cargo clippy --config 'build.warnings="deny"' --locked --workspace --all-targets
-    node node_modules/@biomejs/biome/bin/biome lint .
+    node scripts/ci.mjs run clippy
+    node scripts/ci.mjs check lint-js
 
 # Verify generated contracts, TypeScript consumers and the workbench UI sources.
 [group('Checks')]
 typecheck: setup
-    npm --workspace @maka-agent/plugin-sdk run schema:check
-    npm --workspace @maka-agent/plugin-sdk run typecheck
-    npm --workspace @maka-agent/product run typecheck
-    dir="$(mktemp -d)/ui-types" && cargo run --locked -q -p maka-workbench --example ui_types -- "$dir" && node node_modules/typescript/bin/tsc -p "$dir/tsconfig.json"
+    node scripts/ci.mjs run contracts
 
 # Run Rust behavior tests; pass nextest filters after the recipe name.
 [group('Checks')]
 test *args: setup
-    cargo nextest run --locked --workspace "$@"
+    node scripts/ci.mjs run root "$@"
 
 # Check the vendored terminal input library with the shared Cargo artifacts.
 [group('Checks')]
 test-termina:
-    cargo nextest run --profile default --locked --manifest-path third-party/termina/Cargo.toml --lib --target-dir "${CARGO_TARGET_DIR:-target}"
+    node scripts/ci.mjs run termina
 
 # Check tooling and the exported product; native CLI composition is a Rust integration test.
 [group('Checks')]
 test-js: setup
-    node --test scripts/*.test.mjs scripts/rust/*.test.mjs products/maka/workbench/tests/*.test.mjs packages/cli/tests/*.test.mjs
-    npm --workspace @maka-agent/product test
+    node scripts/ci.mjs check tooling-tests
+    node scripts/ci.mjs run product
 
 # Verify source headers and the reviewed dependency and notice snapshots.
 [group('Checks')]
 licenses: setup
-    node scripts/asf-license-headers.mjs check
-    node scripts/rust/dependencies.mjs check
-    node scripts/rust/notices.mjs check
+    node scripts/ci.mjs check licenses
 
 # Build a source-bound native npm package without publishing.
 [group('Release')]

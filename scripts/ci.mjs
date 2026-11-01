@@ -17,14 +17,29 @@
  * under the License.
  */
 
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { command } from './ci/command.mjs';
-import { createPlan, documentation, sharedInput } from './ci/plan.mjs';
-import { manifests } from './ci/suites.mjs';
+import { checkResults, createPlan, documentation, sharedInput } from './ci/plan.mjs';
+import { manifests, suites, workers } from './ci/suites.mjs';
+import { executor } from './ci/run.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+const temporary = process.env.RUNNER_TEMP ?? join(root, 'target/ci');
+const planFile = join(temporary, 'ci-plan.json');
+
+function output(values) {
+  if (process.env.GITHUB_OUTPUT)
+    appendFileSync(
+      process.env.GITHUB_OUTPUT,
+      Object.entries(values)
+        .map(
+          ([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}\n`,
+        )
+        .join(''),
+    );
+}
 
 export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_NAME } = {}) {
   const revision = (
@@ -81,14 +96,79 @@ async function main(args) {
     const result = await plan({ baseline });
     console.log(JSON.stringify(result, null, 2));
     if (process.env.GITHUB_OUTPUT) {
-      appendFileSync(
-        process.env.GITHUB_OUTPUT,
-        `plan=${JSON.stringify(result)}\nroot=${Boolean(result.suites.root)}\nworkers=${JSON.stringify(result.workers)}\n`,
-      );
+      mkdirSync(temporary, { recursive: true });
+      writeFileSync(planFile, JSON.stringify(result));
+      output({ root: Boolean(result.suites.root), workers: result.workers });
     }
     return;
   }
-  throw new Error('Usage: ci.mjs plan [--base REVISION]');
+  if (action === 'check') {
+    await executor(root).check(rest[0]);
+    return;
+  }
+  if (action === 'run') {
+    const [id, ...extra] = rest;
+    if (!suites[id]) throw new Error(`Unknown suite: ${id}`);
+    const worker = workers.find((entry) => entry.suites.includes(id));
+    const run = executor(root, worker);
+    await run.prepare(id, suites[id].filter ?? 'all()', extra);
+    await run.verify(id, suites[id].filter ?? 'all()', extra);
+    return;
+  }
+  if (action === 'gate') {
+    const results = JSON.parse(process.env.MAKA_CI_RESULTS);
+    if (results.plan?.result !== 'success') throw new Error('CI planning did not succeed');
+    const selected = JSON.parse(readFileSync(planFile, 'utf8'));
+    const hasTests = process.env.MAKA_CI_HAS_TESTS;
+    checkResults(
+      selected,
+      results,
+      hasTests === '' || hasTests === undefined ? undefined : JSON.parse(hasTests),
+    );
+    console.log('All planned CI work succeeded');
+    return;
+  }
+  if (action === 'archive') {
+    const selected = JSON.parse(readFileSync(planFile, 'utf8'));
+    const partitions = await executor(root).archive(
+      selected,
+      join(temporary, 'root-tests.tar.zst'),
+    );
+    const version = (await command('cargo', ['nextest', '--version'], { capture: true }))
+      .trim()
+      .split(/\s+/)[1];
+    output({ partitions, has_tests: partitions.length > 0, nextest: version });
+    return;
+  }
+  if (action === 'replay') {
+    mkdirSync(join(root, 'target/tmp'), { recursive: true });
+    await command(
+      'cargo',
+      [
+        'nextest',
+        'run',
+        '--archive-file',
+        join(temporary, 'root-tests.tar.zst'),
+        '--extract-to',
+        root,
+        '--profile',
+        'ci',
+        '--partition',
+        rest[0],
+      ],
+      { cwd: root },
+    );
+    return;
+  }
+  if (action === 'prepare' || action === 'verify') {
+    const selected = JSON.parse(readFileSync(planFile, 'utf8'));
+    const worker = selected.workers.find((entry) => entry.id === rest[0]);
+    if (!worker) throw new Error(`Worker not selected: ${rest[0]}`);
+    const run = executor(root, worker);
+    for (const id of worker.suites) await run[action](id, selected.suites[id].filter);
+    return;
+  }
+  throw new Error('Usage: ci.mjs plan|run|check|prepare|verify|archive|replay|gate');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

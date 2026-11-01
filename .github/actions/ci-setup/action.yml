@@ -1,0 +1,138 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: CI setup
+description: Prepare a suite worker and restore its Cargo caches.
+inputs:
+  role:
+    description: Stable worker identity.
+    required: true
+  workspace:
+    description: Owning Cargo workspace.
+    default: root
+  dependencies:
+    description: Linux native dependency group.
+    default: ""
+  javascript:
+    description: Install locked npm dependencies.
+    default: "false"
+  compile:
+    description: Restore compiler outputs and use mbx on Linux.
+    default: "true"
+  nextest:
+    description: Producer version for archive consumers; otherwise resolve latest.
+    default: ""
+outputs:
+  compiled_key:
+    description: Compiler cache key for this revision.
+    value: ${{ steps.keys.outputs.compiled }}-${{ github.sha }}
+  compiled_hit:
+    description: Whether the exact compiler cache was restored.
+    value: ${{ steps.compiled.outputs.cache-hit }}
+  compiled_writer:
+    description: Whether this worker owns compiler cache publication.
+    value: ${{ steps.keys.outputs.compiled_writer }}
+  downloads_key:
+    description: Source cache key for this revision.
+    value: ${{ steps.keys.outputs.downloads }}
+  downloads_hit:
+    description: Whether the exact source cache was restored.
+    value: ${{ steps.downloads.outputs.cache-hit }}
+  downloads_writer:
+    description: Whether this worker owns source cache publication.
+    value: ${{ steps.keys.outputs.downloads_writer }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version: latest
+    - name: Update Rust
+      shell: bash
+      run: rustup update stable --no-self-update
+    - name: Select Rust tools
+      id: tools
+      shell: bash
+      env:
+        MAKA_CI_ROLE: ${{ inputs.role }}
+        MAKA_CI_NEXTEST: ${{ inputs.nextest }}
+      run: node scripts/ci/setup.mjs tool-list
+    - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+      if: steps.tools.outputs.tools != ''
+      with:
+        tool: cargo-binstall
+    - name: Install Rust tools
+      if: steps.tools.outputs.tools != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        MAKA_CI_ROLE: ${{ inputs.role }}
+        MAKA_CI_NEXTEST: ${{ inputs.nextest }}
+      run: node scripts/ci/setup.mjs tools
+    - name: Install native dependencies
+      if: runner.os == 'Linux' && inputs.dependencies != ''
+      shell: bash
+      env:
+        MAKA_CI_DEPENDENCIES: ${{ inputs.dependencies }}
+      run: node scripts/ci/setup.mjs native
+    - name: Install mbx
+      if: runner.os == 'Linux' && inputs.compile == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: node scripts/ci/setup.mjs mbx
+    - name: Identify Cargo caches
+      id: keys
+      if: inputs.role != 'replay'
+      shell: bash
+      env:
+        MAKA_CI_ROLE: ${{ inputs.role }}
+        MAKA_CI_WORKSPACE: ${{ inputs.workspace }}
+      run: node scripts/ci/setup.mjs keys
+    - uses: actions/cache/restore@v6
+      id: downloads
+      if: inputs.role != 'replay'
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: ${{ steps.keys.outputs.downloads }}
+        restore-keys: |
+          ${{ steps.keys.outputs.downloads }}
+          ${{ steps.keys.outputs.downloads_prefix }}-
+    - uses: actions/cache/restore@v6
+      id: compiled
+      if: inputs.compile == 'true'
+      with:
+        path: target
+        key: ${{ steps.keys.outputs.compiled }}-${{ github.sha }}
+        restore-keys: |
+          ${{ steps.keys.outputs.compiled }}-
+          ${{ steps.keys.outputs.compiled_prefix }}-
+    - uses: actions/cache@v6
+      if: inputs.javascript == 'true'
+      with:
+        path: ~/.npm
+        key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+        restore-keys: npm-${{ runner.os }}-
+    - name: Install JavaScript dependencies
+      if: inputs.javascript == 'true'
+      shell: bash
+      run: |
+        npm install --global --no-audit --no-fund npm@latest
+        node scripts/setup.mjs
