@@ -20,6 +20,7 @@
 import { cleanup, computed, signal } from 'nsh';
 import type { Host } from './host';
 import { message, UiError } from './text';
+import { sameValue } from '../../../../plugins/shared/value';
 import type {
   CatalogModelReference,
   CatalogMutationResult,
@@ -184,6 +185,7 @@ export function createModelSettings(
   const confirmation = signal<'connection' | 'key' | 'model' | null>(
     restored?.confirmation ?? null,
   );
+  const discardTarget = signal<'connection' | 'model' | null>(null);
   const connectionIndex = computed(() =>
     connections().map((item) => ({
       item,
@@ -509,10 +511,8 @@ export function createModelSettings(
         !!form.apiKey ||
         form.name !== form.baseline.name ||
         form.enabled !== form.baseline.enabled ||
-        JSON.stringify(configuration(form)) !==
-          JSON.stringify(form.baseline.target.configuration) ||
-        JSON.stringify(overlay(form.overlay)) !==
-          JSON.stringify(form.baseline.editing!.requestBodyOverlay)
+        !sameValue(configuration(form), form.baseline.target.configuration) ||
+        !sameValue(overlay(form.overlay), form.baseline.editing!.requestBodyOverlay)
       );
     } catch {
       return true;
@@ -571,9 +571,7 @@ export function createModelSettings(
       const body = overlay(form.overlay);
       const config = configuration(form);
       const refreshModels =
-        !form.baseline ||
-        !!form.apiKey ||
-        JSON.stringify(config) !== JSON.stringify(form.baseline.target.configuration);
+        !form.baseline || !!form.apiKey || !sameValue(config, form.baseline.target.configuration);
       let result: CatalogMutationResult | null = null;
       const original = form.baseline;
       const expectedCredential = credentialBasis(credential());
@@ -600,13 +598,13 @@ export function createModelSettings(
         const changes: Record<string, unknown> = {};
         if (form.name !== original.name) changes.name = form.name;
         if (form.enabled !== original.enabled) changes.enabled = form.enabled;
-        if (JSON.stringify(config) !== JSON.stringify(original.target.configuration)) {
+        if (!sameValue(config, original.target.configuration)) {
           changes.configuration = config;
           // A connection endpoint change resets discovery in Host. Preserve the
           // explicit per-model choices from the exact editing baseline.
           changes.modelOverrides = original.editing!.modelOverrides;
         }
-        if (JSON.stringify(body) !== JSON.stringify(original.editing!.requestBodyOverlay))
+        if (!sameValue(body, original.editing!.requestBodyOverlay))
           changes.requestBodyOverlay = body;
         if (Object.keys(changes).length)
           result = await mutate('settings', 'update', {
@@ -661,8 +659,7 @@ export function createModelSettings(
           revision: request.input.expected.revision,
         }) &&
         form.baseline.target.connectionId === request.input.expected.connectionId &&
-        JSON.stringify(credentialBasis(credential())) ===
-          JSON.stringify(request.input.expectedCredential) &&
+        sameValue(credentialBasis(credential()), request.input.expectedCredential) &&
         form.provider.descriptor.authentication.some(
           (method) => method.interactive && method.id === request.input.method,
         ) &&
@@ -674,7 +671,7 @@ export function createModelSettings(
       if (
         result.connection.connectionId !== target.connectionId ||
         result.connection.slug !== target.slug ||
-        JSON.stringify(result.connection.provider) !== JSON.stringify(target.provider)
+        !sameValue(result.connection.provider, target.provider)
       )
         throw new UiError(
           'The sign-in receipt refers to another connection. Reload before continuing.',
@@ -703,6 +700,24 @@ export function createModelSettings(
       method,
     },
   });
+  const signIn = async (request: ConnectionAction & { method: string }) => {
+    if (!current(request) || busy()) return;
+    if (!editor()?.baseline || dirty()) await saveConnection(request);
+    if (!alive || editor()?.instance !== request.editor || !editor()?.baseline || dirty()) return;
+    await login.start(loginAction(request.method));
+  };
+  const reloadConnection = (request: ConnectionAction) => {
+    if (!current(request) || !editor()?.baseline) return;
+    return run(async () => {
+      const form = editor()!;
+      const detail = await adopt(basis(form.baseline!), form.instance, 'committed');
+      if (!detail || !alive || editor()?.instance !== form.instance) return;
+      editor.set({ ...editor()!, apiKey: '' });
+      discovery.set('idle');
+      await loadConnections();
+      if (alive) notice.set(message('Connection reloaded.'));
+    });
+  };
   const toggleEnabled = (request: ConnectionAction & { enabled: boolean }) => {
     const form = editor();
     if (current(request) && form && !busy()) editor.set({ ...form, enabled: request.enabled });
@@ -818,6 +833,30 @@ export function createModelSettings(
       }
     }
     return { kind: 'valid', value };
+  };
+  const modelProblem = () => {
+    const value = model();
+    if (!value) return null;
+    const parsed = modelOverride(value);
+    return parsed.kind === 'invalid'
+      ? {
+          field: parsed.field,
+          text: message('{field} must be a positive whole number of tokens.', {
+            field: message(parsed.field),
+          }),
+        }
+      : null;
+  };
+  const modelDirty = () => {
+    const value = model();
+    if (!value) return false;
+    const parsed = modelOverride(value);
+    if (parsed.kind === 'invalid') return true;
+    if (value.originalId === null) return !!value.id.trim() || Object.keys(parsed.value).length > 0;
+    return !sameValue(
+      parsed.value,
+      editor()?.baseline?.editing?.modelOverrides?.[value.originalId] ?? {},
+    );
   };
   const loadModelMetadata = async (request: ModelAction) => {
     const connectionId = editor()!.baseline!.target.connectionId;
@@ -1051,13 +1090,50 @@ export function createModelSettings(
       changed();
     });
   };
+  const leaveConnection = () => {
+    cancelRead();
+    editor.set(null);
+    confirmation.set(null);
+    page.set('connections');
+    void loadConnections();
+  };
+  const connectionEdited = () => {
+    const form = editor();
+    if (!form) return false;
+    if (form.baseline) return dirty();
+    const defaults = form.provider.descriptor.configurationDefaults as Record<
+      string,
+      unknown
+    > | null;
+    const slug =
+      form.provider.identity.name
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'connection';
+    return (
+      !!form.apiKey ||
+      form.name !== form.provider.descriptor.label ||
+      form.slug !== slug ||
+      !form.enabled ||
+      form.overlay.trim() !== 'null' ||
+      form.baseUrl !== (defaults?.baseUrl ?? '')
+    );
+  };
   const back = () => {
     if (busy()) return false;
+    if (discardTarget()) {
+      discardTarget.set(null);
+      return false;
+    }
     if (confirmation()) {
       confirmation.set(null);
       return false;
     }
     if (page() === 'model') {
+      if (modelDirty()) {
+        discardTarget.set('model');
+        return false;
+      }
       model.set(null);
       page.set('models');
       return false;
@@ -1067,17 +1143,18 @@ export function createModelSettings(
       return false;
     }
     if (page() !== 'connections') {
-      cancelRead();
-      editor.set(null);
-      confirmation.set(null);
-      page.set('connections');
-      void loadConnections();
+      if (page() === 'connection' && connectionEdited()) {
+        discardTarget.set('connection');
+        return false;
+      }
+      leaveConnection();
       return false;
     }
     return true;
   };
   const deactivate = () => {
     cancelRead();
+    discardTarget.set(null);
     if (editor()) editor.set({ ...editor()!, instance: ++editorInstance });
   };
   const activate = () => {
@@ -1171,13 +1248,30 @@ export function createModelSettings(
     pending,
     pendingKnown,
     confirmation,
+    discardTarget,
+    discardEdits(request: ConnectionAction) {
+      if (!current(request) || busy()) return;
+      const target = discardTarget();
+      discardTarget.set(null);
+      if (target === 'model') {
+        model.set(null);
+        page.set('models');
+      } else if (target === 'connection') leaveConnection();
+    },
+    keepEditing() {
+      discardTarget.set(null);
+    },
     dirty,
     action,
     login,
     loginAction,
+    signIn,
+    reloadConnection,
     editableBaseUrl: () =>
       !!editor()?.provider.descriptor.customEndpoint || 'baseUrl' in configuration(editor()!),
     modelAction,
+    modelDirty,
+    modelProblem,
     removalAction,
     loadConnections,
     loadProviders,
