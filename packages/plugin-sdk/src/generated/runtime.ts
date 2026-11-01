@@ -4610,7 +4610,7 @@ export interface ClientOperation {
    */
   reference?: RecoveryRef | null;
   /**
-   * A known returned business outcome; absent is never proof that it did not run.
+   * A terminal business outcome; absent is never proof that it did not run.
    */
   receipt?: Receipt | null;
 }
