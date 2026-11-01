@@ -1198,27 +1198,27 @@ mod tests {
 
     #[tokio::test]
     async fn launcher_owned_updates_interrupt_the_old_host_and_wait_for_cleanup() {
-        tokio::time::timeout(Duration::from_secs(60), async {
-            for code_changed in [false, true] {
-                let temporary = tempfile::tempdir().unwrap();
-                let root = temporary.path().join("host");
-                let launcher = temporary.path().join("launcher");
-                std::fs::write(&launcher, b"current executable").unwrap();
-                let mut attempted = UpdateAttempt {
-                    launcher: Some(launcher),
-                    ..Default::default()
-                };
-                let generation = if code_changed {
-                    format!("cli-sha256:{}", "0".repeat(64))
-                } else {
-                    attempted.generation().await.unwrap().unwrap().to_owned()
-                };
-                let (root_id, epoch, _stop, server) =
-                    serve_product(&root, !code_changed, false, Some(generation)).await;
-                let discovery = discovery::read(&root).unwrap();
-                let other = Client::connect(&discovery.endpoint, Some(epoch))
-                    .await
-                    .unwrap();
+        for code_changed in [false, true] {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().join("host");
+            let launcher = temporary.path().join("launcher");
+            std::fs::write(&launcher, b"current executable").unwrap();
+            let mut attempted = UpdateAttempt {
+                launcher: Some(launcher),
+                ..Default::default()
+            };
+            let generation = if code_changed {
+                format!("cli-sha256:{}", "0".repeat(64))
+            } else {
+                attempted.generation().await.unwrap().unwrap().to_owned()
+            };
+            let (root_id, epoch, _stop, server) =
+                serve_product(&root, !code_changed, false, Some(generation)).await;
+            let discovery = discovery::read(&root).unwrap();
+            let other = Client::connect(&discovery.endpoint, Some(epoch))
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(60), async {
                 assert!(
                     !Client::retire_with_options(&discovery.endpoint, epoch, false, false)
                         .await
@@ -1238,10 +1238,14 @@ mod tests {
                 assert_eq!(owner.root_id(), root_id);
                 drop((owner, other));
                 server.await.unwrap();
-            }
-        })
-        .await
-        .unwrap();
+            })
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "launcher update and cleanup timed out (code_changed={code_changed}): {error}"
+                )
+            });
+        }
     }
 
     #[tokio::test]

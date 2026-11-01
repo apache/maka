@@ -233,6 +233,7 @@ export function executor(root, worker = {}) {
     const count = selected
       .flatMap((suite) => Object.values(suite.testcases))
       .filter((entry) => !entry.ignored && entry['filter-match'].status === 'matches').length;
+    console.log(`Selected ${count} root tests for archive replay`);
     if (!count && plan.suites.root.filter === 'all()')
       throw new Error('The full root test selection was unexpectedly empty');
     if (!count) return [];

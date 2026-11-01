@@ -270,7 +270,7 @@ mod tests {
             definition: ToolDefinition {
                 provider: None,
                 name: "fixture".into(),
-                description: "d".repeat(1024 * 1024 + 1),
+                description: "catalog definition".into(),
                 input_schema: json!({"type":"string"}),
                 freeform: None,
                 output_schema: None,

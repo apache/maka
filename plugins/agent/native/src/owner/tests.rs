@@ -1255,9 +1255,8 @@ async fn cleanup_case(panic: bool) {
         fixture.owner.runs.lock().await.retained_cleanup.len(),
         usize::from(panic)
     );
-    assert_eq!(
-        fixture.owner.runs.lock().await.closing,
-        false,
+    assert!(
+        !fixture.owner.runs.lock().await.closing,
         "one failed invocation must not close the Agent owner"
     );
     assert!(!fixture.owner.stop.is_cancelled());

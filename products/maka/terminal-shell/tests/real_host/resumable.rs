@@ -146,7 +146,7 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn lost_continuation_receipt_blocks_a_new_send_and_recovers_the_original_turn() {
+async fn lost_continuation_receipt_recovers_automatically_without_replaying_the_turn() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let mut fixture = Fixture::open().await;
         let gate = ReplyGate::resume(fixture.directory.path(), fixture.address.clone());
@@ -173,7 +173,7 @@ async fn lost_continuation_receipt_blocks_a_new_send_and_recovers_the_original_t
             () = gate.held.notified() => {},
         }
         drop(confirmation);
-        mutation.disconnect().await;
+        mutation.disconnect().await.unwrap();
         gate.release();
         let mut continuation = fixture.next_request().await;
         continuation.delta("RECOVERED_CONTINUATION_ANSWER").await;
@@ -182,23 +182,22 @@ async fn lost_continuation_receipt_blocks_a_new_send_and_recovers_the_original_t
         client.close().await.unwrap();
         let restarted = fixture.client().await;
         assert!(restarted.operation(id).await.unwrap().receipt.is_none());
+        restarted.save_draft(
+            "agent", &fixture.session, support::EDITOR, None,
+            "LATER_DRAFT_SURVIVES_CONTINUATION_RECOVERY".into(),
+        ).await.unwrap();
         let (mut view, bindings) = fixture.view(restarted.clone(), Some(fixture.session.clone()));
         wait_editable_composer(&mut view).await;
-        wait_view(&mut view, |screen| screen.contains("Check action status (1)")).await;
-        replace_input(&mut view, "Message composer", "LATER_DRAFT_SURVIVES_CONTINUATION_RECOVERY").await;
-        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Send message" && node.state.disabled)).await;
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        let recover = view.accessibility_snapshot().into_iter()
-            .find(|node| node.label == "Check action status (1)").unwrap();
-        support::click_node(&mut view, recover);
+        wait_view(&mut view, |screen| {
+            screen.contains("LATER_DRAFT_SURVIVES_CONTINUATION_RECOVERY")
+                && screen.contains("RECOVERED_CONTINUATION_ANSWER")
+        }).await;
         support::wait_enabled_button(&mut view, "Send message").await;
         let settled = restarted.operation(id).await.unwrap();
         assert_eq!(settled.reference, original.reference);
         assert!(matches!(settled.receipt, Some(Receipt::Recorded {outcome:OperationOutcome::Returned {ref value},..}) if value["kind"] == "started" && value["execution"]["turnId"] != ready["source"]["turnId"]));
         support::wait_draft(&restarted, &fixture.session, "LATER_DRAFT_SURVIVES_CONTINUATION_RECOVERY").await;
         assert!(restarted.pending_controls().await.unwrap().is_empty());
-        support::wait_enabled_button(&mut view, "Dismiss action feedback").await;
-        wait_view(&mut view, |screen| !screen.contains("Original actions checked.")).await;
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
         support::evidence("composer-recovered-continuation", &view.snapshot());
         drop(view);
