@@ -20,7 +20,6 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::sync::{Arc, LazyLock};
 
-const MAX_SVG_BYTES: usize = 4_000_000;
 static FONTS: LazyLock<Arc<usvg::fontdb::Database>> = LazyLock::new(|| {
     let mut fonts = usvg::fontdb::Database::new();
     fonts.load_system_fonts();
@@ -36,9 +35,6 @@ pub(super) fn image(svg: &str) -> Result<String, String> {
 }
 
 fn outline_with_fonts(svg: &str, fonts: Arc<usvg::fontdb::Database>) -> Result<String, String> {
-    if svg.len() > MAX_SVG_BYTES {
-        return Err("Diagram SVG exceeds the size limit".into());
-    }
     if fonts.is_empty() {
         return Err("No local fonts are available for diagram labels".into());
     }
@@ -56,11 +52,7 @@ fn outline_with_fonts(svg: &str, fonts: Arc<usvg::fontdb::Database>) -> Result<S
         ..usvg::Options::default()
     };
     let tree = usvg::Tree::from_str(svg, &options).map_err(|error| error.to_string())?;
-    let outlined = tree.to_string(&usvg::WriteOptions::default());
-    if outlined.len() > 16 * 1024 * 1024 {
-        return Err("Outlined diagram exceeds the image size limit".into());
-    }
-    Ok(outlined)
+    Ok(tree.to_string(&usvg::WriteOptions::default()))
 }
 
 #[cfg(test)]
@@ -206,16 +198,8 @@ mod tests {
     }
 
     #[test]
-    fn svg_size_and_font_failures_report_the_actual_boundary() {
+    fn missing_fonts_fail_explicitly() {
         let valid = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><text y="16">Maka</text></svg>"#;
-        let oversized = valid.replace(
-            "</svg>",
-            &format!("<!--{}--></svg>", "x".repeat(MAX_SVG_BYTES)),
-        );
-        assert_eq!(
-            outline_with_fonts(&oversized, fonts()).unwrap_err(),
-            "Diagram SVG exceeds the size limit"
-        );
         assert_eq!(
             outline_with_fonts(valid, Arc::new(usvg::fontdb::Database::new())).unwrap_err(),
             "No local fonts are available for diagram labels"
@@ -223,8 +207,20 @@ mod tests {
     }
 
     #[test]
+    fn large_svg_documents_are_outlined_without_a_local_size_cap() {
+        // Cross the removed 4 MB input cap without adding rendering complexity.
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="24"><!--{}--><text y="16">Maka</text></svg>"#,
+            "x".repeat(4_000_001)
+        );
+        let outlined = outline_with_fonts(&svg, fonts()).unwrap();
+        assert!(outlined.contains("<path"));
+        assert!(!outlined.contains("<text"));
+    }
+
+    #[test]
     fn superseded_conversion_never_reaches_the_image_view() {
-        use std::{sync::Mutex, time::Duration};
+        use std::sync::Mutex;
         let (send, pending) = std::sync::mpsc::channel();
         let mut app = diagram_app(nsh_core::platform::Renderer::Native, Some(send));
         let images = Arc::new(Mutex::new(Vec::new()));
@@ -244,7 +240,7 @@ mod tests {
             }
         });
         app.wait_for("Rendering diagram…").unwrap();
-        let old = pending.recv_timeout(Duration::from_secs(5)).unwrap();
+        let old = pending.recv_timeout(nsh_testing::WAIT).unwrap();
         app.press("id:update").unwrap();
         app.wait_for("Latest requested").unwrap();
         let old_image = outline_with_fonts(&old.svg, fonts()).unwrap();
@@ -254,7 +250,7 @@ mod tests {
                 STANDARD.encode(&old_image)
             ))
             .unwrap();
-        let latest = pending.recv_timeout(Duration::from_secs(5)).unwrap();
+        let latest = pending.recv_timeout(nsh_testing::WAIT).unwrap();
         assert!(latest.svg.contains("LATEST"));
         // A real UI round trip applies batches while the latest conversion stays pending.
         app.press("role:button[Show diagram source]").unwrap();

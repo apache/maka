@@ -38,9 +38,10 @@ export function diagramSvg(source: string, palette: DiagramPalette, maxWidth: nu
     maxWidth,
     links: false,
     images: false,
-    limit: 50_000,
-    outputLimit: 4_000_000,
-    maxEdges: 1_000,
+    // Disable Pele's policy defaults; this adapter does not impose diagram quotas.
+    limit: Number.POSITIVE_INFINITY,
+    outputLimit: Number.POSITIVE_INFINITY,
+    maxEdges: Number.POSITIVE_INFINITY,
   });
   const variables: Record<string, string> = {
     '--pele-bg': palette.background,
@@ -60,15 +61,21 @@ export function diagramSvg(source: string, palette: DiagramPalette, maxWidth: nu
     if (declaration.startsWith('--') && colon > 0)
       variables[declaration.slice(0, colon)] = declaration.slice(colon + 1);
   }
-  const resolve = (value: string, depth = 0): string => {
-    if (depth > 32) throw new Error('Circular diagram color variable');
+  const resolving = new Set<string>();
+  const resolve = (value: string): string => {
     let previous: string;
     do {
       previous = value;
       value = value.replace(/var\(\s*(--[\w-]+)\s*(?:,([^()]*))?\)/g, (_, name, fallback) => {
         const selected = variables[name] ?? fallback?.trim();
         if (selected === undefined) throw new Error(`Unknown diagram color variable: ${name}`);
-        return resolve(selected, depth + 1);
+        if (resolving.has(name)) throw new Error(`Circular diagram color variable: ${name}`);
+        resolving.add(name);
+        try {
+          return resolve(selected);
+        } finally {
+          resolving.delete(name);
+        }
       });
     } while (value !== previous && value.includes('var('));
     return value;

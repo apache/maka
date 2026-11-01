@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { LoadingState } from './Loading';
 import { cleanup, inputAction, signal, Text, View } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { useHost } from './host';
@@ -200,7 +201,7 @@ export function SessionCompactionPrompt(props: {
           {target.title || tr('Untitled conversation')}
         </Text>
         <If when={state().kind === 'loading'}>
-          <Text style={{ color: C.muted }}>{tr('Loading…')}</Text>
+          <LoadingState />
         </If>
         <Each of={forms()} key={() => target.id}>
           {(value) => (

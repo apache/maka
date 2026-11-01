@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
   createText,
@@ -317,6 +318,15 @@ export function Conversation(props: ConversationProps) {
   const archived = signal(false);
   const run = signal<ConversationStatus>('loading');
   const invocation = signal<string | null>(null);
+  const toolProgressById = computed(
+    () =>
+      new Map(
+        toolActivity()
+          .filter((item) => item.invocationId === invocation())
+          .map((item) => [item.toolUseId, item.phase] as const),
+      ),
+  );
+  const toolProgress = (id: string) => toolProgressById().get(id) ?? null;
   const compacting = signal<AgentCompactionProgress | null>(null);
   const resumable = signal<AgentResumable | null>(null);
   const resuming = signal(false);
@@ -2037,6 +2047,7 @@ export function Conversation(props: ConversationProps) {
     attachments,
     previewImage: props.previewImage,
     editable: () => draftReady() && !savingFailed(),
+    loading: () => !ready() || !draftReady(),
     blockedReason: sendBlockedReason,
     backend: () => backendIdentity(backend()),
     modelDetails,
@@ -2622,9 +2633,9 @@ export function Conversation(props: ConversationProps) {
                   void loadNewer();
               }}
               empty={
-                <Text style={{ color: C.muted, paddingVertical: 32 }}>
-                  {tr('Loading session history…')}
-                </Text>
+                <If when={!ready()}>
+                  <LoadingState label={tr('Loading session history…')} />
+                </If>
               }
             >
               {(key) => (
@@ -2680,6 +2691,7 @@ export function Conversation(props: ConversationProps) {
                             group={group}
                             turn={turn}
                             toolActivity={tool}
+                            toolProgress={toolProgress}
                             state={groupState(initial.group.key)}
                             row={currentRow}
                             rowState={rowState}
@@ -2737,6 +2749,7 @@ export function Conversation(props: ConversationProps) {
                             return item?.kind === 'row' ? (item.repeats ?? 1) : 1;
                           }}
                           toolMaxHeight={() => readingSize().height}
+                          toolProgress={toolProgress}
                           ownerKey={() => initial.rowId}
                           viewState={rowState(initial.rowId)}
                           sessionId={sessionId}

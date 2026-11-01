@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { LoadingIndicator } from './Loading';
 import { textTooltip } from './ui';
 import { message, renderText, type UiText } from './text';
 import { tr } from './locale';
@@ -912,7 +913,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         )}
       </List>
       <If when={browser.loading()}>
-        <Text style={{ color: C.muted }}>{tr('Loading…')}</Text>
+        <LoadingIndicator />
       </If>
       <If when={navigationNotice()}>
         <Text

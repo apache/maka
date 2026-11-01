@@ -33,6 +33,10 @@ Native npm packages include the root legal documents and the reviewed Rust, embe
 
 `plugins/agent/provider-protocol` implements Responses, Chat Completions compatible and Anthropic Messages with protocol-owned Rust input types, wire decoders and stream state. Chat Completions and Anthropic behavior was checked against the relevant unchanged Vercel AI SDK tests at revision `e623e8c88b55066dde769614a16ae51d424974aa` (openai-compatible 3.0.77 and anthropic 4.0.87). The upstream tests and temporary validation bindings are external validation tools and are not distributed with Maka. The product uses the same Rust protocol core through Host-scoped transport in `plugins/agent/model/src/adapters`.
 
+### Workbench icon source
+
+`products/maka/workbench/app/Icon.tsx`: Brain, status and loading icon geometry from Lucide `icons/{brain,circle-check,circle-dot,circle-question-mark,circle-x,circle-arrow-up,circle,circle-pause,loader-circle}.svg`, revision `a630cec77eac6568b989e87e4947a8bfe45caacd`, scaled from 24 to 16 points. SVG circles and lines use equivalent path commands. The ISC and MIT notices are preserved in `LICENSE`; the remaining icons are first-party.
+
 ### Source archive non-text inventory
 
 - `assets/logo.png`: Product artwork reproduced by `scripts/generate-logo.py` from its vector geometry; Apache-2.0.

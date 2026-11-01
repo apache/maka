@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { LoadingIndicator } from './Loading';
 import { inputAction, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import type { ModelSettingsOwner } from './settings';
@@ -98,7 +99,7 @@ export function ConnectionLogin(props: { owner: ModelSettingsOwner; disabled: bo
           </Each>
         </If>
         <If when={owner.login.state()?.kind === 'models'}>
-          <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('Loading models…')}</Text>
+          <LoadingIndicator label={tr('Loading models…')} />
         </If>
         <If when={authorization()}>
           <Text style={{ ...bodyTextStyle, color: C.secondary }}>

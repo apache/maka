@@ -64,3 +64,19 @@ test('theme resolution preserves literal labels, explicit styles and disables di
   assert.match(svg, /fill:#123456/);
   assert.doesNotMatch(svg, /<script|<a\b|href=/);
 });
+
+test('diagram policy does not inherit Pele source, output or edge quotas', () => {
+  // A two-node graph crosses all three former policy thresholds without a huge layout.
+  const source = 'flowchart LR\n' + 'A --> B\n'.repeat(20_000);
+  const { svg } = diagramSvg(source, dark, 720);
+  assert(source.length > 50_000);
+  assert(svg.length > 4_000_000);
+  assert.equal((svg.match(/class="pele-edge"/g) ?? []).length, 20_000);
+});
+
+test('cyclic palette references fail instead of recursing indefinitely', () => {
+  assert.throws(
+    () => diagramSvg('flowchart LR\n A[Start] --> B[Done]', { ...dark, surface: 'var(--_s)' }, 720),
+    /Circular diagram color variable:/,
+  );
+});

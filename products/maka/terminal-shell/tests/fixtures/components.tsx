@@ -20,6 +20,7 @@
 import { mount, platform, signal, Text, View, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import { Composer } from '../../../../../plugins/agent/composer/ui/Composer';
+import { MessageRow } from '../../../workbench/app/MessageRow';
 import type { ComposerSession } from '../../../../../packages/plugin-sdk/src/composer-view.js';
 import { host as nativeHost } from 'maka/host';
 import { SessionPermissionsSelect } from '../../../workbench/app/SessionPermissionsSelect';
@@ -212,6 +213,7 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
     draft,
     changeDraft: (text) => draft.set(text),
     editable: () => true,
+    loading: () => false,
     empty: () => false,
     workspace: () => '/workspace',
     blockedReason: () => '',
@@ -614,9 +616,88 @@ function WorkspacePages(props: { busy: boolean }) {
   );
 }
 
+function ToolStatuses() {
+  const cases = [
+    { settlement: 'returned', dispatched: true },
+    { settlement: 'unknown', dispatched: true },
+    { settlement: 'failed', dispatched: true },
+    { settlement: 'rejected', dispatched: true },
+    { settlement: null, dispatched: true },
+    { settlement: null, dispatched: false },
+    { settlement: null, dispatched: true, progress: 'running' as const },
+  ] as const;
+  return (
+    <HostProvider value={{} as Host}>
+      <View>
+        <Each of={cases}>
+          {(item, index) => (
+            <MessageRow
+              item={() => ({
+                key: `tool-${index()}`,
+                messageId: `tool-${index()}`,
+                field: 'body',
+                role: 'tool_call',
+                text: '',
+                tool: {
+                  toolUseId: `tool-${index()}`,
+                  call: {
+                    position: { sourceSequence: index(), itemIndex: 0 },
+                    name: `fixture_${index()}`,
+                    title: null,
+                    ancestorToolUseIds: [],
+                    pending: item().settlement === null,
+                    dispatched: item().dispatched,
+                  },
+                  result:
+                    item().settlement === null
+                      ? null
+                      : {
+                          settlement: item().settlement,
+                          position: { sourceSequence: index(), itemIndex: 1 },
+                          isError: item().settlement !== 'returned',
+                          image: false,
+                        },
+                },
+              })}
+              toolProgress={() => ('progress' in item() ? (item().progress ?? null) : null)}
+              sessionId="status-session"
+              through={() => 10}
+              previewImage={() => {}}
+              openLink={async () => {}}
+              userScroll={() => {}}
+              toolMaxHeight={() => 300}
+            />
+          )}
+        </Each>
+      </View>
+    </HostProvider>
+  );
+}
+
 const scenario = (nativeHost as unknown as { scenario: string }).scenario;
 mount(() =>
-  scenario.startsWith('workspace-pages') ? (
+  scenario === 'tool-statuses' ? (
+    <ToolStatuses />
+  ) : scenario === 'thinking-markdown' ? (
+    <HostProvider value={{} as Host}>
+      <MessageRow
+        item={() => ({
+          key: 'thinking',
+          messageId: 'thinking',
+          field: 'thinking',
+          role: 'assistant',
+          text: '**Opening Reddit homepage**\n\nChecking local models and AI coding.',
+          prefix: true,
+        })}
+        sessionId="thinking-session"
+        through={() => 1}
+        previewImage={() => {}}
+        openLink={async () => {}}
+        userScroll={() => {}}
+        toolMaxHeight={() => 300}
+      />
+    </HostProvider>
+  ) : scenario.startsWith('workspace-pages') ? (
     <WorkspacePages busy={scenario === 'workspace-pages-busy'} />
   ) : scenario === 'compaction' ? (
     <Compaction />

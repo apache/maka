@@ -237,6 +237,7 @@ export interface ComposerSession<Element = unknown> {
   draft(): string;
   previewImage(image: ComposerImagePreview): void;
   editable(): boolean;
+  loading(): boolean;
   blockedReason(): string;
   backend(): ComposerBackend;
   modelDetails(): ComposerModelDetails;

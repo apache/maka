@@ -41,6 +41,7 @@ import {
   compact,
   controlStyle,
 } from '../../../../products/maka/workbench/app/ui';
+import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
 import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
@@ -137,6 +138,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     if (pending() === owner && owner.picking() === open) owner.openPicker(!open);
   };
   const blocked = () => props.session()?.blockedReason() ?? '';
+  const confirming = () =>
+    !!props.session()?.loading() ||
+    !!props.session()?.recovering() ||
+    !!props.session()?.resuming() ||
+    !!pending()?.sending();
+  const warning = () => (confirming() ? '' : blocked());
   const cannotSend = () =>
     props.blocked?.() ||
     (props.session() === null &&
@@ -723,10 +730,15 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               activeStyle={{ backgroundColor: C.accent }}
               disabledStyle={{ backgroundColor: C.line }}
             >
-              <Icon
-                name={primaryStops() ? 'pause' : resumeSource() ? 'play' : 'send'}
-                color={primaryDisabled() ? C.muted : C.background}
-              />
+              <If when={!primaryStops() && confirming()}>
+                <LoadingIndicator color={C.muted} />
+              </If>
+              <If when={primaryStops() || !confirming()}>
+                <Icon
+                  name={primaryStops() ? 'pause' : resumeSource() ? 'play' : 'send'}
+                  color={primaryDisabled() ? C.muted : C.background}
+                />
+              </If>
             </Button>
           </View>
           <If when={fileDragging()}>
@@ -737,10 +749,10 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
         {/* The terminal reserves the warning row so the composer never jumps; the
             desktop shows it only when there is a warning, so no empty band sits
             under the box. */}
-        <If when={platform.isTerminal || (props.session()?.connected() && blocked())}>
+        <If when={platform.isTerminal || (props.session()?.connected() && warning())}>
           <View style={{ minHeight: 24, paddingTop: 8 }}>
-            <If when={props.session()?.connected() && blocked()}>
-              <Text style={{ color: C.warning, fontSize: 12, lineHeight: 16 }}>{blocked()}</Text>
+            <If when={props.session()?.connected() && warning()}>
+              <Text style={{ color: C.warning, fontSize: 12, lineHeight: 16 }}>{warning()}</Text>
             </If>
           </View>
         </If>

@@ -20,7 +20,7 @@
 import { cleanup, effect, Image, platform, signal, Text, View } from 'nsh';
 import { Button, TextView } from 'nsh/base';
 import { host } from 'maka/host';
-import { diagramSvg } from './mermaid';
+import { diagramSvg, type DiagramPalette } from './mermaid';
 import { tr } from './locale';
 import { C, captionTextStyle, codeTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
 
@@ -52,35 +52,40 @@ export function MermaidView(props: { source(): string }) {
   let alive = true;
   let generation = 0;
   let running = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let pending: { generation: number; diagram: ReturnType<typeof diagramSvg> } | null = null;
+  let frame: ReturnType<typeof requestAnimationFrame> | undefined;
+  let pending: {
+    generation: number;
+    source: string;
+    palette: DiagramPalette;
+    maxWidth: number;
+  } | null = null;
   const drain = async () => {
-    if (running) return;
+    if (!alive || running || !pending) return;
+    const request = pending;
+    pending = null;
     running = true;
     try {
-      while (alive && pending) {
-        const request = pending;
-        pending = null;
-        try {
-          const uri = await host.diagramImage(request.diagram.svg);
-          if (alive && generation === request.generation)
-            state.set({
-              kind: 'image',
-              uri,
-              width: request.diagram.width,
-              height: request.diagram.height,
-            });
-        } catch (error) {
-          if (alive && generation === request.generation)
-            state.set({
-              kind: 'error',
-              message: error instanceof Error ? error.message : String(error),
-            });
-        }
-      }
+      const diagram = diagramSvg(request.source, request.palette, request.maxWidth);
+      const uri = await host.diagramImage(diagram.svg);
+      if (alive && generation === request.generation)
+        state.set({ kind: 'image', uri, width: diagram.width, height: diagram.height });
+    } catch (error) {
+      if (alive && generation === request.generation)
+        state.set({
+          kind: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        });
     } finally {
       running = false;
+      schedule();
     }
+  };
+  const schedule = () => {
+    if (!alive || running || frame !== undefined || !pending) return;
+    frame = requestAnimationFrame(() => {
+      frame = undefined;
+      void drain();
+    });
   };
   effect(() => {
     const source = props.source();
@@ -97,28 +102,15 @@ export function MermaidView(props: { source(): string }) {
       danger: C.danger,
     };
     const current = ++generation;
-    clearTimeout(timer);
-    pending = null;
+    pending = maxWidth > 0 ? { generation: current, source, palette, maxWidth } : null;
     state.set({ kind: 'loading' });
-    if (maxWidth < 1) return;
-    // Coalesce streamed edits; each mounted diagram has at most one native job.
-    timer = setTimeout(() => {
-      if (!alive || generation !== current) return;
-      try {
-        pending = { generation: current, diagram: diagramSvg(source, palette, maxWidth) };
-        void drain();
-      } catch (error) {
-        state.set({
-          kind: 'error',
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }, 200);
+    // Keep only the latest input; parse and outline at most one diagram per frame/job.
+    schedule();
   });
   cleanup(() => {
     alive = false;
     pending = null;
-    clearTimeout(timer);
+    if (frame !== undefined) cancelAnimationFrame(frame);
   });
   const images = () => {
     const current = state();

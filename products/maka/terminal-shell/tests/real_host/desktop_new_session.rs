@@ -81,7 +81,7 @@ impl Desktop {
         address: &Path,
         dimensions: gpui::Size<gpui::DevicePixels>,
         appearance: nsh_core::platform::Appearance,
-        preview: Option<(String, &str)>,
+        preview: Option<(String, &str, &str)>,
     ) -> Self {
         let client = fixture.client_at(address).await;
         let bindings = Bindings::new(client.clone(), tokio::runtime::Handle::current());
@@ -91,13 +91,8 @@ impl Desktop {
         );
         config.assets = Some(bindings.assets());
         config.chunk_loader = Some(bindings.chunk_loader());
-        let previewing = preview.is_some();
-        let close_label = match preview.as_ref().map(|(_, locale)| *locale) {
-            Some("zh-CN") => "关闭设置",
-            Some("zh-TW") => "關閉設定",
-            _ => "Close settings",
-        };
-        if let Some((source, locale)) = preview {
+        let preview_ready = preview.as_ref().map(|(_, _, label)| *label);
+        if let Some((source, locale, _)) = preview {
             config
                 .host
                 .set_params(json!({"locale":locale}).as_object().unwrap().clone());
@@ -194,8 +189,8 @@ impl Desktop {
             wake,
             errors,
         };
-        if previewing {
-            desktop.control(close_label).await;
+        if let Some(label) = preview_ready {
+            desktop.control(label).await;
         } else {
             desktop.target_after(None).await;
         }
@@ -226,6 +221,23 @@ impl Desktop {
             ppm.extend_from_slice(&pixel[..3]);
         }
         std::fs::write(directory.join(format!("{name}.ppm")), ppm).unwrap();
+    }
+
+    fn pixels(&self, bounds: Bounds<gpui::Pixels>) -> Option<Vec<u8>> {
+        let guard = self.frame.lock().unwrap();
+        let frame = guard.as_ref()?;
+        let stride = frame.size().width.0 as usize * 4;
+        let left = f32::from(bounds.left()) as usize * 4;
+        let right = f32::from(bounds.right()) as usize * 4;
+        Some(
+            (f32::from(bounds.top()) as usize..f32::from(bounds.bottom()) as usize)
+                .flat_map(|y| {
+                    frame.pixels()[y * stride + left..y * stride + right]
+                        .iter()
+                        .copied()
+                })
+                .collect(),
+        )
     }
 
     fn pump(&self) {
@@ -795,16 +807,26 @@ fn tool_names(request: &ModelRequest) -> Vec<String> {
         .collect()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_composer_keeps_one_inset() {
+async fn assert_composer_layout_while_sending(
+    appearance: nsh_core::platform::Appearance,
+    width: gpui::DevicePixels,
+    case: &str,
+) {
     let mut fixture = Fixture::open().await;
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let gate = ReplyGate::resolve_model(fixture.directory.path(), fixture.address.clone());
+    let desktop = Desktop::open_at(
+        &fixture,
+        &gate.address,
+        size(width, gpui::DevicePixels(800)),
+        appearance,
+    )
+    .await;
     desktop.new_draft().await;
     desktop.type_text("COMPOSER_GEOMETRY").await;
     desktop.assert_composer_geometry().await;
     desktop.key("enter", false);
     let mut reply = desktop.request(&mut fixture).await;
-    reply.thinking("Thinking first.").await;
+    reply.thinking("**Opening Reddit homepage**").await;
     reply.delta("Done.").await;
     reply.finish().await;
     let session = desktop
@@ -822,6 +844,13 @@ async fn desktop_composer_keeps_one_inset() {
             fixture.idle(&desktop.client, &session),
         )
         .await;
+    desktop.press("Turn work details").await;
+    desktop.press("Process group").await;
+    desktop.control("Thinking · Opening Reddit homepage").await;
+    desktop.artifact(&format!("thinking-inline-markdown-{case}"));
+    let previous = desktop.platform.text_input_target();
+    desktop.press("Focus message composer").await;
+    desktop.target_after(previous).await;
     desktop.type_text("COMPOSER_GEOMETRY_AGAIN").await;
     let card = desktop.assert_composer_geometry().await;
     // The card's border sits outside the backdrop the window reports, and icon
@@ -829,13 +858,76 @@ async fn desktop_composer_keeps_one_inset() {
     let (left, right) = (card.left() - px(1.), card.right() + px(1.));
     let edit = desktop.control("Edit and resend in a fork").await;
     assert_eq!(edit.right() - px(8.), right);
-    let source = desktop.controls("Copy message");
-    assert_eq!(source[0].left() + px(8.), left);
+    let source = desktop.control("Copy message").await;
+    assert_eq!(source.left() + px(8.), left);
     let turn = desktop.control("Turn work details").await;
     assert_eq!(turn.left() + px(8.), left);
     assert_eq!(turn.right() - px(8.), right);
+    desktop.artifact(&format!("composer-before-send-{case}"));
+    let send = desktop.control("Send message").await;
+    gate.arm();
+    desktop.key("enter", false);
+    desktop
+        .wait("send did not reach model resolution", gate.held.notified())
+        .await;
+    let confirming = desktop.control("Focus message composer").await;
+    desktop.artifact(&format!("composer-confirming-send-{case}"));
+    assert_eq!(confirming, card, "composer moved while sending in {case}");
+    let mut previous = desktop.pixels(send).unwrap();
+    for _ in 0..2 {
+        desktop
+            .until("send progress did not animate", || {
+                (desktop.pixels(send)? != previous).then_some(())
+            })
+            .await;
+        previous = desktop.pixels(send).unwrap();
+    }
+    gate.release();
+    let mut reply = desktop.request(&mut fixture).await;
+    reply.delta("Second reply.").await;
+    reply.finish().await;
     desktop.close().await;
     fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_keeps_one_inset() {
+    assert_composer_layout_while_sending(
+        nsh_core::platform::Appearance::Dark,
+        gpui::DevicePixels(1280),
+        "dark-wide",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_keeps_one_inset_dark_narrow() {
+    assert_composer_layout_while_sending(
+        nsh_core::platform::Appearance::Dark,
+        gpui::DevicePixels(640),
+        "dark-narrow",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_keeps_one_inset_light_wide() {
+    assert_composer_layout_while_sending(
+        nsh_core::platform::Appearance::Light,
+        gpui::DevicePixels(1280),
+        "light-wide",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_keeps_one_inset_light_narrow() {
+    assert_composer_layout_while_sending(
+        nsh_core::platform::Appearance::Light,
+        gpui::DevicePixels(640),
+        "light-narrow",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1052,7 +1144,7 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
         &fixture.address,
         size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
         appearance,
-        Some((source, "en")),
+        Some((source, "en", "Close settings")),
     )
     .await;
     desktop.press("Edit connection ChatGPT Subscription").await;
@@ -1153,7 +1245,7 @@ async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection()
         &fixture.address,
         size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
         appearance,
-        Some((source, "en")),
+        Some((source, "en", "Close settings")),
     )
     .await;
     desktop.press("Add connection").await;
@@ -1301,7 +1393,15 @@ async fn desktop_settings_translate_subscription_sign_in_and_provider_search() {
         &fixture.address,
         size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
         appearance,
-        Some((source, locale)),
+        Some((
+            source,
+            locale,
+            if locale == "zh-TW" {
+                "關閉設定"
+            } else {
+                "关闭设置"
+            },
+        )),
     )
     .await;
     desktop.press(edit).await;
@@ -1381,6 +1481,90 @@ async fn desktop_mermaid_renders_in_the_real_conversation_and_keeps_source_avail
     desktop.press("Show diagram source").await;
     desktop.control("Hide diagram source").await;
     desktop.artifact(&format!("mermaid-workbench-source-{theme}-{layout}"));
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_reasoning_and_tool_status_icons_share_the_activity_layout() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/activity_preview.tsx");
+    let output = fixture.directory.path().join("activity-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(1120), gpui::DevicePixels(800)),
+        nsh_core::platform::Appearance::Dark,
+        Some((source, "en", "Thinking · Check browser connection")),
+    )
+    .await;
+    let icon_center = |row: Bounds<gpui::Pixels>| {
+        let crop = Bounds::new(
+            point(row.right() - row.size.height, row.top()),
+            size(row.size.height, row.size.height),
+        );
+        let pixels = desktop.pixels(crop)?;
+        let background = &pixels[..3];
+        let contrast: Vec<_> = pixels
+            .chunks_exact(4)
+            .map(|pixel| {
+                (0..3)
+                    .map(|channel| pixel[channel].abs_diff(background[channel]))
+                    .max()
+                    .unwrap()
+            })
+            .collect();
+        let peak = *contrast.iter().max()?;
+        if peak == 0 {
+            return None;
+        }
+        let side = f32::from(crop.size.width) as usize;
+        let mut left = side;
+        let mut right = 0;
+        let mut top = side;
+        let mut bottom = 0;
+        for (index, contrast) in contrast.into_iter().enumerate() {
+            if contrast < peak / 2 {
+                continue;
+            }
+            left = left.min(index % side);
+            right = right.max(index % side);
+            top = top.min(index / side);
+            bottom = bottom.max(index / side);
+        }
+        Some((
+            f32::from(crop.left()) + (left + right) as f32 / 2.,
+            f32::from(crop.top()) + (top + bottom) as f32 / 2.,
+        ))
+    };
+    let mut column = None;
+    for index in 0..8 {
+        let row = desktop.control(&format!("Toggle tool tool-{index}")).await;
+        let (x, y) = desktop
+            .until("the status icon did not paint", || icon_center(row))
+            .await;
+        let expected_x = *column.get_or_insert(x);
+        assert!(
+            (x - expected_x).abs() <= 1.,
+            "status {index} is off the icon column: {x} vs {expected_x}"
+        );
+        let expected_y = f32::from(row.center().y);
+        assert!(
+            (y - expected_y).abs() <= 1.,
+            "status {index} is not vertically centered: {y} vs {expected_y}"
+        );
+    }
+    desktop.artifact("activity-status-icons-collapsed");
+    desktop.press("Thinking · Check browser connection").await;
+    desktop.control("Show thinking source").await;
+    desktop.artifact("activity-status-icons-expanded");
     desktop.close().await;
     fixture.finish().await;
 }

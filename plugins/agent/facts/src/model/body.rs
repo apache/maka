@@ -43,6 +43,14 @@ impl TextBody {
         self.0.chunks()
     }
 
+    /// Insert text into a new snapshot at an exact UTF-8 boundary.
+    pub fn inserted(&self, byte: usize, text: &str) -> Option<Self> {
+        self.0.get_byte_slice(byte..byte)?;
+        let mut body = self.0.clone();
+        body.insert(body.byte_to_char(byte), text);
+        Some(Self(body))
+    }
+
     /// Return a borrowed byte range, or None for invalid UTF-8 boundaries or bounds.
     pub fn slice(&self, bytes: Range<usize>) -> Option<TextSlice<'_>> {
         self.0.get_byte_slice(bytes).map(TextSlice)
