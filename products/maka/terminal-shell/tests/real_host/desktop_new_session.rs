@@ -795,10 +795,20 @@ fn tool_names(request: &ModelRequest) -> Vec<String> {
         .collect()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_composer_keeps_one_inset() {
+async fn assert_composer_layout_while_sending(
+    appearance: nsh_core::platform::Appearance,
+    width: gpui::DevicePixels,
+    case: &str,
+) {
     let mut fixture = Fixture::open().await;
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let gate = ReplyGate::resolve_model(fixture.directory.path(), fixture.address.clone());
+    let desktop = Desktop::open_at(
+        &fixture,
+        &gate.address,
+        size(width, gpui::DevicePixels(800)),
+        appearance,
+    )
+    .await;
     desktop.new_draft().await;
     desktop.type_text("COMPOSER_GEOMETRY").await;
     desktop.assert_composer_geometry().await;
@@ -829,13 +839,66 @@ async fn desktop_composer_keeps_one_inset() {
     let (left, right) = (card.left() - px(1.), card.right() + px(1.));
     let edit = desktop.control("Edit and resend in a fork").await;
     assert_eq!(edit.right() - px(8.), right);
-    let source = desktop.controls("Copy message");
-    assert_eq!(source[0].left() + px(8.), left);
+    let source = desktop.control("Copy message").await;
+    assert_eq!(source.left() + px(8.), left);
     let turn = desktop.control("Turn work details").await;
     assert_eq!(turn.left() + px(8.), left);
     assert_eq!(turn.right() - px(8.), right);
+    desktop.artifact(&format!("composer-before-send-{case}"));
+    gate.arm();
+    desktop.key("enter", false);
+    desktop
+        .wait("send did not reach model resolution", gate.held.notified())
+        .await;
+    let confirming = desktop.control("Focus message composer").await;
+    desktop.artifact(&format!("composer-confirming-send-{case}"));
+    assert_eq!(confirming, card, "composer moved while sending in {case}");
+    gate.release();
+    let mut reply = desktop.request(&mut fixture).await;
+    reply.delta("Second reply.").await;
+    reply.finish().await;
     desktop.close().await;
     fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_keeps_one_inset() {
+    assert_composer_layout_while_sending(
+        nsh_core::platform::Appearance::Dark,
+        gpui::DevicePixels(1280),
+        "dark-wide",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_keeps_one_inset_dark_narrow() {
+    assert_composer_layout_while_sending(
+        nsh_core::platform::Appearance::Dark,
+        gpui::DevicePixels(640),
+        "dark-narrow",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_keeps_one_inset_light_wide() {
+    assert_composer_layout_while_sending(
+        nsh_core::platform::Appearance::Light,
+        gpui::DevicePixels(1280),
+        "light-wide",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_keeps_one_inset_light_narrow() {
+    assert_composer_layout_while_sending(
+        nsh_core::platform::Appearance::Light,
+        gpui::DevicePixels(640),
+        "light-narrow",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -60,7 +60,13 @@ async fn send_held(
     })
     .await
     .expect("the send never resolved its model");
-    wait_view(&mut view, |screen| screen.contains("Confirming send")).await;
+    wait_view_state(&mut view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Send message" && node.state.disabled)
+    })
+    .await;
+    assert!(!view.snapshot().contains("Confirming send"));
     (view, bindings, client)
 }
 
@@ -76,9 +82,12 @@ async fn a_rejected_send_keeps_the_text_typed_before_it_was_reserved() {
         support::tick(&mut view);
         gate.release();
         // Check the composer only once the send has settled.
-        let screen = wait_view(&mut view, |screen| {
-            !screen.contains("Confirming send")
-                && screen.contains("/skill:missing-fixture first next")
+        let screen = wait_view_state(&mut view, |view, screen| {
+            screen.contains("/skill:missing-fixture first next")
+                && view
+                    .accessibility_snapshot()
+                    .iter()
+                    .any(|node| node.label == "Send message" && !node.state.disabled)
         })
         .await;
         support::wait_draft(
