@@ -158,7 +158,9 @@ impl Fixture {
     }
 
     pub async fn configured(options: Options) -> Self {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::Builder::new()
+            .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+            .unwrap();
         #[cfg(windows)]
         std::fs::remove_dir(directory.path()).unwrap();
         private_directory(directory.path()).unwrap();

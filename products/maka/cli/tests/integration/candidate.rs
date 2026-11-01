@@ -130,34 +130,8 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
             assert_ne!(predecessor.as_ref(), Some(&registration["hostEpoch"]));
         }
 
-        // Initialization verifies identity without competing for an active writer lease.
-        let init = Command::new(env!("CARGO_BIN_EXE_maka"))
-            .args(["host", "init", "--root"])
-            .arg(&fixture.root)
-            .output()
-            .unwrap();
-        assert!(
-            init.status.success(),
-            "{}",
-            String::from_utf8_lossy(&init.stderr)
-        );
-        assert_eq!(
-            serde_json::from_slice::<Value>(&init.stdout).unwrap()["rootId"],
-            fixture.root_id
-        );
-
-        let mut stdin = fixture.child.as_mut().unwrap().stdin.take().unwrap();
-        if matches!(end, End::ReleasedIdle) {
-            stdin
-                .write_all(b"{\"kind\":\"runtime-host-launch-owner-release\"}\n")
-                .unwrap();
-            drop(stdin);
-        } else {
-            fixture.child.as_mut().unwrap().stdin = Some(stdin);
-        }
-
-        runtime.block_on(async {
-            let mut client = if let Some(ready) = &ready {
+        let mut client = runtime.block_on(async {
+            let client = if let Some(ready) = &ready {
                 let epoch = ready["hostEpoch"]
                     .as_str()
                     .and_then(|value| uuid::Uuid::parse_str(value).ok())
@@ -184,8 +158,24 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
             assert!(!status.closing);
             assert_eq!(status.epoch.to_string(), registration["hostEpoch"]);
             assert_eq!(status.root_id, fixture.root_id);
-            client.close().await.unwrap();
+            client
         });
+
+        // Initialization verifies identity without competing for an active writer lease.
+        let init = Command::new(env!("CARGO_BIN_EXE_maka"))
+            .args(["host", "init", "--root"])
+            .arg(&fixture.root)
+            .output()
+            .unwrap();
+        assert!(
+            init.status.success(),
+            "{}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&init.stdout).unwrap()["rootId"],
+            fixture.root_id
+        );
 
         let status = Command::new(env!("CARGO_BIN_EXE_maka"))
             .args(["host", "status", "--root"])
@@ -200,7 +190,8 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
         let status: Value = serde_json::from_slice(&status.stdout).unwrap();
         assert_eq!(status["epoch"], registration["hostEpoch"]);
         assert_eq!(status["closing"], false);
-        if matches!(end, End::Retirement | End::Standalone | End::Successor) {
+        if matches!(end, End::Standalone) {
+            runtime.block_on(client.close()).unwrap();
             let stale = Command::new(env!("CARGO_BIN_EXE_maka"))
                 .args(["host", "retire", "--root"])
                 .arg(&fixture.root)
@@ -235,13 +226,34 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
             assert_eq!(receipt["kind"], "prepared", "{receipt}");
             assert_eq!(receipt["pid"], registration["pid"]);
         }
+        if matches!(end, End::Retirement | End::Successor) {
+            runtime.block_on(async {
+                let endpoint = discovery::read(&fixture.root).unwrap().endpoint;
+                assert!(
+                    Client::retire(&endpoint, uuid::Uuid::new_v4())
+                        .await
+                        .is_err()
+                );
+                assert!(Client::retire(&endpoint, client.epoch()).await.unwrap());
+            });
+        }
         if matches!(end, End::Takeover) {
-            runtime.block_on(verify_takeover(&fixture.root, &registration));
+            runtime.block_on(verify_takeover(&fixture.root, &registration, &mut client));
             predecessor = Some(registration["hostEpoch"].clone());
         }
         if matches!(end, End::OwnerLoss) {
             drop(fixture.child.as_mut().unwrap().stdin.take());
         }
+        if matches!(end, End::ReleasedIdle) {
+            let mut stdin = fixture.child.as_mut().unwrap().stdin.take().unwrap();
+            stdin
+                .write_all(b"{\"kind\":\"runtime-host-launch-owner-release\"}\n")
+                .unwrap();
+        }
+        if matches!(end, End::OwnerLoss | End::ReleasedIdle) {
+            runtime.block_on(client.close()).unwrap();
+        }
+        drop(client);
         let status = fixture.wait_for_exit();
         assert!(
             status.success(),
@@ -298,9 +310,8 @@ async fn connect(root: &Path) -> Client {
         .unwrap()
 }
 
-async fn verify_takeover(root: &Path, registration: &Value) {
+async fn verify_takeover(root: &Path, registration: &Value, client: &mut Client) {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let mut client = connect(root).await;
         let mut observer = connect(root).await;
         let discovery = discovery::read(root).unwrap();
         assert_eq!(client.epoch(), observer.epoch());
@@ -322,9 +333,8 @@ async fn verify_takeover(root: &Path, registration: &Value) {
                 .unwrap()
         );
         observer.close().await.unwrap();
-        client.close().await.unwrap();
         assert!(
-            Client::retire_with_options(&discovery.endpoint, client.epoch(), false, false)
+            Client::retire_with_options(&discovery.endpoint, client.epoch(), false, true)
                 .await
                 .unwrap()
         );
