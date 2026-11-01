@@ -215,3 +215,30 @@ test('changes revoke deleted threads and reject foreign scope/signatures', async
     other.close();
   }
 });
+
+test('latest-first history queries apply time/thread filters before frozen pagination', async (t) => {
+  const f = fixture(t);
+  f.put('old', since, 1, 'userMessage', 'card broken');
+  f.put('fix', since + 10, 2, 'agentMessage', 'card fixed');
+  f.put('verified', since + 20, 3, 'agentMessage', 'card verified');
+  const query = {
+    text: 'card',
+    threadId: 'old-session',
+    startTime: since + 1,
+    order: 'desc' as const,
+    limit: 1,
+  };
+  const first = await f.a.query(query, caller);
+  assert.equal((await f.a.read(first.items[0], caller)).content?.item.text, 'card verified');
+  f.put('later', since + 30, 4, 'agentMessage', 'card newer');
+  const a = f.restart();
+  const next = await a.query({ ...query, cursor: first.next }, caller);
+  assert.equal((await a.read(next.items[0], caller)).content?.item.text, 'card fixed');
+  assert.equal(next.next, undefined);
+  await assert.rejects(
+    a.query({ ...query, order: 'asc', cursor: first.next }, caller),
+    /scope or query/,
+  );
+  const fresh = await a.query(query, caller);
+  assert.equal((await a.read(fresh.items[0], caller)).content?.item.text, 'card newer');
+});

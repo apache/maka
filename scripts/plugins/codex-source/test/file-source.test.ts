@@ -209,3 +209,32 @@ test('repeated screen text across timestamps and restarts does not repeatedly wa
   appendFileSync(file, '{"app":"Calendar","ax":{"text":"new meeting"}}\n');
   assert.equal((await a.changes(p.cursor, 50, caller)).items.length, 1);
 });
+
+test('latest-first file queries freeze descending pages and apply update time range', async (t) => {
+  const f = fixture(t);
+  for (const [name, at] of [
+    ['old', 1000],
+    ['fix', 2000],
+    ['verified', 3000],
+  ] as const) {
+    const path = f.put(name + '.md', 'card ' + name);
+    utimesSync(path, at, at);
+  }
+  const query = {
+    text: 'card',
+    startTime: 1500000,
+    endTime: 4000000,
+    order: 'desc' as const,
+    limit: 1,
+  };
+  const first = await f.a.query(query, caller);
+  assert.equal((await f.a.read(first.items[0], caller)).content, 'card verified');
+  const a = f.restart();
+  const next = await a.query({ ...query, cursor: first.next }, caller);
+  assert.equal((await a.read(next.items[0], caller)).content, 'card fix');
+  assert.equal(next.next, undefined);
+  await assert.rejects(
+    a.query({ ...query, order: 'asc', cursor: first.next }, caller),
+    /scope or query/,
+  );
+});

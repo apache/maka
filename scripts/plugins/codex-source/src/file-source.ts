@@ -32,6 +32,7 @@ type Query = {
   startTime?: number;
   endTime?: number;
   limit?: number;
+  order?: 'asc' | 'desc';
 };
 type Mode = 'computer-history' | 'memories';
 const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -43,7 +44,7 @@ export class CodexFileSource {
   readonly scope: { root: string; startTime: number; format: string };
   readonly description: string;
   readonly queryHelp =
-    '{text?, types?:string[], startTime?, endTime?, limit?:1..500, cursor?}. Times are Unix milliseconds of file updates (not necessarily event occurrence); start inclusive/end exclusive. Results are file metadata; read originals via MemoryOriginal. Computer activity contains event timestamps; memories are generated summaries, not direct evidence. Keep query unchanged when paging. Refresh/read never advances index coverage. Retained files remain readable while recording is paused; clearing/deleting files revokes access. Missing source is an error, not an empty completed scan.';
+    '{text?, types?:string[], startTime?, endTime?, limit?:1..500, order?:"asc"|"desc", cursor?}. Times are Unix milliseconds of file updates (not necessarily event occurrence); start inclusive/end exclusive. Results are file metadata; read originals via MemoryOriginal. Computer activity contains event timestamps; memories are generated summaries, not direct evidence. Use order:"desc" for latest state and time ranges to check follow-ups; order applies before pagination. Keep query unchanged when paging. Refresh/read never advances index coverage. Retained files remain readable while recording is paused; clearing/deleting files revokes access. Missing source is an error, not an empty completed scan.';
   private db: DatabaseSync;
   private journal: ChangeJournal;
   constructor(
@@ -171,7 +172,7 @@ export class CodexFileSource {
   private shape(q: Query) {
     if (
       Object.keys(q).some(
-        (k) => !['cursor', 'text', 'types', 'startTime', 'endTime', 'limit'].includes(k),
+        (k) => !['cursor', 'text', 'types', 'startTime', 'endTime', 'limit', 'order'].includes(k),
       )
     )
       throw Error('Unknown source query field');
@@ -185,6 +186,7 @@ export class CodexFileSource {
       (!Array.isArray(q.types) || q.types.some((t) => typeof t !== 'string'))
     )
       throw Error('Invalid types');
+    if (q.order !== undefined && !['asc', 'desc'].includes(q.order)) throw Error('Invalid order');
     const limit = q.limit ?? 50;
     if (limit < 1 || limit > 500) throw Error('limit must be 1..500');
     return {
@@ -193,6 +195,7 @@ export class CodexFileSource {
       startTime: Math.max(this.scope.startTime, q.startTime ?? 0),
       endTime: q.endTime ?? null,
       limit,
+      ...(q.order ? { order: q.order } : {}),
     };
   }
   private mac(body: string) {
@@ -347,6 +350,7 @@ export class CodexFileSource {
         items.push(value.object);
       }
       items.sort((a, b) => a.updatedAt - b.updatedAt || a.id.localeCompare(b.id));
+      if (shape.order === 'desc') items.reverse();
       page = digest([hash, items]);
       this.db
         .prepare('INSERT OR IGNORE INTO snapshots VALUES(?,?,?,?)')
