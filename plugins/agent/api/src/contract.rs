@@ -1323,6 +1323,9 @@ pub struct HistoryLandmark {
     pub last_position: RowPosition,
     #[schemars(length(max = 96))]
     pub label: String,
+    /// The Host's attribution of the Turn's opening message, when it generated it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<maka_agent_facts::message::MessageOrigin>,
 }
 
 #[derive(Deserialize, JsonSchema)]

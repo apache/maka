@@ -178,6 +178,31 @@ async fn compaction_waiting_keeps_background_elapsed_time_and_completion_uses_re
         screen.contains("Context compacted (2m 6s)") && !screen.contains("Compacting context")
     })
     .await;
+    let screen = view.snapshot();
+    let line = |label: &str| {
+        screen
+            .lines()
+            .find(|line| line.contains(label))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert!(line("Context compacted").contains('─'), "{screen}");
+    // The Host's Plan opening names the Plan on the same kind of line, without
+    // its frozen request or the user's message actions.
+    assert!(
+        line("Executing plan: FIXTURE_PLAN").contains('─'),
+        "{screen}"
+    );
+    assert!(
+        !screen.contains("Execute the user-approved plan"),
+        "{screen}"
+    );
+    assert!(
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Copy user message")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

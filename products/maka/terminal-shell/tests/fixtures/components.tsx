@@ -25,6 +25,8 @@ import { host as nativeHost } from 'maka/host';
 import { SessionPermissionsSelect } from '../../../workbench/app/SessionPermissionsSelect';
 import { InteractionComposer } from '../../../workbench/app/InteractionComposer';
 import { CompactionDivider } from '../../../workbench/app/CompactionDivider';
+import { MessageRow } from '../../../workbench/app/MessageRow';
+import type { Row } from '../../../workbench/app/history';
 import { WorkspaceBrowser } from '../../../workbench/app/WorkspaceBrowser';
 import type { Browsing, BrowserSession } from '../../../workbench/app/browsing';
 import { HostProvider, type Host } from '../../../workbench/app/host';
@@ -475,6 +477,18 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
   );
 }
 
+/** The message the Host writes to start an approved Plan. */
+const planOpening: Row = {
+  key: 'plan-opening',
+  messageId: 'plan-opening',
+  field: 'body',
+  role: 'user',
+  text: 'Execute the user-approved plan.\n{"title":"FIXTURE_PLAN"}',
+  position: { sourceSequence: 1, itemIndex: 0 },
+  turnId: 'plan-turn',
+  origin: { kind: 'plan', executionId: 'execution_fixture', title: 'FIXTURE_PLAN' },
+};
+
 function Compaction() {
   const startedAt = Date.now() - 125_000;
   const state = signal<'background' | 'waiting' | 'completed'>('background');
@@ -503,6 +517,15 @@ function Compaction() {
           )
         }
       </Each>
+      <MessageRow
+        item={() => planOpening}
+        sessionId="fixture-session"
+        through={() => 1}
+        previewImage={() => {}}
+        openLink={async () => {}}
+        userScroll={() => {}}
+        toolMaxHeight={() => 0}
+      />
     </View>
   );
 }
