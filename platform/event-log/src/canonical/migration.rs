@@ -210,20 +210,29 @@ mod tests {
             .unwrap()
             .unwrap();
         let ranges = [
-            0..64,
-            (source.offset - 2)..(source.offset + 32),
-            (source.offset + source.json.len() - 2)..(source.offset + source.json.len() + 4),
-            (original.len() - 64)..original.len(),
+            source.offset..source.offset + 64,
+            source.offset + 32..source.offset + 96,
+            source.offset + source.json.len() - 64..source.offset + source.json.len(),
+            source.offset + source.json.len()..source.offset + source.json.len(),
         ];
         let expected_ranges: Vec<_> = ranges
             .iter()
             .map(|range| original.as_bytes()[range.clone()].to_vec())
             .collect();
+        let outside_body = [source.offset - 1, source.offset + source.json.len()];
         crate::connection::worker_query(&mut db, move |worker| {
             Box::pin(async move {
                 // SAFETY: the callback exclusively owns this original SQLite worker.
                 let raw =
                     unsafe { rusqlite::Connection::from_handle(worker.as_raw_handle().as_ptr()) }?;
+                for offset in outside_body {
+                    assert!(
+                        crate::canonical::with_span::<()>(&raw, 1, offset as u64, 1, |_| {
+                            panic!("tool range must remain inside its canonical body");
+                        })
+                        .is_err()
+                    );
+                }
                 for (range, expected) in ranges.into_iter().zip(expected_ranges) {
                     let actual = crate::canonical::with_span(
                         &raw,

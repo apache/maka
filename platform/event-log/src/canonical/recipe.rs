@@ -17,11 +17,11 @@
  * under the License.
  */
 
-//! Lossless canonical event recipes and byte-range mapping.
+//! Lossless canonical event recipes over a header and its optional body slot.
 use crate::StoreError;
 use serde::Deserialize;
 use serde_json::value::RawValue;
-use std::{borrow::Cow, ops::Range};
+use std::borrow::Cow;
 
 fn invalid(reason: &'static str) -> StoreError {
     StoreError::Sqlite(rusqlite::Error::InvalidParameterName(reason.into()))
@@ -124,12 +124,7 @@ pub(crate) struct Slot {
     pub offset: u64,
     pub bytes: u64,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Segment {
-    Header { offset: u64, bytes: u64 },
-    Body { offset: u64, bytes: u64 },
-}
-/// Logical positions map to physical spans without loading the header body.
+/// The logical event size and optional body slot determine the stored header size.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Layout {
     bytes: u64,
@@ -158,50 +153,6 @@ impl Layout {
             Some(slot) => self.bytes - slot.bytes + 4,
             None => self.bytes,
         }
-    }
-    /// A logical byte range touches at most the prefix, body, and suffix.
-    pub fn segments(&self, range: Range<u64>) -> Result<[Option<Segment>; 3], StoreError> {
-        if range.start > range.end || range.end > self.bytes {
-            return Err(invalid("canonical byte range is outside its event"));
-        }
-        let mut segments = [None; 3];
-        if range.is_empty() {
-            return Ok(segments);
-        }
-        let Some(slot) = self.slot else {
-            segments[0] = Some(Segment::Header {
-                offset: range.start,
-                bytes: range.end - range.start,
-            });
-            return Ok(segments);
-        };
-        let body_end = slot
-            .offset
-            .checked_add(slot.bytes)
-            .ok_or_else(|| invalid("canonical slot range overflows"))?;
-        let prefix_end = range.end.min(slot.offset);
-        if range.start < prefix_end {
-            segments[0] = Some(Segment::Header {
-                offset: range.start,
-                bytes: prefix_end - range.start,
-            });
-        }
-        let body_start = range.start.max(slot.offset);
-        let body_limit = range.end.min(body_end);
-        if body_start < body_limit {
-            segments[1] = Some(Segment::Body {
-                offset: body_start - slot.offset,
-                bytes: body_limit - body_start,
-            });
-        }
-        let suffix_start = range.start.max(body_end);
-        if suffix_start < range.end {
-            segments[2] = Some(Segment::Header {
-                offset: suffix_start - body_end + slot.offset + 4,
-                bytes: range.end - suffix_start,
-            });
-        }
-        Ok(segments)
     }
 }
 
@@ -357,7 +308,7 @@ mod tests {
         }
     }
     #[test]
-    fn extraction_and_every_byte_range_preserve_original_bytes() {
+    fn extraction_and_reconstruction_preserve_original_bytes() {
         let projection = projection("tool_settled", ORIGINAL).unwrap().unwrap();
         let header = projection.header(ORIGINAL).unwrap();
         let recipe = Recipe::new(
@@ -375,31 +326,6 @@ mod tests {
                 .unwrap(),
             ORIGINAL
         );
-        for start in 0..=ORIGINAL.len() {
-            for end in start..=ORIGINAL.len() {
-                let mut result = Vec::new();
-                for segment in recipe
-                    .layout
-                    .segments(start as u64..end as u64)
-                    .unwrap()
-                    .into_iter()
-                    .flatten()
-                {
-                    let (source, offset, bytes) = match segment {
-                        Segment::Header { offset, bytes } => (header.as_bytes(), offset, bytes),
-                        Segment::Body { offset, bytes } => {
-                            (projection.json.as_bytes(), offset, bytes)
-                        }
-                    };
-                    result.extend_from_slice(&source[offset as usize..(offset + bytes) as usize]);
-                }
-                assert_eq!(
-                    result,
-                    &ORIGINAL.as_bytes()[start..end],
-                    "range {start}..{end}"
-                );
-            }
-        }
     }
     #[test]
     fn escaped_success_tag_preserves_its_original_encoding() {
@@ -437,7 +363,6 @@ mod tests {
         let recipe = Recipe::new("null", 4, None).unwrap();
         assert_eq!(recipe.reconstruct(None).unwrap(), "null");
         assert!(recipe.reconstruct(Some(b"null")).is_err());
-        assert!(recipe.layout.segments(0..5).is_err());
     }
     #[test]
     fn invalid_recipes_do_not_silently_become_inline_events() {

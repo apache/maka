@@ -18,10 +18,17 @@
  */
 
 //! Callback-local source metadata uses the original worker's statement cache.
+use super::super::source::SemanticPayloadSource;
 use super::{Backing, RawConnection, RowPosition, StoreError, invalid, with_blob};
 use crate::canonical::SpanMetadata;
 use sqlx::{Row, sqlite::SqliteWorkerConnection};
 use std::io::Read;
+
+fn query() -> String {
+    format!("SELECT f.storage_kind,f.byte_offset,f.byte_len,{} FROM context_semantic_fragments f
+        LEFT JOIN event_log e ON e.sequence=f.source_sequence AND f.storage_kind='canonical_tool_projection' {}
+        WHERE f.source_sequence=? AND f.source_index=?", crate::canonical::SPAN_COLUMNS, crate::canonical::JOINS)
+}
 
 pub(super) struct CanonicalRead {
     key: RowPosition,
@@ -37,45 +44,69 @@ impl CanonicalRead {
         let Backing::Canonical { key, offset, bytes } = *backing else {
             return Ok(None);
         };
-        let query = format!("SELECT f.storage_kind,f.byte_offset,f.byte_len,{} FROM context_semantic_fragments f
-            LEFT JOIN event_log e ON e.sequence=f.source_sequence AND f.storage_kind='canonical_tool_projection' {}
-            WHERE f.source_sequence=? AND f.source_index=?", crate::canonical::SPAN_COLUMNS, crate::canonical::JOINS);
-        let row = sqlx::query(sqlx::AssertSqlSafe(query))
+        let row = sqlx::query(sqlx::AssertSqlSafe(query()))
             .bind(key.source_sequence as i64)
             .bind(key.item_index as i64)
             .fetch_one(&mut *worker)
             .await?;
-        let source = super::super::source::SemanticPayloadSource::from_metadata(
+        let source = SemanticPayloadSource::from_metadata(
             key.source_sequence as i64,
             key.item_index as i64,
             row.try_get("storage_kind")?,
             row.try_get("byte_offset")?,
             row.try_get("byte_len")?,
         )?;
-        let (actual, length, model) = match source {
-            super::super::source::SemanticPayloadSource::CanonicalToolProjection(span) => {
-                (span.offset(), span.len(), false)
+        Self::checked(key, offset, bytes, source, SpanMetadata::from_row(&row)?).map(Some)
+    }
+    pub(super) fn load_on_handle(
+        raw: &RawConnection,
+        key: RowPosition,
+        offset: u64,
+        bytes: u64,
+    ) -> Result<Self, StoreError> {
+        raw.query_row(
+            &query(),
+            [key.source_sequence as i64, key.item_index as i64],
+            |row| {
+                Ok((|| {
+                    let kind: String = row.get("storage_kind")?;
+                    let source = SemanticPayloadSource::from_metadata(
+                        key.source_sequence as i64,
+                        key.item_index as i64,
+                        &kind,
+                        row.get("byte_offset")?,
+                        row.get("byte_len")?,
+                    )?;
+                    Self::checked(key, offset, bytes, source, SpanMetadata::from_handle(row)?)
+                })())
+            },
+        )?
+    }
+    fn checked(
+        key: RowPosition,
+        offset: u64,
+        bytes: u64,
+        source: SemanticPayloadSource,
+        material: SpanMetadata,
+    ) -> Result<Self, StoreError> {
+        let (actual, length, material) = match source {
+            SemanticPayloadSource::CanonicalToolProjection(span) => {
+                (span.offset(), span.len(), Some(material))
             }
-            super::super::source::SemanticPayloadSource::CanonicalModelPart(span) => {
-                (span.offset(), span.len(), true)
-            }
-            super::super::source::SemanticPayloadSource::Pieces => {
+            SemanticPayloadSource::CanonicalModelPart(span) => (span.offset(), span.len(), None),
+            SemanticPayloadSource::Pieces => {
                 return Err(invalid("captured canonical source changed"));
             }
         };
         if actual as u64 != offset || length as u64 != bytes {
             return Err(invalid("captured canonical source changed"));
         }
-        Ok(Some(Self {
+        Ok(Self {
             key,
             offset,
             bytes,
-            material: if model {
-                None
-            } else {
-                Some(SpanMetadata::from_row(&row)?)
-            },
-        }))
+            material,
+        })
     }
     pub(super) fn with_range<T>(
         &self,
@@ -92,14 +123,9 @@ impl CanonicalRead {
             .checked_add(start)
             .ok_or_else(|| invalid("canonical span offset overflows"))?;
         match self.material {
-            Some(material) => crate::canonical::with_span_metadata(
-                raw,
-                self.key.source_sequence as i64,
-                material,
-                position,
-                count,
-                consume,
-            ),
+            Some(material) => {
+                crate::canonical::with_span_metadata(raw, material, position, count, consume)
+            }
             None => with_blob(
                 raw,
                 "event_log",

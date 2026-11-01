@@ -54,9 +54,10 @@ fn with_range<T>(
             length,
             consume,
         ),
-        Backing::Canonical { key, offset, bytes } => {
-            with_canonical_range(raw, key, offset, bytes, range.start, length, consume)
-        }
+        Backing::Canonical { key, offset, bytes } => CanonicalRead::load_on_handle(
+            raw, key, offset, bytes,
+        )?
+        .with_range(raw, range.start, length, consume),
         Backing::Pieces { key, .. } => {
             check_pieces(raw, key)?;
             let mut reader = PieceReader {

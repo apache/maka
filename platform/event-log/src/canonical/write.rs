@@ -22,6 +22,7 @@ use super::{recipe::Projection, source};
 use crate::StoreError;
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::SqliteWorkerConnection;
+use std::io::Read;
 pub(crate) async fn prepare(
     worker: &mut SqliteWorkerConnection<'_>,
     projection: &Projection<'_>,

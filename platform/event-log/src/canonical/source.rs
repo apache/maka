@@ -31,7 +31,7 @@ pub(super) fn with_material<T>(
     raw: &rusqlite::Connection,
     id: i64,
     bytes: u64,
-    use_reader: impl FnOnce(&mut dyn Read) -> Result<T, StoreError>,
+    use_reader: impl FnOnce(&mut rusqlite::blob::Blob<'_>) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
     let mut blob = raw.blob_open("main", "event_bodies", "payload", id, true)?;
     let result = (|| {
@@ -50,32 +50,10 @@ fn settle<T>(result: Result<T, StoreError>, closed: rusqlite::Result<()>) -> Res
     }
 }
 
-use super::recipe::{Layout, Segment, Slot};
-use std::io::{self, Seek, SeekFrom, Take};
+use super::recipe::{Layout, Slot};
+use std::io::{self, Seek, SeekFrom};
 fn invalid(reason: &'static str) -> StoreError {
     io::Error::new(io::ErrorKind::InvalidData, reason).into()
-}
-struct Parts<'a> {
-    parts: [Option<Take<rusqlite::blob::Blob<'a>>>; 3],
-    current: usize,
-}
-impl Read for Parts<'_> {
-    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-        if output.is_empty() {
-            return Ok(0);
-        }
-        while self.current < self.parts.len() {
-            let read = match self.parts[self.current].as_mut() {
-                Some(reader) => reader.read(output)?,
-                None => 0,
-            };
-            if read > 0 {
-                return Ok(read);
-            }
-            self.current += 1;
-        }
-        Ok(0)
-    }
 }
 #[derive(Clone, Copy)]
 pub(crate) struct SpanMetadata {
@@ -103,6 +81,17 @@ impl SpanMetadata {
             raw_bytes: row.try_get("canonical_raw_bytes")?,
         })
     }
+    pub(crate) fn from_handle(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        let base = row.as_ref().column_index("canonical_live")?;
+        Ok(Self {
+            live: row.get(base)?,
+            length: row.get(base + 1)?,
+            body_reference: row.get(base + 2)?,
+            slot_offset: row.get(base + 3)?,
+            body_id: row.get(base + 4)?,
+            raw_bytes: row.get(base + 5)?,
+        })
+    }
 }
 
 /// Map canonical coordinates to immutable material without reading a full header.
@@ -118,36 +107,18 @@ pub(crate) fn with_span<T>(
         super::read::JOINS
     );
     raw.query_row(&query, [sequence], |row| {
-        Ok(with_span_on_row(raw, row, sequence, offset, bytes, consume))
+        Ok(with_span_metadata(
+            raw,
+            SpanMetadata::from_handle(row)?,
+            offset,
+            bytes,
+            consume,
+        ))
     })?
-}
-
-/// Consume metadata borrowed from a caller's existing same-snapshot query.
-pub(crate) fn with_span_on_row<T>(
-    raw: &rusqlite::Connection,
-    row: &rusqlite::Row<'_>,
-    sequence: i64,
-    offset: u64,
-    bytes: u64,
-    consume: impl FnOnce(&mut dyn Read) -> Result<T, StoreError>,
-) -> Result<T, StoreError> {
-    // SPAN_COLUMNS is one contiguous projection even when prefixed by a
-    // caller's fields. Resolve its base once rather than rescan all names.
-    let base = row.as_ref().column_index("canonical_live")?;
-    let metadata = SpanMetadata {
-        live: row.get(base)?,
-        length: row.get(base + 1)?,
-        body_reference: row.get(base + 2)?,
-        slot_offset: row.get(base + 3)?,
-        body_id: row.get(base + 4)?,
-        raw_bytes: row.get(base + 5)?,
-    };
-    with_span_metadata(raw, sequence, metadata, offset, bytes, consume)
 }
 
 pub(crate) fn with_span_metadata<T>(
     raw: &rusqlite::Connection,
-    sequence: i64,
     metadata: SpanMetadata,
     offset: u64,
     bytes: u64,
@@ -175,71 +146,29 @@ pub(crate) fn with_span_metadata<T>(
     let length =
         u64::try_from(length.ok_or_else(|| invalid("canonical span lacks logical length"))?)
             .map_err(|_| invalid("negative canonical byte length"))?;
-    let (slot, material) = match (body_reference, slot_offset, body_id, raw_bytes) {
-        (None, None, None, None) => (None, None),
-        (Some(reference), Some(position), Some(id), Some(length))
-            if reference == id && position >= 0 && id > 0 && length > 0 =>
+    let (slot, id) = match (body_reference, slot_offset, body_id, raw_bytes) {
+        (Some(reference), Some(position), Some(id), Some(bytes))
+            if reference == id && position >= 0 && id > 0 && bytes > 0 =>
         {
             (
-                Some(Slot {
+                Slot {
                     offset: position as u64,
-                    bytes: length as u64,
-                }),
-                Some((id, length as u64)),
+                    bytes: bytes as u64,
+                },
+                id,
             )
         }
-        _ => return Err(invalid("canonical span has an incomplete body slot")),
+        _ => return Err(invalid("canonical tool projection lacks its body slot")),
     };
-    let layout = Layout::new(length, slot)?;
+    Layout::new(length, Some(slot))?;
     let end = offset
         .checked_add(bytes)
         .ok_or_else(|| invalid("canonical span length overflows"))?;
-    let segments = layout.segments(offset..end)?;
-    let mut parts = Parts {
-        parts: std::array::from_fn(|_| None),
-        current: 0,
-    };
-    let result = (|| {
-        for (index, segment) in segments.into_iter().enumerate() {
-            let Some(segment) = segment else { continue };
-            let (table, column, rowid, expected, offset, bytes) = match segment {
-                Segment::Header { offset, bytes } => (
-                    "event_log",
-                    "event_header",
-                    sequence,
-                    layout.header_bytes(),
-                    offset,
-                    bytes,
-                ),
-                Segment::Body { offset, bytes } => {
-                    let (id, raw_bytes) = material
-                        .ok_or_else(|| invalid("canonical range requires missing body material"))?;
-                    ("event_bodies", "payload", id, raw_bytes, offset, bytes)
-                }
-            };
-            let blob = raw.blob_open("main", table, column, rowid, true)?;
-            // Install ownership before any validation or seek can fail.
-            parts.parts[index] = Some(blob.take(bytes));
-            let reader = parts.parts[index]
-                .as_mut()
-                .expect("installed canonical reader");
-            if reader.get_ref().len() as u64 != expected {
-                return Err(invalid("canonical material length changed"));
-            }
-            reader.get_mut().seek(SeekFrom::Start(offset))?;
-        }
-        consume(&mut parts)
-    })();
-    let mut closing = Ok(());
-    for part in parts.parts.into_iter().flatten() {
-        if let Err(error) = part.into_inner().close() {
-            closing = match closing {
-                Ok(()) => Err(error),
-                Err(previous) => Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
-                    io::Error::other(format!("{previous}; {error}")),
-                ))),
-            };
-        }
+    if offset < slot.offset || end > slot.offset + slot.bytes {
+        return Err(invalid("canonical tool range exceeds its body slot"));
     }
-    settle(result, closing)
+    with_material(raw, id, slot.bytes, |reader| {
+        reader.seek(SeekFrom::Start(offset - slot.offset))?;
+        consume(&mut reader.take(bytes))
+    })
 }
