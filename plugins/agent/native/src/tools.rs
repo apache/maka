@@ -919,9 +919,11 @@ fn operation_id(context: &ToolCallContext) -> Uuid {
 }
 fn mutation_result(reply: OperationReply, language: Language) -> Result<ToolSuccess, ToolError> {
     let unknown = match language {
-        Language::En => "The tool could not complete this operation.",
-        Language::ZhCn => "工具未能完成此操作。",
-        Language::ZhTw => "工具未能完成此操作。",
+        Language::En => {
+            "The operation result is unknown. Check the current state and continue from there."
+        }
+        Language::ZhCn => "操作结果尚未确认，请检查当前状态后继续。",
+        Language::ZhTw => "操作結果尚未確認，請檢查目前狀態後繼續。",
     };
     match &reply.receipt {
         Receipt::Recorded { outcome, .. } => match outcome {

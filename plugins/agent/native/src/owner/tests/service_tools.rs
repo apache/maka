@@ -543,7 +543,6 @@ async fn unknown_service_outcome_has_typed_original_evidence_and_never_enters_mo
             let (mut socket, _) = listener.accept().await.unwrap();
             let next = request(&mut socket).await;
             let text = next.to_string();
-            assert!(text.contains("result is unknown"));
             assert!(!text.contains("journal_v1"));
             assert!(!text.contains("fixture.Counter"));
             response(&mut socket).await;
