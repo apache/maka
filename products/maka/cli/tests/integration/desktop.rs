@@ -34,7 +34,7 @@ use tokio::{
 
 fn launcher(directory: &Path) -> PathBuf {
     let executable = directory.join("maka");
-    std::fs::copy(env!("CARGO_BIN_EXE_maka"), &executable).unwrap();
+    std::fs::hard_link(env!("CARGO_BIN_EXE_maka"), &executable).unwrap();
     executable
 }
 
@@ -131,8 +131,8 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
         );
     };
     tokio::time::timeout(Duration::from_secs(60), async {
-        let directory = tempfile::tempdir().unwrap();
-        stage("copy-launcher");
+        let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+        stage("link-launcher");
         let executable = launcher(directory.path());
         eprintln!(
             "desktop lifecycle: executable_bytes={}",
@@ -253,7 +253,7 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
 #[tokio::test]
 async fn desktop_launcher_succeeds_when_its_host_stopped_under_the_shell() {
     tokio::time::timeout(Duration::from_secs(60), async {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
         let executable = launcher(directory.path());
         shell(directory.path());
         let fixture = CandidateFixture::new(directory.path().join("root"));
@@ -285,7 +285,7 @@ async fn desktop_launcher_succeeds_when_its_host_stopped_under_the_shell() {
 #[tokio::test]
 async fn desktop_launched_through_a_symlink_runs_the_shell_beside_its_target() {
     tokio::time::timeout(Duration::from_secs(60), async {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
         let install = directory.path().join("install");
         std::fs::create_dir(&install).unwrap();
         let executable = launcher(&install);
@@ -313,8 +313,8 @@ async fn desktop_shell_spawn_failure_ignores_path_and_releases_its_host() {
         );
     };
     tokio::time::timeout(Duration::from_secs(40), async {
-        let directory = tempfile::tempdir().unwrap();
-        stage("copy-launcher");
+        let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+        stage("link-launcher");
         let executable = launcher(directory.path());
         eprintln!(
             "desktop spawn-failure lifecycle: executable_bytes={}",
@@ -364,7 +364,7 @@ async fn desktop_shell_spawn_failure_ignores_path_and_releases_its_host() {
 
 #[test]
 fn desktop_help_and_version_do_not_start_a_host_or_shell() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let executable = launcher(directory.path());
     let root = directory.path().join("must remain absent");
     for flag in ["--help", "--version"] {
@@ -396,7 +396,7 @@ fn desktop_help_and_version_do_not_start_a_host_or_shell() {
 async fn desktop_uses_the_default_root_unless_an_explicit_root_is_selected() {
     tokio::time::timeout(Duration::from_secs(60), async {
         for explicit in [false, true] {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
             let executable = launcher(directory.path());
             shell(directory.path());
             let default_root = directory.path().join(".maka/application/host");
