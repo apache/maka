@@ -17,13 +17,12 @@
  * under the License.
  */
 
-use maka_agent_facts::language::Language;
-
 use crate::prepared_prompt::PreparedPrompt;
 use crate::{RunContext, RunError, RunInput, RunSettings, history, runner::digest};
 use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::ModelInterruption;
+use maka_agent_facts::language::Language;
 use maka_agent_facts::model::ModelPart;
 use maka_agent_facts::model::assembly::{AttemptBinding, AttemptWriter, PartReceipt};
 use maka_agent_facts::model::recorded::{ModelObservation, RecordedPartRef};
@@ -214,40 +213,6 @@ pub(super) fn rendered_system<W>(input: &RunInput<W>) -> Option<Arc<String>> {
     .map(Arc::new)
 }
 
-pub(super) fn prior_unknown_notice(source: &ContextView, language: Language) -> String {
-    let unknown = &source.unknown_tools;
-    if unknown.is_empty() {
-        return String::new();
-    }
-    let mut notice = String::from(match language {
-        Language::En => {
-            "Prior execution was interrupted after these tools were dispatched. Their results were never recorded; effects may or may not have happened. Inspect current state before repeating any action. This is historical uncertainty, not a new tool result:"
-        }
-        Language::ZhCn => {
-            "先前执行在派发以下工具后中断，未记录结果；操作可能已经生效。重复操作前先检查当前状态。这是历史不确定性，不是新的工具结果："
-        }
-        Language::ZhTw => {
-            "先前執行在派發以下工具後中斷，未記錄結果；操作可能已經生效。重複操作前先檢查目前狀態。這是歷史不確定性，不是新的工具結果："
-        }
-    });
-    for (name, operation) in unknown.iter().take(64) {
-        notice.push_str(&match language {
-            Language::En => format!("\n- {name} (operation {operation})"),
-            Language::ZhCn => format!("\n- {name}（操作 {operation}）"),
-            Language::ZhTw => format!("\n- {name}（操作 {operation}）"),
-        });
-    }
-    if source.unknown_tool_count > 64 {
-        let remaining = source.unknown_tool_count - 64;
-        notice.push_str(&match language {
-            Language::En => format!("\n- and {remaining} more unknown operations"),
-            Language::ZhCn => format!("\n- 另有 {remaining} 个结果未知的操作"),
-            Language::ZhTw => format!("\n- 另有 {remaining} 個結果未知的操作"),
-        });
-    }
-    notice
-}
-
 #[derive(Clone)]
 pub(super) struct RequestSource {
     pub evidence: maka_event_log::context::SourceEvidence,
@@ -276,27 +241,15 @@ impl From<&ContextView> for RequestSource {
 pub(super) async fn read_source(
     inner: &RunContext,
     input: &RunSettings,
-    prior_unknown: bool,
     cancellation: &CancellationToken,
 ) -> Result<Arc<ContextView>, RunError> {
-    // Only abandon the read reply. Its snapshot remains owned by the log's
-    // independent reader until completion; no append or external effect is raced.
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => Err(RunError::Cancelled),
-        source = async {
-            if prior_unknown {
-                inner.log.read_manual_message_view(
-                    &input.invocation.session_id,
-                    &input.invocation.invocation_id,
-                ).await
-            } else {
-                inner.log.read_model_view(
-                    &input.invocation.session_id,
-                    Some(&input.invocation.invocation_id),
-                ).await
-            }
-        } => Ok(Arc::new(source?)),
+        source = inner.log.read_model_view(
+            &input.invocation.session_id,
+            Some(&input.invocation.invocation_id),
+        ) => Ok(Arc::new(source?)),
     }
 }
 
@@ -483,7 +436,7 @@ async fn execute_retry_chain(
                 // Accepted progress replaces the frozen retry prompt. Release it
                 // before materializing the next canonical source.
                 close_retry(&mut retry).await?;
-                let context = read_source(inner, input, prior_unknown, cancellation).await?;
+                let context = read_source(inner, input, cancellation).await?;
                 high_water = context.source_evidence.high_water;
                 source = RequestSource::from(context.as_ref());
                 source.capture.prior_unknown = prior_unknown;

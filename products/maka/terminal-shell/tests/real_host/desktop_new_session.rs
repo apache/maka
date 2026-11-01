@@ -988,6 +988,19 @@ async fn desktop_plans_first_then_runs_the_approved_plan() {
             }
         })
         .await;
+    // The Host wrote the execution's opening message: the conversation names the
+    // Plan there, and only the message the user typed can be copied or edited.
+    desktop
+        .until(
+            "the Plan execution message offered the user's actions",
+            || {
+                (desktop.controls("Copy user message").len() == 1
+                    && desktop.controls("Edit and resend in a fork").len() == 1)
+                    .then_some(())
+            },
+        )
+        .await;
+    desktop.artifact("plan-execution");
     // Approving runs the Plan without leaving planning mode.
     let observed = desktop
         .client
@@ -1431,6 +1444,61 @@ async fn desktop_settings_translate_subscription_sign_in_and_provider_search() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_mermaid_renders_in_the_real_conversation_and_keeps_source_available() {
+    let mut fixture = Fixture::open().await;
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+    )
+    .await;
+    desktop.new_draft().await;
+    desktop
+        .type_text("Show how Maka renders Mermaid diagrams locally.")
+        .await;
+    desktop.key("enter", false);
+    desktop.artifact("mermaid-submitted");
+    let mut reply = desktop.request(&mut fixture).await;
+    reply.delta("### Mermaid diagrams in Maka\n\nRendered locally, with Chinese labels and colors that follow the workbench theme.\n\n```mermaid\nflowchart LR\n  A[Mermaid 源码] --> B[Pele 渲染]\n  B --> C[字体转路径]\n  C --> D[NSH 显示]\n  style D fill:#1d745a,stroke:#24c483,color:#ffffff\n```\n").await;
+    reply.finish().await;
+    let sessions = desktop.sessions().await;
+    let session = sessions
+        .iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fixture.idle(&desktop.client, &session).await;
+    desktop.control("Show diagram source").await;
+    desktop
+        .until(
+            "the diagram's image never reached the desktop frame",
+            || {
+                let guard = desktop.frame.lock().unwrap();
+                let frame = guard.as_ref()?;
+                let filled = frame
+                    .pixels()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|pixel| pixel[..3] == [0x1d, 0x74, 0x5a])
+                    .count();
+                (filled > 500).then_some(())
+            },
+        )
+        .await;
+    desktop.artifact(&format!("mermaid-workbench-{theme}-{layout}"));
+    desktop.press("Show diagram source").await;
+    desktop.control("Hide diagram source").await;
+    desktop.artifact(&format!("mermaid-workbench-source-{theme}-{layout}"));
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_reasoning_and_tool_status_icons_share_the_activity_layout() {
     let fixture = Fixture::open().await;
     let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1510,6 +1578,122 @@ async fn desktop_reasoning_and_tool_status_icons_share_the_activity_layout() {
     desktop.press("Thinking · Check browser connection").await;
     desktop.control("Show thinking source").await;
     desktop.artifact("activity-status-icons-expanded");
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_context_tooltip_includes_output_speed() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/context_gauge_preview.tsx");
+    let output = fixture.directory.path().join("context-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(1120), gpui::DevicePixels(800)),
+        nsh_core::platform::Appearance::Dark,
+        Some((source, "en", "Update output speed")),
+    )
+    .await;
+    let above = Bounds::new(point(px(0.), px(0.)), size(px(1120.), px(390.)));
+    let before = desktop.pixels(above).unwrap();
+    desktop
+        .platform
+        .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
+            position: point(px(560.), px(400.)),
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+    desktop
+        .until("context tooltip did not appear", || {
+            (desktop.pixels(above)? != before).then_some(())
+        })
+        .await;
+    desktop.artifact("context-tooltip-output-speed");
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_loading_indicator_keeps_rotating_after_scrolling_away_and_back() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/loading_preview.tsx");
+    let output = fixture.directory.path().join("loading-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(640), gpui::DevicePixels(400)),
+        nsh_core::platform::Appearance::Dark,
+        Some((source, "en", "Bottom")),
+    )
+    .await;
+    let icon = Bounds::new(point(px(0.), px(60.)), size(px(24.), px(24.)));
+    let painted = |pixels: &[u8]| pixels.chunks_exact(4).filter(|rgba| rgba[0] > 80).count() > 10;
+    let mut first = desktop
+        .until("initial loading indicator was not painted", || {
+            desktop.pixels(icon).filter(|pixels| painted(pixels))
+        })
+        .await;
+    for _ in 0..3 {
+        first = desktop
+            .until(
+                "loading indicator did not rotate on initial display",
+                || {
+                    desktop
+                        .pixels(icon)
+                        .filter(|pixels| painted(pixels) && *pixels != first)
+                },
+            )
+            .await;
+    }
+    desktop.press("Bottom").await;
+    desktop.control("Row 199").await;
+    desktop.press("Top").await;
+    desktop.control("Row 0").await;
+    let mut returned = desktop
+        .until("returned loading indicator was not painted", || {
+            desktop.pixels(icon).filter(|pixels| painted(pixels))
+        })
+        .await;
+    for _ in 0..3 {
+        returned = desktop
+            .until(
+                "loading indicator stopped after returning to its row",
+                || {
+                    desktop
+                        .pixels(icon)
+                        .filter(|pixels| painted(pixels) && *pixels != returned)
+                },
+            )
+            .await;
+    }
+    if std::env::var_os("MAKA_UI_ARTIFACT_DIR").is_some() {
+        for frame in 0..12 {
+            desktop
+                .wait(
+                    "loading animation recording",
+                    tokio::time::sleep(Duration::from_millis(80)),
+                )
+                .await;
+            desktop.artifact(&format!("loading-after-scroll-{frame:02}"));
+        }
+    }
+    desktop.artifact("loading-after-scroll");
     desktop.close().await;
     fixture.finish().await;
 }

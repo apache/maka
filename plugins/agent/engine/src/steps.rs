@@ -265,10 +265,9 @@ async fn run_from(
                             if !tools.code_idle() || !effects.is_idle() {
                                 return None;
                             }
-                            let context =
-                                model_attempt::read_source(inner, input, false, cancellation)
-                                    .await
-                                    .ok()?;
+                            let context = model_attempt::read_source(inner, input, cancellation)
+                                .await
+                                .ok()?;
                             // Read the live source, but project from the successor's point of
                             // view: manual replay cuts distinguish current from inherited work.
                             let prompt = model_attempt::prompt(
@@ -349,18 +348,10 @@ async fn run_from(
                         compaction = CompactionBudget::Reshaped;
                     }
                     let mut context =
-                        model_attempt::read_source(inner, input, prior_unknown, cancellation)
-                            .await?;
+                        model_attempt::read_source(inner, input, cancellation).await?;
                     tools.set_model(input.provider.tool_context());
-                    let (mut request_tools, mut surface) = capture_surface(
-                        inner,
-                        input,
-                        &tools,
-                        &context,
-                        prior_unknown,
-                        cancellation,
-                    )
-                    .await?;
+                    let (mut request_tools, mut surface) =
+                        capture_surface(inner, input, &tools, &context, cancellation).await?;
                     let mut prompt = model_attempt::prompt(
                         inner,
                         input,
@@ -376,7 +367,6 @@ async fn run_from(
                     let needs_compaction = crate::context_input::needs_compaction(input, &prompt);
                     if tools.code_idle()
                         && effects.is_idle()
-                        && !prior_unknown
                         && ((needs_compaction && pending.is_some())
                             || (compaction == CompactionBudget::Available
                                 && pending.is_none()
@@ -418,19 +408,10 @@ async fn run_from(
                         // Compaction makes its own logical requests. The next Main
                         // must observe any provider change made meanwhile.
                         input.refresh_model(cancellation).await?;
-                        context =
-                            model_attempt::read_source(inner, input, prior_unknown, cancellation)
-                                .await?;
+                        context = model_attempt::read_source(inner, input, cancellation).await?;
                         tools.set_model(input.provider.tool_context());
-                        (request_tools, surface) = capture_surface(
-                            inner,
-                            input,
-                            &tools,
-                            &context,
-                            prior_unknown,
-                            cancellation,
-                        )
-                        .await?;
+                        (request_tools, surface) =
+                            capture_surface(inner, input, &tools, &context, cancellation).await?;
                         prompt = model_attempt::prompt(
                             inner,
                             input,
@@ -598,7 +579,7 @@ async fn run_from(
             // Pruning/compaction require a settled boundary. A yielded cell is
             // still live work, not a corrupt boundary or a reason to cancel it.
             // Defer maintenance until it settles; the model can still call wait.
-            if tools.code_idle() && effects.is_idle() && pending.is_none() && !prior_unknown {
+            if tools.code_idle() && effects.is_idle() && pending.is_none() {
                 prune::run(inner, input, cancellation, &mut inspected_through).await?;
             }
             if request_tools.finished() {
@@ -607,8 +588,7 @@ async fn run_from(
                 ));
             }
             if !cancellation.is_cancelled() && lane.needs_confirmation() {
-                let context =
-                    model_attempt::read_source(inner, input, prior_unknown, cancellation).await?;
+                let context = model_attempt::read_source(inner, input, cancellation).await?;
                 let replay = model_attempt::prompt(
                     inner,
                     input,
@@ -668,8 +648,7 @@ async fn run_from(
         Ok(StepExit::Terminal(
             maka_agent_facts::event::InvocationOutcome::Completed
         ))
-    ) && !prior_unknown
-    {
+    ) {
         // The last Main can finish while a background Summary fails. Drain first,
         // then reuse admission's zero-materialization safety check so an unknown
         // summary effect becomes a sealed failure, never apparent Turn success.
@@ -915,7 +894,6 @@ async fn capture_surface<'tools>(
     input: &RunSettings,
     tools: &'tools RunTools,
     context: &maka_event_log::context::ContextView,
-    prior_unknown: bool,
     cancellation: &CancellationToken,
 ) -> Result<
     (
@@ -927,19 +905,11 @@ async fn capture_surface<'tools>(
     let request_tools = tools
         .capture(&input.configuration.cwd, cancellation.clone())
         .await?;
-    let unknown_notice = prior_unknown
-        .then(|| model_attempt::prior_unknown_notice(context, input.configuration.language));
-    if unknown_notice.as_deref() == Some("") {
-        return Err(RunError::ReconciliationRequired(
-            "unknown prior tool is missing from model context".into(),
-        ));
-    }
     let surface = Arc::new(crate::request_composition::Surface::capture(
         &request_tools,
         &inner.shared.model,
         input,
         context,
-        unknown_notice.as_deref(),
     )?);
     Ok((request_tools, surface))
 }

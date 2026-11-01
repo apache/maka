@@ -8739,6 +8739,7 @@ dependencies = [
  "nsh-core",
  "nsh-engine",
  "nsh-js",
+ "nsh-testing",
  "open",
  "percent-encoding",
  "serde",
@@ -8747,6 +8748,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+ "usvg",
  "uuid",
 ]
 
@@ -9644,6 +9646,17 @@ dependencies = [
  "ureq",
  "url",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nsh-testing"
+version = "0.3.0"
+dependencies = [
+ "crossbeam-channel",
+ "log",
+ "nsh-core",
+ "nsh-engine",
+ "regex",
 ]
 
 [[package]]

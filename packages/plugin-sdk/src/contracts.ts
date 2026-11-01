@@ -7286,6 +7286,25 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
+                  },
                 ],
               },
               HistoryCompaction: {
@@ -7633,6 +7652,18 @@ export const contracts = {
                     type: 'string',
                     maxLength: 96,
                   },
+                  origin: {
+                    description:
+                      "The Host's attribution of the Turn's opening message, when it generated it.",
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/MessageOrigin',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['turnId', 'position', 'lastPosition', 'label'],
@@ -7657,6 +7688,74 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['sourceSequence', 'itemIndex'],
+              },
+              MessageOrigin: {
+                description:
+                  'Trusted producer attribution, preserved independently of editable content.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'workhub_task',
+                      },
+                      taskId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'taskId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'workhub_graph',
+                      },
+                      graphId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
+                  },
+                ],
               },
             },
           },
@@ -15259,6 +15358,25 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
+                  },
                 ],
               },
               AgentQueueKind: {
@@ -22017,6 +22135,25 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
+                  },
                 ],
               },
               HistoryRowPosition: {
@@ -23356,6 +23493,25 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
                   },
                 ],
               },

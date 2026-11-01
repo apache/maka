@@ -22,7 +22,13 @@ import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { useHost } from './host';
-import { canRegenerateFromText, messageKey, type Position, type Row } from './history';
+import {
+  canRegenerateFromText,
+  messageKey,
+  type Position,
+  type Row,
+  userAuthored,
+} from './history';
 import { readOriginal, type OriginalMessage } from './MessageCopy';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { Icon } from './Icon';
@@ -82,6 +88,8 @@ export function MessageEdit(props: {
       const row = props.row();
       if (!row || row.role !== 'user' || row.field !== 'body' || !row.position || !row.turnId)
         return null;
+      // A message the Host generated is not the user's to edit and resend as their own.
+      if (!userAuthored(row)) return null;
       // Text replay must not drop attachments or structured references.
       if (props.regenerate && !canRegenerateFromText(row)) return null;
       // A fork before the turn of a steering message would also drop the message that opened it.

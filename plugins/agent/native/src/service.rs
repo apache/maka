@@ -650,6 +650,7 @@ impl Handler for Agent {
                                 position: landmark.position,
                                 last_position: landmark.last_position,
                                 label: landmark.label,
+                                origin: landmark.origin,
                             })
                             .collect(),
                     };

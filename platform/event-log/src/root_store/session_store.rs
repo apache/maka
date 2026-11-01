@@ -675,12 +675,9 @@ impl SessionStore {
         self.scoped().await?.context_usage(session).await
     }
 
-    pub async fn check_manual_message_history(&self, session: &str) -> Result<bool, StoreError> {
+    pub async fn check_history(&self, session: &str) -> Result<bool, StoreError> {
         self.check_session(session)?;
-        self.scoped()
-            .await?
-            .check_manual_message_history(session)
-            .await
+        self.scoped().await?.check_history(session).await
     }
 
     pub async fn read_model_view(
@@ -702,18 +699,6 @@ impl SessionStore {
         self.scoped()
             .await?
             .read_frozen_model_request(invocation, event_id)
-            .await
-    }
-
-    pub async fn read_manual_message_view(
-        &self,
-        session: &str,
-        current: &str,
-    ) -> Result<ContextView, StoreError> {
-        self.check_session(session)?;
-        self.scoped()
-            .await?
-            .read_manual_message_view(session, current)
             .await
     }
 

@@ -83,9 +83,8 @@ impl Surface {
         models: &maka_model::ModelExecutor,
         input: &RunSettings,
         source: &maka_event_log::context::ContextView,
-        prior_unknown_notice: Option<&str>,
     ) -> Result<Self, RunError> {
-        let mut system = input
+        let system = input
             .configuration
             .system_prompt
             .as_ref()
@@ -96,13 +95,6 @@ impl Surface {
             .as_ref()
             .map(|prompt| prompt.sources.clone())
             .unwrap_or_default();
-        if let Some(notice) = prior_unknown_notice {
-            let system = system.get_or_insert_with(String::new);
-            if !system.is_empty() {
-                system.push_str("\n\n");
-            }
-            system.push_str(notice);
-        }
         let adapter = models.binding(&input.provider)?;
         sources.push(adapter.source().clone());
         if let Some(source) = &input.model_revision {

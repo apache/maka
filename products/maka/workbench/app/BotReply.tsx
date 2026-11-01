@@ -19,6 +19,7 @@
 
 import { View } from 'nsh';
 import { TextView } from 'nsh/base';
+import { MermaidView, mermaidExtensions } from './MermaidView';
 import type { BotTranscriptMessage } from './botTranscript';
 import { tr } from './locale';
 import { Text } from 'nsh';
@@ -37,6 +38,8 @@ export function BotReply(props: {
         {(message) => (
           <TextView
             markdown={message().text}
+            extensions={mermaidExtensions}
+            renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
             sourceId={`bot/${message().sequence}`}
             selectable
             contentStyle={{ rowGap: 16 }}

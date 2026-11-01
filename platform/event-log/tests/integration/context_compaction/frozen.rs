@@ -206,7 +206,7 @@ async fn frozen_base_preserves_original_checkpoint_tail_and_diagnostics_across_l
 }
 
 #[tokio::test]
-async fn a_closed_frozen_boundary_does_not_prove_that_tool_effects_are_settled() {
+async fn a_closed_frozen_boundary_preserves_unknown_tool_effects() {
     let directory = tempfile::tempdir().unwrap();
     let log = EventLog::open(&directory.path().join("safety.sqlite"))
         .await
@@ -271,12 +271,12 @@ async fn a_closed_frozen_boundary_does_not_prove_that_tool_effects_are_settled()
         high_water: sealed.high_water,
         digest: sealed.digest,
     };
-    assert!(
-        log.read_frozen_model_context(&sealed, 100, 32768)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("unresolved prior execution")
-    );
+    let frozen = log
+        .read_frozen_model_context(&sealed, 100, 32768)
+        .await
+        .unwrap();
+    assert!(frozen.tail.iter().any(|row| matches!(row,
+        ContextEvent::Canonical(stored) if matches!(&stored.event.fact,
+            Fact::ToolDispatched { operation_id, .. } if operation_id == "write"))));
     log.close().await.unwrap();
 }

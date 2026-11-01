@@ -299,6 +299,7 @@ export interface ComposerViewInput<Element = unknown> {
 }
 
 export type ComposerContextUsage = {
+  outputTokensPerSecond: number | null;
   tokens: number;
   window: number;
   /** The count is an estimate or predates the latest additions. */

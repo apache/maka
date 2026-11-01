@@ -73,8 +73,6 @@ pub struct ContextView {
     pub selection: semantic::SemanticSelection,
     pub has_new_history: bool,
     pub prior_unknown: bool,
-    pub unknown_tools: Vec<(String, String)>,
-    pub unknown_tool_count: u64,
 }
 
 /// Complete source evidence and its distinct, bounded model rendering input.

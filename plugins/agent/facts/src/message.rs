@@ -44,6 +44,12 @@ pub enum MessageOrigin {
     BotWorker {
         session_id: String,
     },
+    /// The opening message of an approved Plan execution. `title` is the
+    /// approved Plan's title when the execution was frozen, not the current Plan.
+    Plan {
+        execution_id: String,
+        title: String,
+    },
 }
 impl MessageOrigin {
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -51,6 +57,16 @@ impl MessageOrigin {
             Self::WorkhubTask { task_id } => crate::interaction::entity_id(task_id),
             Self::WorkhubGraph { graph_id } => crate::interaction::entity_id(graph_id),
             Self::BotWorker { session_id } => crate::interaction::entity_id(session_id),
+            Self::Plan {
+                execution_id,
+                title,
+            } => {
+                crate::interaction::entity_id(execution_id)?;
+                if title.trim().is_empty() || title.contains('\0') {
+                    return Err("Invalid Plan title");
+                }
+                Ok(())
+            }
         }
     }
 }

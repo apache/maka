@@ -195,7 +195,7 @@ async fn user_messages_after_abandoned_tool_dispatch_preserve_unknown_without_re
             drop(db);
             // Root recovery runs only after every physical worker has stopped.
             f.store.recover_invocations().await.unwrap();
-            assert!(f.session(&session).await.check_manual_message_history(&session).await.unwrap());
+            assert!(f.session(&session).await.check_history(&session).await.unwrap());
             reopen(&mut f).await;
             f.mutation(2, "send", json!({"sessionId":session,"message":"What happened to the checklist?","model":f.selection().await}), Uuid::new_v4()).await.unwrap();
             let (mut socket, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())

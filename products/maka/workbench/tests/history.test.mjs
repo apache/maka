@@ -253,5 +253,5 @@ test('a message the Host wrote keeps its origin so the Bot Chat can tell it from
   const [wake] = mergeChunks([], [chunk({ kind: 'bot_worker', sessionId: 'ma_worker' })], false, 1);
   assert.deepEqual(wake.origin, { kind: 'bot_worker', sessionId: 'ma_worker' });
   const [typed] = mergeChunks([], [chunk(null)], false, 1);
-  assert.equal('origin' in typed, false);
+  assert.equal(typed.origin, undefined);
 });

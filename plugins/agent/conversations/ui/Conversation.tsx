@@ -98,6 +98,7 @@ import {
 import { BotNote, BotReply, BotWorking } from '../../../../products/maka/workbench/app/BotReply';
 import {
   MessageRow,
+  originLabel,
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
@@ -642,7 +643,7 @@ export function Conversation(props: ConversationProps) {
     for (const item of landmarks().items) {
       items.set(item.turnId, {
         turnId: item.turnId,
-        label: item.label,
+        label: originLabel(item.origin) ?? item.label,
         anchor: {
           kind: 'landmark',
           through: landmarks().through,
@@ -656,7 +657,8 @@ export function Conversation(props: ConversationProps) {
       const previous = items.get(row.turnId);
       const label =
         row.role === 'user'
-          ? Array.from(row.text.replace(/\s+/g, ' ').trim()).slice(0, 96).join('')
+          ? (originLabel(row.origin) ??
+            Array.from(row.text.replace(/\s+/g, ' ').trim()).slice(0, 96).join(''))
           : '';
       if (!previous)
         items.set(row.turnId, {
@@ -2081,6 +2083,7 @@ export function Conversation(props: ConversationProps) {
       if (!value?.contextTokens || !value.contextWindow) return null;
       return {
         tokens: value.contextTokens,
+        outputTokensPerSecond: value.outputTokensPerSecond ?? null,
         window: value.contextWindow,
         approximate: value.approximate || value.contextLastKnown,
       };
