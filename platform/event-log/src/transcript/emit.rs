@@ -28,31 +28,31 @@ use sqlx::sqlite::SqliteWorkerConnection;
 pub(super) const ELIGIBLE: &str = r#"(e.kind = 'context_checkpoint_recorded' OR NOT EXISTS (SELECT 1 FROM runtime_events opening
                        WHERE opening.invocation_id = e.invocation_id
                          AND opening.kind = 'invocation_opened'
-                         AND json_extract(opening.event_json, '$.fact.input.kind') = 'context_compact'))
+                         AND json_extract(opening.event_header, '$.fact.input.kind') = 'context_compact'))
                    AND (e.kind NOT IN ('model_completed', 'model_interrupted') OR
                        EXISTS (SELECT 1 FROM runtime_events request
              JOIN runtime_events opening ON opening.invocation_id = request.invocation_id
              AND opening.kind = 'invocation_opened'
              WHERE request.kind = 'model_requested' AND request.invocation_id = e.invocation_id
              AND request.operation_id = e.operation_id
-             AND json_extract(opening.event_json, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
-             AND json_extract(request.event_json, '$.fact.purpose') = 'main'))
+             AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
+             AND json_extract(request.event_header, '$.fact.purpose') = 'main'))
                    AND (e.kind IN ('message_imported', 'invocation_opened', 'message_steered', 'model_completed',
                                 'model_interrupted', 'invocation_ended', 'context_checkpoint_recorded',
                                 'tool_dispatched', 'tool_rejected', 'tool_settled', 'executor_completed')
                        OR (e.kind = 'model_observed'
-                           AND json_extract(e.event_json, '$.fact.event.kind') = 'part'
-                           AND json_type(e.event_json, '$.fact.step_id') = 'text'
+                           AND json_extract(e.event_header, '$.fact.event.kind') = 'part'
+                           AND json_type(e.event_header, '$.fact.step_id') = 'text'
                            AND EXISTS (SELECT 1 FROM runtime_events request
                                JOIN runtime_events opening ON opening.invocation_id = request.invocation_id AND opening.kind = 'invocation_opened'
                                WHERE request.kind = 'model_requested' AND request.invocation_id = e.invocation_id
                                  AND request.sequence < e.sequence
-                                 AND request.operation_id = CAST(json_extract(e.event_json, '$.fact.step_id') AS TEXT)
-                                 AND json_extract(e.event_json, '$.fact.step_id') = request.operation_id
-                                 AND json_extract(request.event_json, '$.fact.purpose') = 'main'
-                                 AND json_extract(request.event_json, '$.fact.item_acceptance') = 1
-                                 AND json_extract(opening.event_json, '$.fact.input.kind') IN ('message','continuation','handoff')))
-                       OR (e.kind = 'executor_observed' AND json_extract(e.event_json, '$.fact.output.type') IN ('tool_start','tool_result')))"#;
+                                 AND request.operation_id = CAST(json_extract(e.event_header, '$.fact.step_id') AS TEXT)
+                                 AND json_extract(e.event_header, '$.fact.step_id') = request.operation_id
+                                 AND json_extract(request.event_header, '$.fact.purpose') = 'main'
+                                 AND json_extract(request.event_header, '$.fact.item_acceptance') = 1
+                                 AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message','continuation','handoff')))
+                       OR (e.kind = 'executor_observed' AND json_extract(e.event_header, '$.fact.output.type') IN ('tool_start','tool_result')))"#;
 
 pub(super) async fn source_on_worker(
     connection: &mut SqliteWorkerConnection<'_>,
@@ -94,7 +94,7 @@ pub(super) async fn source_on_worker(
 
 fn candidate_sql() -> String {
     format!(
-        "SELECT e.invocation_id, CASE WHEN e.kind = 'model_observed' THEN json_extract(e.event_json, '$.fact.step_id') ELSE e.operation_id END, e.kind FROM runtime_events e WHERE e.sequence = ?1 AND (e.event_session = ?2 OR EXISTS(SELECT 1 FROM session_history_members h WHERE h.session_id = ?2 AND h.sequence = e.sequence)) AND {ELIGIBLE}"
+        "SELECT e.invocation_id, CASE WHEN e.kind = 'model_observed' THEN json_extract(e.event_header, '$.fact.step_id') ELSE e.operation_id END, e.kind FROM runtime_events e WHERE e.sequence = ?1 AND (e.event_session = ?2 OR EXISTS(SELECT 1 FROM session_history_members h WHERE h.session_id = ?2 AND h.sequence = e.sequence)) AND {ELIGIBLE}"
     )
 }
 

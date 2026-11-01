@@ -7773,6 +7773,7 @@ dependencies = [
  "maka-plugin-core",
  "maka-presentation",
  "maka-sandbox",
+ "postcard",
  "regex",
  "rusqlite",
  "schemars 1.2.3",

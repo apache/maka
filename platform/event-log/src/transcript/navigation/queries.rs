@@ -21,14 +21,14 @@ pub(super) const FENCE: &str = "
 SELECT MAX(sequence) FROM (
  SELECT MAX(event.sequence) AS sequence FROM runtime_events event
  JOIN runtime_events opening ON opening.invocation_id = event.invocation_id AND opening.kind = 'invocation_opened'
- WHERE (event.event_json IS NOT NULL AND event.event_session=?1)
- AND json_extract(opening.event_json, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
+ WHERE (event.event_header IS NOT NULL AND event.event_session=?1)
+ AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
  UNION ALL
  SELECT MAX(h.sequence) FROM session_history_members h
  JOIN runtime_events event ON event.sequence=h.sequence
  JOIN runtime_events opening ON opening.invocation_id = event.invocation_id AND opening.kind = 'invocation_opened'
  WHERE h.session_id = ?1
- AND json_extract(opening.event_json, '$.fact.input.kind') IN ('message', 'continuation', 'handoff'))";
+ AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff'))";
 
 pub(super) const ROWS: &str = "
 SELECT row.source_sequence,row.item_index,row.turn_id,row.role,source.kind
@@ -39,16 +39,16 @@ ORDER BY row.source_sequence,row.item_index LIMIT 257";
 
 pub(super) const LANDMARKS: &str = "
 WITH sources AS (
- SELECT opening.invocation_id,opening.sequence,json_extract(opening.event_json,'$.invocation.turn_id') AS turn_id
+ SELECT opening.invocation_id,opening.sequence,json_extract(opening.event_header,'$.invocation.turn_id') AS turn_id
  FROM runtime_events opening
- WHERE json_extract(opening.event_json,'$.invocation.session_id')=?1
+ WHERE json_extract(opening.event_header,'$.invocation.session_id')=?1
  AND opening.kind='invocation_opened' AND opening.sequence<=?2
- AND json_extract(opening.event_json,'$.fact.input.kind') IN ('message','continuation')
+ AND json_extract(opening.event_header,'$.fact.input.kind') IN ('message','continuation')
  UNION ALL
- SELECT opening.invocation_id,opening.sequence,json_extract(opening.event_json,'$.invocation.turn_id')
+ SELECT opening.invocation_id,opening.sequence,json_extract(opening.event_header,'$.invocation.turn_id')
  FROM session_history_members h JOIN runtime_events opening ON opening.sequence=h.sequence
  WHERE h.session_id=?1 AND h.sequence<=?2 AND opening.kind='invocation_opened'
- AND json_extract(opening.event_json,'$.fact.input.kind') IN ('message','continuation')
+ AND json_extract(opening.event_header,'$.fact.input.kind') IN ('message','continuation')
 ), openings AS (
  SELECT invocation_id,sequence,ROW_NUMBER() OVER (PARTITION BY turn_id ORDER BY sequence) AS first
  FROM sources

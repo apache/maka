@@ -292,15 +292,17 @@ impl EventLog {
             return Err(StoreError::SessionRetired);
         }
         let json = serde_json::to_string(event)?;
-        let previous: Option<(i64, String)> =
-            sqlx::query_as("SELECT sequence, event_json FROM runtime_events WHERE event_id = ?")
-                .bind(&event.id)
-                .fetch_optional(&mut *transaction)
-                .await?;
-        if let Some((sequence, previous)) = previous {
-            if previous != json {
+        let previous=sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT e.sequence,e.event_header,{columns} FROM runtime_events e {joins} WHERE e.event_id=?",
+            columns=crate::canonical::COLUMNS,joins=crate::canonical::JOINS,
+        ))).bind(&event.id).fetch_optional(&mut *transaction).await?;
+        if let Some(previous) = previous {
+            use sqlx::Row;
+            let sequence: i64 = previous.try_get(0)?;
+            if crate::canonical::json(&previous)?.as_ref() != json {
                 return Err(StoreError::EventConflict);
             }
+            drop(previous);
             crate::tool_payloads::verify_replay(transaction, write).await?;
             crate::composition::verify_replay(transaction, write).await?;
             crate::usage::valuation::verify_replay(transaction, write).await?;

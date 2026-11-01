@@ -81,16 +81,14 @@ impl Closure {
             }
         }
         while let Some(sequence) = selected.queue.pop_front() {
-            let row: Option<(Option<String>, Option<i64>)> = sqlx::query_as(
-                "SELECT event_json,
-                    (SELECT length(payload) FROM tool_result_payloads WHERE event_id=e.event_id)
-                 FROM runtime_events e WHERE sequence=?1",
-            )
-            .bind(sequence as i64)
-            .fetch_optional(&mut *db)
-            .await?;
-            let (json, payload_bytes) = row.ok_or(StoreError::MaterialCollected)?;
-            let json = json.ok_or(StoreError::PrefixTooLarge)?;
+            let row=sqlx::query(sqlx::AssertSqlSafe(format!(
+                "SELECT e.event_header,(SELECT length(payload) FROM tool_result_payloads WHERE event_id=e.event_id) AS tool_payload_bytes,{columns}
+                 FROM runtime_events e {joins} WHERE e.sequence=?1",columns=crate::canonical::COLUMNS,joins=crate::canonical::JOINS,
+            ))).bind(sequence as i64).fetch_optional(&mut *db).await?;
+            let row = row.ok_or(StoreError::MaterialCollected)?;
+            use sqlx::Row;
+            let payload_bytes: Option<i64> = row.try_get("tool_payload_bytes")?;
+            let json = crate::canonical::json(&row)?;
             let event: RuntimeEvent = serde_json::from_str(&json)?;
             crate::tool_payloads::verify_binding(&event, payload_bytes)?;
             if !matches!(event.fact, Fact::MessageImported { .. }) {
@@ -233,9 +231,9 @@ impl Closure {
             "SELECT EXISTS(SELECT 1 FROM context_source_prefixes p
                CROSS JOIN event_log e ON e.sequence=p.sequence
                WHERE p.kind='session' AND p.owner=?1 AND p.sequence<=?2
-               AND e.invocation_id IS NOT NULL AND e.event_json IS NULL AND {filter}
+               AND e.invocation_id IS NOT NULL AND e.event_header IS NULL AND {filter}
              UNION ALL SELECT 1 FROM session_history_members h JOIN event_log e ON e.sequence=h.sequence
-             WHERE h.session_id=?1 AND e.sequence<=?2 AND e.event_json IS NULL AND {filter})"
+             WHERE h.session_id=?1 AND e.sequence<=?2 AND e.event_header IS NULL AND {filter})"
         ))).bind(session).bind(through as i64).bind(&selection.lineage).fetch_one(&mut *db).await?;
         if collected {
             return Err(StoreError::MaterialCollected);
@@ -275,7 +273,7 @@ impl Closure {
         let target = Selection::predicate("t", "?4");
         let rows: Vec<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT a.sequence FROM session_history_events t JOIN runtime_events a
-             ON a.kind='tool_result_archived' AND json_extract(a.event_json,'$.fact.placeholder.identity.runtime_event_id')=t.event_id
+             ON a.kind='tool_result_archived' AND json_extract(a.event_header,'$.fact.placeholder.identity.runtime_event_id')=t.event_id
              WHERE t.owner_session_id=?1 AND t.sequence<=?2 AND {filter} AND {target}
              ORDER BY a.sequence"
         ))).bind(&selection.session).bind(through as i64).bind(before as i64).bind(&selection.lineage)

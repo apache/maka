@@ -54,7 +54,7 @@ macro_rules! unresolved {
                 WHERE done.invocation_id = started.invocation_id
                   AND (done.kind = 'executor_completed' OR
                     (done.kind = 'invocation_ended' AND
-                     COALESCE(json_extract(done.event_json, '$.fact.outcome.class'), '') != 'outcome_unknown')))
+                     COALESCE(json_extract(done.event_header, '$.fact.outcome.class'), '') != 'outcome_unknown')))
         )",
         $tail
     ) };
@@ -107,9 +107,9 @@ const UNFINISHED_INVOCATIONS: &str = "WITH pending AS MATERIALIZED (
                        WHERE i.invocation_id=context_obligations.invocation_id)
                  ORDER BY opened_at LIMIT ?2
              )
-             SELECT json_extract(opening.event_json, '$.invocation.session_id'),
-                    json_extract(opening.event_json, '$.invocation.turn_id'),
-                    json_extract(opening.event_json, '$.invocation.run_id'),
+             SELECT json_extract(opening.event_header, '$.invocation.session_id'),
+                    json_extract(opening.event_header, '$.invocation.turn_id'),
+                    json_extract(opening.event_header, '$.invocation.run_id'),
                     opening.invocation_id, pending.opened_at
              FROM pending CROSS JOIN runtime_events AS opening
              WHERE opening.sequence = pending.opened_at
@@ -123,9 +123,9 @@ const SESSION_UNFINISHED_INVOCATIONS: &str = "WITH pending AS MATERIALIZED (
                        WHERE i.invocation_id=context_obligations.invocation_id)
                  ORDER BY opened_at LIMIT ?2
              )
-             SELECT json_extract(opening.event_json, '$.invocation.session_id'),
-                    json_extract(opening.event_json, '$.invocation.turn_id'),
-                    json_extract(opening.event_json, '$.invocation.run_id'),
+             SELECT json_extract(opening.event_header, '$.invocation.session_id'),
+                    json_extract(opening.event_header, '$.invocation.turn_id'),
+                    json_extract(opening.event_header, '$.invocation.run_id'),
                     opening.invocation_id, pending.opened_at
              FROM pending CROSS JOIN runtime_events AS opening
              WHERE opening.sequence = pending.opened_at
@@ -146,7 +146,7 @@ impl EventLog {
                     let mut transaction = connection.begin().await?;
                     require_local(&mut transaction, &invocation.invocation_id).await?;
                     let identity: String = sqlx::query_scalar(
-                        "SELECT json_extract(event_json, '$.invocation') FROM runtime_events
+                        "SELECT json_extract(event_header, '$.invocation') FROM runtime_events
              WHERE invocation_id = ? AND kind = 'invocation_opened'",
                     )
                     .bind(&invocation.invocation_id)

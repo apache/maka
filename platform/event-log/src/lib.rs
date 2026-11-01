@@ -25,6 +25,7 @@ pub mod applications;
 pub mod archive;
 pub mod artifacts;
 pub mod bundle;
+mod canonical;
 mod canonical_insert;
 mod catalog_changes;
 pub mod checkpoints;

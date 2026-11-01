@@ -112,7 +112,22 @@ pub(crate) async fn initialize_connection_with_control(
             .await?;
     }
     crate::sqlite_functions::register(connection).await?;
-    MIGRATIONS.run_direct(None, &mut *connection, false).await?;
+    crate::sqlite_functions::register_migrations(connection).await?;
+    let migrated = MIGRATIONS
+        .run_direct(None, &mut *connection, false)
+        .await
+        .map_err(StoreError::from);
+    let unregistered = crate::sqlite_functions::unregister_migrations(connection).await;
+    match (migrated, unregistered) {
+        (Ok(()), Ok(())) => {}
+        (Err(cause), Err(cleanup)) => {
+            return Err(StoreError::StartupCleanupFailed {
+                cause: Box::new(cause),
+                cleanup: Box::new(cleanup),
+            });
+        }
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => return Err(error),
+    }
     sqlx::raw_sql(
         "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE;",
     )

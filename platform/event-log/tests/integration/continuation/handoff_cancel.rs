@@ -139,7 +139,7 @@ async fn paused_cancellation_claim_is_atomic_idempotent_and_never_cancels_an_exi
             let database = rusqlite::Connection::open(&path).unwrap();
             database.execute_batch(
                 "CREATE TRIGGER reject_cancel BEFORE INSERT ON event_log
-                 WHEN NEW.kind='invocation_ended' AND json_extract(NEW.event_json,'$.fact.outcome.kind')='cancelled'
+                 WHEN NEW.kind='invocation_ended' AND json_extract(NEW.event_header,'$.fact.outcome.kind')='cancelled'
                  BEGIN SELECT RAISE(ABORT, 'cancel fault'); END;"
             ).unwrap();
             let before = log.prefix(100, 8 * 1024 * 1024).await.unwrap();

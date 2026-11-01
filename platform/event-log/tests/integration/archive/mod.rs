@@ -321,7 +321,13 @@ async fn archive_publication_is_atomic_and_preserves_original_source_integrity()
             .unwrap(),
         expected
     );
-    inspect.execute("UPDATE event_log SET event_json=replace(event_json,'xxxxxxxx','yyyyyyyy') WHERE event_id=?", [&target.event().id]).unwrap();
+    // Deliberately corrupt immutable physical material outside its publisher.
+    inspect
+        .execute_batch("DROP TRIGGER event_body_immutable")
+        .unwrap();
+    inspect.execute("UPDATE event_bodies SET payload=CAST(replace(CAST(payload AS TEXT),'xxxxxxxx','yyyyyyyy') AS BLOB) WHERE id=(
+        SELECT e.body_id FROM event_log e WHERE e.event_id=?)",
+        [&target.event().id]).unwrap();
     assert!(
         log.read_tool_result("session", &target.event().id)
             .await

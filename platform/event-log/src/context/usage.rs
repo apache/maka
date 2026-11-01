@@ -29,7 +29,7 @@ use maka_agent_facts::model::ToolInput;
 use maka_agent_facts::model::{ModelPart, recorded::ModelObservation};
 use maka_agent_facts::tool_output::DurableToolProjection;
 use maka_agent_facts::tool_output::ProjectionPart;
-use sqlx::{Connection, Row, SqliteConnection};
+use sqlx::{Connection, SqliteConnection};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContextUsage {
@@ -85,7 +85,7 @@ async fn last_known(
     // a meaningful reading of the active context, even as a last-known value.
     let reset: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE sequence>?1
-         AND json_extract(event_json,'$.invocation.session_id')=?2
+         AND json_extract(event_header,'$.invocation.session_id')=?2
          AND kind='context_checkpoint_recorded')",
     )
     .bind(basis.sequence as i64)
@@ -118,18 +118,18 @@ async fn additions(
         "SELECT EXISTS(SELECT 1 FROM runtime_events c JOIN runtime_events r
          ON r.invocation_id=c.invocation_id AND r.operation_id=c.operation_id AND r.kind='model_requested'
          JOIN runtime_events n ON n.invocation_id=c.invocation_id
-         WHERE c.sequence=?1 AND n.sequence>json_extract(r.event_json,'$.fact.source_high_water') AND n.sequence<c.sequence
+         WHERE c.sequence=?1 AND n.sequence>json_extract(r.event_header,'$.fact.source_high_water') AND n.sequence<c.sequence
            AND (n.kind='tool_notified'
-             OR (n.kind='tool_rejected' AND json_extract(n.event_json,'$.fact.call.origin.kind')='provider')
+             OR (n.kind='tool_rejected' AND json_extract(n.event_header,'$.fact.call.origin.kind')='provider')
              OR (n.kind='tool_settled' AND EXISTS(SELECT 1 FROM runtime_events d
                  WHERE d.invocation_id=n.invocation_id AND d.operation_id=n.operation_id AND d.kind='tool_dispatched'
-                   AND json_extract(d.event_json,'$.fact.call.origin.kind')='provider'))))
+                   AND json_extract(d.event_header,'$.fact.call.origin.kind')='provider'))))
          OR EXISTS(SELECT 1 FROM runtime_events i JOIN runtime_events r ON r.invocation_id=i.invocation_id
-           AND r.operation_id=i.operation_id AND r.kind='model_requested' AND json_extract(r.event_json,'$.fact.item_acceptance')=1
+           AND r.operation_id=i.operation_id AND r.kind='model_requested' AND json_extract(r.event_header,'$.fact.item_acceptance')=1
            JOIN runtime_events o ON o.invocation_id=i.invocation_id AND o.kind='model_observed'
-             AND json_extract(o.event_json,'$.fact.step_id')=i.operation_id AND o.sequence<i.sequence
-           WHERE i.kind='model_interrupted' AND i.sequence>?1 AND json_extract(i.event_json,'$.invocation.session_id')=?2
-             AND json_extract(o.event_json,'$.fact.event.kind')='part')",
+             AND json_extract(o.event_header,'$.fact.step_id')=i.operation_id AND o.sequence<i.sequence
+           WHERE i.kind='model_interrupted' AND i.sequence>?1 AND json_extract(i.event_header,'$.invocation.session_id')=?2
+             AND json_extract(o.event_header,'$.fact.event.kind')='part')",
     ).bind(basis.sequence as i64).bind(session).fetch_one(&mut *connection).await?;
     if unobserved_progress {
         return Ok(None);
@@ -143,12 +143,12 @@ async fn additions(
             AND base.operation_id=c.operation_id AND base.kind='model_requested'
           LEFT JOIN model_request_compositions bc ON bc.event_id=base.event_id
           JOIN runtime_events r ON r.sequence>c.sequence AND r.kind='model_requested'
-            AND json_extract(r.event_json,'$.invocation.session_id')=?2
-            AND json_extract(r.event_json,'$.fact.purpose')='main'
+            AND json_extract(r.event_header,'$.invocation.session_id')=?2
+            AND json_extract(r.event_header,'$.fact.purpose')='main'
           LEFT JOIN model_request_compositions rc ON rc.event_id=r.event_id
           WHERE c.sequence=?1 AND (rc.digest IS NULL OR bc.digest IS NULL
-            OR rc.digest!=bc.digest OR json_extract(r.event_json,'$.fact.route_identity')
-                !=json_extract(base.event_json,'$.fact.route_identity')))",
+            OR rc.digest!=bc.digest OR json_extract(r.event_header,'$.fact.route_identity')
+                !=json_extract(base.event_header,'$.fact.route_identity')))",
     )
     .bind(basis.sequence as i64)
     .bind(session)
@@ -161,31 +161,37 @@ async fn additions(
     // Legacy interrupted fragments are discarded; marked retained progress
     // was handled above. Completed Main output is already in newest usage.
     const FILTER: &str = "
-        e.sequence > ?1 AND (e.event_json IS NOT NULL AND e.event_session=?2)
+        e.sequence > ?1 AND (e.event_header IS NOT NULL AND e.event_session=?2)
         AND e.kind IN ('invocation_opened','message_steered','model_requested',
             'model_observed','executor_completed','tool_settled','tool_rejected','tool_notified',
             'context_checkpoint_recorded','tool_result_archived')
         AND (e.kind NOT IN ('tool_settled','tool_rejected') OR
-            json_extract(e.event_json,'$.fact.call.origin.kind')='provider' OR
+            json_extract(e.event_header,'$.fact.call.origin.kind')='provider' OR
             EXISTS(SELECT 1 FROM runtime_events d WHERE d.invocation_id=e.invocation_id
                 AND d.operation_id=e.operation_id AND d.kind='tool_dispatched'
-                AND json_extract(d.event_json,'$.fact.call.origin.kind')='provider'))
+                AND json_extract(d.event_header,'$.fact.call.origin.kind')='provider'))
         AND (e.kind!='model_observed' OR EXISTS(
             SELECT 1 FROM runtime_events r WHERE r.invocation_id=e.invocation_id
                 AND r.kind='model_requested'
-                AND r.operation_id=json_extract(e.event_json,'$.fact.step_id')
-                AND json_extract(r.event_json,'$.fact.purpose')='main'
+                AND r.operation_id=json_extract(e.event_header,'$.fact.step_id')
+                AND json_extract(r.event_header,'$.fact.purpose')='main'
                 AND NOT EXISTS(SELECT 1 FROM runtime_events c
                     WHERE c.invocation_id=r.invocation_id AND c.operation_id=r.operation_id
                     AND c.kind IN ('model_completed','model_interrupted'))))";
     let (count, bytes): (i64, i64) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT COUNT(*),COALESCE(SUM(length(CAST(e.event_json AS BLOB))),0) FROM runtime_events e WHERE {FILTER}"
-    ))).bind(basis.sequence as i64).bind(session).fetch_one(&mut *connection).await?;
+        "SELECT COUNT(*),COALESCE(SUM(e.canonical_bytes),0) FROM runtime_events e WHERE {FILTER}"
+    )))
+    .bind(basis.sequence as i64)
+    .bind(session)
+    .fetch_one(&mut *connection)
+    .await?;
     if count > 4096 || bytes > 1024 * 1024 {
         return Ok(None);
     }
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT e.event_json FROM runtime_events e WHERE {FILTER} ORDER BY e.sequence"
+        "SELECT e.event_header,{} FROM runtime_events e {} WHERE {FILTER} ORDER BY e.sequence",
+        crate::canonical::COLUMNS,
+        crate::canonical::JOINS
     )))
     .bind(basis.sequence as i64)
     .bind(session)
@@ -193,7 +199,7 @@ async fn additions(
     .await?;
     let mut units = 0_u64;
     for row in rows {
-        let event: RuntimeEvent = serde_json::from_str(row.try_get("event_json")?)?;
+        let event: RuntimeEvent = serde_json::from_str(&crate::canonical::json(&row)?)?;
         let Some(added) = increment(&event.fact, basis) else {
             return Ok(None);
         };

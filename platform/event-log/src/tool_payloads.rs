@@ -138,8 +138,14 @@ pub(crate) async fn verify_replay(
     Ok(())
 }
 
-const RAW_META: &str = r#"SELECT e.event_json, length(p.payload) FROM runtime_events e
-         LEFT JOIN tool_result_payloads p ON p.event_id = e.event_id WHERE e.event_id = ?"#;
+fn raw_meta() -> String {
+    format!(
+        "SELECT e.event_header, length(p.payload) AS payload_bytes,{} FROM runtime_events e {}
+         LEFT JOIN tool_result_payloads p ON p.event_id=e.event_id WHERE e.event_id=?",
+        crate::canonical::COLUMNS,
+        crate::canonical::JOINS
+    )
+}
 const RAW_BYTES: &str =
     r#"SELECT payload FROM tool_result_payloads WHERE event_id = ? AND length(payload) = ?"#;
 
@@ -155,14 +161,19 @@ pub(crate) fn resolve_in_transaction(
     else {
         return Err(invalid());
     };
-    let row: Option<(String, Option<i64>)> = db
-        .prepare_cached(RAW_META)?
-        .query_row([&event.id], |row| Ok((row.get(0)?, row.get(1)?)))
+    let row = db
+        .prepare_cached(&raw_meta())?
+        .query_row([&event.id], |row| {
+            Ok((
+                crate::canonical::json_on_handle(row).map(|json| json.into_owned()),
+                row.get::<_, Option<i64>>("payload_bytes")?,
+            ))
+        })
         .optional()?;
     let Some((canonical, bytes)) = row else {
         return Err(invalid());
     };
-    if serde_json::from_str::<RuntimeEvent>(&canonical)? != *event {
+    if serde_json::from_str::<RuntimeEvent>(&canonical?)? != *event {
         return Err(invalid());
     }
     verify_binding(event, bytes)?;
@@ -186,12 +197,13 @@ impl EventLog {
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
-                    let canonical: Option<String> = sqlx::query_scalar(
-                "SELECT event_json FROM runtime_events WHERE event_id = ? AND kind = 'tool_settled'
-                 AND json_extract(event_json, '$.invocation.session_id') = ?",
-            ).bind(event_id).bind(session_id).fetch_optional(&mut *tx).await?;
-                    let event =
-                        serde_json::from_str::<RuntimeEvent>(&canonical.ok_or_else(invalid)?)?;
+                    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+                        "SELECT e.event_header,{} FROM runtime_events e {} WHERE e.event_id=? AND e.kind='tool_settled'
+                         AND json_extract(e.event_header,'$.invocation.session_id')=?",
+                        crate::canonical::COLUMNS, crate::canonical::JOINS
+                    ))).bind(event_id).bind(session_id).fetch_optional(&mut *tx).await?
+                        .ok_or_else(invalid)?;
+                    let event = serde_json::from_str::<RuntimeEvent>(&crate::canonical::json(&row)?)?;
                     let output = tx
                         .run_on_worker(move |handle| {
                             // SAFETY: exclusive callback-local non-owning connection;

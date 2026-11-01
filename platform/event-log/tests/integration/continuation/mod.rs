@@ -153,7 +153,7 @@ async fn canonical_claim_is_atomic_unique_and_preserves_the_entire_lineage_after
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch(
         "CREATE TRIGGER reject_continuation BEFORE INSERT ON event_log
-        WHEN json_extract(NEW.event_json,'$.fact.input.kind')='continuation'
+        WHEN json_extract(NEW.event_header,'$.fact.input.kind')='continuation'
         BEGIN SELECT RAISE(ABORT,'injected opening failure'); END;",
     )
     .unwrap();
