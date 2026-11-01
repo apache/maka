@@ -107,7 +107,7 @@ async fn settings_admission_and_original_secret_receipt_survive_independent_clie
             assert_eq!(pending.iter().map(|operation| operation.id).collect::<Vec<_>>(), [original_id]);
             let target = client.describe(&pending[0].endpoint).await.unwrap();
             assert_eq!(pending[0].correlation, json!({"kind":"settings","owner":{"namespace":target.provider,"export":target.export}}));
-            assert_eq!(client.recover(original_id).await.unwrap_err(), "client attempt has no confirmed preparation; it cannot be replayed");
+            assert_eq!(client.recover(original_id).await.unwrap_err(), "client journal still has active preparation");
         }
         let restarted = fixture.client().await;
         assert!(restarted.abandon_unprepared(original_id).await.unwrap().abandoned);
@@ -129,7 +129,7 @@ async fn settings_admission_and_original_secret_receipt_survive_independent_clie
             () = fixture.counter.started.notified() => {},
         }
         drop(confirmation);
-        saved.disconnect().await;
+        saved.disconnect().await.unwrap();
         drop(saved);
         assert_eq!(second.settings_mutation(Uuid::new_v4(), "settings", "updateNetwork", json!({"credential":"keep"}), Attachments::new()).await.err().unwrap(), "settings operation already exists or has an unresolved original");
         fixture.counter.release.notify_one();

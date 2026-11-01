@@ -41,6 +41,7 @@ fn reference(record: &ProjectRecord) -> ProjectRef {
 }
 fn stored(error: StoreError) -> Result<ProjectResult, String> {
     match error {
+        StoreError::SessionBusy => Ok(ProjectResult::Busy),
         StoreError::Project(ProjectError::Changed) => Ok(ProjectResult::Changed),
         StoreError::Project(_) => Ok(ProjectResult::Unavailable),
         _ => Err("agent_project_commit_unknown".into()),
@@ -446,11 +447,10 @@ impl Owner {
                         .project_id
                         .is_some_and(|id| ids.contains(&id.to_string()))
                 };
-                if !runs.quarantined.is_empty()
-                    || runs
-                        .controls
-                        .values()
-                        .any(|control| affected(&control.basis.workspace))
+                if runs
+                    .controls
+                    .values()
+                    .any(|control| affected(&control.basis.workspace))
                 {
                     return Ok(ProjectResult::Busy);
                 }

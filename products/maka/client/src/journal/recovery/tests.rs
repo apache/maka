@@ -249,8 +249,8 @@ async fn recovery_indexes_preserve_exact_owners_and_eligibility_transitions_afte
         }
         eligible.push(original);
     }
-    // Receipt alone does not settle an upload, and a returned terminal still owns
-    // cleanup until its original cleanup acknowledgement is confirmed.
+    // An upload remains pending until adopted. A returned terminal is usable
+    // independently of the original request's physical cleanup.
     journal
         .observe(&eligible[1], &returned(OperationCleanup::Confirmed))
         .await
@@ -262,7 +262,11 @@ async fn recovery_indexes_preserve_exact_owners_and_eligibility_transitions_afte
     for (list, original) in LISTS.into_iter().zip(&eligible) {
         assert_eq!(
             list.read(&journal, &key, &host).await,
-            vec![original.id],
+            if matches!(list, List::Terminals) {
+                vec![]
+            } else {
+                vec![original.id]
+            },
             "{list:?}"
         );
     }
@@ -272,7 +276,11 @@ async fn recovery_indexes_preserve_exact_owners_and_eligibility_transitions_afte
     for (list, original) in LISTS.into_iter().zip(&eligible) {
         assert_eq!(
             list.read(&journal, &key, &host).await,
-            vec![original.id],
+            if matches!(list, List::Terminals) {
+                vec![]
+            } else {
+                vec![original.id]
+            },
             "reopened {list:?}"
         );
     }
@@ -367,4 +375,61 @@ async fn recovery_indexes_preserve_exact_owners_and_eligibility_transitions_afte
             .await
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn terminal_unknown_releases_waiting_and_keeps_the_unsent_draft_and_failed_upload() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("client.db");
+    let journal = Journal::open(&path).await.unwrap();
+    let (host, key) = owner();
+    journal
+        .save_draft(&key, None, "unsent work".into())
+        .await
+        .unwrap();
+    let unknown = Receipt::Recorded {
+        outcome: OperationOutcome::Unknown {
+            diagnostic: "original connection ended".into(),
+        },
+        cleanup: OperationCleanup::Failed {
+            diagnostic: "original resources retained".into(),
+        },
+    };
+    for (index, list) in LISTS.into_iter().enumerate() {
+        let original = operation(list, 300_000 + index as u128, &host, &key);
+        journal.reserve(&original).await.unwrap();
+        journal.observe(&original, &unknown).await.unwrap();
+        if matches!(list, List::Uploads) {
+            assert_eq!(list.read(&journal, &key, &host).await, [original.id]);
+            journal
+                .save_draft(
+                    &key,
+                    Some(1),
+                    DraftEdit {
+                        text: "unsent work".into(),
+                        attachments: vec![],
+                        settled_uploads: vec![original.id],
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        assert!(
+            list.read(&journal, &key, &host).await.is_empty(),
+            "{list:?}"
+        );
+    }
+    journal.pool.close().await;
+    let reopened = Journal::open(&path).await.unwrap();
+    let draft = reopened.load_draft(&key).await.unwrap().unwrap();
+    assert_eq!(draft.text, "unsent work");
+    assert!(draft.attachments.is_empty());
+    for (index, list) in LISTS.into_iter().enumerate() {
+        let id = Uuid::from_u128(300_000 + index as u128);
+        assert_eq!(
+            reopened.load(&host, id).await.unwrap().receipt,
+            Some(unknown.clone())
+        );
+        assert!(list.read(&reopened, &key, &host).await.is_empty());
+    }
 }

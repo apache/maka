@@ -325,11 +325,13 @@ fn failed_cleanup_fences_replacement_until_executor_confirms_recovery() {
     let capability = runtime.bind(&consumer, "action").unwrap().pop().unwrap();
     let execution = runtime.admit(&capability).unwrap();
     let resource = runtime.own_resource(&provider, "database writer").unwrap();
-    let stopped = runtime
+    runtime
         .settle(&execution, Err("unknown work outcome".into()))
         .unwrap();
-    assert!(stopped.contains(&provider));
-    assert!(stopped.contains(&consumer));
+    assert_eq!(runtime.status(&provider).unwrap().phase, Phase::Active);
+    assert_eq!(runtime.status(&consumer).unwrap().phase, Phase::Active);
+    let independent = runtime.admit(&capability).unwrap();
+    runtime.settle(&independent, Ok(())).unwrap();
     runtime
         .complete_resource(&resource, Err("writer close failed".into()))
         .unwrap();

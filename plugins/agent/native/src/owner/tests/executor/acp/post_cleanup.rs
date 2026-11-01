@@ -81,7 +81,7 @@ async fn cleanup_sql_failure_keeps_recovery_record_after_actual_process_exit() {
         {
             let runs = f.owner.runs.lock().await;
             assert!(!runs.closing);
-            assert!(runs.quarantined.is_empty());
+            assert!(runs.retained_cleanup.is_empty());
         }
 
         raw.execute_batch("DROP TRIGGER reject_process_cleanup").unwrap();

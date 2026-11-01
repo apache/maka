@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createPendingRecovery } from './pendingRecovery';
 import { errorText, renderText, UiError } from './text';
 import { cleanup, effect, signal, untracked, type Signal } from 'nsh';
 import { TerminalGrid } from 'maka/host';
@@ -109,7 +110,7 @@ export function createTerminals(
       method !== 'release' &&
       (!owns(owner.sessionId) || scope !== owner || !known() || pending().length)
     )
-      throw new UiError('Recover the unresolved terminal action before sending new input.');
+      throw new UiError('Checking action status…');
     try {
       return await terminalMutation(owner, method, input);
     } catch (reason) {
@@ -300,16 +301,31 @@ export function createTerminals(
       else {
         const reply: OperationReply = await recoverTerminal(owner, target.id);
         if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
-          throw new UiError('The original terminal result is still unknown. It was not repeated.');
+          throw new UiError('This action could not be completed.');
       }
-      await refreshPending(target.sessionId, owner);
       if (owns(target.sessionId) && scope === owner && options.active()) follow(target.sessionId);
     } catch (reason) {
       if (owns(target.sessionId) && scope === owner) error.set(reason);
     } finally {
+      await refreshPending(target.sessionId, owner).catch((reason) => {
+        if (owns(target.sessionId) && scope === owner) error.set(reason);
+      });
       if (owns(target.sessionId) && scope === owner) recovering.set(false);
     }
   };
+  createPendingRecovery({
+    pending: () => !known() || pending().length > 0,
+    blocked: () => starting() || recovering() || !options.active(),
+    recover: async () => {
+      const selected = sessionId;
+      const owner = scope;
+      if (!selected || !owner) return;
+      await refreshPending(selected, owner);
+      if (!owns(selected) || scope !== owner) return;
+      for (const original of pending())
+        await recover({ sessionId: selected, id: original.id, abandon: false });
+    },
+  });
   cleanup(() => {
     alive = false;
     stop(watch);

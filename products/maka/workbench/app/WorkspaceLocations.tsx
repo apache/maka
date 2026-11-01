@@ -29,6 +29,7 @@ import { useHost } from './host';
 import { tr } from './locale';
 import { createSettingsOperations } from './settingsOperations';
 import { UiError } from './text';
+import { createPendingRecovery } from './pendingRecovery';
 import {
   C,
   controlStyle,
@@ -112,6 +113,11 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
       if (original.endpoint === 'settings' && original.method === 'updateWorkspaceLocations')
         accept(value);
     });
+  createPendingRecovery({
+    pending: () => !operations.pendingKnown() || operations.pending().length > 0,
+    blocked: locked,
+    recover,
+  });
   const button = {
     style: controlStyle,
     get hoverStyle() {
@@ -163,30 +169,8 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
       <If when={reading()}>
         <Text style={{ color: C.muted, fontSize: 13 }}>{tr('Loading locations…')}</Text>
       </If>
-      <If when={!operations.pendingKnown() || operations.pending().length > 0}>
-        <Button
-          {...button}
-          disabled={locked()}
-          accessibilityLabel={tr('Recover settings actions')}
-          onPress={inputAction(recover, null)}
-        >
-          <Text style={{ color: C.accent, fontSize: 13 }}>
-            {tr('Recover original settings actions')}
-          </Text>
-        </Button>
-        <Each of={operations.pending().filter((item) => !item.reference)} key={(item) => item.id}>
-          {(item) => (
-            <Button
-              {...button}
-              disabled={locked()}
-              onPress={inputAction(operations.abandon, item().id)}
-            >
-              <Text style={{ color: C.secondary, fontSize: 13 }}>
-                {tr('Discard unsent action')}
-              </Text>
-            </Button>
-          )}
-        </Each>
+      <If when={operations.pending().length > 0}>
+        <Text style={{ color: C.muted, fontSize: 13 }}>{tr('Checking action status…')}</Text>
       </If>
       <List
         each={roots().map((root, index) => ({ ...root, index }))}

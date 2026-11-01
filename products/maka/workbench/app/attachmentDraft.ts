@@ -19,8 +19,9 @@
 
 import { createText, UiError, errorText, type UiText, message as uiMessage } from './text';
 import { tr } from './locale';
+import { createPendingRecovery } from './pendingRecovery';
 import { cleanup, signal } from 'nsh';
-import { findUpload, recoverUpload, abandonUpload, watchUploads, type ScopedHost } from './host';
+import { findUpload, recoverUpload, watchUploads, type ScopedHost } from './host';
 import type { ClientDraftAttachment } from '../../../../packages/plugin-sdk/src/index.js';
 
 export type DraftAttachment = ClientDraftAttachment;
@@ -78,12 +79,16 @@ export function createAttachmentDraft(options: {
   let subscription: UploadSubscription | null = null;
   const intakes = signal<Set<UploadIntake>>(new Set());
   let reading = false;
-  let watchFailed = false;
+  const watchFailed = signal(false);
   const owns = (target: { owner: string }) => alive && target.owner === options.sessionId;
   const returned = (original: any) =>
     original.receipt?.kind === 'recorded' && original.receipt.outcome?.kind === 'returned'
       ? original.receipt.outcome.value
       : null;
+  const ended = (original: any) =>
+    original.abandoned ||
+    (original.receipt?.kind === 'recorded' &&
+      ['returned', 'unknown'].includes(original.receipt.outcome?.kind));
   const uploaded = (original: any): DraftAttachment | null => {
     const value = returned(original),
       attachment = value?.attachment;
@@ -130,13 +135,14 @@ export function createAttachmentDraft(options: {
       }),
     );
     restoring.set(false);
+    if (!watchFailed()) error.set('');
   };
   const receiveOne = (original: any) => {
     const known = originals().find((item) => item.id === original.id);
     // A slower exact lookup must not replace an already recorded receipt.
     receive([
       ...originals().filter((item) => item.id !== original.id),
-      known?.receipt && !original.receipt ? known : original,
+      known && (ended(known) || (known.receipt && !original.receipt)) ? known : original,
     ]);
   };
   const rows = (): UploadRow[] => [
@@ -154,7 +160,7 @@ export function createAttachmentDraft(options: {
           id: original.id,
           name: original.upload.name,
           kind:
-            result?.kind === 'rejected' || original.abandoned
+            result?.kind === 'rejected' || (ended(original) && !uploaded(original))
               ? ('failed' as const)
               : ('unknown' as const),
           error:
@@ -168,7 +174,7 @@ export function createAttachmentDraft(options: {
   const start = async () => {
     if (!alive || reading) return;
     reading = true;
-    watchFailed = false;
+    watchFailed.set(false);
     error.set('');
     let stream: UploadSubscription | null = null;
     try {
@@ -183,7 +189,7 @@ export function createAttachmentDraft(options: {
       }
     } catch (reason) {
       if (alive) {
-        watchFailed = true;
+        watchFailed.set(true);
         error.set(errorText(reason));
       }
     } finally {
@@ -203,7 +209,7 @@ export function createAttachmentDraft(options: {
   const inspect = async (target: AttachmentTarget) => {
     if (!owns(target) || recovering()) return;
     recovering.set(target.id);
-    if (!watchFailed) error.set('');
+    if (!watchFailed()) error.set('');
     try {
       const original = await findUpload(options.client, target.id);
       if (!alive) return;
@@ -253,48 +259,44 @@ export function createAttachmentDraft(options: {
     if (!owns(target)) return;
     const original = originals().find((item) => item.id === target.id);
     const local = selecting().find((item) => item.id === target.id);
-    if (
-      (original && !returned(original) && !original.abandoned) ||
-      (local && local.kind !== 'failed')
-    )
-      return;
+    if ((original && !ended(original)) || (local && local.kind !== 'failed')) return;
     if (original && !settled.has(original.id)) settled.set(original.id, 'pending');
     selecting.set(selecting().filter((item) => item.id !== target.id));
     files.set(files().filter((file) => file.id !== target.id));
-    if (!watchFailed) error.set('');
+    if (!watchFailed()) error.set('');
     options.changed();
   };
   const recover = async (target: AttachmentTarget) => {
     if (!owns(target) || recovering()) return;
     recovering.set(target.id);
-    if (!watchFailed) error.set('');
+    if (!watchFailed()) error.set('');
     try {
       const original = await recoverUpload(options.client, target.id);
       if (alive) receiveOne(original);
     } catch (reason) {
-      if (alive) error.set(errorText(reason));
+      if (alive) {
+        const failure = errorText(reason);
+        if (!watchFailed() && rows().some((row) => row.id === target.id && row.kind === 'unknown'))
+          error.set(failure);
+      }
     } finally {
       if (alive) recovering.set(null);
     }
   };
-  const abandon = async (target: AttachmentTarget) => {
-    if (!owns(target) || recovering()) return;
-    recovering.set(target.id);
-    if (!watchFailed) error.set('');
-    try {
-      const original = await abandonUpload(options.client, target.id);
-      if (!alive) return;
-      if (!original.abandoned)
-        throw new UiError('This upload is prepared. Recover its original receipt.');
-      receiveOne(original);
-      settled.set(original.id, 'pending');
-      options.changed();
-    } catch (reason) {
-      if (alive) error.set(errorText(reason));
-    } finally {
-      if (alive) recovering.set(null);
-    }
-  };
+  createPendingRecovery({
+    pending: () => watchFailed() || restoring() || rows().some((row) => row.kind === 'unknown'),
+    blocked: () => recovering() !== null,
+    recover: async () => {
+      if (!reading) void start();
+      for (const row of rows()) {
+        if (!alive) return;
+        if (row.kind !== 'unknown') continue;
+        const target = { owner: options.sessionId, id: row.id };
+        if (row.original) await recover(target);
+        else await inspect(target);
+      }
+    },
+  });
   return {
     sessionId: options.sessionId,
     client: options.client,
@@ -320,7 +322,7 @@ export function createAttachmentDraft(options: {
         intake.close();
         return;
       }
-      if (!watchFailed) error.set('');
+      if (!watchFailed()) error.set('');
       notice.set('');
       intakes.set(new Set([...intakes(), intake]));
       void (async () => {
@@ -358,9 +360,6 @@ export function createAttachmentDraft(options: {
       })();
     },
     remove,
-    recover,
-    abandon,
-    inspect,
     open(target: { owner: string; value: boolean }) {
       if (!owns(target)) return;
       picker.set(target.value);
@@ -370,7 +369,6 @@ export function createAttachmentDraft(options: {
       if (alive) files.set(attachments);
     },
     start,
-    retry: start,
     snapshot: (): AttachmentEdit => ({
       attachments: [...files()],
       settledUploads: [...settled].filter(([, state]) => state === 'pending').map(([id]) => id),
@@ -394,8 +392,7 @@ export function createAttachmentDraft(options: {
       if (restoring()) return tr('Restoring attachment drafts…');
       if (error()) return tr('Attachment state needs attention. Your draft is kept.');
       if (intakes().size) return tr('Preparing attachments… You can keep typing.');
-      if (rows().some((row) => row.kind === 'unknown'))
-        return tr('Recover the original upload receipt before sending.');
+      if (rows().some((row) => row.kind === 'unknown')) return tr('Checking upload status…');
       if (rows().some((row) => row.kind === 'reading' || row.kind === 'uploading'))
         return tr('Uploading attachments… Your typing is kept.');
       if (rows().length) return tr('Remove the failed attachment or choose it again.');

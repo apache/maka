@@ -238,13 +238,6 @@ impl recap::Models for Backend {
                     Err(ToolError::CleanupUnconfirmed(error)) => Err(error.clone()),
                     _ => Ok(()),
                 };
-                if matches!(
-                    result,
-                    Err(ToolError::Persistence(_) | ToolError::CleanupUnconfirmed(_))
-                ) {
-                    captured.runs.lock().await.closing = true;
-                    captured.stop.cancel();
-                }
                 call_ticket.complete(cleanup.clone());
                 original_ticket.complete(cleanup.clone());
                 owner_ticket.complete(cleanup);

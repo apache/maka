@@ -131,12 +131,7 @@ impl Owner {
         let admission = self.runs.session(&input.session_id).await;
         let runs = admission.state().await;
         let rejected = |reason| Ok(QueueMutationResult::Rejected { reason });
-        if runs.closing
-            || runs
-                .controls
-                .get(&input.session_id)
-                .is_some_and(|run| run.failure.is_some())
-        {
+        if runs.closing {
             return rejected(QueueRejection::Closed);
         }
         let promotion = if matches!(&input.edit, QueueAction::Promote { .. }) {

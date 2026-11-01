@@ -167,36 +167,11 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                 {(row) => (
                   <View style={{ gap: 4 }}>
                     <Text>
-                      {row().name} · {row().kind}
+                      {row().name} ·{' '}
+                      {row().kind === 'unknown' ? 'Checking upload status…' : row().kind}
                     </Text>
                     <If when={row().error}>
                       <Text>{row().error}</Text>
-                    </If>
-                    <If when={row().kind === 'unknown'}>
-                      <Button
-                        accessibilityLabel={`${row().recovery === 'inspect' ? 'Check' : 'Recover'} original upload ${row().name}`}
-                        disabled={session.attachments.recovering() !== null}
-                        onPress={inputAction(
-                          row().recovery === 'inspect'
-                            ? session.attachments.inspect
-                            : session.attachments.recover,
-                          { owner: session.sessionId, id: row().id },
-                        )}
-                      >
-                        <Text>Recover original upload</Text>
-                      </Button>
-                    </If>
-                    <If when={row().recovery === 'recover_or_abandon' && row().kind === 'unknown'}>
-                      <Button
-                        accessibilityLabel={`Abandon unconfirmed upload ${row().name}`}
-                        disabled={session.attachments.recovering() !== null}
-                        onPress={inputAction(session.attachments.abandon, {
-                          owner: session.sessionId,
-                          id: row().id,
-                        })}
-                      >
-                        <Text>Abandon unconfirmed upload</Text>
-                      </Button>
                     </If>
                     <If when={row().kind === 'failed'}>
                       <Button
@@ -254,26 +229,6 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
               <If when={session.attachments.error() || session.attachments.notice()}>
                 <Text>{session.attachments.error() || session.attachments.notice()}</Text>
               </If>
-              <If when={session.recoverable()}>
-                <Button
-                  accessibilityLabel="Recover original send receipt"
-                  disabled={session.recovering()}
-                  onPress={inputAction(session.recover, null)}
-                >
-                  <Text>Recover original send receipt</Text>
-                </Button>
-              </If>
-              <Each of={session.unconfirmed()} key={(id) => id}>
-                {(id) => (
-                  <Button
-                    accessibilityLabel={`Abandon unconfirmed send ${id()}`}
-                    disabled={session.recovering()}
-                    onPress={inputAction(session.abandon, id())}
-                  >
-                    <Text>Abandon unconfirmed send · {id()}</Text>
-                  </Button>
-                )}
-              </Each>
             </View>
           );
         }}

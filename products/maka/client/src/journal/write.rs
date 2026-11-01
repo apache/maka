@@ -423,7 +423,7 @@ async fn observe(
     receipt: &Receipt,
 ) -> Result<()> {
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { .. },
+        outcome: OperationOutcome::Returned { .. } | OperationOutcome::Unknown { .. },
         ..
     } = receipt
     else {

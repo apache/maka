@@ -63,7 +63,9 @@ impl Gate {
     pub fn check_open(&self) -> Result<(), ToolError> {
         let state = self.state.lock().unwrap();
         if let Some(error) = &state.failure {
-            return Err(error.clone());
+            return Err(ToolError::Failed(format!(
+                "Computer VM requires recovery: {error}"
+            )));
         }
         if state.sealed {
             return Err(ToolError::Failed("Computer VM has retired".into()));
@@ -74,7 +76,9 @@ impl Gate {
     pub fn register(self: &Arc<Self>) -> Result<Receipt, ToolError> {
         let mut state = self.state.lock().unwrap();
         if let Some(error) = &state.failure {
-            return Err(error.clone());
+            return Err(ToolError::Failed(format!(
+                "Computer VM requires recovery: {error}"
+            )));
         }
         if state.sealed {
             return Err(ToolError::Failed("Computer VM has retired".into()));

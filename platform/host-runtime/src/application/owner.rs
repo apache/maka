@@ -1242,7 +1242,6 @@ impl Owner {
                 if kind.closed() && parent.is_none() {
                     return;
                 }
-                let mut descriptor_failed = false;
                 let admission = (|| {
                     if self.closing
                         || !self.issuer.owns(&scope)
@@ -1385,7 +1384,6 @@ impl Owner {
                                 let error =
                                     "Host admission policy or attachment descriptor panicked"
                                         .to_string();
-                                descriptor_failed = true;
                                 return Err(error);
                             }
                         };
@@ -1422,11 +1420,7 @@ impl Owner {
                         drop(kind.take_confirmation());
                         drop((attachments, resources, bytes, input, scope));
                         if let Some(ticket) = parent.take() {
-                            ticket.complete(if descriptor_failed {
-                                Err(error.clone())
-                            } else {
-                                Ok(())
-                            });
+                            ticket.complete(Ok(()));
                         }
                         kind.reject(error);
                     }
@@ -1878,7 +1872,10 @@ impl Owner {
                     drop((confirmation, attachments, _resources, _bytes, scope));
                 }
                 if let Some(ticket) = parent {
-                    ticket.complete(cleanup.clone());
+                    // Failed execution custody is retained by this Host above.
+                    // The caller's observation has ended; child cleanup remains
+                    // unconfirmed in its own receipt and retained scope.
+                    ticket.complete(Ok(()));
                 }
                 reply.send(result, cleanup, receipt.map(|receipt| *receipt));
             }

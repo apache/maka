@@ -49,7 +49,7 @@ impl Owner {
             .controls
             .get(&source.session_id)
             .ok_or("workhub_source_inactive")?;
-        if control.invocation != *source || control.failure.is_some() {
+        if control.invocation != *source {
             return Err("workhub_source_changed".into());
         }
         Ok(ReturnRoute {

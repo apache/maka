@@ -118,9 +118,9 @@ impl Owner {
                     Ok(deadline) => deadline,
                     Err(error) => {
                         owner.queue_failed("", None, &error);
-                        owner.runs.state().await.closing = true;
-                        owner.stop.cancel();
-                        return;
+                        // Retry the read-only scan after a store outage without
+                        // shutting down unrelated sessions or replaying effects.
+                        Some(now().saturating_add(1000))
                     }
                 };
                 let due = async {
@@ -163,10 +163,7 @@ impl Owner {
             if runs.closing || self.stop.is_cancelled() {
                 return Ok(());
             }
-            if runs.controls.contains_key(&session)
-                || runs.preparing.contains_key(&session)
-                || runs.quarantined.contains(&session)
-            {
+            if runs.busy(&session) {
                 continue;
             }
             let cancellation = self.stop.child_token();
@@ -197,21 +194,18 @@ impl Owner {
 
     // Recover the owner-scoped durable backlog without limiting active Sessions.
     async fn schedule(self: &Arc<Self>) {
-        if let Err(error) = self.schedule_pending().await {
-            if !(self.stop.is_cancelled()
+        if let Err(error) = self.schedule_pending().await
+            && !(self.stop.is_cancelled()
                 && matches!(
                     &error,
                     RunError::Cancelled
                         | RunError::Commit(maka_agent_facts::event::CommitError::Retired)
                         | RunError::Store(StoreError::SessionRetired)
                 ))
-            {
-                tracing::error!(stage = "queue_schedule_failed", cause = crate::diagnostics::run_cause(&error),
-                    consequence = "owner_closing", activation = %self.revision.activation, instance = ?self.data_source.namespace,
+        {
+            tracing::error!(stage = "queue_schedule_failed", cause = crate::diagnostics::run_cause(&error),
+                    consequence = "operation_failed", activation = %self.revision.activation, instance = ?self.data_source.namespace,
                     "Agent queue scheduling failed");
-            }
-            self.stop.cancel();
-            self.runs.state().await.closing = true;
         }
     }
     pub(super) async fn schedule_pending(self: &Arc<Self>) -> Result<(), RunError> {
@@ -247,7 +241,7 @@ impl Owner {
                 if runs.closing || self.stop.is_cancelled() {
                     return Ok(());
                 }
-                if runs.busy(session) || runs.quarantined.contains(session) {
+                if runs.busy(session) {
                     continue;
                 }
                 let Ok(admission) = self.runs.try_ordered(session) else {
@@ -313,7 +307,7 @@ impl Owner {
         };
         {
             let mut runs = admission.state().await;
-            if runs.closing || runs.quarantined.contains(session) {
+            if runs.closing {
                 runs.preparing.remove(session);
                 if previous.is_some() {
                     runs.controls.remove(session);
@@ -350,13 +344,9 @@ impl Owner {
             }
             Err(error) => {
                 if error.is_cleanup_unconfirmed() {
-                    runs.quarantined.insert(session.into());
+                    runs.retained_cleanup.insert(session.into());
                 }
-                if let Some(control) = runs.controls.get_mut(session) {
-                    control.failure = Some("agent_execution_unavailable");
-                }
-                runs.closing = true;
-                self.stop.cancel();
+                runs.controls.remove(session);
                 Err(error)
             }
         }
@@ -371,7 +361,7 @@ impl Owner {
             ))
         {
             tracing::error!(stage = "queue_advance_failed", cause = crate::diagnostics::run_cause(error),
-                consequence = "owner_closing", session_id = %session,
+                consequence = "operation_failed", session_id = %session,
                 turn_id = previous.map(|invocation| invocation.turn_id.as_str()),
                 run_id = previous.map(|invocation| invocation.run_id.as_str()),
                 invocation_id = previous.map(|invocation| invocation.invocation_id.as_str()),
@@ -397,7 +387,6 @@ impl Owner {
                 invocation: running.invocation().clone(),
                 basis,
                 cancellation: running.cancellation(),
-                failure: None,
             },
         );
     }
@@ -416,18 +405,24 @@ impl Owner {
                     } else {
                         "queue_cleanup_unconfirmed"
                     };
-                    tracing::error!(stage, cause = "cleanup_unconfirmed", consequence = "session_quarantined",
+                    tracing::error!(stage, cause = "cleanup_unconfirmed", consequence = "resources_retained",
                         session_id = %invocation.session_id, turn_id = %invocation.turn_id,
                         run_id = %invocation.run_id, invocation_id = %invocation.invocation_id,
                         activation = %self.revision.activation, "Agent invocation cleanup is unconfirmed");
-                    runs.controls
-                        .get_mut(&session)
-                        .expect("original worker control")
-                        .failure = Some("agent_cleanup_unconfirmed");
-                    runs.quarantined.insert(session.clone());
+                    runs.controls.remove(&session);
+                    runs.retained_cleanup.insert(session.clone());
+                    drop(runs);
+                    match self.advance(&session, None, None).await {
+                        Ok(Some(next)) => {
+                            running = next;
+                            continue;
+                        }
+                        Ok(None) => {}
+                        Err(error) => self.queue_failed(&session, Some(&invocation), &error),
+                    }
                     return;
                 }
-                let completion = completion.expect("confirmed physical completion");
+                let completion = completion.expect("original worker completion");
                 if let Ok(ActivationExit::Parked(_)) = completion.result {
                     let mut runs = self.runs.state().await;
                     runs.controls.remove(&session);
@@ -1081,11 +1076,6 @@ impl Owner {
                     basis.tool_discovery,
                     configuration.editing_tools,
                 )?;
-                // The Bot Session lives across crashes: its wakes and delegated results must
-                // continue after an unknown tool outcome, with the model told, not replayed.
-                let allow_prior_unknown = (basis.background.is_none()
-                    && delivered.message.origin.is_none())
-                    || self.bot.is(&invocation.session_id);
                 PreparedRun::Model(Box::new(RunInput {
                     model_source: Some(Arc::new(source)),
                     model_revision: Some(prepared.revision),
@@ -1103,7 +1093,6 @@ impl Owner {
                         message: delivered.message.content.clone(),
                         source_messages: vec![delivered],
                         tools,
-                        allow_prior_unknown,
                     },
                 }))
             }

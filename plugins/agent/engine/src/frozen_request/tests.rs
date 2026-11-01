@@ -668,7 +668,6 @@ async fn long_provider_deadline_releases_physical_activation_and_early_resume_ne
             message: "original question".into(),
             source_messages: vec![],
             tools: ToolCatalog::default(),
-            allow_prior_unknown: false,
         },
     };
     let running = engine

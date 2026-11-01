@@ -2470,7 +2470,7 @@ impl Host {
                         }))
             })
         {
-            return Err(ToolError::CleanupUnconfirmed("previous extension attachment settlement must finish before this provider admits more effects".into()));
+            return Err(ToolError::Failed("previous extension attachment settlement must finish before this provider admits more effects".into()));
         }
         let state = self
             .extension
@@ -2480,13 +2480,13 @@ impl Host {
             return Err(failed("extension owner has permanently retired"));
         }
         if activate && state.retiring_turn.is_some() {
-            return Err(ToolError::CleanupUnconfirmed(
+            return Err(ToolError::Failed(
                 "extension turn cleanup must settle before this provider admits another effect"
                     .into(),
             ));
         }
         if activate && state.headers_unknown {
-            return Err(ToolError::CleanupUnconfirmed(
+            return Err(ToolError::Failed(
                 "extension session header state remains uncertain".into(),
             ));
         }
@@ -2498,7 +2498,7 @@ impl Host {
         ) && (state.retiring_turn.is_some()
             || state.current_turn.as_deref() != Some(&context.turn_id))
         {
-            return Err(ToolError::CleanupUnconfirmed(
+            return Err(ToolError::Failed(
                 "extension call no longer belongs to the current live turn".to_owned(),
             ));
         }
@@ -6267,7 +6267,7 @@ impl Browsers {
             .reconcile_provider(self.owner, provider)
             .await?
         {
-            return Err(ToolError::CleanupUnconfirmed(
+            return Err(ToolError::Failed(
                 "a previous extension mutation is still in flight".into(),
             ));
         }
@@ -6662,11 +6662,19 @@ impl Browsers {
                 .dispatch(async {
                     enter_handoff_preparation(boundary.as_ref())?;
                     entered = true;
-                    scope
-                        .control
-                        .prepare_session_tab(id)
-                        .await
-                        .map_err(Box::new)
+                    if provider.extension_mode() == Some(ExtensionAdapterMode::Chatgpt) {
+                        scope
+                            .control
+                            .take_over_session_tab(id)
+                            .await
+                            .map_err(Box::new)
+                    } else {
+                        scope
+                            .control
+                            .prepare_session_tab(id)
+                            .await
+                            .map_err(Box::new)
+                    }
                 })
                 .await;
             let preparation_not_dispatched = prepared.as_ref().err().is_some_and(|error| {

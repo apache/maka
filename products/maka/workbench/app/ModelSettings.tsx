@@ -71,7 +71,6 @@ export function ModelSettings(props: {
   route: Signal<SettingsRoute | null>;
   defaultRoute: SettingsRoute;
   operations: SettingsOperations;
-  recover(): void;
 }) {
   const runtime = props.context.runtime;
   const operations = props.operations;
@@ -264,48 +263,10 @@ export function ModelSettings(props: {
             <If when={operations.notice()}>
               <Text style={{ ...bodyTextStyle, color: C.muted }}>{operations.notice()}</Text>
             </If>
-            <If when={!operations.pendingKnown() || operations.pending().length > 0}>
-              <View
-                style={{ gap: 8, padding: 12, backgroundColor: C.background, borderRadius: 12 }}
-              >
-                <Text style={{ ...bodyTextStyle, color: C.warning }}>
-                  {tr('Earlier settings actions must be resolved before another change.')}
-                </Text>
-                <Button
-                  disabled={busy()}
-                  accessibilityLabel={tr('Recover settings actions')}
-                  onPress={inputAction(props.recover, null)}
-                  style={{ ...controlStyle, alignSelf: 'flex-start' }}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
-                  disabledStyle={controlDisabledStyle}
-                >
-                  <Text style={{ ...captionTextStyle, color: C.accent }}>
-                    {operations.busy()
-                      ? tr('Checking receipts…')
-                      : tr('Recover original settings actions')}
-                  </Text>
-                </Button>
-                <Each
-                  of={operations.pending().filter((item) => !item.reference)}
-                  key={(item) => item.id}
-                >
-                  {(item) => (
-                    <Button
-                      disabled={busy()}
-                      onPress={inputAction(operations.abandon, item().id)}
-                      style={{ ...controlStyle, alignSelf: 'flex-start' }}
-                      hoverStyle={controlHoverStyle()}
-                      focusStyle={controlFocusStyle()}
-                      disabledStyle={controlDisabledStyle}
-                    >
-                      <Text style={{ ...captionTextStyle, color: C.warning }}>
-                        {tr('Abandon unconfirmed {method}', { method: item().method })}
-                      </Text>
-                    </Button>
-                  )}
-                </Each>
-              </View>
+            <If when={operations.pending().length > 0}>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>
+                {tr('Checking action status…')}
+              </Text>
             </If>
             <Each of={contributed() ? [contributed()!] : []} key={(item) => item.key}>
               {(item) => runtime.render(item(), { sessionId: null, input: input(item()) })}

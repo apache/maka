@@ -224,7 +224,6 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
             declared_window: spent.then_some(210),
         });
         input.work = RunWork::Message {
-            allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: "read".into(),
             tools: catalog(count.clone(), repeats),

@@ -573,14 +573,13 @@ impl<T> Runtime<T> {
         })
     }
 
-    /// Only explicit executor settlement releases accepted ownership. Unknown
-    /// cleanup keeps the record and fences replacement until confirmed recovery.
-    /// Newly retired owners are returned for adapter stop/cleanup delivery.
+    /// Unconfirmed cleanup keeps this execution's ownership. It does not retire
+    /// the provider or its consumers; explicit retirement still waits for it.
     pub fn settle(
         &mut self,
         execution: &Execution<T>,
         cleanup: Result<(), String>,
-    ) -> Result<Vec<Activation>, Error> {
+    ) -> Result<(), Error> {
         if execution.kernel != self.identity {
             return Err(Error::Retired);
         }
@@ -589,11 +588,11 @@ impl<T> Runtime<T> {
         match cleanup {
             Ok(()) => {
                 live.calls.remove(&execution.id);
-                Ok(Vec::new())
+                Ok(())
             }
             Err(reason) => {
                 work.failure = Some(reason);
-                self.retire(&execution.provider)
+                Ok(())
             }
         }
     }

@@ -367,36 +367,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               <View>
                 <ProjectMcp owner={owner.projectMcp} />
                 <ComposerDetails session={owner} />
-                <If when={owner.recoverable()}>
-                  <Button
-                    disabled={!owner.connected() || owner.recovering()}
-                    onPress={inputAction(owner.recover, null)}
-                    style={controlStyle}
-                    hoverStyle={{ backgroundColor: C.raised }}
-                    focusStyle={{ backgroundColor: C.line }}
-                  >
-                    <Text style={{ color: C.warning }}>
-                      {owner.recovering()
-                        ? tr('Reading original receipts…')
-                        : tr('Recover original send receipt')}
-                    </Text>
-                  </Button>
-                </If>
-                <Each of={owner.unconfirmed()} key={(id: string) => id}>
-                  {(id) => (
-                    <Button
-                      disabled={!owner.connected() || owner.recovering()}
-                      onPress={inputAction(owner.abandon, id())}
-                      style={controlStyle}
-                      hoverStyle={{ backgroundColor: C.raised }}
-                      focusStyle={{ backgroundColor: C.line }}
-                    >
-                      <Text style={{ color: C.warning }}>
-                        {tr('Abandon unconfirmed send')} · {id().slice(0, 8)}
-                      </Text>
-                    </Button>
-                  )}
-                </Each>
               </View>
             );
           }}

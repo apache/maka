@@ -279,7 +279,7 @@ impl Drop for JournalCustody {
                 Journal::Operation(journal) => journal.release_after_cleanup(),
             }
         }
-        // Active provider custody remains quarantined by the journal's Drop.
+        // Active provider custody remains retained_cleanup by the journal's Drop.
     }
 }
 enum Journal {

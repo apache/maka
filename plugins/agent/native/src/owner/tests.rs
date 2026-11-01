@@ -421,42 +421,6 @@ impl Fixture {
         matching.into_iter().next().unwrap()
     }
 
-    async fn facts_after_failed_shutdown(
-        &self,
-        session: &str,
-    ) -> Vec<maka_agent_facts::event::Fact> {
-        // Root admission is closed after uncertain physical cleanup. Inspect
-        // only the original durable evidence, without admitting another job.
-        assert!(self.store.shutdown().await.is_err());
-        let database = rusqlite::Connection::open_with_flags(
-            self.session_database(session),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .unwrap();
-        let (count, bytes): (i64, i64) = database.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(canonical_bytes),0) FROM runtime_events WHERE event_session=?",
-            [session], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
-        assert!(
-            count <= 256 && bytes <= 4 * 1024 * 1024,
-            "fixture evidence exceeds original prefix bounds"
-        );
-        let mut statement = database
-            .prepare(
-                "SELECT event_header FROM runtime_events WHERE event_session=? ORDER BY sequence",
-            )
-            .unwrap();
-        statement
-            .query_map([session], |row| row.get::<_, String>(0))
-            .unwrap()
-            .map(|row| {
-                serde_json::from_str::<maka_agent_facts::event::RuntimeEvent>(&row.unwrap())
-                    .unwrap()
-                    .fact
-            })
-            .collect()
-    }
-
     fn session_database(&self, id: &str) -> std::path::PathBuf {
         let control = rusqlite::Connection::open_with_flags(
             self.root.join(maka_event_log::root::ROOT_DATABASE),
@@ -1254,26 +1218,25 @@ async fn cleanup_case(panic: bool) {
     fixture.drained().await;
 
     if let Some(reference) = reference {
-        // Test the original admission gate after terminal persistence failed.
-        assert!(
-            fixture
-                .owner
-                .send(
-                    Send {
-                        session_id: session.clone(),
-                        message: "after failed cleanup".into(),
-                        model: selection,
-                        thinking_level: None,
-                        attachments: vec![]
-                    },
-                    &reference,
-                    &scope(&fixture.issuer, true)
-                )
-                .await
-                .err()
-                .unwrap()
-                .contains("agent_cleanup_unconfirmed")
-        );
+        // The damaged partition can still reject writes, but physical cleanup
+        // must not create a permanent admission ban on this session.
+        let error = fixture
+            .owner
+            .send(
+                Send {
+                    session_id: session.clone(),
+                    message: "after failed cleanup".into(),
+                    model: selection,
+                    thinking_level: None,
+                    attachments: vec![],
+                },
+                &reference,
+                &scope(&fixture.issuer, true),
+            )
+            .await
+            .err()
+            .unwrap();
+        assert!(!error.contains("agent_cleanup_unconfirmed"), "{error}");
         let raw = rusqlite::Connection::open_with_flags(
             fixture.session_database(&session),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -1289,15 +1252,15 @@ async fn cleanup_case(panic: bool) {
         assert_eq!(pending, 1);
     }
     assert_eq!(
-        fixture.owner.runs.lock().await.quarantined.len(),
+        fixture.owner.runs.lock().await.retained_cleanup.len(),
         usize::from(panic)
     );
     assert_eq!(
         fixture.owner.runs.lock().await.closing,
-        !panic,
-        "completion uncertainty quarantines only the session; advancing after SQL failure closes the owner"
+        false,
+        "one failed invocation must not close the Agent owner"
     );
-    assert_eq!(fixture.owner.stop.is_cancelled(), !panic);
+    assert!(!fixture.owner.stop.is_cancelled());
 
     let close = fixture.app.shutdown().await;
 
@@ -1341,10 +1304,10 @@ async fn cleanup_case(panic: bool) {
         (
             "queue_cleanup_unconfirmed",
             "cleanup_unconfirmed",
-            "session_quarantined",
+            "resources_retained",
         )
     } else {
-        ("queue_advance_failed", "store_sqlx", "owner_closing")
+        ("queue_advance_failed", "store_sqlx", "operation_failed")
     };
     let event = log
         .lines()
@@ -1379,7 +1342,7 @@ async fn cleanup_case(panic: bool) {
     }
 }
 #[tokio::test]
-async fn model_panic_and_terminal_sql_failure_quarantine_execution_and_keep_root() {
+async fn model_panic_and_terminal_sql_failure_keep_the_owner_open_and_retain_original_custody() {
     tokio::time::timeout(Duration::from_secs(20), cleanup_case(true))
         .await
         .unwrap();

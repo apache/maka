@@ -51,18 +51,12 @@ pub async fn run(
     if cancellation.is_cancelled() {
         return Err(RunError::Cancelled);
     }
-    let manual_message = matches!(
-        &input.work,
-        RunWork::Message {
-            allow_prior_unknown: true,
-            ..
-        }
-    );
+    let message = matches!(&input.work, RunWork::Message { .. });
     let prior_unknown = tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err(RunError::Cancelled),
         result = async {
-            if manual_message {
+            if message {
                 inner
                     .log
                     .check_manual_message_history(&input.invocation.session_id)

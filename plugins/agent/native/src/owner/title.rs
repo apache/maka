@@ -190,11 +190,9 @@ impl Owner {
                     tracing::error!(
                         stage,
                         cause,
-                        consequence = "owner_closing",
+                        consequence = "title_failed",
                         "Agent title worker failed"
                     );
-                    owner.runs.lock().await.closing = true;
-                    owner.stop.cancel();
                 }
             }
             .instrument(span),

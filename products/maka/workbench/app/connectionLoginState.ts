@@ -111,10 +111,7 @@ export function createConnectionLogin(
         let saved = false;
         for (;;) {
           const event = await mutation.next();
-          if (!event)
-            throw new UiError(
-              'Sign-in ended without a final receipt. Recover the original action.',
-            );
+          if (!event) throw new UiError('Checking action status…');
           if (event.kind === 'not_dispatched') {
             if (alive) operations.notice.set(message('Sign-in cancelled before it started.'));
             return;

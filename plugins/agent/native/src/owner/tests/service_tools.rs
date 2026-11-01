@@ -1178,18 +1178,11 @@ async fn independent_session_admits_while_preparation_is_blocked_and_same_sessio
 }
 
 #[tokio::test]
-async fn returned_effect_with_failed_cleanup_preserves_receipt_without_settling_execution() {
+async fn failed_tool_cleanup_keeps_original_custody_while_the_agent_and_application_continue() {
     tokio::time::timeout(Duration::from_secs(30), async {
-        let behavior = Behavior::CleanupFailed;
-
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            request(&mut socket).await;
-            tool_response(&mut socket).await;
-        });
-        let counter = Counter::new(behavior);
+        let counter = Counter::new(Behavior::CleanupFailed);
         let fixture = Fixture::with_services(
             &base,
             None,
@@ -1199,27 +1192,42 @@ async fn returned_effect_with_failed_cleanup_preserves_receipt_without_settling_
         .await;
         let session = fixture.create("Failed original cleanup").await;
         fixture.send(&session).await.unwrap();
-        fixture.drained().await;
-        let observed = fixture.facts_after_failed_shutdown(&session).await;
-        server.await.unwrap();
-        let facts = observed;
-        assert!(
-            !facts
-                .iter()
-                .any(|fact| matches!(fact, Fact::ToolSettled { .. }))
-        );
-        let observation = facts
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        tool_response(&mut socket).await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let next = request(&mut socket).await;
+        let result = next["messages"]
+            .as_array()
+            .unwrap()
             .iter()
-            .find_map(|fact| {
-                if let Fact::ToolOperationObserved { observation, .. } = fact {
-                    Some(observation)
-                } else {
-                    None
-                }
-            })
+            .find(|message| message["role"] == "tool")
             .unwrap();
-        assert_eq!(observation.reference.namespace, id(21));
-
+        assert_eq!(
+            serde_json::from_str::<Value>(result["content"].as_str().unwrap()).unwrap(),
+            json!({"effects":1})
+        );
+        response_with_text(
+            &mut socket,
+            "The operation completed. I can continue with the task.",
+        )
+        .await;
+        fixture.drained().await;
+        let recorded = facts(&fixture, &session).await;
+        let stored = stored_facts(&fixture, &session).await;
+        let settled = stored
+            .iter()
+            .find(|event| matches!(event.event.fact, Fact::ToolSettled { .. }))
+            .unwrap();
+        let raw = fixture
+            .session(&session)
+            .await
+            .resolve_tool_result(&session, &settled.event.id)
+            .await
+            .unwrap();
+        let maka_agent_facts::tool_output::ToolOutput::Operation(observation) = raw else {
+            panic!("original operation receipt must be retained")
+        };
         assert!(matches!(
             observation.receipt,
             Receipt::Recorded {
@@ -1227,11 +1235,27 @@ async fn returned_effect_with_failed_cleanup_preserves_receipt_without_settling_
                 cleanup: maka_plugin_core::operation::OperationCleanup::Failed { .. }
             }
         ));
-        assert_eq!(fixture.owner.runs.lock().await.quarantined.len(), 1);
+        assert!(recorded.iter().any(|fact| matches!(
+            fact,
+            Fact::InvocationEnded {
+                outcome: maka_agent_facts::event::InvocationOutcome::Completed
+            }
+        )));
+        assert!(fixture.owner.runs.lock().await.retained_cleanup.is_empty());
+        assert!(!fixture.owner.stop.is_cancelled());
+
+        fixture.send(&session).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        response_with_text(&mut socket, "This conversation is still available.").await;
+        fixture.drained().await;
+        assert_eq!(counter.effects.load(Ordering::SeqCst), 1);
+        fixture.create("Other conversations still work").await;
+        // Original custody and the failed cleanup receipt are retained even
+        // though the caller can continue using the application.
         assert!(fixture.app.shutdown().await.is_err());
         assert!(!fixture.app.client().snapshot().closed);
         fixture.config.shutdown().await.unwrap();
-        // Failed cleanup does not authorize destruction of the original Root.
         eprintln!(
             "Retained failed-cleanup Root: {}",
             fixture._dir.keep().display()

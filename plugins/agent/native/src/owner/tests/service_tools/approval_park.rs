@@ -105,7 +105,7 @@ async fn diagnostic_state(fixture: &Fixture, session: &str) -> String {
         });
     let runs = fixture.owner.runs.state().await;
     format!(
-        "terminal={terminal:?}, opened={}, T1={}, T2={}, requested={}, completed={}, interrupted={}, kinds={kinds:?}, rejected={rejected:?}, interactions={interactions:?}, checkpoint={checkpoint:?}, fixture_owner_closing={}, control={:?}, preparing={}, quarantined={}",
+        "terminal={terminal:?}, opened={}, T1={}, T2={}, requested={}, completed={}, interrupted={}, kinds={kinds:?}, rejected={rejected:?}, interactions={interactions:?}, checkpoint={checkpoint:?}, fixture_owner_closing={}, control={:?}, preparing={}, retained_cleanup={}",
         count("invocation_opened"),
         count("tool_dispatched"),
         count("tool_settled"),
@@ -115,9 +115,9 @@ async fn diagnostic_state(fixture: &Fixture, session: &str) -> String {
         runs.closing,
         runs.controls
             .get(session)
-            .map(|control| (&control.invocation, control.failure)),
+            .map(|control| &control.invocation),
         runs.preparing.contains_key(session),
-        runs.quarantined.contains(session)
+        runs.retained_cleanup.contains(session)
     )
 }
 
@@ -241,12 +241,7 @@ async fn pending_approval(
             .any(|event| matches!(event.event.fact, Fact::InvocationEnded { .. }));
         let failed = {
             let runs = fixture.owner.runs.state().await;
-            runs.closing
-                || runs.quarantined.contains(session)
-                || runs
-                    .controls
-                    .get(session)
-                    .is_some_and(|control| control.failure.is_some())
+            runs.closing || runs.retained_cleanup.contains(session)
         };
         let observed = diagnostic_state(fixture, session).await;
         assert!(
@@ -310,12 +305,7 @@ async fn parked(
             .any(|event| matches!(event.event.fact, Fact::InvocationEnded { .. }));
         let failed = {
             let runs = fixture.owner.runs.state().await;
-            runs.closing
-                || runs.quarantined.contains(session)
-                || runs
-                    .controls
-                    .get(session)
-                    .is_some_and(|control| control.failure.is_some())
+            runs.closing || runs.retained_cleanup.contains(session)
         };
         let observed = diagnostic_state(fixture, session).await;
         assert!(
@@ -949,7 +939,7 @@ async fn rejected_original_t2_retains_real_custody_and_retries_same_event_withou
             let runs = fixture.owner.runs.state().await;
             assert_eq!(runs.controls[&session].invocation, checkpoint.checkpoint.invocation);
             assert!(!runs.closing);
-            assert!(!runs.quarantined.contains(&session));
+            assert!(!runs.retained_cleanup.contains(&session));
         }
         assert!(matches!(fixture.store.finish_session_retirement(&session).await,
             Err(maka_event_log::StoreError::SessionBusy)), "actual exclusive Work gate must reject retirement while original T2 is retained");
@@ -1749,7 +1739,6 @@ async fn actual_host_startup_resumes_due_model_retry_once() {
                 message: "Hello".into(),
                 source_messages: vec![],
                 tools,
-                allow_prior_unknown: false,
             },
         };
         let seeded = maka_agent_engine::retry_fixture::seed_due_model_retry(

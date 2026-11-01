@@ -763,9 +763,23 @@ async fn executor_service_cancelled_unsettled_callback_keeps_actual_owner() {
         assert_eq!(stopped["requested"], true);
         probe.cancelled.acquire().await.unwrap().forget();
         fixture.drained().await;
-        assert_eq!(
-            fixture.owner.runs.lock().await.controls[&session].failure,
-            Some("agent_cleanup_unconfirmed")
+        assert!(
+            fixture
+                .owner
+                .runs
+                .lock()
+                .await
+                .retained_cleanup
+                .contains(&session)
+        );
+        assert!(
+            !fixture
+                .owner
+                .runs
+                .lock()
+                .await
+                .controls
+                .contains_key(&session)
         );
         assert!(
             fixture
