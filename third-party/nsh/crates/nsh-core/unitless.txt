@@ -186,6 +186,7 @@ scroll::ease_out(t)                                              # easing curve 
 scroll::frame(now)                                               # time
 scroll::indicator_alpha ->                                       # an opacity, 0..1
 scroll::indicator_alpha(since)                                   # time
+scroll::indicator_hold_left(since)                               # time
 scroll::projected(rate)                                          # a deceleration factor (velocity kept per millisecond)
 scroll::projected(velocity)                                      # a velocity, points per millisecond
 scroll::rate ->                                                  # a deceleration factor (velocity kept per millisecond)

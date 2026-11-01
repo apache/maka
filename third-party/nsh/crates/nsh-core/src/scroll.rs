@@ -110,6 +110,8 @@ pub struct Live {
     report: bool,
     /// When the indicator was last shown (ms).
     shown: f64,
+    /// [`ScrollHost::wake_after`] was asked and has not called back.
+    hold_timer: bool,
     /// The indicator's opacity.
     pub alpha: f32,
     /// The refresh spinner shows.
@@ -181,6 +183,8 @@ pub trait ScrollHost {
     fn attached(&self) -> bool;
     /// Runs [`frame`] on every frame from now until it returns false.
     fn start_ticking(&self);
+    /// Calls [`hold_ended`] on the view's thread after `ms` milliseconds.
+    fn wake_after(&self, ms: u64);
     /// The scroll view came to rest (its drag and momentum ended, as it
     /// sends `onScrollEnd`): the snapping animated values that follow it
     /// settle ([`crate::animation::Animator::scroll_ended`]).
@@ -274,6 +278,12 @@ pub fn snap_duration(distance: Points, velocity: f32) -> f64 {
     } else {
         ANIMATION
     }
+}
+
+/// How many ms the indicator still holds `since` ms after it was shown;
+/// `None` once it fades.
+pub fn indicator_hold_left(since: f64) -> Option<u64> {
+    (since < INDICATOR_HOLD).then(|| (INDICATOR_HOLD - since).ceil() as u64)
 }
 
 /// The indicator's opacity `since` ms after it was shown.
@@ -793,11 +803,48 @@ pub fn cancel_pointer(host: &impl ScrollHost) {
 /// One frame of the view's motion at `now` (ms); false when there is
 /// nothing left to do, and the frame callback stops.
 pub fn frame(host: &impl ScrollHost, now: f64) -> bool {
-    let busy = tick(host, now);
-    if !busy {
-        host.scroll_mut(|s, _| s.live.ticking = false);
+    let left = tick(host, now);
+    if left == Left::Busy {
+        return true;
     }
-    busy
+    let wake = host.scroll_mut(|s, _| {
+        s.live.ticking = false;
+        match left {
+            // Nothing changes on screen until the hold ends: no frames until
+            // then, or following the end of a stream would draw every frame.
+            Left::Hold(ms) if !std::mem::replace(&mut s.live.hold_timer, true) => Some(ms),
+            _ => None,
+        }
+    });
+    if let Some(Some(ms)) = wake {
+        host.wake_after(ms);
+    }
+    false
+}
+
+/// The wait [`frame`] asked of [`ScrollHost::wake_after`] is over: the frames
+/// that fade the indicator start, or the wait does again if it was shown since.
+/// A view out of the window gets no frames: its indicator is gone when it returns.
+pub fn hold_ended(host: &impl ScrollHost) {
+    let attached = host.attached();
+    host.scroll_mut(|s, _| {
+        s.live.hold_timer = false;
+        if !attached {
+            s.live.alpha = 0.0;
+        }
+    });
+    if attached {
+        ensure_ticking(host);
+    }
+}
+
+/// What a scroll view has left to do after a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Left {
+    Done,
+    Busy,
+    /// Only the indicator's hold, for this many ms.
+    Hold(u64),
 }
 
 /// Ends an owner's pending input or animated command without end callbacks.
@@ -815,7 +862,7 @@ pub fn detached(host: &impl ScrollHost) {
     host.scroll_mut(|s, _| s.live.ticking = false);
 }
 
-fn tick(host: &impl ScrollHost, now: f64) -> bool {
+fn tick(host: &impl ScrollHost, now: f64) -> Left {
     let Some((phase, pos, rate, (min, max), corrected)) = host.scroll_mut(|s, size| {
         let (mx, my) = s.max_f(size);
         let (cross, max) = if s.horizontal {
@@ -835,7 +882,7 @@ fn tick(host: &impl ScrollHost, now: f64) -> bool {
             changed.then(|| s.reported(size)),
         )
     }) else {
-        return false;
+        return Left::Done;
     };
     if let Some(offset) = corrected {
         host.moved(offset);
@@ -913,8 +960,9 @@ fn tick(host: &impl ScrollHost, now: f64) -> bool {
         _ => {}
     }
     report(host);
-    let Some((busy, redraw)) = host.scroll_mut(|s, _| {
+    let Some((left, redraw)) = host.scroll_mut(|s, _| {
         let mut redraw = false;
+        let mut hold = None;
         let mut busy = !matches!(
             s.live.phase,
             Phase::Idle
@@ -926,12 +974,14 @@ fn tick(host: &impl ScrollHost, now: f64) -> bool {
             // A held thumb stays until it is let go (`thumb_end`).
             s.live.shown = now;
         } else if s.live.alpha > 0.0 {
-            let alpha = indicator_alpha(now - s.live.shown);
+            let since = now - s.live.shown;
+            let alpha = indicator_alpha(since);
             if alpha != s.live.alpha {
                 s.live.alpha = alpha;
                 redraw = true;
             }
-            busy |= alpha > 0.0;
+            hold = indicator_hold_left(since);
+            busy |= alpha > 0.0 && hold.is_none();
         }
         if !s.horizontal
             && s.offset() < 0.0
@@ -942,14 +992,19 @@ fn tick(host: &impl ScrollHost, now: f64) -> bool {
             redraw = true;
             busy = true;
         }
-        (busy, redraw)
+        let left = match hold {
+            _ if busy => Left::Busy,
+            Some(ms) => Left::Hold(ms),
+            None => Left::Done,
+        };
+        (left, redraw)
     }) else {
-        return false;
+        return Left::Done;
     };
     if redraw {
         host.redraw();
     }
-    busy
+    left
 }
 
 // Mount items.
@@ -1617,6 +1672,7 @@ mod tests {
         fn start_ticking(&self) {
             self.ticks.set(self.ticks.get() + 1);
         }
+        fn wake_after(&self, _: u64) {}
     }
 
     fn scroll_state(content: (f32, f32), horizontal: bool) -> ScrollState {
@@ -2146,6 +2202,7 @@ mod tests {
             fn start_ticking(&self) {
                 self.ticks.set(self.ticks.get() + 1);
             }
+            fn wake_after(&self, _: u64) {}
         }
         for phase in [
             Phase::Drag {
@@ -2209,6 +2266,8 @@ mod tests {
     struct TestHost {
         state: std::cell::RefCell<ScrollState>,
         redraws: std::cell::Cell<u32>,
+        wakes: std::cell::RefCell<Vec<u64>>,
+        attached: std::cell::Cell<bool>,
     }
 
     impl ScrollHost for TestHost {
@@ -2233,9 +2292,70 @@ mod tests {
             self.redraws.set(self.redraws.get() + 1);
         }
         fn attached(&self) -> bool {
-            true
+            self.attached.get()
         }
         fn start_ticking(&self) {}
+        fn wake_after(&self, ms: u64) {
+            self.wakes.borrow_mut().push(ms);
+        }
+    }
+
+    #[test]
+    fn a_hold_that_ends_out_of_the_window_leaves_no_indicator() {
+        let host = TestHost {
+            state: std::cell::RefCell::new(scroll_state((300.0, 1000.0), false)),
+            redraws: std::cell::Cell::new(0),
+            wakes: Default::default(),
+            attached: std::cell::Cell::new(true),
+        };
+        host.scroll_mut(|s, _| {
+            s.indicator = true;
+            s.live.alpha = 1.0;
+            s.live.shown = 1000.0;
+            s.live.ticking = true;
+        });
+        assert!(!frame(&host, 1100.0));
+        host.attached.set(false);
+        hold_ended(&host);
+        let state = host.state.borrow();
+        assert_eq!(state.live.alpha, 0.0);
+        assert!(!state.live.ticking);
+        assert!(!state.live.hold_timer);
+    }
+
+    #[test]
+    fn the_indicators_hold_draws_no_frames() {
+        let host = TestHost {
+            state: std::cell::RefCell::new(scroll_state((300.0, 1000.0), false)),
+            redraws: std::cell::Cell::new(0),
+            wakes: Default::default(),
+            attached: std::cell::Cell::new(true),
+        };
+        host.scroll_mut(|s, _| {
+            s.indicator = true;
+            s.live.alpha = 1.0;
+            s.live.shown = 1000.0;
+            s.live.ticking = true;
+        });
+        // In the hold the frames end and one wake-up is asked for, however
+        // often new offsets start the frames again before it comes.
+        assert!(!frame(&host, 1100.0));
+        assert!(!host.state.borrow().live.ticking);
+        host.scroll_mut(|s, _| s.live.shown = 1200.0);
+        assert!(!frame(&host, 1200.0));
+        assert_eq!(*host.wakes.borrow(), [600]);
+        // A wake-up that finds it shown since waits for the rest of the hold.
+        hold_ended(&host);
+        assert!(host.state.borrow().live.ticking);
+        assert!(!frame(&host, 1700.0));
+        assert_eq!(*host.wakes.borrow(), [600, 200]);
+        // The fade takes frames until it is gone.
+        hold_ended(&host);
+        assert!(frame(&host, 2000.0));
+        assert_eq!(host.state.borrow().live.alpha, indicator_alpha(800.0));
+        assert!(!frame(&host, 2200.0));
+        assert_eq!(host.state.borrow().live.alpha, 0.0);
+        assert_eq!(host.wakes.borrow().len(), 2);
     }
 
     #[test]
@@ -2243,6 +2363,8 @@ mod tests {
         let host = TestHost {
             state: std::cell::RefCell::new(scroll_state((300.0, 1000.0), false)),
             redraws: std::cell::Cell::new(0),
+            wakes: Default::default(),
+            attached: std::cell::Cell::new(true),
         };
         let own = ScrollBehavior {
             refresh_indicator: Some(Points(72.0)),

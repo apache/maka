@@ -41,11 +41,11 @@ use nsh_core::{
     Command, EventKind, EventPayload, Points, ScrollBehavior, Size, StickyCell, ViewKind,
     geometry::point,
     scroll::{
-        dragged, ease_out, indicator_alpha, indicator_span, projected, rate, reveal_delta,
-        snap_duration, sticky_shift, thumb_scroll,
+        dragged, ease_out, indicator_alpha, indicator_hold_left, indicator_span, projected, rate,
+        reveal_delta, snap_duration, sticky_shift, thumb_scroll,
     },
 };
-use objc2::{MainThreadOnly, define_class, msg_send, rc::Retained};
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
 use objc2_app_kit::{NSResponder, NSView};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGColor;
@@ -126,6 +126,9 @@ pub(crate) struct Live {
     report: bool,
     /// When the indicator was last shown (ms).
     shown: f64,
+    /// A wake-up for the end of the indicator's hold is on its way
+    /// ([`wake_after_hold`]).
+    hold_timer: bool,
     /// The indicator's opacity.
     alpha: f32,
     /// The surface is dark (the indicator's color).
@@ -760,12 +763,47 @@ fn ensure_ticking(surface: &Rc<Surface>, view: &NshView) {
             fading = !fading;
             surface.cosmetic_frame(fading);
         }
-        if left == Tick::Done
-            && let Some(s) = view.state_mut().scroll.as_mut()
-        {
+        if matches!(left, Tick::Busy | Tick::Fading) {
+            return true;
+        }
+        if let Some(s) = view.state_mut().scroll.as_mut() {
             s.live.ticking = false;
         }
-        left != Tick::Done
+        if let Tick::Hold(ms) = left {
+            wake_after_hold(surface, &view, ms);
+        }
+        false
+    });
+}
+
+/// Nothing changes on screen until the indicator's hold ends: no frames until
+/// then, or following the end of a stream would run the display link all along.
+fn wake_after_hold(surface: &Rc<Surface>, view: &NshView, ms: u64) {
+    let armed = view
+        .state_mut()
+        .scroll
+        .as_mut()
+        .is_some_and(|s| !std::mem::replace(&mut s.live.hold_timer, true));
+    if !armed {
+        return;
+    }
+    let key = surface.key();
+    let view = dispatch2::MainThreadBound::new(view.clone(), view.mtm());
+    later(ms, move || {
+        let view = view.into_inner(MainThreadMarker::new().expect("main queue"));
+        let attached = mapped(&view);
+        if let Some(s) = view.state_mut().scroll.as_mut() {
+            s.live.hold_timer = false;
+            // No frames come out of the window: the indicator is gone when it returns.
+            if !attached {
+                s.live.alpha = 0.0;
+            }
+        }
+        if !attached {
+            update_overlays(&view);
+        } else if let Some(surface) = Surface::with_key(key) {
+            ensure_ticking(&surface, &view);
+        }
     });
 }
 
@@ -793,6 +831,8 @@ enum Tick {
     Busy,
     /// Only the indicator's fade.
     Fading,
+    /// Only the indicator's hold, for this many ms.
+    Hold(u64),
 }
 
 /// One frame of `view`'s motion.
@@ -896,18 +936,23 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> Tick {
             return Tick::Done;
         };
         let resampling = s.live.resampled.is_some();
-        let mut fading = false;
+        let mut indicator = Indicator::Gone;
         let mut overlays = false;
         if matches!(s.live.phase, Phase::Thumb { .. }) {
             // A held thumb stays until it is let go (`thumb_end`).
             s.live.shown = now;
         } else if s.live.alpha > 0.0 {
-            let alpha = indicator_alpha(now - s.live.shown);
+            let since = now - s.live.shown;
+            let alpha = indicator_alpha(since);
             if alpha != s.live.alpha {
                 s.live.alpha = alpha;
                 overlays = true;
             }
-            fading = alpha > 0.0;
+            indicator = match indicator_hold_left(since) {
+                Some(ms) => Indicator::Holding(ms),
+                None if alpha > 0.0 => Indicator::Fading,
+                None => Indicator::Gone,
+            };
         }
         let spinning = !s.horizontal
             && main(s) < 0.0
@@ -918,7 +963,7 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> Tick {
             overlays = true;
         }
         (
-            what_is_left(&s.live.phase, resampling, fading, spinning),
+            what_is_left(&s.live.phase, resampling, indicator, spinning),
             overlays,
         )
     };
@@ -933,19 +978,30 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> Tick {
 /// momentum), trackpad offsets still to show (`resampling`) or the
 /// refresh spinner (`spinning`) keep it busy; the phases events drive
 /// (a trackpad gesture, momentum, a held thumb) wait for them; the
-/// indicator's fade (`fading`) is all that may be left.
-fn what_is_left(phase: &Phase, resampling: bool, fading: bool, spinning: bool) -> Tick {
+/// `indicator` is all that may be left.
+fn what_is_left(phase: &Phase, resampling: bool, indicator: Indicator, spinning: bool) -> Tick {
     let moving = !matches!(
         phase,
         Phase::Idle | Phase::Thumb { .. } | Phase::Momentum | Phase::Wheel { gesture: true, .. }
     );
     if moving || resampling || spinning {
-        Tick::Busy
-    } else if fading {
-        Tick::Fading
-    } else {
-        Tick::Done
+        return Tick::Busy;
     }
+    match indicator {
+        Indicator::Gone => Tick::Done,
+        Indicator::Holding(ms) => Tick::Hold(ms),
+        Indicator::Fading => Tick::Fading,
+    }
+}
+
+/// Where a scroll view's indicator is after a frame.
+#[derive(Debug, Clone, Copy)]
+enum Indicator {
+    /// Not shown, or held by the thumb until it is let go.
+    Gone,
+    /// Fully shown for this many ms more.
+    Holding(u64),
+    Fading,
 }
 
 // The indicator and the refresh spinner.
@@ -1315,6 +1371,21 @@ pub(crate) fn content(surface: &Rc<Surface>, view: &NshView, size: Size<Points>)
         s.content = (size.width.0, size.height.0);
         let pos = main(s);
         pos > limits(&state).1 + 0.5
+    };
+    if past {
+        ensure_ticking(surface, view);
+    }
+    update_overlays(view);
+}
+
+/// The viewport changed size: an offset now past the end is pulled back.
+pub(crate) fn resized(surface: &Rc<Surface>, view: &NshView) {
+    let past = {
+        let state = view.state();
+        let Some(s) = &state.scroll else {
+            return;
+        };
+        main(s) > limits(&state).1 + 0.5
     };
     if past {
         ensure_ticking(surface, view);
@@ -2089,19 +2160,38 @@ mod tests {
             momentum: false,
             end: true,
         };
-        assert_eq!(what_is_left(&gliding, false, true, false), Tick::Busy);
-        assert_eq!(what_is_left(&Phase::Idle, false, true, false), Tick::Fading);
-        assert_eq!(what_is_left(&Phase::Idle, false, false, false), Tick::Done);
-        assert_eq!(what_is_left(&Phase::Idle, true, true, false), Tick::Busy);
-        assert_eq!(what_is_left(&Phase::Idle, false, true, true), Tick::Busy);
+        let fading = Indicator::Fading;
+        assert_eq!(what_is_left(&gliding, false, fading, false), Tick::Busy);
         assert_eq!(
-            what_is_left(&Phase::AwaitMomentum { since: 0.0 }, false, true, false),
+            what_is_left(&Phase::Idle, false, fading, false),
+            Tick::Fading
+        );
+        assert_eq!(
+            what_is_left(&Phase::Idle, false, Indicator::Gone, false),
+            Tick::Done
+        );
+        assert_eq!(what_is_left(&Phase::Idle, true, fading, false), Tick::Busy);
+        assert_eq!(what_is_left(&Phase::Idle, false, fading, true), Tick::Busy);
+        assert_eq!(
+            what_is_left(&Phase::AwaitMomentum { since: 0.0 }, false, fading, false),
             Tick::Busy
         );
         assert_eq!(
-            what_is_left(&Phase::Momentum, false, true, false),
+            what_is_left(&Phase::Momentum, false, fading, false),
             Tick::Fading
         );
+    }
+
+    /// The indicator's hold takes no frames unless something else does.
+    #[test]
+    fn only_the_indicators_hold_ends_the_frames() {
+        let holding = Indicator::Holding(300);
+        assert_eq!(
+            what_is_left(&Phase::Idle, false, holding, false),
+            Tick::Hold(300)
+        );
+        assert_eq!(what_is_left(&Phase::Idle, true, holding, false), Tick::Busy);
+        assert_eq!(what_is_left(&Phase::Idle, false, holding, true), Tick::Busy);
     }
 
     #[test]
