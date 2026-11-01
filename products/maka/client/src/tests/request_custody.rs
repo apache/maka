@@ -230,12 +230,22 @@ async fn close_with_withheld_opening(acknowledge: bool) {
                             });
                         } else {
                             workers.spawn(async move {
-                                tokio::io::copy_bidirectional(
+                                // Cancellation may close a peer with bytes still buffered.
+                                if let Err(error) = tokio::io::copy_bidirectional(
                                     &mut downstream.inner,
                                     &mut upstream.inner,
                                 )
                                 .await
-                                .unwrap();
+                                {
+                                    assert!(
+                                        matches!(
+                                            error.kind(),
+                                            std::io::ErrorKind::ConnectionReset
+                                                | std::io::ErrorKind::BrokenPipe
+                                        ),
+                                        "query relay failed: {error}"
+                                    );
+                                }
                             });
                         }
                     }
