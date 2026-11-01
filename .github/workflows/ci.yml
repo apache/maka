@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     # Allow cold compilation and Host fixtures that reserve multiple CPU slots.
     timeout-minutes: 180
     env:
@@ -42,12 +42,12 @@ jobs:
       # Cargo retains linked outputs in target; avoid another copy in mbx's store.
       MBX_CACHE_LINKS: "0"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@v7
         with:
-          node-version: "26"
+          node-version: latest
           cache: npm
       # NSH headless rendering tests need Vulkan and Mesa software adapters,
       # as in third-party/nsh/.github/workflows/gpui.yml.
@@ -84,10 +84,16 @@ jobs:
           echo "$RUNNER_TEMP/mbx-bin" >> "$GITHUB_PATH"
           echo "$RUNNER_TEMP/mbx-data/mbx/bin" >> "$GITHUB_PATH"
           echo "key=rust-target-${RUNNER_OS}-${RUNNER_ARCH}-$(rustc -vV | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
         with:
-          tool: just@1.59.0,cargo-nextest@0.9.149,cargo-deny
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          tool: cargo-binstall
+      - name: Install latest Rust tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cargo binstall --no-confirm --force cargo-binstall
+          cargo binstall --no-confirm --force just cargo-nextest cargo-deny
+      - uses: actions/cache/restore@v6
         id: cargo-cache
         with:
           path: |
@@ -97,7 +103,7 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
       - name: Restore compiled Rust cache
         id: rust-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@v6
         with:
           path: target
           key: ${{ steps.mbx.outputs.key }}-${{ hashFiles('Cargo.lock', 'third-party/termina/Cargo.lock') }}-${{ github.sha }}
@@ -105,7 +111,7 @@ jobs:
             ${{ steps.mbx.outputs.key }}-${{ hashFiles('Cargo.lock', 'third-party/termina/Cargo.lock') }}-
             ${{ steps.mbx.outputs.key }}-
       - name: Select npm
-        run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
+        run: npm install --global --no-audit --no-fund npm@latest
       - run: just setup
       - name: Verify Rust dependency inventory before compilation
         run: |
@@ -138,13 +144,13 @@ jobs:
       # Publish complete compiler outputs before any behavior tests can fail.
       - name: Save compiled Rust cache
         if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview'))) && steps.rust-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@v6
         with:
           path: target
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Save Cargo downloads
         if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview'))) && steps.cargo-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@v6
         with:
           path: |
             ~/.cargo/registry
@@ -201,7 +207,7 @@ jobs:
   nsh-integration:
     needs: test
     if: ${{ always() && github.event_name == 'workflow_dispatch' && !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: "2"
@@ -209,7 +215,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Verify source revision
@@ -225,7 +231,7 @@ jobs:
         run: |
           rustup update stable --no-self-update
           echo "key=nsh-target-${RUNNER_OS}-${RUNNER_ARCH}-$(rustc -vV | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -234,7 +240,7 @@ jobs:
           restore-keys: nsh-cargo-${{ runner.os }}-
       - name: Restore NSH compiled cache
         id: nsh-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.CARGO_TARGET_DIR }}
           key: ${{ steps.rust.outputs.key }}-${{ hashFiles('third-party/nsh/Cargo.lock', 'third-party/nsh/crates/gpui/Cargo.lock') }}-${{ github.sha }}
@@ -334,7 +340,7 @@ jobs:
           if [ -d "$CARGO_TARGET_DIR" ]; then du -sh "$CARGO_TARGET_DIR"; fi
       - name: Save NSH compiled cache
         if: ${{ !cancelled() && steps.nsh-cache.outcome == 'success' && steps.nsh-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@v6
         with:
           path: ${{ env.CARGO_TARGET_DIR }}
           key: ${{ steps.nsh-cache.outputs.cache-primary-key }}

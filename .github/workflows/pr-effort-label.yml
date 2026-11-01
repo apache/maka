@@ -46,7 +46,7 @@ concurrency:
 
 jobs:
   label:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
@@ -54,12 +54,12 @@ jobs:
       # the trusted default-branch commit rather than left to the event's
       # default: pull_request_review and friends resolve to refs/pull/N/merge,
       # and this job imports the checked-out script.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      - uses: actions/github-script@v9
         env:
           DRY_RUN: ${{ inputs.dry_run || false }}
         with:
