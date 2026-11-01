@@ -236,6 +236,7 @@ export function executor(root, worker = {}) {
       .filter((entry) => !entry.ignored && entry['filter-match'].status === 'matches').length;
     if (!count && plan.suites.root.filter === 'all()')
       throw new Error('The full root test selection was unexpectedly empty');
+    if (!count) return [];
     const config = readFileSync(join(root, '.config/nextest.toml'), 'utf8');
     const runtimePackages = new Set(
       selected

@@ -151,6 +151,7 @@ async function main(args) {
         join(temporary, 'root-tests.tar.zst'),
         '--extract-to',
         root,
+        '--extract-overwrite',
         '--profile',
         'ci',
         '--partition',

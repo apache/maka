@@ -110,6 +110,7 @@ jobs:
         run: node scripts/ci.mjs archive
       - uses: actions/upload-artifact@v7
         id: upload
+        if: steps.archive.outputs.has_tests == 'true'
         with:
           name: root-tests-${{ github.run_attempt }}
           path: ${{ runner.temp }}/root-tests.tar.zst
