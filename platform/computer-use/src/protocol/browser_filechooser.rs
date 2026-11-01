@@ -22,8 +22,7 @@ use serde_json::Value;
 #[cfg(feature = "native-desktop")]
 use std::time::Duration;
 
-/// Chooser schema validation precedes browser dispatch. Explicit null is not a
-/// missing timeout; very large finite integral JS numbers still clamp to 3s.
+/// Chooser schema validation precedes browser dispatch. Explicit null is not a missing timeout.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrowserFileChooserOptions {
@@ -51,6 +50,6 @@ impl BrowserFileChooserOptions {
                     )
                 })?,
         };
-        Ok(Duration::from_secs_f64(millis.min(3000.0) / 1000.0))
+        super::timeout_duration(millis)
     }
 }

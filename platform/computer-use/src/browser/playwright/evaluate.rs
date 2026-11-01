@@ -203,6 +203,7 @@ impl Tab {
         let resources = Resources::new();
         let bindings = Mutex::new(Vec::new());
         let last_error = Mutex::new("playwright.evaluate exceeded its deadline".to_owned());
+        let requested = options.budget()?;
         let timeout = || {
             let reason = last_error.lock().expect("evaluate error mutex poisoned");
             if mode == BrowserEvaluateMode::Element
@@ -210,7 +211,7 @@ impl Tab {
             {
                 return failed(format!(
                     "Timed out after {}ms evaluating selector {}: {}",
-                    options.budget().as_secs_f64() * 1000.0,
+                    requested.as_secs_f64() * 1000.0,
                     locator.selector,
                     reason.as_str()
                 ));

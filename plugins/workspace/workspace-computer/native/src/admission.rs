@@ -222,17 +222,22 @@ pub(super) struct Operation {
     lease: Option<InvocationEffectLease>,
     ticket: Option<Ticket>,
     tasks: tokio_util::task::TaskTracker,
-    stopping: tokio_util::sync::CancellationToken,
+    gate: Arc<Gate>,
 }
 impl Operation {
     pub fn new(
         owner: &Arc<super::Computer>,
         lease: InvocationEffectLease,
         native: &Arc<NativeSession>,
+        gate: &Arc<Gate>,
     ) -> Result<Self, ToolError> {
         if owner.stopping.is_cancelled() {
             lease.finish(Ok(())); // No journal dispatch or native effect was admitted.
             return Err(ToolError::Failed("Computer Host service is closed".into()));
+        }
+        if let Err(error) = gate.check_open() {
+            lease.finish(Ok(()));
+            return Err(error);
         }
         let mut ticket = match owner.resources.reserve() {
             Ok(ticket) => ticket,
@@ -252,7 +257,7 @@ impl Operation {
             lease: Some(lease),
             ticket: Some(ticket),
             tasks: owner.tasks.clone(),
-            stopping: owner.stopping.clone(),
+            gate: gate.clone(),
         })
     }
 
@@ -281,7 +286,7 @@ impl Operation {
             root: self.root.take(),
             lease: Some(lease),
             ticket: self.ticket.take(),
-            stopping: self.stopping.clone(),
+            gate: self.gate.clone(),
             failure: None,
             observations: Vec::new(),
         };
@@ -311,7 +316,7 @@ struct PendingSettlement {
     root: Option<Arc<maka_event_log::RootStore>>,
     lease: Option<InvocationEffectLease>,
     ticket: Option<Ticket>,
-    stopping: tokio_util::sync::CancellationToken,
+    gate: Arc<Gate>,
     failure: Option<String>,
     observations: Vec<ToolError>,
 }
@@ -319,7 +324,7 @@ impl PendingSettlement {
     fn fail(&mut self, observation: ToolError) {
         let failure = observation.to_string();
         self.observations.push(observation);
-        self.stopping.cancel();
+        self.gate.close_admission();
         if let Some(lease) = self.lease.take() {
             lease.retain_unconfirmed(failure.clone());
         }
@@ -483,6 +488,7 @@ impl BrowserEffectScope for AttachedEffectScope {
 }
 
 struct HostAdmission {
+    gate: Arc<Gate>,
     owner: Arc<super::Computer>,
     native: Arc<NativeSession>,
     receipt: Receipt,
@@ -510,6 +516,7 @@ impl HostEffects {
         };
         ticket.start();
         Ok(HostAdmission {
+            gate: self.gate.clone(),
             owner,
             native,
             receipt,
@@ -525,6 +532,7 @@ impl HostEffects {
         preparation_active: Option<tokio_util::sync::CancellationToken>,
     ) {
         let HostAdmission {
+            gate,
             owner,
             native,
             receipt,
@@ -537,7 +545,7 @@ impl HostEffects {
             failure: None,
             observations: Vec::new(),
             ticket: Some(ticket),
-            stopping: owner.stopping.clone(),
+            gate,
             root: Some(owner.store.clone()),
             completed,
             preparation_active,
@@ -722,7 +730,7 @@ struct HostCustody {
     failure: Option<String>,
     observations: Vec<ToolError>,
     ticket: Option<Ticket>,
-    stopping: tokio_util::sync::CancellationToken,
+    gate: Arc<Gate>,
     root: Option<Arc<maka_event_log::RootStore>>,
     completed: Option<tokio::sync::oneshot::Sender<Result<(), ToolError>>>,
     preparation_active: Option<tokio_util::sync::CancellationToken>,
@@ -754,7 +762,7 @@ impl HostCustody {
         }
         let error = observation.to_string();
         self.observations.push(observation);
-        self.stopping.cancel();
+        self.gate.close_admission();
         if let Some(ticket) = &self.ticket {
             ticket.record_failure(error.clone());
         }
@@ -828,7 +836,7 @@ impl Drop for HostCustody {
             active.cancel();
         }
         if let Some(pending) = self.pending.take() {
-            self.stopping.cancel();
+            self.gate.close_admission();
             if let Some(ticket) = self.ticket.take() {
                 ticket.unconfirmed(
                     "Computer Host-service effect owner disappeared".into(),
@@ -1003,7 +1011,13 @@ mod tests {
     #[tokio::test]
     async fn durable_closed_result_retains_same_run_until_original_rpc_is_ready() {
         let fixture = Fixture::new().await;
-        let operation = Operation::new(&fixture.owner, fixture.lease(), &fixture.native).unwrap();
+        let operation = Operation::new(
+            &fixture.owner,
+            fixture.lease(),
+            &fixture.native,
+            &Arc::default(),
+        )
+        .unwrap();
         let handoff = operation.handoff();
         let release = CancellationToken::new();
         let _release_on_failure = release.clone().drop_guard();
@@ -1073,7 +1087,8 @@ mod tests {
     #[tokio::test]
     async fn real_uncertainty_signal_fences_admission_but_drains_the_same_host_future() {
         let fixture = Fixture::new().await;
-        let host = host_effects(&fixture.owner, Arc::default(), &fixture.native);
+        let gate = Arc::new(Gate::default());
+        let host = host_effects(&fixture.owner, gate.clone(), &fixture.native);
         let started = CancellationToken::new();
         let uncertain = CancellationToken::new();
         let release = CancellationToken::new();
@@ -1104,12 +1119,14 @@ mod tests {
             .await
             .expect("admitted Host future was not polled");
         uncertain.cancel();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            fixture.owner.stopping.cancelled(),
-        )
-        .await
-        .expect("actual uncertainty was not recorded");
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.wait_closed())
+            .await
+            .expect("actual uncertainty was not recorded");
+        assert!(!fixture.owner.stopping.is_cancelled());
+        let sibling = host_effects(&fixture.owner, Arc::default(), &fixture.native);
+        sibling
+            .spawn(Box::pin(async { Ok(()) }))
+            .expect("another VM remains usable");
         let rejected_calls = calls.clone();
         assert!(
             host.spawn(Box::pin(async move {
@@ -1122,7 +1139,7 @@ mod tests {
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
         assert!(
             matches!(
-                Operation::new(&fixture.owner, fixture.lease(), &fixture.native),
+                Operation::new(&fixture.owner, fixture.lease(), &fixture.native, &gate),
                 Err(ToolError::Failed(_))
             ),
             "uncertain real owner must refuse a fresh operation before native or journal dispatch"
@@ -1154,7 +1171,9 @@ mod tests {
     #[tokio::test]
     async fn checked_rpc_uncertainty_quarantines_the_original_invocation_before_other_rpc_drains() {
         let fixture = Fixture::new().await;
-        let operation = Operation::new(&fixture.owner, fixture.lease(), &fixture.native).unwrap();
+        let gate = Arc::new(Gate::default());
+        let operation =
+            Operation::new(&fixture.owner, fixture.lease(), &fixture.native, &gate).unwrap();
         let handoff = operation.handoff();
         let fail_first = CancellationToken::new();
         let release_last = CancellationToken::new();
@@ -1200,12 +1219,10 @@ mod tests {
             .unwrap();
         operation.complete(None);
         fail_first.cancel();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            fixture.owner.stopping.cancelled(),
-        )
-        .await
-        .expect("actual uncertainty was not recorded");
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.wait_closed())
+            .await
+            .expect("actual uncertainty was not recorded");
+        assert!(!fixture.owner.stopping.is_cancelled());
         assert!(
             fixture.effects.settle().await.is_err(),
             "the real original invocation must retain unconfirmed custody"
@@ -1228,7 +1245,13 @@ mod tests {
     #[tokio::test]
     async fn closed_checked_handoff_returns_the_original_unpolled_future() {
         let fixture = Fixture::new().await;
-        let operation = Operation::new(&fixture.owner, fixture.lease(), &fixture.native).unwrap();
+        let operation = Operation::new(
+            &fixture.owner,
+            fixture.lease(),
+            &fixture.native,
+            &Arc::default(),
+        )
+        .unwrap();
         let handoff = operation.handoff();
         operation.complete(None);
         let calls = Arc::new(AtomicUsize::new(0));

@@ -98,18 +98,14 @@ impl Store {
     }
 }
 
-pub(super) fn timeout(options: &BrowserDownloadOptions) -> Duration {
-    let millis = options
-        .timeout_ms
-        .as_ref()
-        .and_then(Value::as_f64)
-        .unwrap_or(3000.0)
-        .clamp(0.0, 120_000.0);
-    Duration::from_secs_f64(millis / 1000.0)
-}
-
-pub(super) fn locator_timeout(options: &BrowserDownloadOptions) -> Duration {
-    timeout(options).min(Duration::from_millis(3000))
+pub(super) fn timeout(options: &BrowserDownloadOptions) -> Result<Duration, ToolError> {
+    crate::protocol::timeout_duration(
+        options
+            .timeout_ms
+            .as_ref()
+            .and_then(Value::as_f64)
+            .unwrap_or(3000.0),
+    )
 }
 
 fn cleanup(error: impl std::fmt::Display) -> ToolError {
@@ -298,7 +294,7 @@ impl Tab {
                 session_metadata,
                 authorization,
                 cancellation.clone(),
-                timeout(&options),
+                timeout(&options)?,
             )
             .await
     }

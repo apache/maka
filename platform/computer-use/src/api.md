@@ -152,7 +152,7 @@ characters are literal. The default `waitUntil` is `commit`; `load`,
 `domcontentloaded` and `networkidle` wait for that state after a match.
 `tab.playwright.waitForLoadState({state?, timeoutMs?})` defaults to `load` and also
 accepts `domcontentloaded` and `networkidle`. These condition waits default to
-3000 ms and cap numeric timeouts at 3000 ms. Zero leaves no event-wait budget:
+3000 ms and honor longer explicit timeouts. Zero leaves no event-wait budget:
 a locator still gets its first probe, current URL/load state may already match,
 and networkidle times out. `tab.playwright.waitForTimeout(ms)` accepts a nonnegative
 integer and waits for a fixed duration. For an action-triggered wait, start the
@@ -173,8 +173,7 @@ Click options accept `button: 'left'|'right'|'middle'`, `modifiers`, `force` and
 `timeoutMs`; check options accept `force` and `timeoutMs`. Modifiers are `Alt`,
 `Control`, `ControlOrMeta`, `Meta` and `Shift`; `ControlOrMeta` uses the selected
 browser's platform. Other input options accept `timeoutMs`. Timeouts are positive
-integers; preparation defaults to 3000 ms and is capped there, or at 5000 ms for
-sequential input. An option selection accepts a value string or a descriptor with
+integers; preparation defaults to 3000 ms and honors longer explicit timeouts. An option selection accepts a value string or a descriptor with
 `value`, `label` or a nonnegative integer `index`; arrays select multiple options.
 
 Locator mutations use a unique match or the sole visible match. Ambiguous matches
@@ -352,7 +351,7 @@ ChatGPT and other third-party adapters remain best effort.
 - Evaluation exposes read-only DOM, CSS, geometry, range and selection views.
   It does not expose networking, cookies, module loading or DOM edits. Scrolling,
   local range boundaries and function-only timers remain supported operations.
-  The timeout defaults to 3000 ms and numeric values are clamped to 0–3000 ms.
+  The timeout defaults to 3000 ms; explicit values set the requested duration.
   A stopped or interrupted script may already have run; it is not automatically
   executed again. Existing site permissions and tab ownership still apply.
 
@@ -453,7 +452,7 @@ chooser.isMultiple();
 await chooser.setFiles(['workspace-file.bin']);
 ```
 
-Start the wait before the action that opens the chooser. The default and maximum chooser event wait are 3000 ms; an explicit timeout must be a positive integer. `isMultiple()` is synchronous. `setFiles(pathOrPaths, {timeoutMs})` accepts one path or a nonempty array; a single-file chooser rejects multiple paths. Its optional timeout is validated without discarding an in-flight selection.
+Start the wait before the action that opens the chooser. The default chooser event wait is 3000 ms; an explicit timeout must be a positive integer. `isMultiple()` is synchronous. `setFiles(pathOrPaths, {timeoutMs})` accepts one path or a nonempty array; a single-file chooser rejects multiple paths. Its optional timeout is validated without discarding an in-flight selection.
 
 Paths refer to the Agent Host's filesystem and remain subject to the caller's workspace file policy. Page access, upload consent for the current HTTP(S) origin, and file-read permission are separate. The supported input snapshot is a regular file. Files are transported as immutable bytes and materialized by the selected Maka browser host; do not translate paths between operating systems yourself.
 

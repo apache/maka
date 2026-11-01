@@ -28,6 +28,13 @@ pub(super) struct NativeTurns {
     closed: std::collections::HashSet<String>,
 }
 
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+pub(super) struct ActiveInput {
+    bound: Arc<BoundSession>,
+    turn: String,
+    owner: Arc<cua_driver_sdk::NativeDesktopOwner>,
+}
+
 impl Driver {
     /// These are actual registered Cua tools. This narrow entry adds no model
     /// named-tool escape hatch to the ordinary App facade.
@@ -77,6 +84,28 @@ impl Driver {
         }
         let bound = driver.lock().await.bind_epoch(epoch, language)?;
         let session = bound.ready(language).await?;
+        let device = driver.lock().await.native_input.clone();
+        let mut device = device.lock().await;
+        if let Some(previous) = device.as_ref()
+            && (!Arc::ptr_eq(&previous.bound, &bound) || previous.turn != turn)
+        {
+            previous.owner.seal();
+            previous.owner.close().await.map_err(|error| {
+                ToolError::Failed(format!(
+                    "native_input_busy: previous input release is unconfirmed: {error}"
+                ))
+            })?;
+            let mut turns = previous.bound.native_turns.lock().await;
+            if turns
+                .owners
+                .get(&previous.turn)
+                .is_some_and(|owner| Arc::ptr_eq(owner, &previous.owner))
+            {
+                turns.owners.remove(&previous.turn);
+            }
+            drop(turns);
+            *device = None;
+        }
         let owner = {
             let mut turns = bound.native_turns.lock().await;
             if turns.closed.contains(turn) {
@@ -95,6 +124,11 @@ impl Driver {
                     .clone(),
             }
         };
+        *device = Some(ActiveInput {
+            bound: bound.clone(),
+            turn: turn.to_owned(),
+            owner: owner.clone(),
+        });
         if cancellation.is_cancelled() {
             return Err(ToolError::Failed(
                 "Computer Use cancelled before native input dispatch".into(),
@@ -313,8 +347,8 @@ mod retirement_tests {
                 .is_ok(),
             "joining a failed resource cleanup must not close the original SDK session"
         );
-        // A separate terminal close is the sole retry admission. It reuses
-        // that exact passive owner, then drains/closes the real SDK binding.
+        driver.release_epoch(epoch).await.unwrap();
+        assert!(bound.native_turns.lock().await.owners.is_empty());
         driver.close().await.unwrap();
         assert!(matches!(driver.state, State::Closed));
         assert!(bound.native_turns.lock().await.owners.is_empty());
