@@ -269,6 +269,23 @@ impl Desktop {
         })
     }
 
+    /// Acts until `done`, slowly enough that a repeat does not undo what the
+    /// last act is still doing: toggle a menu shut, or press in the dialog it opened.
+    async fn retry(&self, stage: &str, done: impl Fn() -> bool, act: impl Fn()) {
+        let mut acted = None::<std::time::Instant>;
+        self.until(stage, || {
+            if done() {
+                return Some(());
+            }
+            if acted.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
+                act();
+                acted = Some(std::time::Instant::now());
+            }
+            None
+        })
+        .await
+    }
+
     async fn wait<T>(&self, stage: &str, future: impl Future<Output = T>) -> T {
         tokio::time::timeout(Duration::from_secs(30), async {
             tokio::pin!(future);
@@ -318,6 +335,9 @@ impl Desktop {
     }
 
     fn copy_input(&self) -> Option<String> {
+        // Outside an editor Ctrl+C interrupts, and its dialog refuses the focus
+        // being waited for.
+        self.platform.text_input_target()?;
         self.key("a", true);
         self.key("c", true);
         self.platform
@@ -334,11 +354,18 @@ impl Desktop {
     async fn type_text(&self, text: &str) {
         let _ = self.platform.take_clipboard_write();
         self.until("the editor did not accept the draft", || {
+            self.platform.text_input_target()?;
             self.key("a", true);
             self.platform.paste(text).unwrap();
             self.copy_input().filter(|copied| copied == text)
         })
         .await;
+    }
+
+    /// Enter does nothing until the typed draft can be sent.
+    async fn submit(&self) {
+        self.control("Send message").await;
+        self.key("enter", false);
     }
 
     async fn expect_text(&self, text: &str) {
@@ -1636,9 +1663,21 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     .await;
     desktop.new_draft().await;
     desktop.type_text("KEEP_MY_DRAFT").await;
-    desktop.press("Add to message").await;
     let previous = desktop.platform.text_input_target();
-    desktop.press("Goal").await;
+    // A new draft can still move its composer, which closes the menu.
+    desktop
+        .retry(
+            "the Goal dialog did not open",
+            || !desktop.controls("Close Goal").is_empty(),
+            || {
+                let goal = desktop.controls("Goal");
+                let add = desktop.controls("Add to message");
+                if let [control] = if goal.is_empty() { &add[..] } else { &goal[..] } {
+                    desktop.press_at(control.center());
+                }
+            },
+        )
+        .await;
     desktop.target_after(previous).await;
     desktop.artifact("goal-before-objective");
     desktop.app.update(|cx| {
@@ -1682,19 +1721,8 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.press("Pause Goal").await;
     // A paused Goal can still be cancelling its iteration.
     desktop.control("Complete Goal").await;
-    // A press this soon after the pause settles can be lost before it reaches
-    // the dialog, so it repeats until the Goal resumes.
-    desktop
-        .until("Resume Goal did not resume", || {
-            if desktop.controls("Pause Goal").len() == 1 {
-                return Some(());
-            }
-            if let [resume] = desktop.controls("Resume Goal")[..] {
-                desktop.press_at(resume.center());
-            }
-            None
-        })
-        .await;
+    desktop.press("Resume Goal").await;
+    desktop.control("Pause Goal").await;
     let running = desktop.request(&mut fixture).await;
     running
         .tool_call(
@@ -1714,7 +1742,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.press("Focus message composer").await;
     desktop.expect_text("KEEP_MY_DRAFT").await;
     desktop.type_text("/goal Finish the follow-up").await;
-    desktop.key("enter", false);
+    desktop.submit().await;
     let next = desktop.request(&mut fixture).await;
     assert!(next.body.to_string().contains("Finish the follow-up"));
     next.tool_call(
@@ -1725,8 +1753,15 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.request(&mut fixture).await.finish().await;
     desktop.press("Focus message composer").await;
     desktop.type_text("/goal").await;
-    desktop.key("enter", false);
-    desktop.control("New Goal").await;
+    // "/goal" opens a completion menu, and an Enter on the binding of a menu
+    // that just closed is lost.
+    desktop
+        .retry(
+            "/goal did not open the Goal dialog",
+            || desktop.controls("New Goal").len() == 1,
+            || desktop.key("enter", false),
+        )
+        .await;
     drop(first);
     desktop.close().await;
     fixture.finish().await;
@@ -1806,22 +1841,20 @@ async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandc
     let previous = desktop.platform.text_input_target();
     desktop.press("Open Verification worker").await;
     desktop.target_after(previous).await;
-    let _ = desktop.platform.take_clipboard_write();
-    // A conversation that just opened ignores the press until its editor is ready.
+    // A conversation that just opened still moves its composer under the press.
     desktop
-        .until("the composer did not accept the draft", || {
-            let [composer] = desktop.controls("Focus message composer")[..] else {
-                return None;
-            };
-            desktop.press_at(composer.center());
-            desktop.key("a", true);
-            desktop.platform.paste("OPENED_TREE_GRANDCHILD").unwrap();
-            desktop
-                .copy_input()
-                .filter(|copied| copied == "OPENED_TREE_GRANDCHILD")
-        })
+        .retry(
+            "the composer did not take focus",
+            || desktop.platform.text_input_target().is_some(),
+            || {
+                if let [composer] = desktop.controls("Focus message composer")[..] {
+                    desktop.press_at(composer.center());
+                }
+            },
+        )
         .await;
-    desktop.press("Send message").await;
+    desktop.type_text("OPENED_TREE_GRANDCHILD").await;
+    desktop.submit().await;
     desktop.request(&mut fixture).await.finish().await;
     let history = desktop
         .client
