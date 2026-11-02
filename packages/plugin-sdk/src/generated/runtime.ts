@@ -416,18 +416,6 @@ export type HostLogPage =
       hasMore: boolean;
     };
 export type HostLogReset = 'replaced' | 'truncated';
-/**
- * Templates can select an entry in their own immutable package without a
- * self-referential content hash. Deployment roots must select a pinned revision.
- */
-export type PackageSelection =
-  | {
-      source: 'pinned';
-      package: PackageRef;
-    }
-  | {
-      source: 'current';
-    };
 export type PackageUse = 'host' | 'ui' | 'composition';
 export type Target =
   | {
@@ -444,6 +432,18 @@ export type Target =
       deployment: string;
       instance: InstanceId;
       export: string;
+    };
+/**
+ * Templates can select an entry in their own immutable package without a
+ * self-referential content hash. Deployment roots must select a pinned revision.
+ */
+export type PackageSelection =
+  | {
+      source: 'pinned';
+      package: PackageRef;
+    }
+  | {
+      source: 'current';
     };
 export type Interface =
   | {
@@ -4609,10 +4609,69 @@ export interface HostLogRequest {
  * Durable deployment input. Plans are derived and never persisted as overrides.
  */
 export interface CompositionInput {
+  /**
+   * Optional immutable root composition. Its children remain deployment roots,
+   * so selecting a baseline does not prepend a namespace to instance identities.
+   */
+  base?: RootComposition | null;
   instances: {
     [k: string]: CompositionNode | undefined;
   };
   ui?: UiTarget | null;
+}
+/**
+ * A composition selected at deployment scope, without introducing an instance.
+ * Additional roots remain in Input.instances; inherited roots are edited with overrides.
+ */
+export interface RootComposition {
+  package: PackageRef;
+  parameters?: {
+    [k: string]: unknown | undefined;
+  };
+  overrides?: Override[];
+  /**
+   * Absent inherits the template UI; null explicitly selects no UI.
+   */
+  ui?: UiTarget | null;
+}
+export interface PackageRef {
+  id: string;
+  revision: string;
+}
+/**
+ * An override belongs to its containing structural instance. Missing paths fail;
+ * removal/upgrade never guesses how to discard independent user intent.
+ */
+export interface Override {
+  path: string[];
+  /**
+   * A persistent deletion, distinct from disabling an instance.
+   */
+  remove?: boolean;
+  package?: PackageRef | null;
+  usePackage?: PackageUse | null;
+  parameters?: {
+    [k: string]: unknown | undefined;
+  };
+  configuration?: {
+    [k: string]: unknown | undefined;
+  };
+  configurationFields?: ConfigurationField[];
+  bindings?: {
+    [k: string]: Target[] | undefined;
+  };
+  disabled?: boolean | null;
+}
+/**
+ * An exact object-field edit. Missing value deletes the field; JSON null is a value.
+ */
+export interface ConfigurationField {
+  path: string[];
+  value?: unknown;
+}
+export interface UiTarget {
+  path: string[];
+  id: string;
 }
 export interface CompositionNode {
   key: string;
@@ -4626,10 +4685,6 @@ export interface CompositionNode {
   disabled?: boolean;
   overrides?: Override[];
 }
-export interface PackageRef {
-  id: string;
-  revision: string;
-}
 export interface Configuration {
   values?: {
     [k: string]: unknown | undefined;
@@ -4640,29 +4695,6 @@ export interface Configuration {
   parameters?: {
     [k: string]: string | undefined;
   };
-}
-/**
- * An override belongs to its containing structural instance. Missing paths fail;
- * removal/upgrade never guesses how to discard independent user intent.
- */
-export interface Override {
-  path: string[];
-  package?: PackageRef | null;
-  usePackage?: PackageUse | null;
-  parameters?: {
-    [k: string]: unknown | undefined;
-  };
-  configuration?: {
-    [k: string]: unknown | undefined;
-  };
-  bindings?: {
-    [k: string]: Target[] | undefined;
-  };
-  disabled?: boolean | null;
-}
-export interface UiTarget {
-  path: string[];
-  id: string;
 }
 export interface Deployment {
   reference: DeploymentRef;
@@ -5011,6 +5043,10 @@ export interface UiEntry {
   };
 }
 export interface Template {
+  /**
+   * Default UI selection when this template is used at deployment scope.
+   */
+  ui?: UiTarget | null;
   parameters?: {
     [k: string]: Parameter | undefined;
   };

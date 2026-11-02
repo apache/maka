@@ -157,6 +157,7 @@ fn service_plan(contract: &Contract) -> (Input, Plan) {
         );
     }
     let input = Input {
+        base: None,
         ui: None,
         instances: nodes,
     };
@@ -459,6 +460,7 @@ async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness
     ]))
     .unwrap();
     let input = Input {
+        base: None,
         ui: None,
         instances: BTreeMap::from([(
             "ui".into(),

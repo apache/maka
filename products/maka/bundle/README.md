@@ -27,6 +27,20 @@ This directory selects the Host and UI plugin packages shipped with Maka and bin
 - [src/composition.ts](src/composition.ts) builds instances, bindings and installation identities.
 - [scripts/build.mjs](scripts/build.mjs) emits package bytes and authoring code into `dist`.
 
+## Installation and upgrades
+
+Default installations persist a pinned `maka.product.installation` composition in `input.base`, its user `overrides`, and independent roots in `input.instances`. The immutable baseline package contains the generated defaults and their installation inputs (including stable logical instance identities). It is not a second editable deployment. Root expansion adds no structural instance or UUID namespace, so existing conversations and plugin state keep their identities.
+
+Startup and `application update-defaults` preview/apply use the same checked source update. An older product-created flat installation is migrated once by comparing its first committed source, current source and new defaults; this also repairs installations whose package pins advanced without their configuration. Later upgrades replace the baseline pin while retaining the explicit overrides. Explicitly authored deployments retain their selected-package update behavior; detaching an installation from an existing baseline does not opt it back in.
+
+Configuration overrides can record exact `configurationFields` object paths. An omitted field `value` means deletion; JSON `null` remains a value. Existing `configuration` overrides still replace whole top-level fields. Arrays, including tool lists, are explicit whole selections, not lists merged by display name. Independent additions and complete component substitutions retain their chosen packages and configuration. Source editing records these decisions at their original owner; it never saves a materialized default graph. See the [composition types](../../../platform/plugin-core/src/composition.rs) and [root composition](../../../platform/plugin-core/src/composition/root.rs).
+
+The template may supply the default root UI. `input.ui` explicitly selects another root; `base.ui: null` explicitly disables the inherited root. Package, configuration and binding conflicts reject the candidate before persistence. Applied operations freeze their exact source and package bytes for recovery instead of reauthoring against a newer executable.
+
+Baseline publication metadata describes defaults; it does not grant access. Existing native grants and explicitly narrowed publications remain authoritative. Endpoint names tagged in `productMethods` retain their explicit follow-contract policy.
+
+## Model discovery and child conversations
+
 The default installation exposes `ModelList`, backed by the same model directory as Settings. Start with `{ "kind": "start", "query": "...", "connectionId": "..." }` (both filters are optional). Each choice includes a `selection` accepted by `SessionSend` / `SessionResume`, supported and default thinking levels, and effective limits. Continue with `{ "kind": "continue", "revision": page.revision, "cursor": page.next }`; restart if the directory changed. Only enabled connections and enabled models supported by the runtime are listed. Catalog availability does not guarantee provider reachability, credentials or quota. Credentials, URLs and request overlays are not returned.
 
 The sidebar conversation menu opens **Child conversations** in a separate, window-sized dialog. Disclosure arrows load direct children across workspaces, including archived conversations; titles open the requested conversation. The outline uses immutable `parentSessionId` creation ancestry, not fork-source history. Deep trees scroll horizontally and long branches page through the existing session directory.

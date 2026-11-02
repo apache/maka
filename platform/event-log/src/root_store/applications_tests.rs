@@ -88,6 +88,7 @@ async fn source(store: &RootStore, deployment: Uuid, expected: u64) -> Deploymen
             deployment,
             expected,
             Input {
+                base: None,
                 ui: None,
                 instances,
             },

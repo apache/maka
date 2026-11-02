@@ -712,3 +712,158 @@ async fn pending_initialization_preview_and_completion_preserve_a_later_head() {
     assert!(record.pending.is_none());
     f.store.drain().await;
 }
+
+#[tokio::test]
+async fn stranded_default_source_migrates_once_through_preview_and_frozen_apply_without_widening_grants()
+ {
+    use crate::application::product::{
+        author_with_source, authoring, baseline, installation, packages,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let store = launch::create(directory.path().join("host")).await.unwrap();
+    let bundled = packages().unwrap();
+    let mut configuration = installation(json!({
+        "workspace": directory.path(), "helper": std::env::current_exe().unwrap(),
+    }))
+    .await
+    .unwrap();
+    for name in ["agent", "coordinator"] {
+        configuration[name]["tools"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|tool| tool["name"] != "ModelList");
+        configuration[name]["plans"] = json!(true);
+    }
+    let (sources, _, prepared) = author_with_source(configuration, &bundled, &authoring().unwrap())
+        .await
+        .unwrap();
+    let deployment = sources.deployment;
+    let mut selection = serde_json::to_value(Selection::PublicHost {
+        endpoints: sources.endpoints,
+        native: sources.native,
+        product_methods: ["agent".into(), "coordinator".into()].into(),
+    })
+    .unwrap();
+    // A deliberately narrowed existing authority must not be replaced by freshly generated defaults.
+    selection["native"][0]["methods"]
+        .as_array_mut()
+        .unwrap()
+        .truncate(1);
+    let first = store
+        .commit_prepared_application(deployment, 0, prepared)
+        .await
+        .unwrap();
+    store
+        .select_committed_application_launch(first.source().reference.clone(), selection.clone())
+        .await
+        .unwrap();
+    let mut current = first.source().input.clone();
+    current
+        .instances
+        .get_mut("agent")
+        .unwrap()
+        .configuration
+        .values
+        .insert("goals".into(), json!(false));
+    current
+        .instances
+        .get_mut("workhub")
+        .unwrap()
+        .configuration
+        .values
+        .get_mut("agent")
+        .unwrap()["goals"] = json!(false);
+    store
+        .commit_application(
+            deployment,
+            1,
+            current.clone(),
+            vec![],
+            first.packages().to_vec(),
+        )
+        .await
+        .unwrap();
+    let record = store.application_launch().await.unwrap().unwrap();
+    let preview = synchronize_packages(&store, record, false, bundled.clone())
+        .await
+        .unwrap();
+    assert!(preview.changed && !preview.applied);
+    assert!(
+        preview
+            .changes
+            .iter()
+            .any(|change| change.starts_with("/base:"))
+    );
+    assert_eq!(
+        store
+            .load_application(deployment)
+            .await
+            .unwrap()
+            .unwrap()
+            .source()
+            .input,
+        current
+    );
+    assert!(
+        store
+            .application_launch()
+            .await
+            .unwrap()
+            .unwrap()
+            .pending
+            .is_none()
+    );
+    let record = store.application_launch().await.unwrap().unwrap();
+    let outcome = synchronize_packages(&store, record, true, bundled.clone())
+        .await
+        .unwrap();
+    assert!(outcome.changed && outcome.applied);
+    let loaded = store.load_application(deployment).await.unwrap().unwrap();
+    assert_eq!(
+        loaded.source().input.base.as_ref().unwrap().package.id,
+        baseline::ID
+    );
+    assert!(loaded.source().input.instances.is_empty());
+    for name in ["agent", "workhub"] {
+        let instance = loaded
+            .plan()
+            .instances()
+            .values()
+            .find(|node| node.path == [name])
+            .unwrap();
+        assert_eq!(instance.identity.0, vec![current.instances[name].key]);
+        let config = if name == "workhub" {
+            &instance.configuration["agent"]
+        } else {
+            &instance.configuration
+        };
+        assert_eq!(config["goals"], json!(false));
+        assert_eq!(
+            config["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|tool| tool["name"] == "ModelList")
+                .count(),
+            1
+        );
+    }
+    let record = store.application_launch().await.unwrap().unwrap();
+    assert_eq!(record.configuration, selection);
+    assert!(record.pending.is_none());
+    let second = synchronize_packages(&store, record, true, bundled)
+        .await
+        .unwrap();
+    assert!(!second.changed && !second.applied);
+    assert_eq!(
+        store
+            .load_application(deployment)
+            .await
+            .unwrap()
+            .unwrap()
+            .source()
+            .reference,
+        loaded.source().reference
+    );
+    store.drain().await;
+}

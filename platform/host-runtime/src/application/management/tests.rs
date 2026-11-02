@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod baseline;
+
 use super::*;
 use maka_capabilities::call::{Identity, ReadResource, ResourceEncoding};
 use maka_event_log::root::{RootNamespaces, RootOwner};
@@ -55,6 +57,7 @@ impl Fixture {
         );
         let store = Arc::new(RootStore::open(owner).await.unwrap());
         let input = Input {
+            base: None,
             ui: None,
             instances: BTreeMap::new(),
         };
@@ -863,6 +866,7 @@ async fn settings_forms_preserve_exact_numbers_unedited_sources_and_original_cas
     let template = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({
         "schemaVersion":1,"id":"form.product","application":Declaration {
             host: None, ui: None,composition:Some(Template {
+ui: None,
                 parameters:BTreeMap::from([("name".into(),Parameter { schema:json!({"type":"string"}).into(),default:None })]),
                 imports:BTreeMap::new(),exports:BTreeMap::new(),children:BTreeMap::from([("child".into(),child)]),
             }),
@@ -881,6 +885,7 @@ async fn settings_forms_preserve_exact_numbers_unedited_sources_and_original_cas
             f.source.deployment,
             1,
             Input {
+                base: None,
                 ui: None,
                 instances: BTreeMap::from([
                     ("settings".into(), root.clone()),
@@ -949,8 +954,11 @@ async fn settings_forms_preserve_exact_numbers_unedited_sources_and_original_cas
     assert_eq!(product.parameters, original_product.parameters);
     assert_eq!(product.overrides.len(), 1);
     assert_eq!(
-        product.overrides[0].configuration,
-        BTreeMap::from([("enabled".into(), json!(false))])
+        product.overrides[0].configuration_fields,
+        vec![maka_plugin_core::composition::ConfigurationField {
+            path: vec!["enabled".into()],
+            value: Some(json!(false)),
+        }]
     );
     let fields: InstanceSettingsPage = serde_json::from_value(
         f.manager
@@ -1043,6 +1051,7 @@ async fn composition_choices_and_atomic_edits_preserve_source_bindings_and_unrel
             f.source.deployment,
             1,
             Input {
+                base: None,
                 ui: None,
                 instances: BTreeMap::from([
                     ("apps".into(), catalog_node),

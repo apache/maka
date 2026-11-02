@@ -441,7 +441,6 @@ async fn observe_live(
                 }
                 return Ok(Live::Ready(Box::new(refreshed)));
             }
-            crate::application::LivePublication::Restart => {}
         }
     }
     if update_attempt.restarted {
@@ -607,6 +606,7 @@ mod tests {
     use super::*;
     use crate::application::ProductHost;
     use maka_host_runtime::application::host::{Configuration, Host, Options};
+    use maka_host_runtime::application::transport::Reply;
     use maka_packages::Package;
     use tokio_util::sync::CancellationToken;
 
@@ -742,11 +742,34 @@ mod tests {
             }
             let previous = Package::new(files).unwrap();
             let mut input = loaded.source().input.clone();
-            input.instances.get_mut("settings").unwrap().package =
-                previous.application_ref().into();
-            // The settings UI still selects the current package revision.
+            let selected = &input.base.as_ref().unwrap().package;
+            let base = loaded
+                .packages()
+                .iter()
+                .find(|package| package.application_ref() == *selected)
+                .unwrap();
+            let mut files = base.files().clone();
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&files["maka.extension.json"]).unwrap();
+            manifest["application"]["composition"]["children"]["settings"]["package"]["package"] =
+                serde_json::to_value(previous.application_ref()).unwrap();
+            files.insert(
+                "maka.extension.json".into(),
+                serde_json::to_vec(&manifest).unwrap(),
+            );
+            let mut metadata: serde_json::Value =
+                serde_json::from_slice(&files["installation.json"]).unwrap();
+            metadata["release"] = serde_json::json!("previous-product-release");
+            files.insert(
+                "installation.json".into(),
+                serde_json::to_vec(&metadata).unwrap(),
+            );
+            let old_baseline = Package::new(files).unwrap();
+            input.base.as_mut().unwrap().package = old_baseline.application_ref();
+            // The settings UI still selects current bytes; the prior baseline
+            // changes only the Host selection and its product release identity.
             let mut packages = loaded.packages().to_vec();
-            packages.push(previous);
+            packages.extend([previous, old_baseline]);
             store
                 .commit_application(
                     record.deployment,
@@ -799,22 +822,25 @@ mod tests {
                         .await
                         .unwrap()
                         .unwrap();
-                    let settings = initial
-                        .packages()
-                        .iter()
-                        .find(|package| package.application_ref().id == "maka.agent.settings")
-                        .unwrap();
-                    input.instances.get_mut("settings").unwrap().package =
-                        settings.application_ref().into();
+                    input.base.as_mut().unwrap().package = initial
+                        .source()
+                        .input
+                        .base
+                        .as_ref()
+                        .unwrap()
+                        .package
+                        .clone();
                 }
                 DesiredRevision::ConfigurationOnly => {
                     input
-                        .instances
-                        .get_mut("settings")
-                        .unwrap()
-                        .configuration
-                        .values
-                        .insert("locale".into(), serde_json::json!("zh-CN"));
+                        .configure(
+                            &["settings".into()],
+                            vec![maka_plugin_core::composition::ConfigurationField {
+                                path: vec!["locale".into()],
+                                value: Some(serde_json::json!("zh-CN")),
+                            }],
+                        )
+                        .unwrap();
                 }
             }
             store
@@ -919,26 +945,60 @@ mod tests {
         (root_id, epoch, stop, server)
     }
 
-    async fn desired_metadata(
+    async fn query(
         client: &Client,
-    ) -> maka_plugin_core::deployment::management::ManagedDeployment {
-        use maka_host_runtime::application::transport::Reply;
+        endpoint: &str,
+        method: &str,
+        input: serde_json::Value,
+    ) -> serde_json::Value {
         let mut call = client
-            .call(
-                "management",
-                "read".into(),
-                serde_json::json!({}),
-                Default::default(),
-            )
+            .call(endpoint, method.into(), input, Default::default())
             .await
             .unwrap();
         call.start().await.unwrap();
         let Reply::Finished { result, cleanup } = call.receive().await.unwrap() else {
-            panic!("management query did not finish")
+            panic!("query did not finish")
         };
         cleanup.unwrap();
         call.close().await.unwrap();
-        serde_json::from_value(result.unwrap()).unwrap()
+        result.unwrap()
+    }
+
+    async fn desired_metadata(
+        client: &Client,
+    ) -> maka_plugin_core::deployment::management::ManagedDeployment {
+        serde_json::from_value(query(client, "management", "read", serde_json::json!({})).await)
+            .unwrap()
+    }
+
+    async fn settings_instance(
+        client: &Client,
+        source: &maka_plugin_core::deployment::DeploymentRef,
+    ) -> maka_plugin_core::deployment::management::ManagedInstance {
+        let mut after = None;
+        loop {
+            let page: maka_plugin_core::deployment::management::ManagedInstancesPage =
+                serde_json::from_value(
+                    query(
+                        client,
+                        "management",
+                        "instances",
+                        serde_json::json!({
+                            "kind":"continue","source":source,"after":after,
+                        }),
+                    )
+                    .await,
+                )
+                .unwrap();
+            if let Some(instance) = page
+                .instances
+                .into_iter()
+                .find(|node| node.path == ["settings"])
+            {
+                return instance;
+            }
+            after = Some(page.next.expect("settings instance missing"));
+        }
     }
 
     fn bundled_settings() -> maka_plugin_core::package::PackageSelection {
@@ -947,6 +1007,174 @@ mod tests {
             .unwrap()
             .application_ref()
             .into()
+    }
+
+    #[tokio::test]
+    async fn old_flat_default_installation_recovers_missing_tools_on_safe_reconnect() {
+        let directory = tempfile::tempdir().unwrap();
+        let namespaces = RootNamespaces::for_current_account().unwrap();
+        let seed = directory.path().join("seed");
+        let mut seeded = crate::application::open_host(
+            RootOwner::create(&seed, &namespaces).unwrap(),
+            Options::default(),
+            crate::application::Roots::Configured(Some(vec![])),
+            Some(catalog_transport()),
+        )
+        .await
+        .unwrap();
+        seeded.shutdown().await.unwrap();
+        drop(seeded);
+        let store =
+            maka_transport::open_store(Arc::new(RootOwner::open(&seed, &namespaces).unwrap()))
+                .await
+                .unwrap();
+        let record = store.application_launch().await.unwrap().unwrap();
+        let initial = store
+            .load_application(record.deployment)
+            .await
+            .unwrap()
+            .unwrap();
+        let package = initial
+            .packages()
+            .iter()
+            .find(|package| {
+                package.application_ref() == initial.source().input.base.as_ref().unwrap().package
+            })
+            .unwrap();
+        let template = package
+            .manifest()
+            .application
+            .as_ref()
+            .unwrap()
+            .composition
+            .as_ref()
+            .unwrap();
+        let mut flat = maka_plugin_core::composition::Input {
+            base: None,
+            instances: template.children.clone(),
+            ui: template.ui.clone(),
+        };
+        for name in ["agent", "workhub"] {
+            let node = flat.instances.get_mut(name).unwrap();
+            let mut values = serde_json::to_value(&node.configuration.values).unwrap();
+            let agent = if name == "workhub" {
+                &mut values["agent"]
+            } else {
+                &mut values
+            };
+            agent["tools"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|tool| tool["name"] != "ModelList");
+            node.configuration.values = serde_json::from_value(values).unwrap();
+            node.bindings.remove("settings");
+        }
+        let packages = initial
+            .packages()
+            .iter()
+            .filter(|bytes| bytes.application_ref() != package.application_ref())
+            .cloned()
+            .collect();
+        store.drain().await;
+        drop(store);
+        let root = directory.path().join("legacy");
+        let store =
+            maka_transport::open_store(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))
+                .await
+                .unwrap();
+        let source = store
+            .commit_application(record.deployment, 0, flat, vec![], packages)
+            .await
+            .unwrap();
+        store
+            .select_committed_application_launch(source, record.configuration.clone())
+            .await
+            .unwrap();
+        store.drain().await;
+        drop(store);
+        let (root_id, epoch, _stop, server) = serve_product(&root, false, false, None).await;
+        let discovery = discovery::read(&root).unwrap();
+        let mut before = Client::connect(&discovery.endpoint, Some(epoch))
+            .await
+            .unwrap();
+        for endpoint in ["agent", "coordinator"] {
+            assert!(
+                !query(&before, endpoint, "tools", serde_json::json!({})).await["names"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|name| name == "ModelList")
+            );
+        }
+        assert!(
+            crate::application::live_update_available(&before)
+                .await
+                .unwrap()
+        );
+        before.close().await.unwrap();
+        let mut attempt = UpdateAttempt::default();
+        assert!(
+            live(&root, &root_id, None, &mut attempt)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(attempt.restarted);
+        server.await.unwrap();
+        let replacement = crate::application::open_host(
+            RootOwner::open(&root, &namespaces).unwrap(),
+            Options::default(),
+            crate::application::Roots::Saved,
+            Some(catalog_transport()),
+        )
+        .await
+        .unwrap();
+        let source = replacement.host.source().clone();
+        let endpoint = crate::endpoint::LocalEndpoint::bind().unwrap();
+        let path = endpoint.path.clone();
+        let registration = replacement.host.publish_registration(&path, None).unwrap();
+        let stop = CancellationToken::new();
+        let stopped = stop.clone();
+        let serving = tokio::spawn(async move {
+            serve_fixture(endpoint, replacement, stopped, None)
+                .await
+                .unwrap();
+            registration.remove().unwrap();
+        });
+        let mut after = Client::connect(&path, None).await.unwrap();
+        assert_ne!(after.epoch(), epoch);
+        for endpoint in ["agent", "coordinator"] {
+            assert_eq!(
+                query(&after, endpoint, "tools", serde_json::json!({})).await["names"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|name| *name == "ModelList")
+                    .count(),
+                1
+            );
+        }
+        let models = query(
+            &after,
+            "settings",
+            "models",
+            serde_json::json!({"kind":"start"}),
+        )
+        .await;
+        assert_eq!(models["kind"], "ready");
+        assert_eq!(models["choices"], serde_json::json!([]));
+        assert_eq!(models["next"], serde_json::Value::Null);
+        let metadata = desired_metadata(&after).await;
+        assert!(metadata.source.input.base.is_some());
+        assert_eq!(metadata.source.reference, source);
+        assert!(
+            !crate::application::live_update_available(&after)
+                .await
+                .unwrap()
+        );
+        after.close().await.unwrap();
+        stop.cancel();
+        serving.await.unwrap();
     }
 
     #[tokio::test]
@@ -968,7 +1196,11 @@ mod tests {
         let metadata = desired_metadata(&client).await;
         assert_ne!(metadata.source.reference, *client.source());
         assert_eq!(
-            metadata.source.input.instances["settings"].package,
+            maka_plugin_core::package::PackageSelection::from(
+                settings_instance(&client, &metadata.source.reference)
+                    .await
+                    .package
+            ),
             bundled_settings()
         );
         assert!(
@@ -1001,14 +1233,31 @@ mod tests {
         let metadata = desired_metadata(&client).await;
         assert_ne!(metadata.source.reference, *client.source());
         assert_eq!(
-            metadata.source.input.instances["settings"].package,
+            maka_plugin_core::package::PackageSelection::from(
+                settings_instance(&client, &metadata.source.reference)
+                    .await
+                    .package
+            ),
             bundled_settings()
         );
+        let settings = settings_instance(&client, &metadata.source.reference).await;
+        let fields = query(
+            &client,
+            "management",
+            "readSettings",
+            serde_json::json!({
+                "source":metadata.source.reference,"instance":settings.instance,"path":[],
+            }),
+        )
+        .await;
         assert_eq!(
-            metadata.source.input.instances["settings"]
-                .configuration
-                .values["locale"],
-            serde_json::json!("zh-CN")
+            fields["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|field| field["key"] == "locale")
+                .unwrap()["value"],
+            serde_json::json!({"kind":"text","text":"zh-CN"})
         );
         assert_eq!(client.epoch(), epoch);
         assert!(!attempted.restarted);
