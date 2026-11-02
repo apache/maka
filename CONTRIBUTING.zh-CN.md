@@ -52,7 +52,7 @@ just check
 
 ## 提交与评审
 
-标题使用 Conventional Commits，分支使用 `<type>/<description>`。填写 [PR 模板](.github/pull_request_template.md)，说明结果及相关验证；UI 变更附截图或录屏。仓库使用 squash merge，PR 标题会成为最终提交标题。
+标题使用 Conventional Commits，分支使用 `<type>/<description>`。填写 [PR 模板](.github/pull_request_template.md)，说明结果及相关验证；UI 变更的截图或录屏附在 PR 中。仓库使用 squash merge，PR 标题会成为最终提交标题。
 
 每份贡献都需要一位人类负责人，对准确性、来源和许可负责。只提交有权贡献的内容，遵循 [Apache-2.0](LICENSE)，保留第三方归属信息。参阅[来源记录](docs/code-origin-audit.md)和[文件头规范](.github/ASF_SOURCE_HEADERS.md)。
 

@@ -52,7 +52,7 @@ The [product guide](products/maka/README.md) explains TypeScript development. Th
 
 ## Submit and review
 
-Use Conventional Commit titles and `<type>/<description>` branches. Fill in the [pull request template](.github/pull_request_template.md), describe the result and relevant verification, and include screenshots or a recording for UI changes. Squash merging makes the PR title the final commit title.
+Use Conventional Commit titles and `<type>/<description>` branches. Fill in the [pull request template](.github/pull_request_template.md), describe the result and relevant verification. Attach screenshots or a recording to the PR for UI changes. Squash merging makes the PR title the final commit title.
 
 Each contribution has a human owner responsible for its accuracy, provenance and licensing. Submit only work you have the right to contribute, under [Apache-2.0](LICENSE), and preserve third-party attribution. See the [source records](docs/code-origin-audit.md) and [header policy](.github/ASF_SOURCE_HEADERS.md).
 
