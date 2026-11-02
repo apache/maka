@@ -2002,35 +2002,43 @@ fn insert_items(
     r
 }
 
-/// For an array of children holding functions, a copy with a memo for each
-/// function (owned), made under the running owner; `None` otherwise.
+/// For an array of children holding functions, at any depth, a copy with a
+/// memo for each function (owned), made under the running owner; `None`
+/// otherwise, and for a lone function, which has no sibling to run it again.
 fn memoize_run(cx: *mut JsContext, value: JsValue) -> Option<JsValue> {
     // SAFETY: reads of a live value.
-    if unsafe { !qjs::JS_IsArray(value) } {
+    if unsafe { !qjs::JS_IsArray(value) } || !is_dynamic(cx, value, 0) {
         return None;
     }
     let items = array_items(cx, value);
-    // SAFETY: borrowed values checked.
-    let functions = items
-        .iter()
-        .filter(|&&v| unsafe { qjs::JS_IsFunction(cx, v) } && node_ptr(cx, v).is_null())
-        .count();
-    if items.len() < 2 || functions == 0 {
+    // SAFETY: a borrowed value checked.
+    if items.len() == 1 && unsafe { qjs::JS_IsFunction(cx, items[0]) } {
         free_values(cx, items);
         return None;
     }
+    let items = items.into_iter().map(|v| memoize_value(cx, v, 1)).collect();
+    Some(new_array(cx, items))
+}
+
+/// `value` (owned) with a memo for the function it is or for each one its
+/// nested arrays hold, made under the running owner (owned).
+fn memoize_value(cx: *mut JsContext, value: JsValue, depth: u32) -> JsValue {
+    // SAFETY: a borrowed check of an owned value.
+    if unsafe { qjs::JS_IsFunction(cx, value) } && node_ptr(cx, value).is_null() {
+        return item_memo(cx, value);
+    }
+    // SAFETY: a borrowed check of an owned value.
+    if unsafe { !qjs::JS_IsArray(value) } || depth > MAX_DEPTH || !is_dynamic(cx, value, depth) {
+        return value;
+    }
+    let items = array_items(cx, value);
+    // SAFETY: the array is ours; `items` holds what it held.
+    unsafe { qjs::JS_FreeValue(cx, value) };
     let items = items
         .into_iter()
-        .map(|v| {
-            // SAFETY: a borrowed check of an owned value.
-            if unsafe { qjs::JS_IsFunction(cx, v) } && node_ptr(cx, v).is_null() {
-                item_memo(cx, v)
-            } else {
-                v
-            }
-        })
+        .map(|v| memoize_value(cx, v, depth + 1))
         .collect();
-    Some(new_array(cx, items))
+    new_array(cx, items)
 }
 
 /// A memo of a child function `func` (owned), including the functions it
@@ -2048,12 +2056,12 @@ pub(crate) fn item_memo(cx: *mut JsContext, func: JsValue) -> JsValue {
 }
 
 /// A run of an [`item_memo`]: calls its function, and gives a function it
-/// returns (an `<If>` whose branch is an expression returns one) a memo of
-/// its own, under this one. Called by the array's effect instead, that
-/// function would run again, and make its nodes again, whenever any other
-/// item of the array changes; called by this memo, a change in what it
-/// reads would run this function again too (a component's `children`
-/// getter: the component made again).
+/// returns (an `<If>` whose branch is an expression returns one, one with
+/// several children an array of them) a memo of its own, under this one.
+/// Called by the array's effect instead, that function would run again, and
+/// make its nodes again, whenever any other item of the array changes; called
+/// by this memo, a change in what it reads would run this function again too
+/// (a component's `children` getter: the component made again).
 unsafe extern "C" fn item_run(
     cx: *mut JsContext,
     _this: JsValue,
@@ -2064,12 +2072,11 @@ unsafe extern "C" fn item_run(
 ) -> JsValue {
     // SAFETY: one data value (`item_memo`).
     let r = unsafe { qjs::JS_Call(cx, *data, UNDEFINED, 0, ptr::null_mut()) };
-    // SAFETY: inline checks of a live value.
-    if unsafe { !qjs::JS_IsException(r) && qjs::JS_IsFunction(cx, r) } && node_ptr(cx, r).is_null()
-    {
-        return item_memo(cx, r);
+    // SAFETY: an inline check of a live value.
+    if unsafe { qjs::JS_IsException(r) } {
+        return r;
     }
-    r
+    memoize_value(cx, r, 0)
 }
 
 /// `insert(parent, value, marker)`: children before `marker` (or at the
