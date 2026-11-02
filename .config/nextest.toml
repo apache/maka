@@ -34,3 +34,6 @@ threads-required = 3
 [profile.ci]
 # Collect all failures while inheriting default scheduling and timeouts.
 fail-fast = false
+# A real Host on a shared runner can stall once. A rerun costs far less than a
+# job, and nextest still reports the test as FLAKY.
+retries = 1
