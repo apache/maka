@@ -98,6 +98,7 @@ test('retries target detection through the POSIX login shell when Node is not on
       launches.push({ args, pty });
       return pty as unknown as IPty;
     }) as typeof import('node-pty').spawn,
+    resolveTerminalExecutable: (executable) => executable,
   });
   t.after(() => terminal.close());
 
@@ -166,6 +167,26 @@ test('does not reopen a cancelled SSH prompt for late process output', async () 
 
   assert.deepEqual(harness.eventKinds(), ['opened', 'data', 'dismissed']);
   assert.deepEqual(await harness.getSnapshot(), { kind: 'idle', revision: 3 });
+  await harness.terminal.close();
+});
+
+test('ignores a resize that arrives after the pty exited but before its exit event', async () => {
+  const harness = createHarness('pending');
+  const opening = openTunnel(harness);
+  harness.pty.emitData('Password: ');
+  const connecting = (await harness.getSnapshot()) as { sessionId?: string };
+  assert.ok(connecting.sessionId);
+
+  // Windows node-pty marks the pty exited up to a second before it emits
+  // 'exit', so a resize can reach a terminal that is still active while the
+  // pty already refuses it.
+  harness.pty.resizeError = new Error('Cannot resize a pty that has already exited');
+  const resize = harness.handlers.get('runtime-host-ssh-terminal:resize');
+  assert.ok(resize);
+  await resize({}, { sessionId: connecting.sessionId, cols: 120, rows: 40 });
+
+  harness.releaseTunnel();
+  await opening;
   await harness.terminal.close();
 });
 
@@ -955,6 +976,7 @@ test('does not launch a management process after the terminal owner closes', asy
       launches.push(args);
       return new FakePty() as unknown as IPty;
     }) as typeof import('node-pty').spawn,
+    resolveTerminalExecutable: (executable) => executable,
   });
   await terminal.close();
   await assert.rejects(
@@ -1025,6 +1047,7 @@ test('uploads a development release archive before running the same remote setup
       launches.push({ file, args, pty });
       return pty as unknown as IPty;
     }) as typeof import('node-pty').spawn,
+    resolveTerminalExecutable: (executable) => executable,
   });
   t.after(() => terminal.close());
 
@@ -1063,6 +1086,79 @@ test('uploads a development release archive before running the same remote setup
   await assert.rejects(setup, /exited with code 255/u);
 });
 
+test('launches the resolved terminal executable instead of the bare name', async (t) => {
+  const launches: Array<{ file: string; pty: FakePty }> = [];
+  const terminal = createDesktopRuntimeHostSshTerminal({
+    ipcMain: { handle: () => undefined, removeHandler: () => undefined },
+    send: () => undefined,
+    spawnPty: ((file: string) => {
+      const pty = new FakePty();
+      launches.push({ file, pty });
+      return pty as unknown as IPty;
+    }) as typeof import('node-pty').spawn,
+    resolveTerminalExecutable: () => 'C:\\Windows\\System32\\OpenSSH\\ssh.exe',
+  });
+  t.after(() => terminal.close());
+
+  const detection = terminal.resolveNodeIdentity({ destination: 'operator@example.com' });
+  await waitFor(() => launches.length === 1);
+  assert.deepEqual(
+    launches.map(({ file }) => file),
+    ['C:\\Windows\\System32\\OpenSSH\\ssh.exe'],
+  );
+  launches[0]?.pty.exit(0);
+  await assert.rejects(detection, /no result/u);
+});
+
+test('keeps Windows OpenSSH location variables and drops secrets from the SSH environment', async (t) => {
+  const previousProgramData = process.env.ProgramData;
+  const previousSecret = process.env.MAKA_TEST_SSH_SECRET;
+  process.env.ProgramData = 'C:\\ProgramData';
+  process.env.MAKA_TEST_SSH_SECRET = 'super-secret';
+  t.after(() => {
+    if (previousProgramData === undefined) delete process.env.ProgramData;
+    else process.env.ProgramData = previousProgramData;
+    if (previousSecret === undefined) delete process.env.MAKA_TEST_SSH_SECRET;
+    else process.env.MAKA_TEST_SSH_SECRET = previousSecret;
+  });
+
+  const environments: NodeJS.ProcessEnv[] = [];
+  const pty = new FakePty();
+  const terminal = createDesktopRuntimeHostSshTerminal({
+    ipcMain: { handle: () => undefined, removeHandler: () => undefined },
+    send: () => undefined,
+    spawnPty: ((_file: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
+      environments.push(options.env);
+      return pty as unknown as IPty;
+    }) as typeof import('node-pty').spawn,
+    resolveTerminalExecutable: () => 'C:\\Windows\\System32\\OpenSSH\\ssh.exe',
+  });
+  t.after(() => terminal.close());
+
+  const detection = terminal.resolveNodeIdentity({ destination: 'operator@example.com' });
+  await waitFor(() => environments.length === 1);
+  assert.equal(environments[0]?.ProgramData, 'C:\\ProgramData');
+  assert.equal(environments[0]?.MAKA_TEST_SSH_SECRET, undefined);
+  pty.exit(0);
+  await assert.rejects(detection, /no result/u);
+});
+
+test('surfaces an actionable error when the terminal executable cannot be resolved', async (t) => {
+  const terminal = createDesktopRuntimeHostSshTerminal({
+    ipcMain: { handle: () => undefined, removeHandler: () => undefined },
+    send: () => undefined,
+    resolveTerminalExecutable: () => {
+      throw new Error('Unable to find ssh.exe for the interactive SSH session.');
+    },
+  });
+  t.after(() => terminal.close());
+
+  await assert.rejects(
+    terminal.resolveNodeIdentity({ destination: 'operator@example.com' }),
+    /Unable to find ssh\.exe/u,
+  );
+});
+
 function createHarness(
   mode: 'pending' | 'exit',
   options: { readonly managementTimeoutMs?: number } = {},
@@ -1087,6 +1183,7 @@ function createHarness(
       launchArgs.push(args);
       return pty as unknown as IPty;
     }) as typeof import('node-pty').spawn,
+    resolveTerminalExecutable: (executable) => executable,
     revealDelayMs: 0,
     ...options,
     processStopGraceMs: 1,
@@ -1141,6 +1238,7 @@ class FakePty {
   readonly exited: Promise<void>;
   deferKill = false;
   exitOnForceKill = false;
+  resizeError: Error | undefined;
   readonly killSignals: Array<string | undefined> = [];
   readonly writes: string[] = [];
   readonly #dataListeners = new Set<(data: string) => void>();
@@ -1182,7 +1280,9 @@ class FakePty {
   write(data: string): void {
     this.writes.push(data);
   }
-  resize(): void {}
+  resize(): void {
+    if (this.resizeError) throw this.resizeError;
+  }
   kill(signal?: string): void {
     this.killSignals.push(signal);
     if (!this.deferKill || (this.exitOnForceKill && signal === 'SIGKILL')) this.exit(0);
