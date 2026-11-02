@@ -235,7 +235,7 @@ export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
     this.resumeGatewayUrl = null;
   }
 
-  protected override async fetchGatewayUrl(): Promise<string | null> {
+  protected override async fetchGatewayUrl(isCurrent: () => boolean): Promise<string | null> {
     try {
       const response = await proxiedFetch(`${DISCORD_API}/gateway/bot`, {
         method: 'GET',
@@ -243,6 +243,7 @@ export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
         timeoutMs: 10_000,
       });
       const json = await response.json().catch(() => null);
+      if (!isCurrent()) return null;
       if (!response.ok || !json || typeof json.url !== 'string') {
         const message = (json as { message?: unknown } | null)?.message;
         this.recordFailure(message, `gateway-bot-${response.status}`);
@@ -254,6 +255,7 @@ export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
       const gatewayUrl = this.resumeGatewayUrl ?? json.url;
       return `${gatewayUrl}/?v=${DISCORD_GATEWAY_VERSION}&encoding=json`;
     } catch (error) {
+      if (!isCurrent()) return null;
       this.recordFailure(error);
       this.readiness = 'configured';
       this.emitStatusChange();

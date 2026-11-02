@@ -59,6 +59,7 @@ export abstract class WsBridgeBase extends BaseBotAdapter {
   protected explicitlyStopped = false;
   protected reconnectAttempts = 0;
   protected reconnectTimer: NodeJS.Timeout | null = null;
+  protected connectionGeneration = 0;
 
   /** Reason-string prefix for close diagnostics; DingTalk overrides to 'stream'. */
   protected readonly closeReasonPrefix: 'gateway' | 'stream' = 'gateway';
@@ -85,6 +86,12 @@ export abstract class WsBridgeBase extends BaseBotAdapter {
   /** Drop resumable session state; gateway bridges clear seq/sessionId here. */
   protected resetSession(): void {}
 
+  /** Async handshakes may finish after stop or a newer connection attempt. */
+  protected beginConnectionAttempt(): () => boolean {
+    const generation = ++this.connectionGeneration;
+    return () => !this.explicitlyStopped && this.connectionGeneration === generation;
+  }
+
   override async start(): Promise<void> {
     if (this.running) return;
     if (!this.settings.enabled) {
@@ -103,6 +110,7 @@ export abstract class WsBridgeBase extends BaseBotAdapter {
   }
 
   override async stop(): Promise<void> {
+    this.connectionGeneration += 1;
     this.explicitlyStopped = true;
     this.running = false;
     this.clearProtocolTimers();
@@ -162,6 +170,7 @@ export abstract class WsBridgeBase extends BaseBotAdapter {
   }
 
   protected handleClose(code: number, reason: string): void {
+    this.connectionGeneration += 1;
     this.clearProtocolTimers();
     this.ws = null;
     this.running = false;

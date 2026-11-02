@@ -54,28 +54,29 @@ export abstract class GatewayBridgeBase extends WsBridgeBase {
 
   /**
    * Resolve the gateway WS url (token refresh + REST gateway fetch).
-   * Record the failure reason/emit status itself, then return null —
-   * the caller schedules the reconnect.
+   * Record failures only while isCurrent() holds, then return null —
+   * the caller schedules the reconnect for the current attempt.
    */
-  protected abstract fetchGatewayUrl(): Promise<string | null>;
+  protected abstract fetchGatewayUrl(isCurrent: () => boolean): Promise<string | null>;
   /**
    * Build the identify `d` payload (auth + intents). Return null when
    * auth is unavailable (QQ's token refresh failing) — the base then
    * force-reconnects so the backoff path owns the retry instead of
    * leaving an un-identified socket open.
    */
-  protected abstract buildIdentifyPayload():
-    | Record<string, unknown>
-    | null
-    | Promise<Record<string, unknown> | null>;
-  protected abstract buildResumePayload():
-    | Record<string, unknown>
-    | null
-    | Promise<Record<string, unknown> | null>;
+  protected abstract buildIdentifyPayload(
+    isCurrent: () => boolean,
+  ): Record<string, unknown> | null | Promise<Record<string, unknown> | null>;
+  protected abstract buildResumePayload(
+    isCurrent: () => boolean,
+  ): Record<string, unknown> | null | Promise<Record<string, unknown> | null>;
   protected abstract onDispatch(type: string, d: unknown): void;
 
   protected override async openConnection(): Promise<void> {
-    const url = await this.fetchGatewayUrl();
+    const isCurrent = this.beginConnectionAttempt();
+    if (!isCurrent()) return;
+    const url = await this.fetchGatewayUrl(isCurrent);
+    if (!isCurrent()) return;
     if (!url) {
       this.scheduleReconnect();
       return;
@@ -131,7 +132,11 @@ export abstract class GatewayBridgeBase extends WsBridgeBase {
   }
 
   private async sendIdentify(): Promise<void> {
-    const d = await this.buildIdentifyPayload();
+    const ws = this.ws;
+    if (!ws) return;
+    const isCurrent = () => this.ws === ws && !this.explicitlyStopped;
+    const d = await this.buildIdentifyPayload(isCurrent);
+    if (!isCurrent()) return;
     if (d === null) {
       // Auth unavailable — drop the socket instead of idling until
       // the remote gateway gives up on us.
@@ -142,7 +147,11 @@ export abstract class GatewayBridgeBase extends WsBridgeBase {
   }
 
   private async sendResume(): Promise<void> {
-    const d = await this.buildResumePayload();
+    const ws = this.ws;
+    if (!ws) return;
+    const isCurrent = () => this.ws === ws && !this.explicitlyStopped;
+    const d = await this.buildResumePayload(isCurrent);
+    if (!isCurrent()) return;
     if (d === null) {
       this.forceReconnect(true);
       return;
@@ -187,6 +196,7 @@ export abstract class GatewayBridgeBase extends WsBridgeBase {
   }
 
   protected forceReconnect(resumable: boolean): void {
+    this.connectionGeneration += 1;
     if (!resumable) {
       this.resetSession();
     }
