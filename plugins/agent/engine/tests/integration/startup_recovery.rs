@@ -39,6 +39,12 @@ use crate::support::recovery_session::invocation;
 
 #[tokio::test]
 async fn unknown_dispatch_survives_reopen_and_the_next_message_continues_without_replay() {
+    for yielded in [false, true] {
+        recover_unknown_dispatch(yielded).await;
+    }
+}
+
+async fn recover_unknown_dispatch(yielded: bool) {
     use crate::support::recovery_session::{append, opening, tool_call};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.sqlite");
@@ -63,6 +69,15 @@ async fn unknown_dispatch_survives_reopen_and_the_next_message_continues_without
             },
         )
         .await;
+        if yielded {
+            append(
+                &log,
+                Fact::ToolYielded {
+                    operation_id: "step:call".into(),
+                },
+            )
+            .await;
+        }
         log.close().await.unwrap();
     }
     let log = Arc::new(
@@ -72,7 +87,6 @@ async fn unknown_dispatch_survives_reopen_and_the_next_message_continues_without
     );
     assert_eq!(log.root().recover_invocations().await.unwrap(), 0);
     let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-    assert_eq!(prefix.events.len(), 5);
     assert!(
         !prefix
             .events
@@ -80,9 +94,12 @@ async fn unknown_dispatch_survives_reopen_and_the_next_message_continues_without
             .any(|event| matches!(event.event.fact, Fact::ToolSettled { .. }))
     );
     assert!(
-        matches!(&prefix.events[4].event.fact, Fact::InvocationEnded {
+        prefix
+            .events
+            .iter()
+            .any(|event| matches!(&event.event.fact, Fact::InvocationEnded {
         outcome: InvocationOutcome::Failed { class, .. }
-    } if class == "outcome_unknown")
+    } if class == "outcome_unknown"))
     );
     let state = prefix.project_invocation("invocation");
     assert_eq!(state.terminal, Some(TerminalStatus::Failed));
@@ -94,6 +111,21 @@ async fn unknown_dispatch_survives_reopen_and_the_next_message_continues_without
         let (mut socket, _) = listener.accept().await.unwrap();
         let request = crate::support::http::read_request(&mut socket).await;
         assert!(request.to_string().contains("outcome_unknown"), "{request}");
+        let messages = request["messages"].as_array().unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message["role"] == "tool" && message["tool_call_id"] == "call")
+                .count(),
+            1
+        );
+        if yielded {
+            assert!(
+                messages.iter().any(|message| message["role"] == "user"
+                    && message.to_string().contains("outcome_unknown")),
+                "uncertain execution after yielding is a notification, not a second tool output"
+            );
+        }
         let chunk = json!({"id":"reply","object":"chat.completion.chunk","created":1,"model":"fixture","choices":[{"index":0,"delta":{"content":"I will check the current state."},"finish_reason":"stop"}]});
         socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {chunk}\n\ndata: [DONE]\n\n").as_bytes()).await.unwrap();
     });

@@ -61,6 +61,53 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const conversationMessages = {
+  'Stopped before delivery. Your message is kept.': [
+    'Stopped before delivery. Your message is kept.',
+    '送达前已停止，消息已保留。',
+    '送達前已停止，訊息已保留。',
+  ],
+  'Send options': ['Send options', '发送选项', '傳送選項'],
+  'Add to queue': ['Add to queue', '加入队列', '加入佇列'],
+  'Send after this turn': ['Send after this turn', '本轮结束后发送', '本輪結束後傳送'],
+  'Use suggestion': ['Use suggestion', '使用建议', '使用建議'],
+  'Right arrow to use · Esc to dismiss': [
+    'Right arrow to use · Esc to dismiss',
+    '右方向键使用 · Esc 忽略',
+    '右方向鍵使用 · Esc 忽略',
+  ],
+  'Outgoing messages': ['Outgoing messages', '待发送消息', '待傳送訊息'],
+  'Retry message': ['Retry message', '重试消息', '重試訊息'],
+  'Check message status': ['Check message status', '检查消息状态', '檢查訊息狀態'],
+  'Check status': ['Check status', '检查状态', '檢查狀態'],
+  'Dismiss message status': ['Dismiss message status', '关闭消息状态', '關閉訊息狀態'],
+  'Sending…': ['Sending…', '正在发送…', '正在傳送…'],
+  'Saving message…': ['Saving message…', '正在保存消息…', '正在儲存訊息…'],
+  'Saving message… New typing is kept.': [
+    'Saving message… New typing is kept.',
+    '正在保存消息… 新输入会保留。',
+    '正在儲存訊息… 新輸入會保留。',
+  ],
+  'Retry or remove the unsaved message before sending another.': [
+    'Retry or remove the unsaved message before sending another.',
+    '请先重试或移除尚未保存的消息。',
+    '請先重試或移除尚未儲存的訊息。',
+  ],
+  'Approve workspace connections, then retry this message.': [
+    'Approve workspace connections, then retry this message.',
+    '请先批准工作区连接，再重试这条消息。',
+    '請先核准工作區連線，再重試這則訊息。',
+  ],
+  'Message was not sent.': ['Message was not sent.', '消息尚未发送。', '訊息尚未傳送。'],
+  'Delivery not confirmed. Check status before retrying.': [
+    'Delivery not confirmed. Check status before retrying.',
+    '尚未确认送达，请先检查状态。',
+    '尚未確認送達，請先檢查狀態。',
+  ],
+  'Received · waiting for the next step': [
+    'Received · waiting for the next step',
+    '已收到 · 等待下一步处理',
+    '已收到 · 等待下一步處理',
+  ],
   'Child conversations': ['Child conversations', '子会话', '子對話'],
   'Close child conversations': ['Close child conversations', '关闭子会话', '關閉子對話'],
   'No child conversations.': ['No child conversations.', '没有子会话。', '沒有子對話。'],

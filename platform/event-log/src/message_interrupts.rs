@@ -55,6 +55,15 @@ pub enum InterruptReceipt {
 }
 
 impl EventLog {
+    pub async fn invocation_stopped(&self, invocation: &str) -> Result<bool, StoreError> {
+        self.validate_root()?;
+        let invocation = invocation.to_owned();
+        self.connection.read(move |db| Box::pin(async move {
+            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM local_runtime_events o JOIN message_interrupt_receipts s ON s.session_id=o.event_session AND s.run_id=json_extract(o.event_header,'$.invocation.run_id') WHERE o.invocation_id=? AND o.kind='invocation_opened' AND s.fence_json IS NOT NULL)")
+                .bind(invocation).fetch_one(db).await?)
+        })).await
+    }
+
     pub async fn message_interrupt_receipt(
         &self,
         command: &InterruptCommand,

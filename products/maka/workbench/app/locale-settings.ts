@@ -358,6 +358,11 @@ export const settingsMessages = {
     '选择模型和推理强度',
     '選擇模型和推理強度',
   ],
+  'Model for queued and future messages': [
+    'Model for queued and future messages',
+    '队列消息和后续新消息使用的模型',
+    '佇列訊息和後續新訊息使用的模型',
+  ],
   'Choose plugin setting {value}': [
     'Choose plugin setting {value}',
     '选择插件设置 {value}',

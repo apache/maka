@@ -550,41 +550,18 @@ async fn encode_message(
             while let Some(result) = cursor.next().await.map_err(failure)? {
                 tokio::task::yield_now().await;
                 let custom = result.call_kind == ToolCallKind::Custom && plaintext.is_none();
-                if result.kind == ToolResultKind::Notification && !custom {
-                    if let ToolOutputRecipe::Text(value) = result.output {
-                        let mut notification = vec![literal(b"\"")];
-                        notification.extend(
-                            text(generated(match language {
-                                Language::En => "[Notification from exec ",
-                                Language::ZhCn => "[来自 exec ",
-                                Language::ZhTw => "[來自 exec ",
-                            }))
-                            .into_iter()
-                            .skip(1)
-                            .take(1),
-                        );
-                        notification.push(F::Text(result.tool_call_id));
-                        notification.push(F::Text(generated(match language {
-                            Language::En => "]\n",
-                            Language::ZhCn => " 的通知]\n",
-                            Language::ZhTw => " 的通知]\n",
-                        })));
-                        notification.push(F::Text(value));
-                        notification.push(literal(b"\""));
-                        let mut parts = vec![literal(b"[")];
-                        parts.extend(
-                            object(
-                                vec![
-                                    ("type", text(generated("input_text"))),
-                                    ("text", notification),
-                                ],
-                                &budget,
-                            )
-                            .await?,
-                        );
-                        parts.push(literal(b"]"));
-                        items.push(item(message("user", parts, &budget).await?));
-                    }
+                if result.kind == ToolResultKind::Notification {
+                    let mut owned = 0;
+                    let parts = super::chat_source::notification_content(
+                        result,
+                        language,
+                        budget.clone(),
+                        &mut owned,
+                    )?;
+                    let mut notification =
+                        item(message("user", content(parts, &budget).await?, &budget).await?);
+                    notification.owned_bytes = owned;
+                    items.push(notification);
                     continue;
                 }
                 items.push(item(

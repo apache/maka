@@ -2201,6 +2201,7 @@ export function createConversationUi(
                       return (
                         <ModelSelect
                           owner={owner}
+                          running={() => owner.invocation() !== null}
                           instance={() => {
                             const current = overlay();
                             return current?.kind === 'models' &&
@@ -2432,6 +2433,10 @@ function projectComposerSession(
   return {
     sessionId: owner.sessionId,
     prediction: owner.prediction,
+    sends: owner.sends,
+    retrySend: owner.retrySend,
+    checkSend: owner.checkSend,
+    dismissSend: owner.dismissSend,
     computerAccess: owner.computerAccess,
     completion: {
       files: (query, directory) =>

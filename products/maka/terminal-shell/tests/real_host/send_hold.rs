@@ -21,8 +21,8 @@ use super::*;
 use maka_app_client::Client;
 
 /// Opens the fixture conversation through `gate`, types `text` and sends
-/// it; returns while the send waits at the gate for its model, before it
-/// reserves the draft.
+/// it; returns while the send waits at the gate for its model, after it
+/// freezes the draft locally.
 async fn send_held(
     fixture: &Fixture,
     gate: &ReplyGate,
@@ -37,8 +37,7 @@ async fn send_held(
     tab_to_label(&mut view, "Message composer").await;
     view.handle_event(Event::Paste(text.into()));
     support::wait_draft(&client, &fixture.session, text).await;
-    // The composer resolves the model for its own label too; let that read
-    // finish so the gate holds the send's.
+    // Resolve the initial model before holding the original send preparation.
     wait_view(&mut view, |screen| screen.contains("fixture-model")).await;
     support::wait_enabled_button(&mut view, "Send message").await;
     gate.arm();
@@ -59,45 +58,36 @@ async fn send_held(
         }
     })
     .await
-    .expect("the send never resolved its model");
-    wait_view_state(&mut view, |view, _| {
-        view.accessibility_snapshot()
-            .iter()
-            .any(|node| node.label == "Send message" && node.state.disabled)
-    })
-    .await;
-    assert!(!view.snapshot().contains("Confirming send"));
+    .expect("the original send never reached preparation");
+    support::wait_draft(&client, &fixture.session, "").await;
     (view, bindings, client)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_rejected_send_keeps_the_text_typed_before_it_was_reserved() {
+async fn a_rejected_send_preserves_its_snapshot_and_the_next_draft() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let fixture = Fixture::open().await;
-        let gate = ReplyGate::resolve_model(fixture.directory.path(), fixture.address.clone());
+        let gate = ReplyGate::send(fixture.directory.path(), fixture.address.clone());
         // The Host rejects a message that invokes a skill it cannot load.
         let sent = "/skill:missing-fixture first";
         let (mut view, bindings, client) = send_held(&fixture, &gate, sent).await;
-        view.handle_event(Event::Paste(" next".into()));
+        view.handle_event(Event::Paste("next draft".into()));
         support::tick(&mut view);
         gate.release();
         // Check the composer only once the send has settled.
         let screen = wait_view_state(&mut view, |view, screen| {
-            screen.contains("/skill:missing-fixture first next")
+            screen.contains("/skill:missing-fixture first")
+                && screen.contains("next draft")
+                && screen.contains("Retry")
                 && view
                     .accessibility_snapshot()
                     .iter()
                     .any(|node| node.label == "Send message" && !node.state.disabled)
         })
         .await;
-        support::wait_draft(
-            &client,
-            &fixture.session,
-            "/skill:missing-fixture first next",
-        )
-        .await;
+        support::wait_draft(&client, &fixture.session, "next draft").await;
         // The Host refused the send itself; the typing did not cancel it.
-        assert!(!screen.contains("The draft changed before confirmation"));
+        assert!(screen.contains("Retry"));
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
         drop(view);
         bindings.close().await.unwrap();

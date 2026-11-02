@@ -65,9 +65,10 @@ export function createQueueDock(
   connected: () => boolean,
 ) {
   const items = computed(
-    () => session.snapshot()?.entries.filter((row) => row.kind !== 'in_flight') ?? [],
+    () => session.snapshot()?.entries.filter((row) => row.kind === 'followup') ?? [],
   );
   const editing = signal<Editing | null>(null);
+  const composing = signal(false);
   const review = signal<Review | null>(null);
   const busy = signal<{ through: number | null } | null>(null);
   const error = createText();
@@ -164,6 +165,7 @@ export function createQueueDock(
       const result = await read(row.messageId, request.revision);
       if (result && alive) {
         review.set(null);
+        composing.set(false);
         editing.set({
           messageId: row.messageId,
           revision: result.revision,
@@ -171,13 +173,13 @@ export function createQueueDock(
           hasAttachments: result.hasAttachments,
         });
       }
-    } else if (request.kind !== 'promote' || (row.kind === 'followup' && session.running())) {
+    } else if (request.kind !== 'promote' || session.running()) {
       await change(request.revision, { kind: request.kind, messageId: row.messageId });
     }
   };
   const save = async () => {
     const edit = editing();
-    if (!edit || (!edit.text.trim() && !edit.hasAttachments)) return;
+    if (composing() || !edit || (!edit.text.trim() && !edit.hasAttachments)) return;
     if (
       await change(edit.revision, { kind: 'update', messageId: edit.messageId, message: edit.text })
     ) {
@@ -190,6 +192,7 @@ export function createQueueDock(
   const cancel = () => {
     if (!busy()) {
       editing.set(null);
+      composing.set(false);
       review.set(null);
       error.set('');
     }
@@ -298,9 +301,7 @@ export function createQueueDock(
                       { numberOfLines: 1 },
                     ]}
                   >
-                    {row().kind === 'steering'
-                      ? tr('Sending to current turn · {preview}', { preview: row().preview })
-                      : row().preview}
+                    {row().preview}
                   </Text>
                   <Button
                     accessibilityLabel={tr('Edit queued message {number}', { number: number() })}
@@ -328,17 +329,9 @@ export function createQueueDock(
                     accessibilityLabel={tr('Steer queued message {number} now', {
                       number: number(),
                     })}
-                    tooltip={textTooltip(() =>
-                      row().kind === 'steering'
-                        ? tr('Waiting for the next step')
-                        : tr('Steer now · use in the current turn'),
-                    )}
+                    tooltip={textTooltip(() => tr('Steer now · use in the current turn'))}
                     disabled={
-                      !connected() ||
-                      busy() !== null ||
-                      editing() !== null ||
-                      row().kind !== 'followup' ||
-                      !session.running()
+                      !connected() || busy() !== null || editing() !== null || !session.running()
                     }
                     onPress={inputAction(act, request('promote'))}
                     style={actionStyle}
@@ -361,7 +354,13 @@ export function createQueueDock(
               <Scroll
                 ref={(node) => {
                   unbind();
-                  unbind = keymap.bind('escape', cancel, { when: 'always', within: node });
+                  unbind = keymap.bind(
+                    'escape',
+                    () => {
+                      if (!composing()) cancel();
+                    },
+                    { when: 'always', within: node },
+                  );
                 }}
                 style={{ maxHeight: height(), minHeight: 0, flexShrink: 1, flexGrow: 0 }}
               >
@@ -380,7 +379,9 @@ export function createQueueDock(
                     value={edit().text}
                     readonly={busy() !== null}
                     onChange={({ value: text }) => editing.set({ ...edit(), text })}
+                    onCompositionChange={(event) => composing.set(event.composing)}
                     onSubmit={({ text }) => {
+                      if (composing()) return;
                       editing.set({ ...edit(), text });
                       void save();
                     }}
@@ -427,6 +428,7 @@ export function createQueueDock(
                       disabled={
                         !connected() ||
                         busy() !== null ||
+                        composing() ||
                         !entry(edit().messageId) ||
                         edit().revision !== revision() ||
                         (!edit().text.trim() && !edit().hasAttachments)

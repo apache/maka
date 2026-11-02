@@ -1417,6 +1417,7 @@ export type UsageToolResult =
  * Refusal category without input-derived explanation text.
  */
 export type RejectionKind =
+  | 'superseded'
   | 'unavailable'
   | 'invalid_input'
   | 'policy_denied'
@@ -3229,6 +3230,7 @@ export type AgentSessionChanged =
       kind: 'rejected';
       reason: AgentRejection;
     };
+export type AgentSendDelivery = 'steer' | 'queue';
 export type AgentExecutionResult =
   | {
       kind: 'missing';
@@ -3519,6 +3521,7 @@ export type InteractionOutcome =
       committedAt: number;
     };
 export type ClosureReason =
+  | 'steered'
   | 'turn_stopped'
   | 'turn_terminal'
   | 'producer_cancelled'
@@ -3783,7 +3786,7 @@ export type AgentSendResult =
   | {
       kind: 'rejected';
       sessionId: string;
-      reason: AgentSkillInputRejection;
+      reason: AgentSendRejection;
       skills?: SkillInvocationResult | null;
     }
   | {
@@ -3802,7 +3805,7 @@ export type AgentSendResult =
       kind: 'not_your_worker';
       sessionId: string;
     };
-export type AgentSkillInputRejection = 'skills_unavailable';
+export type AgentSendRejection = 'skills_unavailable' | 'turn_stopped';
 export type AgentDeliveryFact =
   | {
       kind: 'opened';
@@ -3969,7 +3972,9 @@ export type ProviderFailureReason =
   | 'quota_exhausted'
   | 'provider_unavailable'
   | 'stream_truncated';
-export type ModelInterruption = ('cancelled' | 'timed_out' | 'failed') | 'retryable_failure';
+export type ModelInterruption =
+  | ('steered' | 'cancelled' | 'timed_out' | 'failed')
+  | 'retryable_failure';
 export type TitleFailureCause =
   | {
       kind: 'preparation';
@@ -4120,7 +4125,9 @@ export type AgentQueueMessageResult =
     }
   | {
       kind: 'missing';
+      reason: AgentQueueMessageMissingReason;
     };
+export type AgentQueueMessageMissingReason = 'delivered' | 'cancelled' | 'unknown';
 export type AgentQueueAction =
   | {
       kind: 'retract';
@@ -7821,11 +7828,16 @@ export interface AgentChangeSession {
   action: AgentSessionAction;
 }
 export interface AgentSend {
+  delivery?: AgentSendDelivery;
+  /**
+   * An active send must not start new work after Stop fences its original Run.
+   */
+  expectedInvocationId?: string | null;
   /**
    * IDs of immutable user uploads in this Session; metadata is resolved by the owner.
    */
   attachments?: string[];
-  model: ModelSelection;
+  model?: ModelSelection | null;
   /**
    * Omission/null uses the configured model default; `off` is explicit.
    */

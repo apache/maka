@@ -231,10 +231,10 @@ async fn thinking_choices_reach_requests_and_queued_policy_cannot_steer_another_
         let (mut socket, _) = listener.accept().await.unwrap();
         assert_eq!(request(&mut socket).await["reasoning_effort"], "high");
         for level in [Off, Low] {
-            let result = fixture.mutation(2, "send", json!({"sessionId":session,"message":"chosen thinking","model":selection,"thinkingLevel":level}), Uuid::new_v4()).await.unwrap();
+            let result = fixture.mutation(2, "send", json!({"sessionId":session,"message":"chosen thinking","delivery":"queue","model":selection,"thinkingLevel":level}), Uuid::new_v4()).await.unwrap();
             assert_eq!(result["kind"], "queued");
         }
-        assert!(fixture.mutation(2, "send", json!({"sessionId":session,"message":"unsupported","model":selection,"thinkingLevel":"ultra"}), Uuid::new_v4()).await.is_err());
+        assert!(fixture.mutation(2, "send", json!({"sessionId":session,"message":"unsupported","delivery":"queue","model":selection,"thinkingLevel":"ultra"}), Uuid::new_v4()).await.is_err());
         let pending = fixture.session(&session).await.pending_messages(&session).await.unwrap();
         assert_eq!(pending.len(), 2);
         for (entry, level) in pending.iter().zip([Off, Low]) {

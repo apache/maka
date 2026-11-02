@@ -310,6 +310,7 @@ fn application_input(
         ..node(key, &consumer)
     };
     let input = Input {
+        base: None,
         ui: None,
         instances: BTreeMap::from([
             (
@@ -833,7 +834,7 @@ impl Fixture {
         self.mutation(
             2,
             "send",
-            json!({"sessionId":session,"message":"Hello","model":self.selection().await}),
+            json!({"sessionId":session,"message":"Hello","delivery":"queue","model":self.selection().await}),
             Uuid::new_v4(),
         )
         .await
@@ -1222,9 +1223,11 @@ async fn cleanup_case(panic: bool) {
             .owner
             .send(
                 Send {
+                    delivery: maka_agent_api::contract::SendDelivery::Queue,
+                    expected_invocation_id: None,
                     session_id: session.clone(),
                     message: "after failed cleanup".into(),
-                    model: selection,
+                    model: Some(selection),
                     thinking_level: None,
                     attachments: vec![],
                 },

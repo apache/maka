@@ -3520,7 +3520,7 @@ export const contracts = {
                 oneOf: [
                   {
                     type: 'string',
-                    enum: ['cancelled', 'timed_out', 'failed'],
+                    enum: ['steered', 'cancelled', 'timed_out', 'failed'],
                   },
                   {
                     description:
@@ -3997,7 +3997,7 @@ export const contracts = {
                     type: 'string',
                   },
                   reason: {
-                    $ref: '#/$defs/AgentSkillInputRejection',
+                    $ref: '#/$defs/AgentSendRejection',
                   },
                   skills: {
                     anyOf: [
@@ -4073,9 +4073,9 @@ export const contracts = {
               },
             ],
             $defs: {
-              AgentSkillInputRejection: {
+              AgentSendRejection: {
                 type: 'string',
-                enum: ['skills_unavailable'],
+                enum: ['skills_unavailable', 'turn_stopped'],
               },
               SkillInvocationResult: {
                 type: 'object',
@@ -10454,6 +10454,7 @@ export const contracts = {
               ClosureReason: {
                 type: 'string',
                 enum: [
+                  'steered',
                   'turn_stopped',
                   'turn_terminal',
                   'producer_cancelled',
@@ -14449,11 +14450,20 @@ export const contracts = {
                     type: 'string',
                     const: 'missing',
                   },
+                  reason: {
+                    $ref: '#/$defs/AgentQueueMessageMissingReason',
+                  },
                 },
-                required: ['kind'],
                 additionalProperties: false,
+                required: ['kind', 'reason'],
               },
             ],
+            $defs: {
+              AgentQueueMessageMissingReason: {
+                type: 'string',
+                enum: ['delivered', 'cancelled', 'unknown'],
+              },
+            },
           },
           resources: {},
         },
@@ -16844,6 +16854,7 @@ export const contracts = {
               ClosureReason: {
                 type: 'string',
                 enum: [
+                  'steered',
                   'turn_stopped',
                   'turn_terminal',
                   'producer_cancelled',
@@ -19599,6 +19610,14 @@ export const contracts = {
             title: 'AgentSend',
             type: 'object',
             properties: {
+              delivery: {
+                $ref: '#/$defs/AgentSendDelivery',
+              },
+              expectedInvocationId: {
+                description:
+                  'An active send must not start new work after Stop fences its original Run.',
+                type: ['string', 'null'],
+              },
               attachments: {
                 description:
                   'IDs of immutable user uploads in this Session; metadata is resolved by the owner.',
@@ -19609,7 +19628,14 @@ export const contracts = {
                 default: [],
               },
               model: {
-                $ref: '#/$defs/ModelSelection',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
               thinkingLevel: {
                 description: 'Omission/null uses the configured model default; `off` is explicit.',
@@ -19631,8 +19657,12 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['model', 'sessionId', 'message'],
+            required: ['sessionId', 'message'],
             $defs: {
+              AgentSendDelivery: {
+                type: 'string',
+                enum: ['steer', 'queue'],
+              },
               ModelSelection: {
                 description:
                   'Exact public selection observed by a caller, checked once at run admission.',
@@ -19677,7 +19707,7 @@ export const contracts = {
                     type: 'string',
                   },
                   reason: {
-                    $ref: '#/$defs/AgentSkillInputRejection',
+                    $ref: '#/$defs/AgentSendRejection',
                   },
                   skills: {
                     anyOf: [
@@ -19753,9 +19783,9 @@ export const contracts = {
               },
             ],
             $defs: {
-              AgentSkillInputRejection: {
+              AgentSendRejection: {
                 type: 'string',
-                enum: ['skills_unavailable'],
+                enum: ['skills_unavailable', 'turn_stopped'],
               },
               SkillInvocationResult: {
                 type: 'object',
@@ -29130,6 +29160,7 @@ export const contracts = {
               ClosureReason: {
                 type: 'string',
                 enum: [
+                  'steered',
                   'turn_stopped',
                   'turn_terminal',
                   'producer_cancelled',
@@ -29468,6 +29499,7 @@ export const contracts = {
               ClosureReason: {
                 type: 'string',
                 enum: [
+                  'steered',
                   'turn_stopped',
                   'turn_terminal',
                   'producer_cancelled',
@@ -43665,6 +43697,7 @@ export const contracts = {
                 description: 'Refusal category without input-derived explanation text.',
                 type: 'string',
                 enum: [
+                  'superseded',
                   'unavailable',
                   'invalid_input',
                   'policy_denied',

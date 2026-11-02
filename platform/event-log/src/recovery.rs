@@ -59,7 +59,6 @@ macro_rules! unresolved {
         $tail
     ) };
 }
-pub(crate) use unresolved;
 
 pub(crate) async fn require_local(
     connection: &mut SqliteConnection,

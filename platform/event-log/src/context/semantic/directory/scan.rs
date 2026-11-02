@@ -486,8 +486,18 @@ impl<'a> Scan<'a> {
             let (mut payload, mut part, mut model, mut route, mut call, mut name) =
                 (None, None, None, None, None, None);
             let (mut steering, mut custom, mut is_error, mut archived) = (None, None, None, None);
+            let mut kind = None;
             s.object(|s, k| {
-                if k.is("payload") {
+                if k.is("kind") {
+                    let value = s.name()?;
+                    kind = Some(if value.is("output") {
+                        maka_agent_facts::model::prompt_source::source::ToolResultKind::Output
+                    } else if value.is("notification") {
+                        maka_agent_facts::model::prompt_source::source::ToolResultKind::Notification
+                    } else {
+                        return Err(invalid("unknown tool result kind"));
+                    });
+                } else if k.is("payload") {
                     if variant.is("AssistantPart") {
                         part = Some(s.part_source()?);
                     } else {
@@ -545,6 +555,7 @@ impl<'a> Scan<'a> {
                     custom: required(custom)?,
                     is_error: required(is_error)?,
                     archived: required(archived)?,
+                    kind: required(kind)?,
                 }
             } else if variant.is("Notification") {
                 RowDirectory::Notification {
@@ -557,6 +568,7 @@ impl<'a> Scan<'a> {
                     call_id: required(call)?,
                     name: required(name)?,
                     custom: required(custom)?,
+                    kind: required(kind)?,
                 }
             } else {
                 return Err(invalid("unknown semantic row variant"));

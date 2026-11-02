@@ -164,7 +164,7 @@ async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart
             [attachment]
         );
         let send = client
-            .send_draft(
+            .reserve_send_draft(
                 Uuid::new_v4(),
                 "agent",
                 "session-one",
@@ -174,6 +174,7 @@ async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart
             )
             .await
             .unwrap();
+        let send = send.open().await.unwrap();
         send.prepare().await.unwrap();
         send.confirm().await.unwrap();
         let messages = fixture.counter.messages.lock().unwrap().clone();
@@ -223,92 +224,212 @@ async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn saved_drafts_and_receipts_preserve_new_edits_across_clear_ordering_and_restart() {
+async fn frozen_send_survives_restart_and_preserves_the_next_draft() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let fixture = Fixture::new().await;
         let client = fixture.client().await;
-        let first = client.save_draft("agent", "session-one", "composer", None, "first message".into()).await.unwrap();
-        assert_eq!(first.revision, 1);
-        assert!(client.load_draft("receipts", "session-one", "composer").await.unwrap().is_none());
-        assert!(client.load_draft("agent", "session-two", "composer").await.unwrap().is_none());
-        assert!(client.load_draft("agent", "session-one", "another-editor").await.unwrap().is_none());
-        assert!(client.save_draft("agent", "session-one", "composer", None, "stale creation".into()).await.is_err());
-        let abandoned = client.send_draft(Uuid::new_v4(), "agent", "session-one", "composer", 1, json!({})).await.unwrap();
-        // A different native scope has no request handle to cancel. Only the
-        // durable SQL fence can prevent the old scope's later preparation.
-        let replacement = fixture.client().await;
-        assert!(replacement.abandon_unprepared(abandoned.id()).await.unwrap().abandoned);
-        replacement.close().await.unwrap();
-        assert_eq!(abandoned.prepare().await.unwrap_err(), "original client preparation was already recorded or is unavailable");
-        assert_eq!(client.query("agent", "read", Value::Null).await.unwrap(), json!({"sent":0}));
-        assert!(client.pending_operations("agent", "session-one", "composer").await.unwrap().is_empty());
-        let id = Uuid::new_v4();
-        let sent = client.send_draft(id, "agent", "session-one", "composer", first.revision, json!({"model":{"kind":"default"}})).await.unwrap();
+        let first = client.save_draft("agent", "session-one", "composer", None, "original message".into()).await.unwrap();
+        let original = Uuid::new_v4();
+        let frozen = client.reserve_send_draft(original, "agent", "session-one", "composer", first.revision, json!({"delivery":"steer"})).await.unwrap();
+        assert_eq!(client.load_draft("agent", "session-one", "composer").await.unwrap().unwrap().text, "");
+        let next = client.save_draft("agent", "session-one", "composer", Some(first.revision), "new draft".into()).await.unwrap();
+        assert!(client.retry_send(original, Uuid::new_v4(), json!({})).await.is_err(), "an unconfirmed attempt never authorizes another send");
+        drop(frozen);
+        client.close().await.unwrap();
+
+        let client = fixture.client().await;
         let pending = client.pending_operations("agent", "session-one", "composer").await.unwrap();
-        assert_eq!(pending.iter().map(|operation|operation.id).collect::<Vec<_>>(), [id]);
-        assert!(client.pending_controls().await.unwrap().is_empty());
-        assert_eq!(client.operation_for_control(id).await.unwrap_err(), "original client operation belongs to another control owner");
-        assert!(pending[0].reference.is_none());
-        assert!(client.pending_operations("receipts", "session-one", "composer").await.unwrap().is_empty());
-        let operation = sent.prepare().await.unwrap();
-        assert!(!client.abandon_unprepared(id).await.unwrap().abandoned, "committed preparation wins against later abandonment");
-        assert_eq!(operation.draft.as_ref().unwrap().key.namespace, InstanceId(vec![Uuid::from_u128(1)]));
-        sent.confirm().await.unwrap();
-        fixture.counter.started.notified().await;
-        assert!(client.pending_operations("agent", "session-one", "composer").await.unwrap().is_empty());
-        let cleared = client.load_draft("agent", "session-one", "composer").await.unwrap().unwrap();
-        let settled = client.operation_for_draft("agent", "session-one", "composer", id).await.unwrap();
-        assert_eq!(settled.id, id);
-        assert!(matches!(settled.receipt, Some(Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. }) if value["messageId"] == "message-1"));
-        for (endpoint, session, editor) in [
-            ("receipts", "session-one", "composer"),
-            ("agent", "session-two", "composer"),
-            ("agent", "session-one", "another-editor"),
-        ] {
-            assert_eq!(client.operation_for_draft(endpoint, session, editor, id).await.unwrap_err(), "original client operation belongs to another draft owner");
-        }
-        assert_eq!((cleared.revision, cleared.text.as_str()), (1, ""));
-        assert!(client.send_draft(Uuid::new_v4(), "agent", "session-one", "composer", 1, json!({})).await.is_err());
-        // Consumption is not another editor write: an already queued save of
-        // R=1 can follow the clear without losing the newly typed text.
-        let second = client.save_draft("agent", "session-one", "composer", Some(1), "second message".into()).await.unwrap();
-        assert_eq!(second.revision, 2);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].correlation["draft"]["text"], "original message");
+        assert!(client.recover(original).await.is_err());
+        assert!(client.operation(original).await.unwrap().abandoned);
         fixture.counter.blocked.store(true, Ordering::SeqCst);
-        let second_send = client.send_draft(Uuid::new_v4(), "agent", "session-one", "composer", 2, json!({})).await.unwrap();
-        second_send.prepare().await.unwrap();
-        let mut confirming = Box::pin(second_send.confirm());
+        let retry = client.retry_send(original, Uuid::new_v4(), json!({"delivery":"steer"})).await.unwrap().open().await.unwrap();
+        retry.prepare().await.unwrap();
+        let mut confirmed = Box::pin(retry.confirm());
         tokio::select! {
-            result = &mut confirming => panic!("gated send returned before the next edit: {result:?}"),
+            result = &mut confirmed => panic!("send returned before releasing the gate: {result:?}"),
             () = fixture.counter.started.notified() => {},
         }
-        let third = client.save_draft("agent", "session-one", "composer", Some(2), "typed while sending".into()).await.unwrap();
-        assert_eq!(third.revision, 3);
+        assert!(client.retry_send(retry.id(), Uuid::new_v4(), json!({})).await.is_err(), "an already dispatched attempt with no receipt cannot be replayed");
+        client.save_draft("agent", "session-one", "composer", Some(next.revision), "typed while sending".into()).await.unwrap();
         fixture.counter.release.notify_one();
-        confirming.await.unwrap();
-        let current = client.load_draft("agent", "session-one", "composer").await.unwrap().unwrap();
-        assert_eq!((current.revision, current.text.as_str()), (3, "typed while sending"));
-        assert!(client.save_draft("agent", "session-one", "composer", Some(2), "late old write".into()).await.is_err());
-        assert_eq!(fixture.counter.messages.lock().unwrap().iter().map(|input| input["message"].as_str().unwrap().to_owned()).collect::<Vec<_>>(), ["first message", "second message"]);
+        confirmed.await.unwrap();
+        assert_eq!(client.load_draft("agent", "session-one", "composer").await.unwrap().unwrap().text, "typed while sending");
+        assert_eq!(fixture.counter.messages.lock().unwrap().iter().map(|value| value["message"].as_str().unwrap()).collect::<Vec<_>>(), ["original message"]);
+        assert!(client.pending_operations("agent", "session-one", "composer").await.unwrap().is_empty());
         client.close().await.unwrap();
-        let restarted = fixture.client().await;
-        restarted.recover(id).await.unwrap();
-        let current = restarted.load_draft("agent", "session-one", "composer").await.unwrap().unwrap();
-        assert_eq!((current.revision, current.text.as_str()), (3, "typed while sending"));
-        // A returned domain rejection is recorded, but does not consume a draft.
-        restarted.save_draft("agent", "session-one", "composer", Some(3), "reject".into()).await.unwrap();
-        let rejected = restarted.send_draft(Uuid::new_v4(), "agent", "session-one", "composer", 4, json!({})).await.unwrap();
-        rejected.prepare().await.unwrap();
-        assert!(matches!(rejected.confirm().await.unwrap().receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. } if value["kind"] == "rejected"));
-        assert_eq!(restarted.load_draft("agent", "session-one", "composer").await.unwrap().unwrap().text, "reject");
-        let unconfirmed = restarted.send_draft(Uuid::new_v4(), "agent", "session-one", "composer", 4, json!({})).await.unwrap();
-        unconfirmed.prepare().await.unwrap();
-        unconfirmed.disconnect().await.unwrap();
-        assert!(matches!(restarted.recover(unconfirmed.id()).await.unwrap().receipt, Receipt::NotRecorded));
-        assert_eq!(restarted.load_draft("agent", "session-one", "composer").await.unwrap().unwrap().text, "reject");
-        let pending = restarted.pending_operations("agent", "session-one", "composer").await.unwrap();
-        assert!(pending.is_empty());
-        assert!(restarted.operation(unconfirmed.id()).await.unwrap().abandoned);
-        restarted.close().await.unwrap();
         fixture.finish().await;
     }).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queue_delivery_requires_native_confirmation_and_stopped_messages_can_retry() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let fixture = Fixture::new().await;
+        let client = fixture.client().await;
+        let draft = client
+            .save_draft(
+                "agent",
+                "session-one",
+                "composer",
+                None,
+                "queued snapshot".into(),
+            )
+            .await
+            .unwrap();
+        let id = Uuid::new_v4();
+        let send = client
+            .reserve_send_draft(
+                id,
+                "agent",
+                "session-one",
+                "composer",
+                draft.revision,
+                json!({"delivery":"queue","expectedInvocationId":"running"}),
+            )
+            .await
+            .unwrap()
+            .open()
+            .await
+            .unwrap();
+        send.prepare().await.unwrap();
+        send.confirm().await.unwrap();
+        let next = client
+            .save_draft(
+                "agent",
+                "session-one",
+                "composer",
+                Some(draft.revision),
+                "separate draft".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            client.send_delivery(id).await.unwrap(),
+            SendDelivery::Accepted
+        );
+        assert!(
+            client
+                .retry_send(id, Uuid::new_v4(), json!({}))
+                .await
+                .is_err()
+        );
+        fixture
+            .counter
+            .deliveries
+            .lock()
+            .unwrap()
+            .insert("message-1".into(), "unknown".into());
+        assert_eq!(
+            client.send_delivery(id).await.unwrap(),
+            SendDelivery::Unknown
+        );
+        assert!(
+            client
+                .retry_send(id, Uuid::new_v4(), json!({}))
+                .await
+                .is_err(),
+            "queue disappearance alone cannot authorize replay"
+        );
+        assert_eq!(
+            client
+                .pending_operations("agent", "session-one", "composer")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        fixture
+            .counter
+            .deliveries
+            .lock()
+            .unwrap()
+            .insert("message-1".into(), "cancelled".into());
+        let retry = client
+            .retry_send(
+                id,
+                Uuid::new_v4(),
+                json!({"delivery":"steer","expectedInvocationId":"next-run"}),
+            )
+            .await
+            .unwrap()
+            .open()
+            .await
+            .unwrap();
+        retry.prepare().await.unwrap();
+        retry.confirm().await.unwrap();
+        assert_eq!(
+            client
+                .load_draft("agent", "session-one", "composer")
+                .await
+                .unwrap()
+                .unwrap()
+                .text,
+            "separate draft"
+        );
+        assert_eq!(
+            fixture.counter.messages.lock().unwrap()[1]["message"],
+            "queued snapshot"
+        );
+        assert_eq!(
+            fixture.counter.messages.lock().unwrap()[1]["expectedInvocationId"],
+            "next-run"
+        );
+
+        let stopped = client
+            .reserve_send_draft(
+                Uuid::new_v4(),
+                "agent",
+                "session-one",
+                "composer",
+                next.revision,
+                json!({"delivery":"steer","expectedInvocationId":"stopped"}),
+            )
+            .await
+            .unwrap()
+            .open()
+            .await
+            .unwrap();
+        stopped.prepare().await.unwrap();
+        stopped.confirm().await.unwrap();
+        let pending = client
+            .pending_operations("agent", "session-one", "composer")
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].correlation["draft"]["text"], "separate draft");
+        let retry = client
+            .retry_send(stopped.id(), Uuid::new_v4(), json!({"delivery":"queue"}))
+            .await
+            .unwrap()
+            .open()
+            .await
+            .unwrap();
+        let delivered = retry.id();
+        retry.prepare().await.unwrap();
+        retry.confirm().await.unwrap();
+        fixture
+            .counter
+            .deliveries
+            .lock()
+            .unwrap()
+            .insert("message-3".into(), "delivered".into());
+        assert_eq!(
+            client.send_delivery(delivered).await.unwrap(),
+            SendDelivery::Delivered
+        );
+        assert!(
+            client
+                .pending_operations("agent", "session-one", "composer")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(fixture.counter.messages.lock().unwrap().len(), 4);
+        client.close().await.unwrap();
+        fixture.finish().await;
+    })
+    .await
+    .unwrap();
 }

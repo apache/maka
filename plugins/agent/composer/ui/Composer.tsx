@@ -54,6 +54,7 @@ import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHi
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
 import { createComposerPaste } from './composerPaste';
+import { PendingMessages } from './PendingMessages';
 import logo from '../../../../products/maka/workbench/app/assets/maka.png';
 
 // Match the skill invocation grammar; the surrounding whitespace is not part of the chip.
@@ -71,6 +72,7 @@ const skillTokens = () => [
 
 export function Composer(props: ComposerViewInput<JSX.Element>) {
   const pendingAdd = signal(false);
+  const sendOptions = signal(false);
   const completion = createComposerCompletion({
     session: props.session,
     commands: props.commands,
@@ -106,6 +108,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     const suggestion = suggestedMessage();
     const editor = predictionEditor();
     if (
+      completion.composing() ||
       !owner ||
       owner.sessionId !== offered.sessionId ||
       editor?.owner !== owner ||
@@ -127,13 +130,13 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     const owner = props.session();
     const suggestion = suggestedMessage();
     const editor = predictionEditor();
-    if (!owner || !suggestion || editor?.owner !== owner) return;
+    if (!owner || !suggestion || editor?.owner !== owner || completion.composing()) return;
     const offered = {
       sessionId: owner.sessionId,
       sourceTurnId: suggestion.sourceTurnId,
       text: suggestion.text,
     };
-    const bindings = ['tab', 'right', 'enter'].map((key) =>
+    const bindings = ['right', 'enter'].map((key) =>
       keymap.bind(key, () => acceptSuggestedMessage(offered), {
         when: 'always',
         within: editor.node,
@@ -245,26 +248,28 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           !props.session()?.attachments.files().length &&
           !pending()?.draft().trim() &&
           !pending()?.files().length)));
-  const sendLabel = () =>
-    props.session()?.invocation() != null ? tr('Queue message') : tr('Send message');
   const hasContent = () =>
     !!props.session()?.draft().trim() || !!props.session()?.attachments.files().length;
-  const primaryStops = () =>
-    props.session()?.connected() === true && props.session()?.invocation() != null && !hasContent();
+  const running = () =>
+    props.session()?.connected() === true && props.session()?.invocation() != null;
   const resumeSource = () => {
     const value = props.session()?.resumable();
     return !props.session()?.invocation() && !hasContent() && value?.kind === 'ready'
       ? value.source
       : null;
   };
-  const primaryLabel = () =>
-    primaryStops() ? tr('Pause response') : resumeSource() ? tr('Continue response') : sendLabel();
-  const primaryDisabled = () =>
-    primaryStops()
-      ? props.session()!.stopping()
-      : !!props.blocked?.() ||
-        !!props.session()?.resuming() ||
-        (resumeSource() ? !!blocked() || !props.session()!.editable() : cannotSend());
+  const primaryDisabled = () => cannotSend() || completion.composing();
+  const continueDisabled = () =>
+    !!props.blocked?.() ||
+    !!props.session()?.resuming() ||
+    !!blocked() ||
+    !props.session()?.editable();
+  let sendOptionsOwner: string | undefined;
+  effect(() => {
+    const owner = props.session()?.sessionId;
+    if (owner !== sendOptionsOwner || !running()) sendOptions.set(false);
+    sendOptionsOwner = owner;
+  });
   const continueRendered = ({
     owner,
     source,
@@ -275,7 +280,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     backend: ComposerBackend;
   }) => {
     const session = props.session();
-    if (session?.sessionId === owner && props.active() && !primaryDisabled())
+    if (session?.sessionId === owner && props.active() && !continueDisabled())
       void session.resume(source, backend);
   };
   let unbind = () => {};
@@ -300,7 +305,16 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   effect(() => {
     const stop = props.stopAction();
     const node = cardRoot();
-    if (node) return keymap.bind('escape', stop, { when: 'always', within: node });
+    if (node)
+      return keymap.bind(
+        'escape',
+        () => {
+          if (completion.composing()) return;
+          if (sendOptions()) sendOptions.set(false);
+          else stop();
+        },
+        { when: 'always', within: node },
+      );
   });
   const workspaceLabel = () => {
     const path = props.session()?.workspace() ?? pending()?.workspace();
@@ -472,6 +486,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               <View>
                 <ProjectMcp owner={owner.projectMcp} />
                 <ComposerDetails session={owner} />
+                <PendingMessages session={owner} />
               </View>
             );
           }}
@@ -745,7 +760,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           {suggestedMessage()!.text}{' '}
                           <Button
                             accessibilityLabel={tr('Use suggested message')}
-                            tooltip={textTooltip(() => tr('Tab to use · Esc to dismiss'))}
+                            tooltip={textTooltip(() => tr('Right arrow to use · Esc to dismiss'))}
                             onPress={inputAction(acceptSuggestedMessage, {
                               sessionId: owner!.sessionId,
                               sourceTurnId: suggestedMessage()!.sourceTurnId,
@@ -765,7 +780,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             focusStyle={controlFocusStyle()}
                           >
                             <Text style={{ ...captionTextStyle, color: `${C.muted}80` }}>
-                              {tr('Press Tab to accept')}
+                              {tr('Use suggestion')}
                             </Text>
                           </Button>
                         </Text>
@@ -894,35 +909,75 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             <If when={props.session() === null && pending() === null}>
               <View style={[{ flex: 1 }, { pointerEvents: 'none' }]} />
             </If>
+            <If when={running()}>
+              <Button
+                accessibilityLabel={
+                  props.session()!.stopping() ? tr('Stopping…') : tr('Stop response')
+                }
+                tooltip={textTooltip(() => `${tr('Stop response')} · Esc`)}
+                disabled={props.session()!.stopping()}
+                onPress={inputAction(props.session()!.stop, props.session()!.invocation())}
+                style={{
+                  width: 32,
+                  height: 32,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 16,
+                }}
+                hoverStyle={{ backgroundColor: C.line }}
+                focusStyle={controlFocusStyle()}
+              >
+                <If
+                  when={props.session()!.stopping()}
+                  else={<Icon name="stop" color={C.secondary} />}
+                >
+                  <LoadingIndicator color={C.muted} />
+                </If>
+              </Button>
+            </If>
+            <If when={resumeSource() !== null}>
+              <Button
+                accessibilityLabel={tr('Continue response')}
+                tooltip={textTooltip(() => tr('Continue response'))}
+                disabled={continueDisabled()}
+                onPress={inputAction(continueRendered, {
+                  owner: props.session()!.sessionId,
+                  source: resumeSource()!,
+                  backend: props.session()!.backend(),
+                })}
+                style={{
+                  width: 32,
+                  height: 32,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 16,
+                }}
+                hoverStyle={{ backgroundColor: C.line }}
+                focusStyle={controlFocusStyle()}
+              >
+                <Icon name="play" color={C.secondary} />
+              </Button>
+            </If>
             <Button
-              accessibilityLabel={primaryLabel()}
-              tooltip={textTooltip(() =>
-                primaryStops() ? `${tr('Pause response')} · Esc` : `${primaryLabel()} · Enter`,
-              )}
+              accessibilityLabel={tr('Send message')}
+              tooltip={textTooltip(() => `${tr('Send message')} · Enter`)}
               disabled={primaryDisabled()}
               onPress={
-                primaryStops()
-                  ? inputAction(props.session()!.stop, props.session()!.invocation())
-                  : resumeSource()
-                    ? inputAction(continueRendered, {
-                        owner: props.session()!.sessionId,
-                        source: resumeSource()!,
-                        backend: props.session()!.backend(),
+                props.session()
+                  ? inputAction(completion.send, {
+                      owner: props.session()!.sessionId,
+                      text: props.session()!.draft(),
+                      backend: props.session()!.backend(),
+                      attachments: props.session()!.attachments.ids(),
+                      delivery: 'steer',
+                    })
+                  : pending()
+                    ? inputAction(sendPending, {
+                        owner: pending()!,
+                        text: pending()!.draft(),
+                        expected: pending()!.confirmation(),
                       })
-                    : props.session()
-                      ? inputAction(completion.send, {
-                          owner: props.session()!.sessionId,
-                          text: props.session()!.draft(),
-                          backend: props.session()!.backend(),
-                          attachments: props.session()!.attachments.ids(),
-                        })
-                      : pending()
-                        ? inputAction(sendPending, {
-                            owner: pending()!,
-                            text: pending()!.draft(),
-                            expected: pending()!.confirmation(),
-                          })
-                        : undefined
+                    : undefined
               }
               style={{
                 width: 32,
@@ -937,16 +992,68 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               activeStyle={{ backgroundColor: C.accent }}
               disabledStyle={{ backgroundColor: C.line }}
             >
-              <If when={!primaryStops() && confirming()}>
+              <If when={confirming()}>
                 <LoadingIndicator color={C.muted} />
               </If>
-              <If when={primaryStops() || !confirming()}>
-                <Icon
-                  name={primaryStops() ? 'pause' : resumeSource() ? 'play' : 'send'}
-                  color={primaryDisabled() ? C.muted : C.background}
-                />
+              <If when={!confirming()}>
+                <Icon name="send" color={primaryDisabled() ? C.muted : C.background} />
               </If>
             </Button>
+            <If when={running()}>
+              <Popover
+                open={sendOptions()}
+                onOpenChange={({ open }) => sendOptions.set(open)}
+                placement="top"
+                align="end"
+                offset={8}
+                margin={8}
+                popupStyle={{ padding: 8, backgroundColor: C.surface, borderRadius: 12 }}
+                trigger={
+                  <Button
+                    accessibilityLabel={tr('Send options')}
+                    tooltip={textTooltip(() => tr('Send options'))}
+                    disabled={primaryDisabled() || completion.isCommand()}
+                    onPress={inputAction(() => sendOptions.set(!sendOptions()), null)}
+                    style={{
+                      width: 32,
+                      height: 32,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      borderRadius: 16,
+                    }}
+                    hoverStyle={{ backgroundColor: C.line }}
+                    focusStyle={controlFocusStyle()}
+                  >
+                    <Icon name="down" color={C.secondary} />
+                  </Button>
+                }
+              >
+                <Button
+                  accessibilityLabel={tr('Add to queue')}
+                  tooltip={textTooltip(() => tr('Send after this turn'))}
+                  disabled={primaryDisabled() || completion.isCommand()}
+                  onPress={inputAction(
+                    (action) => {
+                      sendOptions.set(false);
+                      completion.send(action);
+                    },
+                    {
+                      owner: props.session()!.sessionId,
+                      text: props.session()!.draft(),
+                      backend: props.session()!.backend(),
+                      attachments: props.session()!.attachments.ids(),
+                      delivery: 'queue' as const,
+                    },
+                  )}
+                  style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                  hoverStyle={{ backgroundColor: C.raised }}
+                  focusStyle={controlFocusStyle()}
+                >
+                  <Icon name="queue" color={C.secondary} />
+                  <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Add to queue')}</Text>
+                </Button>
+              </Popover>
+            </If>
           </View>
           <If when={fileDragging()}>
             <FileDropHint radius={cardRadius()} />

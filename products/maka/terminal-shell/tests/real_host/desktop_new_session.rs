@@ -546,7 +546,7 @@ async fn desktop_prediction_preserves_the_request_and_inserts_an_undoable_draft(
         .as_str()
         .unwrap()
         .to_owned();
-    desktop.control("Pause response").await;
+    desktop.control("Stop response").await;
     reply.delta("The patch needs a regression test.").await;
     reply.finish().await;
     desktop
@@ -897,61 +897,166 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_send_progress_animates_while_model_resolution_is_pending() {
+async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     let mut fixture = Fixture::open().await;
-    let gate = ReplyGate::resolve_model(fixture.directory.path(), fixture.address.clone());
-    let desktop = Desktop::open(&fixture, &gate.address).await;
+    let gate = ReplyGate::send(fixture.directory.path(), fixture.address.clone());
+    let (theme, appearance, width_name, width, height) = visual_case();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &gate.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+    )
+    .await;
     desktop.new_draft().await;
-    desktop.type_text("FIRST_DESKTOP_MESSAGE").await;
+    desktop
+        .type_text("Review the current implementation.")
+        .await;
     desktop.key("enter", false);
-    let mut reply = desktop.request(&mut fixture).await;
-    reply.thinking("**Opening Reddit homepage**").await;
-    reply.delta("Done.").await;
-    reply.finish().await;
+    let original = desktop.request(&mut fixture).await;
     let session = desktop
         .sessions()
         .await
         .into_iter()
-        .find(|session| session["id"] != fixture.session)
+        .find(|row| row["id"] != fixture.session)
         .unwrap()["id"]
         .as_str()
         .unwrap()
         .to_owned();
+    desktop.control("Stop response").await;
+
+    desktop.type_text("Focus on steering in both modes.").await;
+    let editor = desktop.platform.text_input_target();
+    gate.arm();
+    desktop.key("enter", false);
+    desktop.held(&gate).await;
+    assert!(
+        desktop.platform.text_input_target() == editor,
+        "sending preserves native editor focus"
+    );
+    desktop.type_text("Keep the sidebar compact.").await;
     desktop
         .wait(
-            "the reply did not finish",
+            "next draft was not saved independently",
+            super::support::wait_draft(&desktop.client, &session, "Keep the sidebar compact."),
+        )
+        .await;
+    desktop.key("right", false);
+    desktop.artifact(&format!("steering-{theme}-{width_name}-sending"));
+    gate.release();
+    let second = desktop.request(&mut fixture).await;
+    let sent = second.body["messages"].to_string();
+    assert!(
+        sent.contains("Review the current implementation.")
+            && sent.contains("Focus on steering in both modes."),
+        "{sent}"
+    );
+    assert!(
+        !sent.contains("Keep the sidebar compact."),
+        "new typing must not join the frozen correction"
+    );
+    desktop.expect_text("Keep the sidebar compact.").await;
+    drop(original);
+
+    desktop.type_text("Summarize the changes afterwards.").await;
+    desktop.press("Send options").await;
+    desktop.control("Add to queue").await;
+    desktop.artifact(&format!("steering-{theme}-{width_name}-queue-menu"));
+    desktop.press("Add to queue").await;
+    desktop
+        .wait("explicit queue message was not accepted", async {
+            loop {
+                let queue = desktop
+                    .client
+                    .query("agent", "queue", json!({"sessionId":session}))
+                    .await
+                    .unwrap();
+                if queue["entries"].as_array().unwrap().iter().any(|row| {
+                    row["preview"] == "Summarize the changes afterwards."
+                        && row["kind"] == "followup"
+                }) {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    assert!(
+        desktop.controls("Add to queue").is_empty(),
+        "the one-shot menu closes after use"
+    );
+
+    desktop.type_text("Check ").await;
+    let target = desktop.platform.text_input_target().unwrap();
+    assert!(
+        desktop
+            .platform
+            .apply_composition(&target, "", "方向", Some(2..2), true)
+            .unwrap()
+    );
+    desktop.pump();
+    desktop.key("enter", false);
+    desktop.key("escape", false);
+    desktop
+        .wait("IME keys interrupted the active run", async {
+            let status = desktop
+                .client
+                .query("agent", "observe", json!({"sessionId":session}))
+                .await
+                .unwrap();
+            assert_ne!(status["session"]["activity"], "idle");
+        })
+        .await;
+    assert_eq!(
+        fixture.request_count.load(Ordering::SeqCst),
+        2,
+        "IME confirmation must not send a message"
+    );
+    assert!(
+        desktop
+            .platform
+            .apply_composition(&target, "方向", "", None, false)
+            .unwrap()
+    );
+    desktop.type_text("Check keyboard focus too.").await;
+    desktop.key("enter", false);
+    let third = desktop.request(&mut fixture).await;
+    let sent = third.body["messages"].to_string();
+    assert!(
+        sent.contains("Check keyboard focus too."),
+        "Enter after Queue returns to steering: {sent}"
+    );
+    assert!(
+        !sent.contains("Summarize the changes afterwards."),
+        "explicit followup waits until the turn ends"
+    );
+    drop(second);
+    desktop
+        .type_text("Preserve this draft after stopping.")
+        .await;
+    desktop.control("Stop response").await;
+    desktop.key("right", false);
+    desktop.artifact(&format!("steering-{theme}-{width_name}-active"));
+    desktop.press("Model for queued and future messages").await;
+    desktop.control("Choose model").await;
+    desktop.artifact(&format!("steering-{theme}-{width_name}-model-scope"));
+    desktop.key("escape", false);
+    desktop.press("Stop response").await;
+    desktop
+        .wait(
+            "Stop did not end the active turn",
             fixture.idle(&desktop.client, &session),
         )
         .await;
-    desktop.press("Turn work details").await;
-    desktop.press("Process group").await;
-    desktop.control("Thinking · Opening Reddit homepage").await;
-    desktop.artifact("thinking-inline-markdown");
-    let previous = desktop.platform.text_input_target();
+    drop(third);
     desktop.press("Focus message composer").await;
-    desktop.target_after(previous).await;
-    desktop.type_text("SECOND_DESKTOP_MESSAGE").await;
-    let send = desktop.control("Send message").await;
-    gate.arm();
-    desktop.key("enter", false);
     desktop
-        .wait("send did not reach model resolution", gate.held.notified())
+        .expect_text("Preserve this draft after stopping.")
         .await;
-    desktop.control("Focus message composer").await;
-    desktop.artifact("composer-confirming-send");
-    let mut previous = desktop.pixels(send).unwrap();
-    for _ in 0..2 {
-        desktop
-            .until("send progress did not animate", || {
-                (desktop.pixels(send)? != previous).then_some(())
-            })
-            .await;
-        previous = desktop.pixels(send).unwrap();
-    }
-    gate.release();
-    let mut reply = desktop.request(&mut fixture).await;
-    reply.delta("Second reply.").await;
-    reply.finish().await;
+    desktop.control("Retry message").await;
+    desktop.key("right", false);
+    desktop.artifact(&format!("steering-{theme}-{width_name}-stopped"));
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 3);
     desktop.close().await;
     fixture.finish().await;
 }
@@ -1043,7 +1148,7 @@ async fn disconnected_desktop(
     desktop.type_text("Start a response").await;
     desktop.key("enter", false);
     let mut reply = desktop.request(&mut fixture).await;
-    desktop.control("Pause response").await;
+    desktop.control("Stop response").await;
     let closing = tokio::spawn({
         let store = fixture.store.clone();
         async move { store.shutdown().await }
@@ -1051,7 +1156,7 @@ async fn disconnected_desktop(
     reply.delta("Wake the original source watcher.").await;
     desktop.control("Details").await;
     desktop.control("Retry").await;
-    assert!(desktop.controls("Pause response").is_empty());
+    assert!(desktop.controls("Stop response").is_empty());
     desktop.type_text("DRAFT_KEPT_WHILE_DISCONNECTED").await;
     desktop.expect_text("DRAFT_KEPT_WHILE_DISCONNECTED").await;
     let retry = desktop.control("Retry").await;
@@ -1097,7 +1202,7 @@ async fn disconnected_desktop(
         1,
         "one connection failure needs one retry action"
     );
-    assert!(desktop.controls("Pause response").is_empty());
+    assert!(desktop.controls("Stop response").is_empty());
     reply.finish().await;
     desktop
         .wait("the closed store did not drain", closing)

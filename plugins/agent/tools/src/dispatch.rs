@@ -52,11 +52,14 @@ pub struct RunTools {
     mode: ToolMode,
     cells: CodeExecutor,
     code: cell::Cells,
+    steering: CancellationToken,
+    executions: crate::executions::Executions,
 }
 
 impl Drop for RunTools {
     fn drop(&mut self) {
         self.code.cancel();
+        self.executions.cancel();
     }
 }
 
@@ -79,18 +82,42 @@ impl RunTools {
             mode,
             cells,
             code,
+            steering: CancellationToken::new(),
+            executions: crate::executions::Executions::default(),
         }
     }
 
     pub async fn shutdown(&self) -> Result<(), ToolError> {
-        self.code.shutdown().await
+        let cells = self.code.shutdown().await;
+        let executions = self.executions.shutdown().await;
+        cells.and(executions)
     }
 
-    pub fn code_idle(&self) -> bool {
-        self.code.is_idle()
+    pub fn is_idle(&self) -> bool {
+        self.code.is_idle() && self.executions.is_idle()
+    }
+
+    pub fn check(&self) -> Result<(), ToolError> {
+        self.code.check()?;
+        self.executions.check()
+    }
+
+    pub async fn changed(&self) {
+        tokio::select! {
+            _ = self.code.changed() => {},
+            _ = self.executions.changed() => {},
+        }
     }
     pub async fn finish_output(&self, observed: u64) -> Result<bool, ToolError> {
         self.code.finish_output(observed).await
+    }
+
+    pub async fn has_unread_notifications(&self, observed: u64) -> bool {
+        self.code.has_unread_notifications(observed).await
+    }
+
+    pub fn set_steering(&mut self, signal: CancellationToken) {
+        self.steering = signal;
     }
 
     pub fn with_model(mut self, model: maka_agent_facts::tools::ModelToolContext) -> Self {
@@ -124,7 +151,7 @@ impl RunTools {
         cwd: &str,
         cancellation: CancellationToken,
     ) -> Result<RequestTools<'_>, ToolError> {
-        self.code.check()?;
+        self.check()?;
         let current = self
             .availability
             .capture(
@@ -146,7 +173,7 @@ impl RunTools {
         composition: &maka_agent_facts::composition::RequestComposition,
         cancellation: CancellationToken,
     ) -> Result<RequestTools<'_>, ToolError> {
-        self.code.check()?;
+        self.check()?;
         let current = self
             .availability
             .capture(
@@ -270,6 +297,10 @@ pub struct RequestTools<'a> {
 }
 
 impl<'a> RequestTools<'a> {
+    pub fn steering(&self) -> &CancellationToken {
+        &self.run.steering
+    }
+
     pub fn finished(&self) -> bool {
         self.finished.load(Ordering::Acquire)
     }
@@ -339,6 +370,10 @@ impl Admission {
 }
 
 impl<'a> StepTools<'a> {
+    pub fn steering(&self) -> &CancellationToken {
+        self.request.steering()
+    }
+
     pub fn finished(&self) -> bool {
         self.request.finished()
     }
@@ -375,7 +410,6 @@ impl<'a> StepTools<'a> {
             semantics.and_then(|semantics| self.admission.admit(semantics))
         };
         Box::pin(async move {
-            run.code.check()?;
             let catalog = if run.mode == ToolMode::CodeMode {
                 &request.direct
             } else {
@@ -403,8 +437,11 @@ impl<'a> StepTools<'a> {
                     );
                     let code = run.code.clone();
                     let language = run.language;
+                    let steering = run.steering.clone();
                     let effect: PreparedEffect = PreparedEffect::new(move |cancellation| {
-                        Box::pin(async move { code.start(executor, language, cancellation).await })
+                        Box::pin(async move {
+                            code.start(executor, language, cancellation, steering).await
+                        })
                     });
                     Ok(effect.titled(maka_agent_facts::display::Text::localized(
                         "Run tools",
@@ -415,8 +452,11 @@ impl<'a> StepTools<'a> {
                     let input = cell::wait_input(input)?;
                     let code = run.code.clone();
                     let language = run.language;
+                    let steering = run.steering.clone();
                     Ok(PreparedEffect::new(move |cancellation| {
-                        Box::pin(async move { code.observe(input, language, cancellation).await })
+                        Box::pin(async move {
+                            code.observe(input, language, cancellation, steering).await
+                        })
                     }))
                 } else if run.mode == ToolMode::Direct
                     && call.name == SEARCH
@@ -461,7 +501,22 @@ pub struct PreparedCall<'a> {
 /// The writer installs the prefix receipt before polling the one-shot completion.
 pub struct PublishedCall {
     pub prefix_sequences: Vec<u64>,
-    pub completion: CallContinuation,
+    completion: CallContinuation,
+    executions: crate::executions::Executions,
+    operation_id: String,
+    cancellation: CancellationToken,
+}
+
+impl PublishedCall {
+    pub fn start(self) -> CallContinuation {
+        match self.completion {
+            CallContinuation::Executing(future) => CallContinuation::Executing(
+                self.executions
+                    .start(self.operation_id, future, self.cancellation),
+            ),
+            CallContinuation::Approval(pending) => CallContinuation::Approval(pending),
+        }
+    }
 }
 
 pub enum CallContinuation {
@@ -514,6 +569,9 @@ impl CallSettlement {
 pub struct PendingCall {
     approval: Box<ApprovalContinuation<Value>>,
     settlement: Option<CallSettlement>,
+    executions: crate::executions::Executions,
+    operation_id: String,
+    cancellation: CancellationToken,
 }
 
 impl PendingCall {
@@ -529,10 +587,14 @@ impl Future for PendingCall {
         match Pin::new(this.approval.as_mut()).poll(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(execution) => Poll::Ready(
-                this.settlement
-                    .take()
-                    .expect("pending call settles once")
-                    .complete(execution),
+                this.executions.start(
+                    this.operation_id.clone(),
+                    this.settlement
+                        .take()
+                        .expect("pending call settles once")
+                        .complete(execution),
+                    this.cancellation.clone(),
+                ),
             ),
         }
     }
@@ -550,6 +612,9 @@ impl<'a> PreparedCall<'a> {
                 cancellation,
                 preparation,
             } = self;
+            request.run.check()?;
+            let completion_id = operation_id.clone();
+            let completion_cancel = cancellation.clone();
             let journal = &request.run.journal;
             let published = match preparation {
                 Ok((effect, input)) => {
@@ -596,11 +661,17 @@ impl<'a> PreparedCall<'a> {
                 ToolContinuation::Approval(approval) => CallContinuation::Approval(PendingCall {
                     approval,
                     settlement: Some(settlement),
+                    executions: request.run.executions.clone(),
+                    operation_id: completion_id.clone(),
+                    cancellation: completion_cancel.clone(),
                 }),
             };
             Ok(PublishedCall {
                 prefix_sequences: published.prefix_sequences,
                 completion,
+                executions: request.run.executions.clone(),
+                operation_id: completion_id,
+                cancellation: completion_cancel,
             })
         })
     }
