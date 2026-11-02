@@ -259,6 +259,12 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     clearPendingTurnActions: (sessionId) => turnActionRegistry.clearForSession(sessionId),
   }), [revision, turn, turnActionRegistry.clearForSession]);
   const reader = useMemo(() => ({
+    // Card clicks are independent chat requests: never consume the editor's draft,
+    // attachments or edit-and-resend staging. The normal send path owns admission.
+    sendCardReply: async (text: string) => {
+      if (!ownerSessionId || sharedSessionActive || revisionDraft || !commands.isSessionSelected(ownerSessionId)) return false;
+      return chat.send(text, [], { targetSessionId: ownerSessionId, waitForHostAdmission: true });
+    },
     onSend,
     newTaskSendPending,
     revisionDraft,
@@ -268,7 +274,7 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     respondToUserForm: chat.respondToUserForm,
     stop,
     composerResumeAction: resume.composerResumeAction,
-  }), [chat, newTaskSendPending, onSend, resume.composerResumeAction, revision, revisionDraft, stop]);
+  }), [chat, ownerSessionId, sharedSessionActive, newTaskSendPending, onSend, resume.composerResumeAction, revision, revisionDraft, stop]);
   // What the transcript and the chrome readers take, apart from the Composer's
   // submission state, so a send or an edit draft does not repaint the transcript.
   const turnReader = useMemo(() => ({

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { MessageCardSendContext } from '@maka/ui';
 import { useLayoutEffect, useMemo, type ReactNode } from 'react';
 import { CatalogRowWatch } from '../../../application/contracts/session-catalog/catalog-row-watch.js';
 import { useSessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
@@ -84,7 +85,9 @@ export function ComposerSubmissionProvider<Owner extends ComposerSurfaceOwner>(p
           enabled={props.recoveryEnabled && !submission.reader.revisionDraft}
           restoreContext={props.staging.restoreContext} />
         <ConversationNavigationContext.Provider value={navigation}>
-          {props.children}
+          <MessageCardSendContext.Provider value={props.ownerSessionId && !props.sharedSessionActive && !submission.reader.revisionDraft ? submission.reader.sendCardReply : undefined}>
+            {props.children}
+          </MessageCardSendContext.Provider>
         </ConversationNavigationContext.Provider>
       </ComposerTurnContext.Provider>
     </ComposerSubmissionContext.Provider>

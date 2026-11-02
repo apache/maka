@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { assistantMessageText } from '@maka/core/assistant-card';
+
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -255,7 +257,7 @@ export function createAssistantImBridge(deps: AssistantImDeps) {
         if (message.sequence <= r.through) continue;
         if (message.role === 'assistant') {
           if (r.delivery?.id !== message.id) {
-            r.delivery = { id: message.id, text: message.text, summary: message.summary, attempts: 0, done: false };
+            r.delivery = { id: message.id, text: assistantMessageText(message), summary: message.summary, attempts: 0, done: false };
             await save(r);
           }
           await deliver(r, r.delivery);

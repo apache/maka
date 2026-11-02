@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { app, ipcMain, screen, type BrowserWindow } from "electron";
+import { isAssistantCard, isCardWebUrl } from "@maka/core/assistant-card";
+import { app, ipcMain, screen, shell, type BrowserWindow } from "electron";
 import { join } from "node:path";
 import { createPetPackStore } from "@maka/storage/pet-pack-store";
 import type { SettingsStore } from "@maka/storage/settings-store";
@@ -35,6 +36,7 @@ export function createPetDesktop(input: {
   workspaceRoot: string;
   assistantChat?: {
     target(): Promise<string>;
+    cardAction(input: { target: string; cardId: string; actionKey?: string }): Promise<{ selectedKey: string | null }>;
     send(input: { target: string; id: string; text: string }): Promise<void>;
   };
   settingsStore: SettingsStore;
@@ -259,7 +261,8 @@ export function createPetDesktop(input: {
           typeof m.id === "string" &&
           typeof m.text === "string" &&
           m.text.length <= 100000 &&
-          (m.summary === undefined || typeof m.summary === "string"),
+          (m.summary === undefined || typeof m.summary === "string") &&
+          (m.card === undefined || isAssistantCard(m.card)),
       )
     ) {
       window?.webContents.send("pet-desktop:messages", value);
@@ -383,6 +386,21 @@ export function createPetDesktop(input: {
       throw Error("消息内容不正确或过长");
     if (!input.assistantChat) throw Error("助手聊天暂不可用");
     await input.assistantChat.send({ target: v.target, id: v.id, text: v.text });
+  });
+  ipcMain.handle("pet-desktop:card-action", async (event, value: unknown) => {
+    assertPet(event.sender);
+    const v = value as { target?: unknown; cardId?: unknown; actionKey?: unknown } | null;
+    if (!v || typeof v.target !== 'string' || v.target.length > 1000 ||
+        typeof v.cardId !== 'string' || !v.cardId || v.cardId.length > 512 ||
+        (v.actionKey !== undefined && (typeof v.actionKey !== 'string' || !/^\d+:\d+$/.test(v.actionKey) || v.actionKey.length > 32)))
+      throw Error('卡片参数不正确');
+    if (!input.assistantChat || mode !== 'assistant') throw Error('助手聊天暂不可用');
+    return input.assistantChat.cardAction({ target: v.target, cardId: v.cardId, ...(v.actionKey === undefined ? {} : { actionKey: v.actionKey }) });
+  });
+  ipcMain.handle("pet-desktop:open-link", async (event, url: unknown) => {
+    assertPet(event.sender);
+    if (!isCardWebUrl(url)) throw Error('链接不受支持');
+    await shell.openExternal(url);
   });
   screen.on("display-metrics-changed", clamp);
   screen.on("display-removed", clamp);

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { AssistantCard } from '@maka/core/assistant-card';
+
 import { deriveTurnRecords, isUserVisibleSessionSystemNote } from '@maka/core/session';
 import { foldTimeline } from './timeline-fold.js';
 import {
@@ -342,6 +344,7 @@ export type TurnTimelineItem =
   | {
       kind: "text";
       summary?: string;
+      card?: AssistantCard;
       interrupted?: true;
       text: string;
       messageId: string;
@@ -1083,6 +1086,7 @@ function buildTurnTimeline(
               kind: "text",
               text: message.text,
               ...(message.summary !== undefined ? { summary: message.summary } : {}),
+              ...(message.card !== undefined ? { card: message.card } : {}),
               ...(message.interrupted ? { interrupted: true } : {}),
               messageId: rowId,
               ts: message.ts,
@@ -1108,6 +1112,7 @@ function buildTurnTimeline(
             kind: "text",
             text: message.text,
               ...(message.summary !== undefined ? { summary: message.summary } : {}),
+              ...(message.card !== undefined ? { card: message.card } : {}),
             ...(message.interrupted ? { interrupted: true } : {}),
             messageId: rowId,
             ts: message.ts,

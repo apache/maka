@@ -2098,7 +2098,15 @@ test('SendUser publishes sticker IDs atomically and replays the saved batch afte
     });
     request = {
       messageId: 'direct-sticker',
-      messages: [{ text: '正文保留', summary: '摘要保留', stickerId: id }, { stickerId: id }],
+      messages: [
+        {
+          text: '正文保留',
+          summary: '摘要保留',
+          stickerId: id,
+          card: { type: 'offer', title: 'Test card', items: [{ title: 'Test item' }] },
+        },
+        { stickerId: id },
+      ],
     };
     await assert.rejects(
       invoke('SendUser', { messageId: 'empty', messages: [{}] }),
@@ -2118,6 +2126,7 @@ test('SendUser publishes sticker IDs atomically and replays the saved batch afte
     assert.equal(sent.messageIds.length, 2);
     const output = f.visible.filter((m) => m.type === 'assistant');
     assert.equal(output[0].summary, '摘要保留');
+    assert.equal(output[0].card?.title, 'Test card');
     assert.equal(output[0].text, `正文保留\n\n![表情](maka://runtime/attachments/sticker-${id})`);
     assert.equal(output[1].text, `![表情](maka://runtime/attachments/sticker-${id})`);
     await invoke('AssistantCharacterPack', { action: 'remove_asset', assetId: id });
@@ -2408,4 +2417,82 @@ test('Sleep decisions use durable operation identity, not reused provider call I
   await f.send('decision-input', '这件事处理好了');
   await until(() => done || !!failure);
   if (failure) throw failure;
+});
+
+test('SendUser card batch validates before delivery and retries identically after restart', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const card = {
+    type: 'offer',
+    title: '报销材料',
+    items: [
+      {
+        title: '整理提交包',
+        facts: [{ label: '待补', value: '酒店发票' }],
+        actions: [
+          { kind: 'reply', label: '帮我整理', value: '帮我整理这次出差的报销材料，暂不提交。' },
+        ],
+      },
+    ],
+  };
+  let done = false;
+  f.runner(async ({ invoke }) => {
+    await invoke('InboxCheck');
+    await assert.rejects(
+      invoke('SendUser', {
+        messageId: 'bad-card',
+        messages: [
+          { text: '先不要发送' },
+          {
+            text: 'bad',
+            card: {
+              ...card,
+              items: [
+                {
+                  title: 'run',
+                  actions: [{ kind: 'link', label: 'run', value: 'javascript:alert(1)' }],
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    assert.equal(f.visible.filter((m) => m.type === 'assistant').length, 0);
+    const input = {
+      messageId: 'card-batch',
+      messages: [{ text: '可以帮你整理。', summary: '已有材料可先整理', card }],
+    };
+    await invoke('SendUser', input);
+    await invoke('SendUser', input);
+    await assert.rejects(
+      invoke('SendUser', {
+        ...input,
+        messages: [{ ...input.messages[0], card: { ...card, title: 'changed' } }],
+      }),
+      /different batch/,
+    );
+    await invoke('Sleep');
+    done = true;
+  });
+  await f.send('card-user', '报销还没搞完');
+  await until(() => done);
+  assert.deepEqual(
+    f.visible.filter((m) => m.type === 'assistant').map((m) => m.card),
+    [card],
+  );
+  await f.restart();
+  done = false;
+  f.runner(async ({ invoke }) => {
+    await invoke('InboxCheck');
+    await invoke('SendUser', {
+      messageId: 'card-batch',
+      messages: [{ text: '可以帮你整理。', summary: '已有材料可先整理', card }],
+    });
+    await invoke('Sleep');
+    done = true;
+  });
+  await f.send('card-retry', '重试');
+  await until(() => done);
+  assert.equal(f.visible.filter((m) => m.type === 'assistant').length, 1);
 });
