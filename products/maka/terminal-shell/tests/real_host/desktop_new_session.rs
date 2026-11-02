@@ -546,18 +546,23 @@ async fn desktop_prediction_preserves_the_request_and_inserts_an_undoable_draft(
         .await;
     desktop.press_at(save.center());
     desktop.press("Close settings").await;
-    assert_eq!(
-        desktop
-            .client
-            .query("settings", "assistantPreferences", json!({}))
-            .await
-            .unwrap()["predictions"]["ordinarySessionsOnly"],
-        true,
-    );
+    desktop
+        .wait("the prediction setting was not saved", async {
+            while desktop
+                .client
+                .query("settings", "assistantPreferences", json!({}))
+                .await
+                .unwrap()["predictions"]["ordinarySessionsOnly"]
+                != true
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
     desktop.control("Focus message composer").await;
     desktop.new_draft().await;
     desktop.type_text("Review the patch.").await;
-    desktop.key("enter", false);
+    desktop.submit().await;
     let mut reply = desktop.request(&mut fixture).await;
     let original = reply.body.clone();
     let session = desktop
@@ -813,7 +818,7 @@ async fn desktop_retries_a_failed_first_submission_in_the_same_session() {
         )
         .await;
     set_model_enabled(&desktop.client, true).await;
-    desktop.key("enter", false);
+    desktop.submit().await;
     let retry = desktop.request(&mut fixture).await;
     assert_image(&retry, "RETRIED_FIRST_MESSAGE", &bytes);
     retry.finish().await;
